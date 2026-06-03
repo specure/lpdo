@@ -1,0 +1,104 @@
+name: Release
+
+# Builds the LPDO desktop app for Debian/Linux and Windows and attaches the
+# installers to a DRAFT GitHub release for review before publishing.
+#
+# Triggered by pushing a version tag (e.g. `git tag v0.1.0 && git push origin v0.1.0`)
+# or manually via "Run workflow" (provide a tag name).
+#
+# Requires one repository secret:
+#   CHESSVAULT_NORMALISE_API_KEY — baked into the chess-db sidecar at compile time
+#   so the released app can use the name-normalisation cache service. Without it the
+#   app still works (FIDE-only normalisation). Settings → Secrets and variables →
+#   Actions → New repository secret.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag for the draft release (e.g. v0.1.0)'
+        required: true
+        default: 'v0.0.0-test'
+
+permissions:
+  contents: write   # create the release and upload assets
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            sidecar_src: target/release/chess-db
+            sidecar_dst: chess-client/src-tauri/binaries/chess-db-x86_64-unknown-linux-gnu
+            bundles: deb,appimage
+          - os: windows-latest
+            sidecar_src: target/release/chess-db.exe
+            sidecar_dst: chess-client/src-tauri/binaries/chess-db-x86_64-pc-windows-msvc.exe
+            bundles: msi,nsis
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            curl wget file \
+            libxdo-dev \
+            libssl-dev
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: chess-client/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '.'
+
+      - name: Install frontend dependencies
+        working-directory: chess-client
+        run: npm ci
+
+      # Build the chess-db sidecar separately so the secret key is baked in via
+      # option_env! (build.rs forces a rebuild when the key changes). `tauri build`
+      # does NOT recompile chess-db — it bundles the binary we copy here.
+      - name: Build chess-db sidecar (with cache-service key)
+        shell: bash
+        env:
+          CHESSVAULT_NORMALISE_API_KEY: ${{ secrets.CHESSVAULT_NORMALISE_API_KEY }}
+        run: |
+          cargo build -p chess-db --release
+          mkdir -p "$(dirname "${{ matrix.sidecar_dst }}")"
+          cp "${{ matrix.sidecar_src }}" "${{ matrix.sidecar_dst }}"
+
+      - name: Build app and attach to draft release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: chess-client
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: 'LPDO ${{ github.event.inputs.tag || github.ref_name }}'
+          releaseDraft: true
+          prerelease: false
+          args: --bundles ${{ matrix.bundles }}
