@@ -80,7 +80,7 @@ async fn fide_rating_history(fide_id: u64) -> Result<Vec<RatingPoint>, String> {
 }
 
 #[cfg_attr(dev, allow(unused_variables))]
-fn get_binary_path(app: &tauri::AppHandle) -> std::path::PathBuf {
+fn get_binary_path(_app: &tauri::AppHandle) -> std::path::PathBuf {
     #[cfg(dev)]
     {
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -91,11 +91,14 @@ fn get_binary_path(app: &tauri::AppHandle) -> std::path::PathBuf {
     }
     #[cfg(not(dev))]
     {
-        app.path()
-            .resource_dir()
-            .expect("resource dir not found")
-            .join("binaries")
-            .join("chess-db")
+        // Tauri installs externalBin sidecars *alongside the main executable*
+        // (e.g. /usr/bin/chess-db next to /usr/bin/lpdo on Linux; next to the
+        // .exe on Windows), not in the resource directory.
+        let dir = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        dir.join(format!("chess-db{}", std::env::consts::EXE_SUFFIX))
     }
 }
 
