@@ -16,6 +16,9 @@ use std::path::Path;
 
 const BATCH_SIZE: usize = 10_000;
 const INDEX_READ_BATCH: usize = 50_000;
+// Parse/flush/report indexing in sub-chunks of this many games so the progress
+// bar advances smoothly even when the whole DB fits in one read batch.
+const INDEX_REPORT_CHUNK: usize = 2_000;
 const LARGE_FILE_THRESHOLD: u64 = 100 * 1024 * 1024; // 100 MB
 
 /// User-facing knobs for `import-pgn`: grouping + visibility + duplicate policy.
@@ -262,34 +265,38 @@ fn fill_positions(
             break;
         }
 
-        // Parse all games in this batch in parallel — each task gets its own
-        // GameVisitor (cheap: just holds max_position_depth).
-        let position_batch: Vec<PositionRow> = rows
-            .par_iter()
-            .flat_map(|(game_id, pgn)| {
-                let repaired = repair_pgn_header_quotes(pgn);
-                let mut visitor = GameVisitor::new(max_position_depth);
-                let mut reader = Reader::new(std::io::Cursor::new(repaired.as_bytes()));
-                match reader.read_game(&mut visitor) {
-                    Ok(Some(Some(game))) => game.positions.into_iter().map(|(move_num, hash, next_move)| {
-                        PositionRow {
-                            game_id: *game_id,
-                            move_number: move_num,
-                            zobrist_hash: hash,
-                            next_move,
-                        }
-                    }).collect(),
-                    _ => vec![],
-                }
-            })
-            .collect();
-
-        let games_in_batch = rows.len() as u64;
         last_id = rows.last().map(|(id, _)| *id).unwrap_or(last_id);
 
-        flush_positions(conn, &position_batch, fast)?;
-        pb.inc(games_in_batch);
-        reporter.progress(pb.position(), total, format!("Indexed {} / {} games", pb.position(), total));
+        // Parse/flush/report in sub-chunks so the progress bar advances smoothly.
+        // Reporting only once per (large) read batch left the GUI bar at 0% until
+        // the whole batch — often the entire database — had finished.
+        for chunk in rows.chunks(INDEX_REPORT_CHUNK) {
+            // Parse this sub-chunk in parallel — each task gets its own
+            // GameVisitor (cheap: just holds max_position_depth).
+            let position_batch: Vec<PositionRow> = chunk
+                .par_iter()
+                .flat_map(|(game_id, pgn)| {
+                    let repaired = repair_pgn_header_quotes(pgn);
+                    let mut visitor = GameVisitor::new(max_position_depth);
+                    let mut reader = Reader::new(std::io::Cursor::new(repaired.as_bytes()));
+                    match reader.read_game(&mut visitor) {
+                        Ok(Some(Some(game))) => game.positions.into_iter().map(|(move_num, hash, next_move)| {
+                            PositionRow {
+                                game_id: *game_id,
+                                move_number: move_num,
+                                zobrist_hash: hash,
+                                next_move,
+                            }
+                        }).collect(),
+                        _ => vec![],
+                    }
+                })
+                .collect();
+
+            flush_positions(conn, &position_batch, fast)?;
+            pb.inc(chunk.len() as u64);
+            reporter.progress(pb.position(), total, format!("Indexed {} / {} games", pb.position(), total));
+        }
     }
 
     Ok(())
