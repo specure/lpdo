@@ -746,7 +746,7 @@ export default function SetupWizard({ onClose, onFinish }: Props) {
         <div className="px-6 py-4 flex items-center justify-between shrink-0">
           <button
             onClick={back}
-            disabled={isFirst}
+            disabled={isFirst || stepRunning}
             className={`${textBtn} disabled:opacity-0`}
           >
             ← Back
