@@ -27,6 +27,9 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt"] }
 fide-client = { path = "../../fide-client" }
 chess-results-client = { path = "../../chess-results-client" }
+# Like std::fs::canonicalize but strips Windows' \\?\ verbatim prefix so paths
+# shown in the file browser stay readable (no-op on other platforms).
+dunce = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"

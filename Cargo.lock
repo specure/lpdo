@@ -873,6 +873,7 @@ name = "chess-client"
 version = "0.1.0"
 dependencies = [
  "chess-results-client",
+ "dunce",
  "fide-client",
  "libc",
  "serde",

@@ -32,7 +32,7 @@ pub async fn list_directory(path: String) -> Result<DirectoryListing, String> {
         PathBuf::from(&path)
     };
 
-    let dir = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dir = dunce::canonicalize(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
 
     let parent = dir.parent().map(|p| p.to_string_lossy().into_owned());
 
