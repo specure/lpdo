@@ -1,11 +1,17 @@
 [package]
 name = "chess-client"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "LPDO — desktop chess database for managing your games and preparing for tournaments"
+authors = ["Specure"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+# The installed/bundled executable is named `lpdo` (the Cargo package stays
+# `chess-client` so the lib name `chess_client_lib` is unaffected).
+[[bin]]
+name = "lpdo"
+path = "src/main.rs"
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
