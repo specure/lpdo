@@ -144,14 +144,23 @@ pub fn normalise_players(
     let pb = reporter.bar_with_eta(total as u64);
 
     // ── Apply cache hits ───────────────────────────────────────────────────────
+    // Throttle the streamed progress events: emitting one per player (100k+)
+    // floods the sidecar pipe so the GUI bar lags far behind the (near-instant)
+    // cache work. Report roughly every 1% instead, plus a final tick.
+    let report_every = (total / 100).max(1);
     for (id, fide_id, name) in &hits {
         if let Some(canonical) = cache.get(fide_id) {
             apply_canonical(conn, *id, name, canonical, dry_run);
             updated += 1;
             completed += 1;
             pb.inc(1);
-            reporter.progress(completed as u64, total as u64, format!("Cached {} / {} players", completed, total));
+            if completed % report_every == 0 {
+                reporter.progress(completed as u64, total as u64, format!("Cached {} / {} players", completed, total));
+            }
         }
+    }
+    if updated > 0 {
+        reporter.progress(completed as u64, total as u64, format!("Cached {} / {} players", completed, total));
     }
 
     // The FIDE worker loop processes the (capped) misses.
