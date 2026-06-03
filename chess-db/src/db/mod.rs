@@ -18,6 +18,7 @@ fn memory_limit_str() -> String {
 
 /// Read total system RAM in kilobytes.
 /// Tries /proc/meminfo (Linux), then sysctl (macOS/BSD).
+#[cfg(not(windows))]
 fn read_total_ram_kb() -> Option<u64> {
     // Linux
     if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
@@ -36,6 +37,26 @@ fn read_total_ram_kb() -> Option<u64> {
         }
     }
     None
+}
+
+/// Read total system RAM in kilobytes via the Win32 `GlobalMemoryStatusEx` API.
+/// Neither /proc/meminfo nor `sysctl` exist on Windows, so without this the
+/// memory_limit would always fall back to 8GiB — which on machines with less
+/// than ~8-16GiB RAM lets DuckDB overcommit (it won't spill below its limit)
+/// and thrash/OOM during heavy ops like `index-positions`.
+#[cfg(windows)]
+fn read_total_ram_kb() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    // SAFETY: MEMORYSTATUSEX is a plain-old-data struct; zeroing it and setting
+    // dwLength is the documented way to call GlobalMemoryStatusEx.
+    let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
+    if ok != 0 {
+        Some(status.ullTotalPhys / 1024)
+    } else {
+        None
+    }
 }
 
 pub fn open(path: &Path) -> Result<Connection> {
