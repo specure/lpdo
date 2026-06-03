@@ -29,6 +29,20 @@ fn die_with_parent(cmd: &mut Command) {
 #[cfg(not(target_os = "linux"))]
 fn die_with_parent(_cmd: &mut Command) {}
 
+/// On Windows, prevent a spawned console-subsystem child (chess-db, taskkill)
+/// from allocating its own console window. Without this, a terminal flashes up
+/// over the GUI for the long-lived `serve` sidecar and for every
+/// download/import subprocess. No-op on other platforms.
+#[cfg(windows)]
+fn no_console_window(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn no_console_window(_cmd: &mut Command) {}
+
 struct ServerState {
     child: Mutex<Option<Child>>,
 }
@@ -120,6 +134,7 @@ fn spawn_serve(app: &tauri::AppHandle) {
     let mut cmd = Command::new(&binary_path);
     cmd.args(["serve", "--port", "7777"]);
     die_with_parent(&mut cmd);
+    no_console_window(&mut cmd);
     match cmd.spawn() {
         Ok(child) => {
             *app.state::<ServerState>().child.lock().unwrap() = Some(child);
@@ -181,6 +196,7 @@ async fn run_chess_db(
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
             die_with_parent(&mut cmd);
+            no_console_window(&mut cmd);
             let mut child = cmd.spawn().map_err(|e| e.to_string())?;
 
             // Register the PID so cancel_chess_db can SIGTERM it. We register
@@ -321,12 +337,13 @@ fn cancel_chess_db(app: tauri::AppHandle, event_id: String) -> Result<(), String
             // No SIGTERM on Windows; `taskkill /F` force-terminates the child
             // (and with /T its descendants). The operation is being cancelled,
             // so a hard kill is acceptable.
-            let _ = Command::new("taskkill")
-                .arg("/PID")
+            let mut cmd = Command::new("taskkill");
+            cmd.arg("/PID")
                 .arg(pid.to_string())
                 .arg("/T")
-                .arg("/F")
-                .output();
+                .arg("/F");
+            no_console_window(&mut cmd);
+            let _ = cmd.output();
         }
     }
     Ok(())
