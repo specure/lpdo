@@ -280,8 +280,10 @@ function DatabasesStep({ completed, onComplete, onRunningChange }: { completed: 
 
 // ── Step: TWIC (download + import) ────────────────────────────────────────────
 
-/** Download/import progress block, shared by the two TWIC operations. */
-function StepProgress({ progress, label }: { progress: ReturnType<typeof useSidecarProgress>; label: string }) {
+/** Download/import progress block, shared by the two TWIC operations.
+ *  `cancellable` is false for the fast (appender) import, which must not be
+ *  interrupted — doing so can corrupt the database. */
+function StepProgress({ progress, label, cancellable = true }: { progress: ReturnType<typeof useSidecarProgress>; label: string; cancellable?: boolean }) {
   return (
     <div className="space-y-2">
       <div className="flex justify-between text-label-md text-on-surface-variant">
@@ -290,7 +292,7 @@ function StepProgress({ progress, label }: { progress: ReturnType<typeof useSide
       </div>
       <ProgressBar value={progress.percent} />
       {progress.done && <p className="text-success text-body-sm">✓ {progress.doneMessage}</p>}
-      {progress.running && !progress.done && (
+      {progress.running && !progress.done && cancellable && (
         <div className="flex justify-end">
           <button
             onClick={progress.cancel}
@@ -320,7 +322,9 @@ function TwicStep({ completed, onComplete, onRunningChange }: { completed: boole
     void download.run(["download", "--from", fromIssue, "--dir", TWIC_DIR]);
   }
   function runImport() {
-    void importProgress.run(["import", "--dir", TWIC_DIR]);
+    // --fast = appender-based bulk inserts (much quicker). It must not be
+    // interrupted, so the import progress below is rendered non-cancelable.
+    void importProgress.run(["import", "--fast", "--dir", TWIC_DIR]);
   }
 
   if (completed && !rerunning) {
@@ -376,7 +380,7 @@ function TwicStep({ completed, onComplete, onRunningChange }: { completed: boole
             <button onClick={runImport} className={filledBtn}>Import Downloaded Issues</button>
           </>
         )}
-        {(importProgress.running || importProgress.done) && <StepProgress progress={importProgress} label="Importing…" />}
+        {(importProgress.running || importProgress.done) && <StepProgress progress={importProgress} label="Importing…" cancellable={false} />}
       </div>
     </div>
   );

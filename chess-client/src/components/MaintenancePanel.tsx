@@ -220,7 +220,8 @@ function TwicSection() {
   }
 
   function runImport() {
-    void importProgress.run(["import", "--dir", TWIC_DIR]);
+    // --fast = appender-based bulk inserts (much quicker; not interruptible).
+    void importProgress.run(["import", "--fast", "--dir", TWIC_DIR]);
   }
 
   return (
