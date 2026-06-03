@@ -34,6 +34,8 @@ serde_json = "1"
 
 # HTTP server
 axum = "0.8"
+# CORS so the bundled webview (origin tauri://localhost) can call the sidecar.
+tower-http = { version = "0.6", features = ["cors"] }
 
 # Error handling
 anyhow = "1"

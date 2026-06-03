@@ -6,6 +6,7 @@ use axum::{
 };
 use duckdb::Connection;
 use serde::{Deserialize, Serialize};
+use tower_http::cors::CorsLayer;
 use shakmaty::fen::Fen;
 use shakmaty::san::San;
 use shakmaty::zobrist::{Zobrist64, ZobristHash};
@@ -899,7 +900,11 @@ pub async fn run(conn: Connection, port: u16) -> Result<()> {
         .route("/games/{id}",                          get(game_by_id_handler).delete(delete_game_handler))
         .route("/position",                            get(position_handler))
         .route("/position/moves",                      get(position_moves_handler))
-        .with_state(state);
+        .with_state(state)
+        // Allow the bundled webview (a cross-origin caller, e.g. tauri://localhost)
+        // to reach this local server. In dev the Vite proxy makes calls same-origin;
+        // in a packaged app the frontend hits http://127.0.0.1:7777 directly.
+        .layer(CorsLayer::permissive());
 
     let addr = format!("127.0.0.1:{}", port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
