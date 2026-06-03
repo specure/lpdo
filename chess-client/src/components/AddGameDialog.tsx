@@ -55,6 +55,10 @@ interface Props {
   onImported?: () => void;
   /** Fires when the running flag flips. Used by SetupWizard to disable nav. */
   onRunningChange?: (running: boolean) => void;
+  /** Bulk import (the wizard's Databases step): use --fast appender inserts and
+   *  skip per-import position indexing — the wizard's Index step rebuilds the
+   *  whole position index at the end, so indexing here would be wasted work. */
+  bulk?: boolean;
 }
 
 const ALL_MODES: { mode: Mode; label: string }[] = [
@@ -71,6 +75,7 @@ export default function AddGameDialog({
   onClose,
   onImported,
   onRunningChange,
+  bulk = false,
 }: Props) {
   const visibleModes = ALL_MODES.filter((m) => !allowedModes || allowedModes.includes(m.mode));
   const [mode, setMode] = useState<Mode>(initialMode ?? (embedded ? "file" : "scratch"));
@@ -170,6 +175,12 @@ export default function AddGameDialog({
       "--collection", collectionName.trim(),
       "--on-duplicate", dedup,
     ];
+    if (bulk) {
+      // Fast bulk load for large databases (Megabase, Bundesliga): appender
+      // inserts, and skip position indexing here (--max-position-depth 0) since
+      // the wizard's Index step rebuilds the whole position index afterwards.
+      args.push("--fast", "--max-position-depth", "0");
+    }
     if (!isPublic) args.push("--private");
     void progress.run(args);
   }

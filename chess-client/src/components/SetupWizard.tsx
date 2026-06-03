@@ -270,6 +270,7 @@ function DatabasesStep({ completed, onComplete, onRunningChange }: { completed: 
         embedded
         initialMode="file"
         allowedModes={["file"]}
+        bulk
         onClose={() => { /* no-op: wizard handles step navigation */ }}
         onImported={onComplete}
         onRunningChange={onRunningChange}
