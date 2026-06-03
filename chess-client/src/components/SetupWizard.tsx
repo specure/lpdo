@@ -16,15 +16,14 @@ interface Props {
 const DB_PATH = "~/.chess-db/chess.db";
 const TWIC_DIR = "~/.chess-db/twic";
 
-type Step = "welcome" | "players" | "databases" | "download" | "import" | "dedup" | "normalise" | "index" | "profile" | "done";
+type Step = "welcome" | "players" | "databases" | "twic" | "dedup" | "normalise" | "index" | "profile" | "done";
 
-const STEPS: Step[] = ["welcome", "players", "databases", "download", "import", "dedup", "normalise", "index", "profile", "done"];
+const STEPS: Step[] = ["welcome", "players", "databases", "twic", "dedup", "normalise", "index", "profile", "done"];
 const STEP_LABELS: Record<Step, string> = {
   welcome:   "Welcome",
   players:   "Players",
   databases: "Databases",
-  download:  "Download",
-  import:    "Import",
+  twic:      "TWIC",
   dedup:     "Dedup",
   normalise: "Names",
   index:     "Index",
@@ -32,7 +31,7 @@ const STEP_LABELS: Record<Step, string> = {
   done:      "Summary",
 };
 
-const OPTIONAL_STEPS: Step[] = ["players", "databases", "download", "import", "dedup", "normalise", "index", "profile"];
+const OPTIONAL_STEPS: Step[] = ["players", "databases", "twic", "dedup", "normalise", "index", "profile"];
 const STORAGE_KEY = "chess-setup-state";
 
 interface PersistedState {
@@ -279,137 +278,106 @@ function DatabasesStep({ completed, onComplete, onRunningChange }: { completed: 
   );
 }
 
-// ── Step: Download TWIC ───────────────────────────────────────────────────────
+// ── Step: TWIC (download + import) ────────────────────────────────────────────
 
-function DownloadStep({ completed, onComplete, onRunningChange }: { completed: boolean; onComplete: () => void; onRunningChange: (r: boolean) => void }) {
-  const [fromIssue, setFromIssue] = useState("920");
-  const [rerunning, setRerunning] = useState(false);
-  const [twicAck, setTwicAck] = useTwicAck();
-  const progress = useSidecarProgress();
-
-  useEffect(() => { if (progress.done) onComplete(); }, [progress.done]);
-  useEffect(() => { onRunningChange(progress.running); }, [progress.running]);
-
-  function run() {
-    void progress.run(["download", "--from", fromIssue, "--dir", TWIC_DIR]);
-  }
-
-  if (completed && !rerunning) {
-    return <CompletedBanner summary="TWIC issues downloaded" onRerun={() => setRerunning(true)} />;
-  }
-
+/** Download/import progress block, shared by the two TWIC operations. */
+function StepProgress({ progress, label }: { progress: ReturnType<typeof useSidecarProgress>; label: string }) {
   return (
-    <div className="space-y-4">
-      <p className="text-on-surface-variant text-body-md">
-        Download TWIC (The Week in Chess) issues to a local folder. Issues already present in the folder will be skipped automatically.
-      </p>
-      <TwicCredit acknowledged={twicAck} onAcknowledgeChange={setTwicAck} />
-      <div>
-        <div className="text-label-sm text-on-surface-variant uppercase tracking-wider mb-2">Download from issue</div>
-        <input
-          type="number"
-          value={fromIssue}
-          onChange={(e) => setFromIssue(e.target.value)}
-          disabled={progress.running || progress.done}
-          className="w-32 h-10 px-3 rounded-sm bg-transparent text-on-surface text-body-md font-mono border border-outline focus:outline-none focus:border-primary disabled:opacity-50 transition-colors duration-short3 ease-standard"
-        />
-        <p className="text-label-sm text-on-surface-variant mt-1">Issues are available from 920 onwards.</p>
+    <div className="space-y-2">
+      <div className="flex justify-between text-label-md text-on-surface-variant">
+        <span>{progress.done ? "Complete" : label}</span>
+        <span>{Math.round(progress.percent)}%</span>
       </div>
-      {!progress.running && !progress.done && (
-        twicAck ? (
-          <button onClick={run} className="w-full h-10 rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard">
-            Download TWIC Issues
+      <ProgressBar value={progress.percent} />
+      {progress.done && <p className="text-success text-body-sm">✓ {progress.doneMessage}</p>}
+      {progress.running && !progress.done && (
+        <div className="flex justify-end">
+          <button
+            onClick={progress.cancel}
+            className="h-8 px-4 inline-flex items-center rounded-full text-error border border-outline text-label-md hover:bg-error/8 transition-colors duration-short3 ease-standard"
+          >
+            Cancel
           </button>
-        ) : (
-          <p className="text-label-sm text-on-surface-variant">Tick “I've read this” above to enable the download.</p>
-        )
-      )}
-      {(progress.running || progress.done) && (
-        <div className="space-y-2">
-          <div className="flex justify-between text-label-md text-on-surface-variant">
-            <span>{progress.done ? "Complete" : "Downloading…"}</span>
-            <span>{Math.round(progress.percent)}%</span>
-          </div>
-          <ProgressBar value={progress.percent} />
-          {progress.done && <p className="text-success text-body-sm">✓ {progress.doneMessage}</p>}
-          {progress.running && !progress.done && (
-            <div className="flex justify-end">
-              <button
-                onClick={progress.cancel}
-                className="h-8 px-4 inline-flex items-center rounded-full text-error border border-outline text-label-md hover:bg-error/8 transition-colors duration-short3 ease-standard"
-              >
-                Cancel
-              </button>
-            </div>
-          )}
         </div>
       )}
     </div>
   );
 }
 
-// ── Step: Import TWIC ─────────────────────────────────────────────────────────
-
-function ImportStep({ completed, onComplete, onRunningChange, downloadCompleted }: { completed: boolean; onComplete: () => void; onRunningChange: (r: boolean) => void; downloadCompleted: boolean }) {
+// Download and import TWIC in a single step (mirrors the Maintenance TWIC box).
+// The step counts as complete once issues are imported into the database.
+function TwicStep({ completed, onComplete, onRunningChange }: { completed: boolean; onComplete: () => void; onRunningChange: (r: boolean) => void }) {
+  const [fromIssue, setFromIssue] = useState("920");
   const [rerunning, setRerunning] = useState(false);
-  const progress = useSidecarProgress();
+  const [twicAck, setTwicAck] = useTwicAck();
+  const download = useSidecarProgress();
+  const importProgress = useSidecarProgress();
 
-  useEffect(() => { if (progress.done) onComplete(); }, [progress.done]);
-  useEffect(() => { onRunningChange(progress.running); }, [progress.running]);
+  useEffect(() => { if (importProgress.done) onComplete(); }, [importProgress.done]);
+  useEffect(() => { onRunningChange(download.running || importProgress.running); }, [download.running, importProgress.running]);
 
-  function run() {
-    void progress.run(["import", "--dir", TWIC_DIR]);
+  function runDownload() {
+    void download.run(["download", "--from", fromIssue, "--dir", TWIC_DIR]);
+  }
+  function runImport() {
+    void importProgress.run(["import", "--dir", TWIC_DIR]);
   }
 
   if (completed && !rerunning) {
-    return <CompletedBanner summary="TWIC issues imported" onRerun={() => setRerunning(true)} />;
+    return <CompletedBanner summary="TWIC issues downloaded and imported" onRerun={() => setRerunning(true)} />;
   }
+
+  const filledBtn = "w-full h-10 rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard";
 
   return (
     <div className="space-y-4">
       <p className="text-on-surface-variant text-body-md">
-        Import downloaded TWIC issues into the database. Issues already imported will be skipped automatically.
+        Download TWIC (The Week in Chess) issues and import them into your database, in one place. Issues already present or imported are skipped automatically.
       </p>
-      <div className="bg-surface-container-highest rounded-md p-3 text-body-sm space-y-1">
-        <div className="flex justify-between">
-          <span className="text-on-surface-variant">Folder</span>
-          <span className="text-on-surface font-mono text-label-md truncate ml-4">{TWIC_DIR}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-on-surface-variant">Status</span>
-          <span className={`font-mono text-label-md ${downloadCompleted ? "text-on-surface" : "text-on-surface-variant"}`}>
-            {downloadCompleted ? "Downloaded" : "Not downloaded yet"}
-          </span>
-        </div>
+      <TwicCredit acknowledged={twicAck} onAcknowledgeChange={setTwicAck} />
+
+      <div className="flex items-center gap-2">
+        <span className="text-label-md text-on-surface-variant shrink-0">Folder</span>
+        <span className="font-mono text-body-sm text-on-surface-variant truncate">{TWIC_DIR}</span>
       </div>
-      {!downloadCompleted && (
-        <p className="text-body-sm text-on-surface-variant">No issues downloaded yet. Go back to the Download step first, or skip this step.</p>
-      )}
-      {downloadCompleted && !progress.running && !progress.done && (
-        <button onClick={run} className="w-full h-10 rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard">
-          Import Downloaded Issues
-        </button>
-      )}
-      {(progress.running || progress.done) && (
-        <div className="space-y-2">
-          <div className="flex justify-between text-label-md text-on-surface-variant">
-            <span>{progress.done ? "Complete" : "Importing…"}</span>
-            <span>{Math.round(progress.percent)}%</span>
-          </div>
-          <ProgressBar value={progress.percent} />
-          {progress.done && <p className="text-success text-body-sm">✓ {progress.doneMessage}</p>}
-          {progress.running && !progress.done && (
-            <div className="flex justify-end">
-              <button
-                onClick={progress.cancel}
-                className="h-8 px-4 inline-flex items-center rounded-full text-error border border-outline text-label-md hover:bg-error/8 transition-colors duration-short3 ease-standard"
-              >
-                Cancel
-              </button>
-            </div>
-          )}
+
+      {/* Download */}
+      <div className="space-y-2">
+        <div className="text-label-md text-on-surface">Download</div>
+        <div>
+          <div className="text-label-sm text-on-surface-variant uppercase tracking-wider mb-2">Download from issue</div>
+          <input
+            type="number"
+            value={fromIssue}
+            onChange={(e) => setFromIssue(e.target.value)}
+            disabled={download.running || download.done}
+            className="w-32 h-10 px-3 rounded-sm bg-transparent text-on-surface text-body-md font-mono border border-outline focus:outline-none focus:border-primary disabled:opacity-50 transition-colors duration-short3 ease-standard"
+          />
+          <p className="text-label-sm text-on-surface-variant mt-1">Issues are available from 920 onwards.</p>
         </div>
-      )}
+        {!download.running && !download.done && (
+          twicAck ? (
+            <button onClick={runDownload} className={filledBtn}>Download TWIC Issues</button>
+          ) : (
+            <p className="text-label-sm text-on-surface-variant">Tick “I've read this” above to enable the download.</p>
+          )
+        )}
+        {(download.running || download.done) && <StepProgress progress={download} label="Downloading…" />}
+      </div>
+
+      {/* Import */}
+      <div className="space-y-2 pt-2">
+        <div className="text-label-md text-on-surface">Import into database</div>
+        {!importProgress.running && !importProgress.done && (
+          <>
+            {!download.done && (
+              <p className="text-body-sm text-on-surface-variant">Download issues first, or import any already in the folder.</p>
+            )}
+            <button onClick={runImport} className={filledBtn}>Import Downloaded Issues</button>
+          </>
+        )}
+        {(importProgress.running || importProgress.done) && <StepProgress progress={importProgress} label="Importing…" />}
+      </div>
     </div>
   );
 }
@@ -700,7 +668,7 @@ export default function SetupWizard({ onClose, onFinish }: Props) {
   function back() { if (stepIndex > 0) setStepIndex((i) => i - 1); }
 
   // Welcome choices. Advanced walks every step; Express marks the two optional
-  // import steps (players, databases) as skipped and jumps straight to Download.
+  // import steps (players, databases) as skipped and jumps straight to TWIC.
   function startAdvanced() {
     markComplete("welcome");
     next();
@@ -708,7 +676,7 @@ export default function SetupWizard({ onClose, onFinish }: Props) {
   function startExpress() {
     markComplete("welcome");
     setSkippedSteps((prev) => new Set([...prev, "players", "databases"]));
-    setStepIndex(STEPS.indexOf("download"));
+    setStepIndex(STEPS.indexOf("twic"));
   }
 
   const stepProps = (s: Step) => ({
@@ -761,8 +729,7 @@ export default function SetupWizard({ onClose, onFinish }: Props) {
           {step === "welcome"   && <WelcomeStep onExpress={startExpress} onAdvanced={startAdvanced} />}
           {step === "players"   && <PlayersStep   {...stepProps("players")} />}
           {step === "databases" && <DatabasesStep {...stepProps("databases")} />}
-          {step === "download"  && <DownloadStep  {...stepProps("download")} />}
-          {step === "import"    && <ImportStep    {...stepProps("import")} downloadCompleted={completedSteps.has("download")} />}
+          {step === "twic"      && <TwicStep      {...stepProps("twic")} />}
           {step === "dedup"     && <DedupStep     {...stepProps("dedup")} />}
           {step === "normalise" && <NormaliseStep {...stepProps("normalise")} />}
           {step === "index"     && <IndexStep     {...stepProps("index")} />}
