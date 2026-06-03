@@ -374,12 +374,11 @@ function TwicStep({ completed, onComplete, onRunningChange }: { completed: boole
       <div className="space-y-2 pt-2">
         <div className="text-label-md text-on-surface">Import into database</div>
         {!importProgress.running && !importProgress.done && (
-          <>
-            {!download.done && (
-              <p className="text-body-sm text-on-surface-variant">Download issues first, or import any already in the folder.</p>
-            )}
+          download.done ? (
             <button onClick={runImport} className={filledBtn}>Import Downloaded Issues</button>
-          </>
+          ) : (
+            <p className="text-body-sm text-on-surface-variant">Download issues first to enable the import.</p>
+          )
         )}
         {(importProgress.running || importProgress.done) && <StepProgress progress={importProgress} label="Importing…" cancellable={false} />}
       </div>
