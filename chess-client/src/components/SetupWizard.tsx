@@ -525,7 +525,11 @@ function IndexStep({ completed, onComplete, onRunningChange }: { completed: bool
   useEffect(() => { onRunningChange(progress.running); }, [progress.running]);
 
   function run() {
-    void progress.run(["index-positions"]);
+    // --fast = appender-based inserts (much quicker than row-by-row
+    // transactional inserts, which crawl on a full-database rebuild). Like the
+    // import step it must not be interrupted, so the progress below renders no
+    // Cancel button.
+    void progress.run(["index-positions", "--fast"]);
   }
 
   if (completed && !rerunning) {
@@ -550,16 +554,8 @@ function IndexStep({ completed, onComplete, onRunningChange }: { completed: bool
           </div>
           <ProgressBar value={progress.percent} />
           {progress.done && <p className="text-success text-body-sm">✓ {progress.doneMessage}</p>}
-          {progress.running && !progress.done && (
-            <div className="flex justify-end">
-              <button
-                onClick={progress.cancel}
-                className="h-8 px-4 inline-flex items-center rounded-full text-error border border-outline text-label-md hover:bg-error/8 transition-colors duration-short3 ease-standard"
-              >
-                Cancel
-              </button>
-            </div>
-          )}
+          {/* No Cancel button: --fast (appender) indexing must not be
+              interrupted — doing so can corrupt the database. */}
         </div>
       )}
     </div>
