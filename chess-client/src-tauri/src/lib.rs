@@ -304,12 +304,26 @@ fn cancel_chess_db(app: tauri::AppHandle, event_id: String) -> Result<(), String
         .copied();
 
     if let Some(pid) = pid {
-        // SAFETY: libc::kill is safe to call with any PID; if the PID is
-        // already gone (race with natural exit) it returns ESRCH which we
-        // ignore. SIGTERM lets the process clean up; the parent's
-        // PR_SET_PDEATHSIG (Linux) means hard kill on parent death too.
+        // The PID may already be gone (race with natural exit); errors are
+        // ignored either way (Unix returns ESRCH).
+        #[cfg(target_os = "linux")]
+        // SAFETY: libc::kill is safe to call with any PID. SIGTERM lets the
+        // process clean up; the parent's PR_SET_PDEATHSIG means hard kill on
+        // parent death too.
         unsafe {
             libc::kill(pid as i32, libc::SIGTERM);
+        }
+        #[cfg(windows)]
+        {
+            // No SIGTERM on Windows; `taskkill /F` force-terminates the child
+            // (and with /T its descendants). The operation is being cancelled,
+            // so a hard kill is acceptable.
+            let _ = Command::new("taskkill")
+                .arg("/PID")
+                .arg(pid.to_string())
+                .arg("/T")
+                .arg("/F")
+                .output();
         }
     }
     Ok(())
