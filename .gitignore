@@ -1,0 +1,26 @@
+# Rust build artifacts (workspace + every crate)
+target/
+
+# Node
+node_modules/
+
+# Local Claude Code settings (per-machine, not for the public repo)
+.claude/
+
+# Secrets — the .env.example template IS committed; real env files are not
+.env
+.env.*
+!.env.example
+
+# Prebuilt Tauri sidecar binary — rebuilt by `npm run dev:prepare` / setup-dev.sh.
+# Keep the folder (.gitkeep) and the helper script, drop the platform binaries.
+/chess-client/src-tauri/binaries/chess-db-*
+
+# Local chess data / downloads should never live in the repo
+*.duckdb
+*.db
+
+# OS / editor junk
+.DS_Store
+*.swp
+*~

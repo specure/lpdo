@@ -1,0 +1,54 @@
+[package]
+name = "chess-db"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "chess-db"
+path = "src/main.rs"
+
+[dependencies]
+# PGN parsing
+pgn-reader = "0.28.0"
+shakmaty = "0.29.0"
+
+# Database
+duckdb = { version = "1.10500.0", features = ["bundled"] }
+
+# CLI
+clap = { version = "4.6.0", features = ["derive"] }
+
+# HTTP / async
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false }
+tokio = { version = "1", features = ["full"] }
+
+# Progress
+indicatif = "0.17"
+
+# Zip extraction
+zip = "2"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# HTTP server
+axum = "0.8"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Parallelism
+rayon = "1"
+
+# Misc
+chrono = { version = "0.4", features = ["serde"] }
+csv = "1"
+dirs = "6"
+regex = "1"
+scraper = "0.23"
+
+# Allocator — jemalloc avoids glibc heap corruption with DuckDB on Linux
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.6"

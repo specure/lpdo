@@ -1,0 +1,675 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import PlayerList from "./components/PlayerList";
+import GameList from "./components/GameList";
+import GameBoard from "./components/GameBoard";
+import PositionBoard from "./components/PositionBoard";
+import SetupWizard from "./components/SetupWizard";
+import MaintenancePanel from "./components/MaintenancePanel";
+import AddGameDialog from "./components/AddGameDialog";
+import PrepView from "./components/prep/PrepView";
+import PrepPlayerList from "./components/prep/PrepPlayerList";
+import DirectoryBrowser from "./components/local/DirectoryBrowser";
+import LocalGameList from "./components/local/LocalGameList";
+import HomeEmptyState from "./components/HomeEmptyState";
+import { loadMyPlayer } from "./components/MyStatsWidget";
+import { GameSummary, LocalGame, MoveStats, PlayerInfo, PrepContext, StatusInfo } from "./types";
+
+type ServerStatus = "checking" | "connected" | "disconnected";
+
+// Status polling cadence: the displayed numbers (games / players / TWIC count)
+// change after explicit user actions (imports, dedup, purge), not on a tick —
+// so polling every few seconds is wasted work. 30 minutes catches drift after
+// long sessions while keeping the heartbeat indicator meaningfully responsive.
+const STATUS_POLL_INTERVAL_MS = 30 * 60 * 1000;
+
+function useServerStatus() {
+  const [status, setStatus] = useState<ServerStatus>("checking");
+  const [info, setInfo] = useState<StatusInfo | null>(null);
+  // Holds the latest `check` closure so callers (e.g. dialog onClose handlers)
+  // can trigger an out-of-band refresh without waiting for the next 30-min tick.
+  const checkRef = useRef<() => void>(() => {});
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function check() {
+      try {
+        const res = await fetch("/api/status");
+        if (!res.ok) throw new Error();
+        const data: StatusInfo = await res.json();
+        if (!cancelled) { setStatus("connected"); setInfo(data); }
+      } catch {
+        if (!cancelled) { setStatus("disconnected"); setInfo(null); }
+      }
+    }
+
+    checkRef.current = check;
+    check();
+    const interval = setInterval(check, STATUS_POLL_INTERVAL_MS);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  // Stable identity so consumers can safely include `refresh` in dep arrays.
+  const refresh = useCallback(() => { checkRef.current(); }, []);
+
+  return { status, info, refresh };
+}
+
+function StatusBadge({ status }: { status: ServerStatus }) {
+  // M3 assist chip — tonal container surface, no border, label-md type.
+  // The game count moved to the Home screen's database card; the badge now
+  // just signals reachability.
+  const styles: Record<ServerStatus, string> = {
+    checking: "bg-warning-container text-on-warning-container",
+    connected: "bg-success-container text-on-success-container",
+    disconnected: "bg-error-container text-on-error-container",
+  };
+  const dots: Record<ServerStatus, string> = {
+    checking: "bg-warning animate-pulse",
+    connected: "bg-success",
+    disconnected: "bg-error",
+  };
+  const label: Record<ServerStatus, string> = {
+    checking: "Connecting…",
+    connected: "Online",
+    disconnected: "Server offline",
+  };
+
+  return (
+    <span className={`inline-flex items-center gap-2 h-7 px-3 rounded-full text-label-md ${styles[status]}`}>
+      <span className={`w-2 h-2 rounded-full ${dots[status]}`} />
+      {label[status]}
+    </span>
+  );
+}
+
+const FONT_STEPS = [1, 1.25, 1.5, 1.75, 2];
+
+function useFontScale() {
+  const [step, setStep] = useState(() => {
+    const saved = localStorage.getItem("fontStep");
+    return saved !== null ? Number(saved) : 0;
+  });
+
+  useEffect(() => {
+    const scale = FONT_STEPS[step];
+    document.documentElement.style.fontSize = `${scale * 16}px`;
+    localStorage.setItem("fontStep", String(step));
+  }, [step]);
+
+  return { step, setStep, max: FONT_STEPS.length - 1 };
+}
+
+function useHighContrast() {
+  const [hc, setHc] = useState(() => localStorage.getItem("hc") === "1");
+  return { hc, toggle: () => setHc((v) => { localStorage.setItem("hc", v ? "0" : "1"); return !v; }) };
+}
+
+type Scheme = "dark" | "light";
+
+function initialScheme(): Scheme {
+  const saved = localStorage.getItem("colorScheme");
+  if (saved === "light" || saved === "dark") return saved;
+  // First run — follow the OS preference. Tauri's webview honours this too.
+  return typeof window !== "undefined"
+    && window.matchMedia?.("(prefers-color-scheme: light)").matches
+    ? "light" : "dark";
+}
+
+function useColorScheme() {
+  const [scheme, setScheme] = useState<Scheme>(initialScheme);
+  useEffect(() => { localStorage.setItem("colorScheme", scheme); }, [scheme]);
+  return { scheme, toggle: () => setScheme((s) => s === "dark" ? "light" : "dark") };
+}
+
+const RECENT_PLAYERS_KEY = "recentPlayers";
+const RECENT_PLAYERS_MAX = 8;
+
+function useRecentPlayers() {
+  const [recent, setRecent] = useState<PlayerInfo[]>(() => {
+    try {
+      const raw = localStorage.getItem(RECENT_PLAYERS_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
+
+  function add(player: PlayerInfo) {
+    // Skip synthetic stub players (id===0 means "not in DB"); they'd be unselectable later.
+    if (player.id === 0) return;
+    setRecent((prev) => {
+      const next = [player, ...prev.filter((p) => p.id !== player.id)].slice(0, RECENT_PLAYERS_MAX);
+      localStorage.setItem(RECENT_PLAYERS_KEY, JSON.stringify(next));
+      return next;
+    });
+  }
+
+  function remove(id: number) {
+    setRecent((prev) => {
+      const next = prev.filter((p) => p.id !== id);
+      localStorage.setItem(RECENT_PLAYERS_KEY, JSON.stringify(next));
+      return next;
+    });
+  }
+
+  return { recent, add, remove };
+}
+
+const RECENT_PGN_KEY = "recentPgnFiles";
+const RECENT_PGN_MAX = 8;
+
+interface RecentPgnFile {
+  path: string;
+  gameCount: number;
+}
+
+function useRecentPgnFiles() {
+  const [recent, setRecent] = useState<RecentPgnFile[]>(() => {
+    try {
+      const raw = localStorage.getItem(RECENT_PGN_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
+
+  function add(path: string, gameCount: number) {
+    if (!path || gameCount <= 0) return;
+    setRecent((prev) => {
+      // Avoid an unnecessary write when the entry is already at the head with
+      // the same count — prevents a localStorage write on every onGameCount tick.
+      if (prev[0]?.path === path && prev[0]?.gameCount === gameCount) return prev;
+      const next = [
+        { path, gameCount },
+        ...prev.filter((r) => r.path !== path),
+      ].slice(0, RECENT_PGN_MAX);
+      localStorage.setItem(RECENT_PGN_KEY, JSON.stringify(next));
+      return next;
+    });
+  }
+
+  return { recent, add };
+}
+
+function basename(path: string): string {
+  return path.split("/").pop() ?? path;
+}
+
+export default function App() {
+  const { status, info, refresh: refreshServerStatus } = useServerStatus();
+  const { step, setStep, max } = useFontScale();
+  const { hc, toggle: toggleHc } = useHighContrast();
+  const { scheme, toggle: toggleScheme } = useColorScheme();
+  const { recent: recentPlayers, add: addRecentPlayer, remove: removeRecentPlayer } = useRecentPlayers();
+  const { recent: recentPgnFiles, add: addRecentPgnFile } = useRecentPgnFiles();
+  const playerSearchRef = useRef<HTMLInputElement | null>(null);
+  const [selectedPlayer, setSelectedPlayer] = useState<PlayerInfo | null>(null);
+  const [selectedGame, setSelectedGame] = useState<GameSummary | null>(null);
+  const [lastSelectedGame, setLastSelectedGame] = useState<GameSummary | null>(null);
+  const [topGame, setTopGame] = useState<GameSummary | null>(null);
+  const [moveSequence, setMoveSequence] = useState<string[]>([]);
+  const [positionModeActive, setPositionModeActive] = useState(false);
+  const [positionMoveStats, setPositionMoveStats] = useState<MoveStats[]>([]);
+  const [positionSelectedSan, setPositionSelectedSan] = useState<string | null>(null);
+  const [showSetup, setShowSetup] = useState(false);
+  const [showAddGame, setShowAddGame] = useState(false);
+  const [mode, setMode] = useState<"home" | "players" | "prep" | "local" | "maintenance">("home");
+  // When set, focuses the player search input on the next render (used so the
+  // Home screen's "Search a player" card can switch tabs and focus in one step).
+  const [pendingSearchFocus, setPendingSearchFocus] = useState(false);
+  const [prepContext, setPrepContext] = useState<PrepContext | null>(null);
+  const [localSelectedFile, setLocalSelectedFile] = useState<string | null>(null);
+  const [localSelectedGame, setLocalSelectedGame] = useState<LocalGame | null>(null);
+  const [localGameCount, setLocalGameCount] = useState<number | null>(null);
+  const [filesCollapsed, setFilesCollapsed] = useState(false);
+  const [gameListCollapsed, setGameListCollapsed] = useState(false);
+  const [scopePublicOnly, setScopePublicOnly] = useState<boolean>(
+    () => localStorage.getItem("scopePublicOnly") === "1",
+  );
+  const [scopeCollectionId, setScopeCollectionId] = useState<number | null>(() => {
+    const v = localStorage.getItem("scopeCollectionId");
+    return v && v !== "null" ? Number(v) : null;
+  });
+  const [scopeIncludeDeleted, setScopeIncludeDeleted] = useState<boolean>(
+    () => localStorage.getItem("scopeIncludeDeleted") === "1"
+  );
+  const [collectionsList, setCollectionsList] = useState<{ id: number; name: string; game_count: number }[]>([]);
+  // Bumped whenever a game is mutated (soft-delete, restore, future edits) so
+  // the GameList re-fetches and reflects the change.
+  const [gameMutationKey, setGameMutationKey] = useState(0);
+  const onGameMutated = () => setGameMutationKey((k) => k + 1);
+
+  useEffect(() => {
+    localStorage.setItem("scopePublicOnly", scopePublicOnly ? "1" : "0");
+  }, [scopePublicOnly]);
+  useEffect(() => {
+    localStorage.setItem("scopeCollectionId", scopeCollectionId === null ? "null" : String(scopeCollectionId));
+  }, [scopeCollectionId]);
+  useEffect(() => {
+    localStorage.setItem("scopeIncludeDeleted", scopeIncludeDeleted ? "1" : "0");
+  }, [scopeIncludeDeleted]);
+  // Re-fetch on every game mutation so newly-created collections (added via
+  // the DetailsPanel "+ Add to collection" chip) appear in the filter list.
+  useEffect(() => {
+    fetch("/api/collections").then((r) => r.ok ? r.json() : []).then(setCollectionsList).catch(() => {});
+  }, [gameMutationKey]);
+
+
+  function handleSelectPlayer(player: PlayerInfo) {
+    setSelectedPlayer(player);
+    addRecentPlayer(player);
+    setSelectedGame(null);
+    setLastSelectedGame(null);
+    setTopGame(null);
+    setMoveSequence([]);
+    setPositionModeActive(false);
+    setPositionMoveStats([]);
+    setPositionSelectedSan(null);
+  }
+
+  function handleSelectGame(game: GameSummary) {
+    setSelectedGame(game);
+    setLastSelectedGame(game);
+  }
+
+  // Home "My games" card: open the Players view scoped to the user's own games —
+  // their profile player plus the private "My games" collection filter.
+  function handleMyGames() {
+    const myPlayer = loadMyPlayer();
+    const myGames = collectionsList.find((c) => c.name === "My games");
+    setScopePublicOnly(false);                              // My games is private
+    setScopeCollectionId(myGames ? myGames.id : null);
+    if (myPlayer) handleSelectPlayer(myPlayer);
+    else setPendingSearchFocus(true);                       // no profile yet → let them pick
+    setMode("players");
+  }
+
+  function handleShowGameInPlayers(player: PlayerInfo, game: GameSummary) {
+    // Clear any prep-context overlay so the normal Players view shows up,
+    // pick the player, then pre-select the game.
+    setPrepContext(null);
+    handleSelectPlayer(player);
+    setSelectedGame(game);
+    setLastSelectedGame(game);
+    setMode("players");
+  }
+
+  function handleMoveAppend(mv: string) {
+    setMoveSequence((s) => [...s, mv]);
+    setSelectedGame(null);
+  }
+
+  function handleMoveBack() {
+    setMoveSequence((s) => s.slice(0, -1));
+  }
+
+  function handleMoveReset() {
+    setMoveSequence([]);
+  }
+
+  // Resolve the pending focus request once Players mode is active and the
+  // input is reachable. Runs after commit, so the input is in the live DOM.
+  useEffect(() => {
+    if (pendingSearchFocus && mode === "players") {
+      playerSearchRef.current?.focus();
+      setPendingSearchFocus(false);
+    }
+  }, [pendingSearchFocus, mode]);
+
+  // Entering the Players view with nothing selected: auto-select the most
+  // recent player so the board area isn't empty. The recent list on the left
+  // stays available for switching; skipped during a prep-context flow.
+  useEffect(() => {
+    if (mode === "players" && !prepContext && !selectedPlayer && recentPlayers.length > 0) {
+      handleSelectPlayer(recentPlayers[0]);
+    }
+  }, [mode, prepContext, selectedPlayer, recentPlayers]);
+
+  // Tab: switch between position mode and game mode
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key !== "Tab" || !positionModeActive) return;
+      const tag = (document.activeElement as HTMLElement)?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select") return;
+      e.preventDefault();
+      if (selectedGame) {
+        setSelectedGame(null);
+      } else {
+        const target = lastSelectedGame ?? topGame;
+        if (target) handleSelectGame(target);
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [positionModeActive, selectedGame, lastSelectedGame, topGame]);
+
+  return (
+    <div className={`flex flex-col h-screen bg-surface text-on-surface${scheme === "light" ? " light" : ""}${hc ? " hc" : ""}`}>
+      {/* Header — M3 Expressive top app bar */}
+      <header className="flex items-center justify-between px-4 h-14 bg-surface-container shrink-0">
+        <span className="text-title-lg tracking-tight">LPDO</span>
+        <div className="flex items-center gap-3">
+          {/* Icon buttons — circular with state-layer overlays */}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setStep((s) => Math.max(0, s - 1))}
+              disabled={step === 0}
+              className="w-8 h-8 inline-flex items-center justify-center rounded-full text-on-surface-variant text-label-md hover:bg-on-surface/8 active:bg-on-surface/12 disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-colors duration-short3 ease-standard"
+              title="Decrease font size"
+            >A−</button>
+            <button
+              onClick={() => setStep((s) => Math.min(max, s + 1))}
+              disabled={step === max}
+              className="w-8 h-8 inline-flex items-center justify-center rounded-full text-on-surface-variant text-label-md hover:bg-on-surface/8 active:bg-on-surface/12 disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-colors duration-short3 ease-standard"
+              title="Increase font size"
+            >A+</button>
+            <button
+              onClick={toggleScheme}
+              className="w-8 h-8 inline-flex items-center justify-center rounded-full text-on-surface-variant text-label-md hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
+              title={scheme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            >{scheme === "dark" ? "☀" : "☾"}</button>
+            <button
+              onClick={toggleHc}
+              className={`w-8 h-8 inline-flex items-center justify-center rounded-full text-label-md transition-colors duration-short3 ease-standard ${
+                hc
+                  ? "bg-primary text-on-primary"
+                  : "text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12"
+              }`}
+              title="Toggle high contrast"
+            >◑</button>
+          </div>
+
+          {/* Segmented mode switcher — outlined pill */}
+          <div className="inline-flex items-center h-9 rounded-full border border-outline overflow-hidden">
+            {(["home", "players", "prep", "local"] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={`px-4 h-full text-label-lg transition-colors duration-short3 ease-standard ${
+                  mode === m
+                    ? "bg-secondary-container text-on-secondary-container"
+                    : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
+                }`}
+              >
+                {m === "home" ? "Home" : m === "players" ? "Players" : m === "prep" ? "Prep" : "PGNs"}
+              </button>
+            ))}
+          </div>
+
+          {/* Filled button — primary action */}
+          <button
+            onClick={() => setShowAddGame(true)}
+            className="inline-flex items-center h-9 px-4 rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard"
+            title="Add games to the database — from scratch, paste, or PGN file"
+          >+ Add games</button>
+
+          {/* Filled tonal button — secondary action. Toggles the full-screen
+              Maintenance view (a mode, not a modal). */}
+          <button
+            onClick={() => { setMode("maintenance"); refreshServerStatus(); }}
+            className={`inline-flex items-center h-9 px-4 rounded-full text-label-lg transition-all duration-short3 ease-standard ${
+              mode === "maintenance"
+                ? "bg-secondary text-on-secondary"
+                : "bg-secondary-container text-on-secondary-container hover:brightness-110"
+            }`}
+            title="Database maintenance"
+          >Maintenance</button>
+
+          <StatusBadge status={status} />
+        </div>
+      </header>
+
+      {/* Body */}
+
+      {/* Local view — works without server, always mounted */}
+      <div className={mode !== "local" ? "hidden" : "flex flex-1 overflow-hidden"}>
+        {/* Files panel — always mounted to preserve directory state */}
+        {filesCollapsed && (
+          <button
+            onClick={() => setFilesCollapsed(false)}
+            className="shrink-0 w-6 flex items-start pt-3 justify-center border-r border-zinc-700 bg-zinc-900 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+            title="Show files"
+          >
+            <span className="text-xs" style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}>Files</span>
+          </button>
+        )}
+        <div className={`shrink-0 flex relative ${filesCollapsed ? "hidden" : ""}`} style={{ width: "14rem" }}>
+          <div className="flex-1 overflow-hidden flex flex-col">
+            <DirectoryBrowser
+              selectedFile={localSelectedFile}
+              onSelectFile={(path) => { setLocalSelectedFile(path); setLocalSelectedGame(null); setLocalGameCount(null); }}
+              recentFiles={recentPgnFiles}
+            />
+          </div>
+          <button
+            onClick={() => setFilesCollapsed(true)}
+            className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 z-10 w-5 h-8 flex items-center justify-center rounded bg-zinc-700 border border-zinc-600 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-600 transition-colors text-sm"
+            title="Hide files"
+          >‹</button>
+        </div>
+
+        {/* Game list panel — always mounted so onGameCount fires */}
+        {localSelectedFile && (
+          <>
+            {localGameCount !== 1 && gameListCollapsed && (
+              <button
+                onClick={() => setGameListCollapsed(false)}
+                className="shrink-0 w-6 flex items-start pt-3 justify-center border-r border-zinc-700 bg-zinc-900 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+                title="Show games"
+              >
+                <span className="text-xs" style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}>Games</span>
+              </button>
+            )}
+            <div className={`shrink-0 flex relative ${localGameCount === 1 || gameListCollapsed ? "hidden" : ""}`} style={{ width: "18rem" }}>
+              <div className="flex-1 overflow-hidden flex flex-col">
+                <LocalGameList
+                  filePath={localSelectedFile}
+                  selectedId={localSelectedGame?.id ?? null}
+                  onSelect={setLocalSelectedGame}
+                  onGameCount={(count) => {
+                    setLocalGameCount(count);
+                    // Track files that actually parsed (count > 0) so the
+                    // empty-state chips reflect "files I've successfully opened".
+                    if (localSelectedFile) addRecentPgnFile(localSelectedFile, count);
+                  }}
+                />
+              </div>
+              <button
+                onClick={() => setGameListCollapsed(true)}
+                className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 z-10 w-5 h-8 flex items-center justify-center rounded bg-zinc-700 border border-zinc-600 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-600 transition-colors text-sm"
+                title="Hide games"
+              >‹</button>
+            </div>
+          </>
+        )}
+        <div className="flex-1 flex overflow-hidden">
+          {localSelectedGame ? (
+            <GameBoard game={localSelectedGame} pgn={localSelectedGame.pgn} />
+          ) : localSelectedFile ? (
+            <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md">
+              Select a game
+            </div>
+          ) : recentPgnFiles.length > 0 ? (
+            /* No file selected — surface recently opened PGNs as chips. */
+            <div className="flex-1 overflow-y-auto bg-surface">
+              <div className="max-w-3xl mx-auto px-8 py-12 space-y-3">
+                <h2 className="text-label-md text-on-surface-variant uppercase tracking-wider">Recent</h2>
+                <div className="flex flex-wrap gap-2">
+                  {recentPgnFiles.map((f) => (
+                    <button
+                      key={f.path}
+                      onClick={() => { setLocalSelectedFile(f.path); setLocalSelectedGame(null); setLocalGameCount(null); }}
+                      title={f.path}
+                      className="inline-flex items-center gap-2 h-9 px-4 rounded-full bg-tertiary-container text-on-tertiary-container text-label-md hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard"
+                    >
+                      <span>{basename(f.path)}</span>
+                      <span className="text-label-sm opacity-70">
+                        {f.gameCount.toLocaleString()} {f.gameCount === 1 ? "game" : "games"}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md">
+              Browse to a PGN file
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Home view — server-independent welcome screen */}
+      {mode === "home" && (
+        <HomeEmptyState
+          status={info}
+          onMyGames={handleMyGames}
+          onSearchPlayer={() => { setMode("players"); setPendingSearchFocus(true); }}
+          onOpenTournament={() => setMode("prep")}
+          onBrowseLocal={() => setMode("local")}
+          onRunWizard={() => setShowSetup(true)}
+        />
+      )}
+
+      {/* Maintenance view — full-screen, server-status aware. Mutations inside
+          re-poll status (and refresh open game lists) via onMutated. */}
+      {mode === "maintenance" && (
+        <MaintenancePanel
+          onRunWizard={() => setShowSetup(true)}
+          status={info}
+          onMutated={() => { refreshServerStatus(); onGameMutated(); }}
+        />
+      )}
+
+      {status === "disconnected" && (mode === "players" || mode === "prep") ? (
+        <div className="flex-1 flex items-center justify-center bg-surface-dim">
+          {/* M3 outlined card — Expressive uses xl (28px) corners */}
+          <div className="max-w-md p-8 rounded-xl bg-surface-container-high text-center space-y-3">
+            <div className="text-headline-sm text-on-surface">Chess-db server not running</div>
+            <div className="text-body-md text-on-surface-variant">
+              Start it with{" "}
+              <code className="bg-surface-container-highest text-on-surface px-2 py-0.5 rounded-sm">chess-db serve</code>
+            </div>
+          </div>
+        </div>
+      ) : (mode === "players" || mode === "prep") ? (
+        <>
+          {/* Prep view — always mounted to preserve state, hidden when not active */}
+          <div className={mode !== "prep" ? "hidden" : "flex flex-1 overflow-hidden"}>
+            <PrepView
+              onOpponentsReady={(ctx) => {
+                setPrepContext(ctx);
+                setMode("players");
+              }}
+              onShowGame={handleShowGameInPlayers}
+            />
+          </div>
+
+          {/* Players view — always mounted, hidden when prep is active */}
+          <div className={mode === "prep" ? "hidden" : "flex flex-1 overflow-hidden"}>
+            {/* Panel 1: prep player list or normal player search */}
+            <div className="w-56 shrink-0 overflow-hidden flex flex-col">
+              {prepContext ? (
+                <PrepPlayerList
+                  context={prepContext}
+                  onSelectPlayer={handleSelectPlayer}
+                  onBack={() => { setPrepContext(null); setMode("prep"); }}
+                  onClose={() => setPrepContext(null)}
+                />
+              ) : (
+                <PlayerList
+                  selectedId={selectedPlayer?.id ?? null}
+                  onSelect={handleSelectPlayer}
+                  inputRef={playerSearchRef}
+                  recentPlayers={recentPlayers}
+                  onRemoveRecent={removeRecentPlayer}
+                />
+              )}
+            </div>
+
+            {/* Panel 2: game list for selected player */}
+            {selectedPlayer && (
+              <div className="w-72 shrink-0 overflow-hidden flex flex-col">
+                <GameList
+                  player={selectedPlayer}
+                  selectedId={selectedGame?.id ?? null}
+                  onSelect={handleSelectGame}
+                  moveSequence={moveSequence}
+                  onMoveAppend={handleMoveAppend}
+                  onMoveBack={handleMoveBack}
+                  onMoveReset={handleMoveReset}
+                  onPositionModeChange={setPositionModeActive}
+                  arrowKeysActive={positionModeActive && selectedGame === null}
+                  onTopGameChange={setTopGame}
+                  onMoveStatsChange={setPositionMoveStats}
+                  onSelectedMoveChange={setPositionSelectedSan}
+                  scopePublicOnly={scopePublicOnly}
+                  setScopePublicOnly={setScopePublicOnly}
+                  scopeCollectionId={scopeCollectionId}
+                  setScopeCollectionId={setScopeCollectionId}
+                  scopeIncludeDeleted={scopeIncludeDeleted}
+                  setScopeIncludeDeleted={setScopeIncludeDeleted}
+                  scopeCollections={collectionsList}
+                  reloadKey={gameMutationKey}
+                />
+              </div>
+            )}
+
+            {/* Panel 3: board */}
+            <div className="flex-1 flex overflow-hidden">
+              {selectedGame ? (
+                <GameBoard
+                  game={selectedGame}
+                  moveSequence={positionModeActive ? moveSequence : undefined}
+                  onBackToPosition={positionModeActive ? () => setSelectedGame(null) : undefined}
+                  onGameMutated={onGameMutated}
+                />
+              ) : positionModeActive ? (
+                <PositionBoard
+                  moveSequence={moveSequence}
+                  onBack={handleMoveBack}
+                  onReset={handleMoveReset}
+                  moveStats={positionMoveStats}
+                  selectedMoveSan={positionSelectedSan}
+                  relatedGame={lastSelectedGame ?? topGame}
+                  onSwitchToGame={() => {
+                    const target = lastSelectedGame ?? topGame;
+                    if (target) handleSelectGame(target);
+                  }}
+                />
+              ) : prepContext || selectedPlayer ? (
+                <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md">
+                  {prepContext
+                    ? "Select an opponent to view their games"
+                    : "Select a game"}
+                </div>
+              ) : (
+                <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md">
+                  Search for a player
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      ) : null}
+      {/* Each of these dialogs can mutate database contents (import/dedup/purge),
+          so re-poll status on close so the Home Database section + empty-DB CTA
+          reflect the new state without waiting for the 30-min polling tick. */}
+      {showSetup && (
+        <SetupWizard
+          onClose={() => { setShowSetup(false); refreshServerStatus(); }}
+          onFinish={() => { setShowSetup(false); refreshServerStatus(); setMode("home"); }}
+        />
+      )}
+      {showAddGame && (
+        <AddGameDialog
+          onClose={() => { setShowAddGame(false); refreshServerStatus(); }}
+          onImported={onGameMutated}
+        />
+      )}
+    </div>
+  );
+}

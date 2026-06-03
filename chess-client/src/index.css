@@ -1,0 +1,309 @@
+@import "tailwindcss";
+
+/* =========================================================================
+   Material 3 Expressive — Dark scheme tokens
+   Mapped to Tailwind v4 namespaces so utilities are generated automatically:
+     --color-*    → bg-*, text-*, border-*, etc.
+     --radius-*   → rounded-*
+     --text-*     → text-* (with --line-height / --font-weight modifiers)
+     --ease-*     → ease-*
+     --duration-* → duration-*
+   ========================================================================= */
+
+@theme {
+  /* --- Key colors --- */
+  --color-primary: #adc6ff;
+  --color-on-primary: #002e69;
+  --color-primary-container: #00468b;
+  --color-on-primary-container: #d7e2ff;
+
+  --color-secondary: #bfc6dc;
+  --color-on-secondary: #293041;
+  --color-secondary-container: #3f4759;
+  --color-on-secondary-container: #dbe2f9;
+
+  --color-tertiary: #ddbce0;
+  --color-on-tertiary: #402843;
+  --color-tertiary-container: #583e5b;
+  --color-on-tertiary-container: #fad8fc;
+
+  --color-error: #ffb4ab;
+  --color-on-error: #690005;
+  --color-error-container: #93000a;
+  --color-on-error-container: #ffdad6;
+
+  /* --- Status (extension; not in core M3 but matches the role pattern) --- */
+  --color-success: #87d99a;
+  --color-on-success: #003918;
+  --color-success-container: #005227;
+  --color-on-success-container: #a3f5b3;
+
+  --color-warning: #f8c062;
+  --color-on-warning: #432c00;
+  --color-warning-container: #5f4100;
+  --color-on-warning-container: #ffdfaa;
+
+  /* --- Surfaces (Expressive replaces flat elevation with tonal containers) --- */
+  --color-surface-dim: #0c0e13;
+  --color-surface: #111318;
+  --color-surface-bright: #37393e;
+  --color-surface-container-lowest: #0a0c10;
+  --color-surface-container-low: #191c20;
+  --color-surface-container: #1d2024;
+  --color-surface-container-high: #282a2f;
+  --color-surface-container-highest: #33353a;
+  --color-on-surface: #e2e2e9;
+  --color-on-surface-variant: #c4c6d0;
+  --color-outline: #8e9099;
+  --color-outline-variant: #43474e;
+
+  /* --- Shape scale (Expressive favours larger, more pronounced corners) --- */
+  --radius-xs: 0.25rem;     /* 4px  */
+  --radius-sm: 0.5rem;      /* 8px  */
+  --radius-md: 0.75rem;     /* 12px */
+  --radius-lg: 1rem;        /* 16px */
+  --radius-xl: 1.75rem;     /* 28px — Expressive default for cards/sheets */
+  --radius-2xl: 2rem;       /* 32px */
+  --radius-full: 9999px;
+
+  /* --- Type scale --- */
+  --text-display-lg: 3.5625rem;
+  --text-display-lg--line-height: 4rem;
+  --text-display-md: 2.8125rem;
+  --text-display-md--line-height: 3.25rem;
+  --text-display-sm: 2.25rem;
+  --text-display-sm--line-height: 2.75rem;
+
+  --text-headline-lg: 2rem;
+  --text-headline-lg--line-height: 2.5rem;
+  --text-headline-md: 1.75rem;
+  --text-headline-md--line-height: 2.25rem;
+  --text-headline-sm: 1.5rem;
+  --text-headline-sm--line-height: 2rem;
+
+  --text-title-lg: 1.375rem;
+  --text-title-lg--line-height: 1.75rem;
+  --text-title-md: 1rem;
+  --text-title-md--line-height: 1.5rem;
+  --text-title-md--font-weight: 500;
+  --text-title-sm: 0.875rem;
+  --text-title-sm--line-height: 1.25rem;
+  --text-title-sm--font-weight: 500;
+
+  --text-body-lg: 1rem;
+  --text-body-lg--line-height: 1.5rem;
+  --text-body-md: 0.875rem;
+  --text-body-md--line-height: 1.25rem;
+  --text-body-sm: 0.75rem;
+  --text-body-sm--line-height: 1rem;
+
+  --text-label-lg: 0.875rem;
+  --text-label-lg--line-height: 1.25rem;
+  --text-label-lg--font-weight: 500;
+  --text-label-md: 0.75rem;
+  --text-label-md--line-height: 1rem;
+  --text-label-md--font-weight: 500;
+  --text-label-sm: 0.6875rem;
+  --text-label-sm--line-height: 1rem;
+  --text-label-sm--font-weight: 500;
+
+  /* --- Chess board squares ---
+     Game board uses the classic chess.com green/cream — instantly readable as
+     a chess board, and the warm tones provide a focal point against the cool
+     M3 dark UI surrounding it.
+     Position board keeps an M3-derived purple-mauve so "exploration mode" still
+     reads visually distinct from "game replay mode" at a glance. */
+  --color-board-game-light: #c8b890;
+  --color-board-game-dark: #5d7445;
+  --color-board-position-light: var(--color-on-tertiary-container);
+  --color-board-position-dark: #7d637f;
+
+  /* --- Motion (Expressive easing + standard duration ladder) --- */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-standard-accelerate: cubic-bezier(0.3, 0, 1, 1);
+  --ease-standard-decelerate: cubic-bezier(0, 0, 0, 1);
+  --ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --ease-emphasized-accelerate: cubic-bezier(0.3, 0, 0.8, 0.15);
+  --ease-emphasized-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1);
+  /* Spring with gentle overshoot — used for Expressive shape morphs and icon
+     transforms. Not in the M3 spec verbatim (M3 uses Compose springs); this
+     cubic approximates the "settles past 1 then back" feel. */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  --duration-short1: 50ms;
+  --duration-short2: 100ms;
+  --duration-short3: 150ms;
+  --duration-short4: 200ms;
+  --duration-medium1: 250ms;
+  --duration-medium2: 300ms;
+  --duration-medium3: 350ms;
+  --duration-medium4: 400ms;
+  --duration-long1: 450ms;
+  --duration-long2: 500ms;
+}
+
+/* =========================================================================
+   Theme toggle: dark by default, .light overrides.
+   - `color-scheme` tells the browser which native chrome to use (date picker,
+     <select> menu, scrollbars). Must be set per-scheme — we used to scatter
+     `style={{ colorScheme: "dark" }}` per element to fix Linux GTK rendering;
+     setting it here once removes the need.
+   - The light palette below mirrors the @theme dark token list one-for-one.
+     M3 baseline pairing: dark T80→light T40, dark T30 (container) → T90, etc.
+   ========================================================================= */
+:root {
+  color-scheme: dark;
+}
+
+/* Lock text rendering across the app. Without these, Linux Chromium can pick
+   different sub-pixel AA strategies per row depending on background opacity
+   and parent stacking context — visible as alternating "bold" rows in the
+   game list (only obvious in light mode where contrast is higher).
+   - `font-synthesis: none` prevents the browser from drawing fake-bold for
+     glyphs missing in the font (Cantarell on GNOME hits this).
+   - `-webkit-font-smoothing: antialiased` forces grayscale AA everywhere,
+     so rows with translucent overlays render the same as plain ones. */
+html, body {
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+.light {
+  color-scheme: light;
+
+  --color-primary: #0061a4;
+  --color-on-primary: #ffffff;
+  --color-primary-container: #d3e3ff;
+  --color-on-primary-container: #001b3c;
+
+  --color-secondary: #555f71;
+  --color-on-secondary: #ffffff;
+  --color-secondary-container: #d9e3f8;
+  --color-on-secondary-container: #121c2b;
+
+  --color-tertiary: #705574;
+  --color-on-tertiary: #ffffff;
+  --color-tertiary-container: #fad7fc;
+  --color-on-tertiary-container: #28132d;
+
+  --color-error: #ba1a1a;
+  --color-on-error: #ffffff;
+  --color-error-container: #ffdad6;
+  --color-on-error-container: #410002;
+
+  --color-success: #1f6e3a;
+  --color-on-success: #ffffff;
+  --color-success-container: #a3f5b3;
+  --color-on-success-container: #002110;
+
+  --color-warning: #7d5800;
+  --color-on-warning: #ffffff;
+  --color-warning-container: #ffdfaa;
+  --color-on-warning-container: #271900;
+
+  --color-surface-dim: #d8dae0;
+  --color-surface: #f8f9ff;
+  --color-surface-bright: #f8f9ff;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-low: #f2f3fa;
+  --color-surface-container: #eceef4;
+  --color-surface-container-high: #e6e8ee;
+  --color-surface-container-highest: #e0e2e8;
+  --color-on-surface: #1a1c20;
+  --color-on-surface-variant: #43474e;
+  --color-outline: #73777f;
+  --color-outline-variant: #c3c6cf;
+
+  /* Brighter chess-board tones for the light scheme — the muted dark-scheme
+     pair (#5d7445 / #c8b890) reads heavy on a light background. Classic
+     chess.com green/cream sits much better here. */
+  --color-board-game-light: #eeeed2;
+  --color-board-game-dark: #769656;
+}
+
+/* Used by <CountUp mode="fade"> for values where counting from 0 reads weird
+   (chess ratings: a player isn't going from 0 to 1915, the number just *is*). */
+@keyframes lpdo-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.lpdo-fade-in {
+  animation-name: lpdo-fade-in;
+  animation-fill-mode: both;
+  animation-timing-function: var(--ease-emphasized-decelerate);
+}
+@media (prefers-reduced-motion: reduce) {
+  .lpdo-fade-in {
+    animation: none;
+  }
+}
+
+/* Home page entrance: each top-level section rises a few px and fades in.
+   Stagger via inline `style={{ animationDelay: 'Xms' }}` on each element.
+   `both` fill mode ensures elements are hidden before the delay elapses. */
+@keyframes lpdo-rise-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.lpdo-rise-in {
+  animation: lpdo-rise-in 400ms var(--ease-emphasized-decelerate) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lpdo-rise-in {
+    animation: none;
+  }
+}
+
+/* Pulsing glow behind the LPDO logo on the Home hero — primary-tinted
+   drop-shadow that gently breathes between two blur/alpha targets.
+   Disabled under prefers-reduced-motion. */
+@keyframes lpdo-logo-pulse {
+  0%, 100% {
+    filter: drop-shadow(0 0 14px color-mix(in oklab, var(--color-primary) 10%, transparent));
+  }
+  50% {
+    filter: drop-shadow(0 0 22px color-mix(in oklab, var(--color-primary) 22%, transparent));
+  }
+}
+
+.lpdo-logo-glow {
+  animation: lpdo-logo-pulse 6s ease-in-out infinite;
+  filter: drop-shadow(0 0 14px color-mix(in oklab, var(--color-primary) 10%, transparent));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lpdo-logo-glow {
+    animation: none;
+  }
+}
+
+/* Legacy high-contrast helpers (zinc-based UI, pre-M3 migration) */
+.hc .text-zinc-400,
+.hc .text-zinc-500,
+.hc .text-zinc-600 {
+  color: white;
+}
+
+.hc .border-zinc-700,
+.hc .border-zinc-800 {
+  border-color: #71717a;
+}
+
+.hc .placeholder-zinc-600::placeholder {
+  color: #a1a1aa;
+}
+
+.hc .annotation-hint {
+  opacity: 1;
+}
+
+/* High-contrast extensions for M3 tokens */
+.hc .text-on-surface-variant,
+.hc .text-outline {
+  color: var(--color-on-surface);
+}
+.hc .border-outline-variant {
+  border-color: var(--color-outline);
+}

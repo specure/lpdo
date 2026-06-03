@@ -1,0 +1,17 @@
+LPDO
+Copyright 2026 Specure
+
+This product includes software developed at Specure.
+
+Licensed under the Apache License, Version 2.0. See the LICENSE file for the
+full license text.
+
+---
+
+Acknowledgements
+
+This software can download and import game data from The Week in Chess (TWIC),
+published since 1994 by Mark Crowther at https://theweekinchess.com/. TWIC is a
+free, independent resource; please review its terms and consider supporting his
+work. "LPDO" is a trademark of Specure and is not licensed under Apache-2.0
+(see Section 6 of the LICENSE).

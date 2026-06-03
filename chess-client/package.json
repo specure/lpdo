@@ -1,0 +1,33 @@
+{
+  "name": "chess-client",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:prepare": "cargo build -p chess-db --release --manifest-path ../Cargo.toml && cp ../target/release/chess-db src-tauri/binaries/chess-db-$(rustc -vV | grep host | awk '{print $2}')",
+    "dev:all": "npm run dev:prepare && npm run dev",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.7.0",
+    "@tauri-apps/plugin-opener": "^2",
+    "chess.js": "^1.4.0",
+    "react": "^19.1.0",
+    "react-chessboard": "^5.10.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.2",
+    "@tauri-apps/cli": "^2",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.6.0",
+    "tailwindcss": "^4.2.2",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.4"
+  }
+}

@@ -1,0 +1,132 @@
+pub mod index;
+
+use anyhow::Result;
+use duckdb::Connection;
+use crate::reporter::Reporter;
+use std::path::Path;
+
+pub async fn download(
+    conn: &Connection,
+    from: u32,
+    to: Option<u32>,
+    dir: &Path,
+    reporter: &Reporter,
+) -> Result<()> {
+    reporter.log("Fetching TWIC issue list...");
+    let range = match index::fetch_issue_range().await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!(
+                "Warning: could not fetch issue list from theweekinchess.com ({}). \
+                 Falling back to defaults (920–1700). Use --from/--to to override.",
+                e
+            );
+            index::IssueRange { first: 920, latest: 1700 }
+        }
+    };
+
+    reporter.log(format!(
+        "TWIC archive spans issues {} – {}",
+        range.first, range.latest
+    ));
+
+    let start = if from <= 1 { range.first } else { from };
+    let end = to.unwrap_or(range.latest);
+
+    if start > end {
+        reporter.done(format!("Nothing to download (from {} > to {}).", start, end));
+        return Ok(());
+    }
+
+    reporter.log(format!("Downloading issues {} to {}...", start, end));
+
+    let total = (end - start + 1) as u64;
+    let pb = reporter.bar(total);
+    let mut completed = 0u64;
+
+    // Register issues in DB
+    for issue_id in start..=end {
+        let filename = format!("twic{}g.zip", issue_id);
+        conn.execute(
+            "INSERT INTO issues (id, filename) VALUES (?, ?) ON CONFLICT DO NOTHING",
+            duckdb::params![issue_id as i32, filename],
+        )
+        .ok();
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?;
+
+    for issue_id in start..=end {
+        let filename = format!("twic{}g.zip", issue_id);
+        let dest = dir.join(&filename);
+
+        pb.set_message(format!("issue {}", issue_id));
+
+        // Skip already downloaded
+        if dest.exists() {
+            conn.execute(
+                "UPDATE issues SET downloaded = TRUE, filename = ? WHERE id = ?",
+                duckdb::params![filename, issue_id as i32],
+            )
+            .ok();
+            pb.inc(1);
+            completed += 1;
+            reporter.progress(completed, total, format!("issue {}", issue_id));
+            continue;
+        }
+
+        let url = format!(
+            "https://theweekinchess.com/zips/twic{}g.zip",
+            issue_id
+        );
+
+        // Each issue is independent: a transient failure (reset connection,
+        // truncated body, disk write error) must skip just that issue and move
+        // on, never abort the whole multi-hundred-issue run. Failures are
+        // logged as warnings — not `reporter.error`, which the GUI treats as a
+        // terminal event and would stop the visible download mid-way.
+        match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => match resp.bytes().await {
+                Ok(bytes) => match std::fs::write(&dest, &bytes) {
+                    Ok(()) => {
+                        conn.execute(
+                            "UPDATE issues SET downloaded = TRUE, fetched_at = NOW() WHERE id = ?",
+                            duckdb::params![issue_id as i32],
+                        )
+                        .ok();
+                    }
+                    Err(e) => {
+                        let msg = format!("Skipping issue {} (could not save: {})", issue_id, e);
+                        pb.println(&msg);
+                        reporter.log(&msg);
+                    }
+                },
+                Err(e) => {
+                    let msg = format!("Skipping issue {} (download interrupted: {})", issue_id, e);
+                    pb.println(&msg);
+                    reporter.log(&msg);
+                }
+            },
+            Ok(resp) => {
+                let msg = format!("Skipping issue {} (HTTP {})", issue_id, resp.status());
+                pb.println(&msg);
+                reporter.log(&msg);
+            }
+            Err(e) => {
+                let msg = format!("Skipping issue {} (request failed: {})", issue_id, e);
+                pb.println(&msg);
+                reporter.log(&msg);
+            }
+        }
+
+        pb.inc(1);
+        completed += 1;
+        reporter.progress(completed, total, format!("issue {}", issue_id));
+    }
+
+    pb.finish_with_message("Download complete");
+    reporter.done("Download complete");
+    Ok(())
+}
