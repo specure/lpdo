@@ -57,6 +57,11 @@ export interface MovesEditor {
   error: string | null;
   /** True once any edit has been made (used to gate autosave-on-switch). */
   dirty: boolean;
+  /** True when the game is marked ended — main-line tip moves branch into
+   *  an analysis pseudo-variation instead of extending the game. */
+  gameEndMarked: boolean;
+  /** Toggle game-end / analysis mode (main line only). */
+  markGameEnd(): void;
   /** Trailing comment of the move at the cursor ("" at a line start). */
   moveComment: string;
   /** Intro comment of the current line (game start comment / variation intro). */
@@ -186,6 +191,16 @@ function makeNode(result: { san: string; color: "w" | "b" }, fenAfter: string): 
   return { san: result.san, color: result.color, fen: fenAfter, annotations: {}, variations: [] };
 }
 
+/** A game is "ended" (analysis mode on) when its last main-line move carries a
+ *  pseudo-variation — a side line that begins by repeating that same move,
+ *  which is the signature of an analysis continuation from the final position.
+ *  Detecting it on load makes the mode survive a reload without any extra PGN. */
+function detectGameEnd(mainLine: MoveNode[]): boolean {
+  if (mainLine.length === 0) return false;
+  const last = mainLine[mainLine.length - 1];
+  return last.variations.some((v) => v.length > 0 && v[0].san === last.san);
+}
+
 export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEditor {
   const [active, setActive] = useState(false);
   const [game, setGame] = useState<AnnotatedGame | null>(null);
@@ -198,6 +213,9 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
   const [error, setError] = useState<string | null>(null);
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  // "Game end" / analysis mode: when on, a move played at the main-line tip
+  // branches into an analysis pseudo-variation instead of extending the game.
+  const [gameEndMarked, setGameEndMarked] = useState(false);
 
   // Undo / redo: each snapshot is a deep clone of the working tree plus a
   // serialisable path to the cursor, so restoring never shares array
@@ -429,6 +447,7 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     setUndoStack([]);
     setRedoStack([]);
     setDirty(false);
+    setGameEndMarked(false);
     setError(null);
     setSaving(false);
   }
@@ -446,6 +465,7 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     setUndoStack([]);
     setRedoStack([]);
     setDirty(false);
+    setGameEndMarked(detectGameEnd(clone.mainLine));
     setError(null);
     setActive(true);
   }
@@ -471,6 +491,27 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
       setActiveIndex(r.activeIndex);
       setBreadcrumbs(r.breadcrumbs);
     }
+  }
+
+  /** Toggle "game end / analysis" mode (main line only). Turning it on while the
+   *  cursor is mid-main-line splits the line: the tail after the cursor is moved
+   *  into an analysis pseudo-variation on the last kept move. At the tip it just
+   *  arms the mode — the pseudo-variation is created lazily on the next move, so
+   *  we never leave an empty branch behind. */
+  function markGameEnd() {
+    if (!game || breadcrumbs.length !== 0) return; // main line only
+    if (gameEndMarked) { setGameEndMarked(false); return; }
+    if (activeIndex >= 1 && activeIndex < activeLine.length) {
+      applyEdit(({ line, index, breadcrumbs: bc }) => {
+        const last = line[index - 1];
+        const tail = line.slice(index);
+        const repeat: MoveNode = { san: last.san, color: last.color, fen: last.fen, annotations: {}, variations: [] };
+        last.variations.push([repeat, ...tail]);
+        line.length = index;
+        return { line, index, breadcrumbs: bc };
+      });
+    }
+    setGameEndMarked(true);
   }
 
   function tryMove(from: string, to: string, promotion?: "q" | "r" | "b" | "n"): boolean {
@@ -506,6 +547,20 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
       }
       // Divergent move — let the user choose how to graft it in.
       setPendingDivergence({ san: node.san, node });
+      return true;
+    }
+
+    // At the main-line tip with analysis mode on: branch into a pseudo-variation
+    // from the final position (repeat the last move, then the new move) instead
+    // of growing the recorded game.
+    if (breadcrumbs.length === 0 && activeIndex === activeLine.length && gameEndMarked && activeLine.length > 0) {
+      applyEdit(({ line, breadcrumbs: bc }) => {
+        const last = line[line.length - 1];
+        const repeat: MoveNode = { san: last.san, color: last.color, fen: last.fen, annotations: {}, variations: [] };
+        const pseudo = [repeat, node];
+        last.variations.push(pseudo);
+        return { line: pseudo, index: 2, breadcrumbs: [...bc, { line, index: line.length - 1 }] };
+      });
       return true;
     }
 
@@ -587,18 +642,20 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     tryMove(from, to, piece);
   }
 
+  /** Delete the current move and everything after it. From a variation's first
+   *  move this removes the whole variation (and steps back to the parent). */
   function deleteFromHere() {
-    if (activeIndex >= activeLine.length) return;
+    if (activeIndex < 1) return; // at a line start — no current move to delete
     applyEdit(({ line, index, breadcrumbs: bc }) => {
-      line.length = index;
-      // Emptied a variation from its start → drop it and step up to the parent.
+      line.length = index - 1; // drop the current move and the rest of the line
+      // Emptied a variation → remove it and step up to the parent line.
       if (line.length === 0 && bc.length > 0) {
         const parentBc = bc[bc.length - 1];
         const branchNode = parentBc.line[parentBc.index];
         branchNode.variations = branchNode.variations.filter((v) => v !== line);
         return { line: parentBc.line, index: parentBc.index, breadcrumbs: bc.slice(0, -1) };
       }
-      return { line, index, breadcrumbs: bc };
+      return { line, index: index - 1, breadcrumbs: bc };
     });
   }
 
@@ -685,6 +742,8 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     saving,
     error,
     dirty,
+    gameEndMarked,
+    markGameEnd,
     moveComment,
     lineComment,
     setMoveComment,
@@ -773,6 +832,8 @@ export function MovesEditorMoveList({ editor }: { editor: MovesEditor }) {
     setCollapsedNodes((prev) => { const next = new Set(prev); for (const k of keys) next.add(k); return next; });
   }
 
+  const editActionBtn = "h-7 px-3 inline-flex items-center gap-1 rounded-full text-primary text-label-md hover:bg-primary/8 active:bg-primary/12 disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-colors duration-short3 ease-standard";
+
   return (
     <div className="h-full flex flex-col">
       <div className="text-label-sm text-on-surface-variant uppercase tracking-wider px-3 pt-2 pb-1 shrink-0">Editing moves</div>
@@ -801,6 +862,32 @@ export function MovesEditorMoveList({ editor }: { editor: MovesEditor }) {
           </div>
         )}
       </div>
+      {/* Edit actions — everything that mutates the move tree, grouped here. */}
+      <div className="shrink-0 px-3 py-1.5 flex items-center gap-1 flex-wrap border-t border-outline-variant">
+        <button onClick={editor.undo} disabled={!editor.canUndo} className={editActionBtn} title="Undo last edit (Ctrl+Z)">↶ Undo</button>
+        <button onClick={editor.redo} disabled={!editor.canRedo} className={editActionBtn} title="Redo (Ctrl+Y or Ctrl+Shift+Z)">↷ Redo</button>
+        <button
+          onClick={editor.deleteFromHere}
+          disabled={editor.activeIndex === 0}
+          className="h-7 px-3 inline-flex items-center rounded-full bg-error-container text-on-error-container text-label-md hover:brightness-110 active:brightness-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:brightness-100 transition-all duration-short3 ease-standard"
+          title="Delete this move and everything after it (deletes a whole variation from its first move)"
+        >Delete from here</button>
+        {!inSubVariation && game && game.mainLine.length > 0 && (
+          <button
+            onClick={editor.markGameEnd}
+            className={
+              editor.gameEndMarked
+                ? "h-7 px-3 inline-flex items-center gap-1 rounded-full bg-secondary-container text-on-secondary-container text-label-md transition-colors duration-short3 ease-standard"
+                : "h-7 px-3 inline-flex items-center gap-1 rounded-full text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 text-label-md transition-colors duration-short3 ease-standard"
+            }
+            title={editor.gameEndMarked
+              ? "Game marked as ended — new moves at the end become analysis. Click to resume extending the game."
+              : "Mark the game as ended at the cursor. New moves at the end (and any moves after the cursor) become an analysis variation."}
+          >
+            {editor.gameEndMarked ? "✓ Game ends here" : "Mark game end"}
+          </button>
+        )}
+      </div>
       {editor.error && (
         <div className="shrink-0 px-3 pb-2 text-body-sm text-error whitespace-pre-wrap break-words">{editor.error}</div>
       )}
@@ -808,13 +895,12 @@ export function MovesEditorMoveList({ editor }: { editor: MovesEditor }) {
   );
 }
 
-// ── UI: bottom toolbar (replaces nav controls when editing) ──────────────────
+// ── UI: bottom toolbar — position navigation (replaces nav controls when editing) ──
 
 export function MovesEditorToolbar({ editor }: { editor: MovesEditor }) {
   const cursorAtEnd = editor.activeIndex === editor.activeLine.length;
   const inSubVariation = editor.breadcrumbs.length > 0;
   const iconBtn = "w-8 h-8 inline-flex items-center justify-center rounded-full text-on-surface-variant text-label-md hover:bg-on-surface/8 active:bg-on-surface/12 disabled:opacity-40 disabled:hover:bg-transparent transition-colors duration-short3 ease-standard";
-  const textBtn = "h-8 px-3 inline-flex items-center gap-1 rounded-full text-primary text-label-md hover:bg-primary/8 active:bg-primary/12 disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-colors duration-short3 ease-standard";
   return (
     <div className="shrink-0 flex items-center justify-center gap-1 flex-wrap">
       <button onClick={editor.goBackToParent} disabled={!inSubVariation} className={iconBtn} title="Back to parent line">↩</button>
@@ -825,15 +911,6 @@ export function MovesEditorToolbar({ editor }: { editor: MovesEditor }) {
       </span>
       <button onClick={() => editor.setCursor(Math.min(editor.activeLine.length, editor.activeIndex + 1))} disabled={cursorAtEnd} className={iconBtn} title="Next move">›</button>
       <button onClick={() => editor.setCursor(editor.activeLine.length)} disabled={cursorAtEnd} className={iconBtn} title="Go to end">⟫</button>
-      <div className="w-px h-5 bg-outline-variant mx-2" />
-      <button onClick={editor.undo} disabled={!editor.canUndo} className={textBtn} title="Undo last edit (Ctrl+Z)">↶ Undo</button>
-      <button onClick={editor.redo} disabled={!editor.canRedo} className={textBtn} title="Redo (Ctrl+Y or Ctrl+Shift+Z)">↷ Redo</button>
-      <button
-        onClick={editor.deleteFromHere}
-        disabled={cursorAtEnd}
-        className="h-8 px-3 inline-flex items-center rounded-full bg-error-container text-on-error-container text-label-md hover:brightness-110 active:brightness-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:brightness-100 transition-all duration-short3 ease-standard"
-        title="Truncate from this position onwards"
-      >Delete from here</button>
     </div>
   );
 }
