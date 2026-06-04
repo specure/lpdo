@@ -164,6 +164,7 @@ async fn run_chess_db(
     app: tauri::AppHandle,
     args: Vec<String>,
     event_id: String,
+    stdin: Option<String>,
 ) -> Result<(), String> {
     let binary_path = get_binary_path(&app);
     let needs_lock = needs_db_write_lock(&args);
@@ -195,6 +196,9 @@ async fn run_chess_db(
                 .args(&args)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
+            if stdin.is_some() {
+                cmd.stdin(std::process::Stdio::piped());
+            }
             die_with_parent(&mut cmd);
             no_console_window(&mut cmd);
             let mut child = cmd.spawn().map_err(|e| e.to_string())?;
@@ -209,6 +213,17 @@ async fn run_chess_db(
                 .lock()
                 .unwrap()
                 .insert(event_id_for_task.clone(), child_pid);
+
+            // Feed stdin (e.g. PGN movetext for `set-moves`) on a side thread so
+            // a large payload can't deadlock against our stdout draining. Closing
+            // the pipe (dropping the sink) signals EOF to the child.
+            let stdin_handle = match (stdin, child.stdin.take()) {
+                (Some(data), Some(mut sink)) => Some(std::thread::spawn(move || {
+                    use std::io::Write;
+                    let _ = sink.write_all(data.as_bytes());
+                })),
+                _ => None,
+            };
 
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
@@ -250,6 +265,7 @@ async fn run_chess_db(
             }
 
             let status = child.wait().map_err(|e| e.to_string())?;
+            if let Some(h) = stdin_handle { let _ = h.join(); }
             if let Some(h) = stderr_handle { let _ = h.join(); }
             // Deregister PID — cancel_chess_db is a no-op after this point.
             app_arc

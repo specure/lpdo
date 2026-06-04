@@ -14,6 +14,10 @@ export interface MoveNode {
   fen: string;
   annotations: Annotations;
   variations: MoveNode[][];
+  /** Comment shown BEFORE this move — used for line intros (a comment at the
+   *  start of a variation). The mainline's intro lives on `AnnotatedGame.startComment`
+   *  instead, since the mainline can be empty (no first node to attach to). */
+  preComment?: string;
 }
 
 export interface AnnotatedGame {
@@ -198,9 +202,13 @@ class Parser {
           const varChess = new Chess();
           varChess.load(preFen);
           const variation = this.parseLine(varChess);
-          // Filter out comment-sentinel nodes
           const realMoves = variation.filter(n => n.san !== "");
           if (realMoves.length > 0) {
+            // A leading comment in the variation is parsed as a sentinel
+            // (san: ""). Attach it to the first real move as its pre-comment
+            // (the line's intro) instead of dropping it.
+            const lead = variation.find(n => n.san === "");
+            if (lead?.annotations.comment) realMoves[0].preComment = lead.annotations.comment;
             node.variations.push(realMoves);
           }
           if (this.peek()?.type === "var_end") this.next(); // consume ')'

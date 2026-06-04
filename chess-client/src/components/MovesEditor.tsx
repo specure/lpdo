@@ -1,38 +1,70 @@
 // Inline moves-editor used by GameBoard. The host renders the board and side
 // panel; this module owns:
-//   - the editor state machine (moves, cursor, overwrite/promotion pending)
-//   - handlers (try-move, delete-from-here, save via sidecar)
-//   - the small UI pieces that overlay the host (toolbar, side panel,
-//     promotion chooser, overwrite confirm, annotated-game gate).
+//   - the editor state machine: a working copy of the game's move tree
+//     (AnnotatedGame) navigated with a path-aware cursor (activeLine +
+//     activeIndex + breadcrumbs), shared with the read-only viewer's model.
+//   - handlers (try-move, the divergence flow, delete-from-here, save).
+//   - the small UI pieces that overlay the host (toolbar, move list, promotion
+//     chooser, divergence chooser).
+//
+// Editing is lossless: variations, comments, NAGs and arrows on the loaded game
+// are preserved (a deep clone is edited and serialised back to PGN movetext).
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Chess } from "chess.js";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { MoveNode } from "../lib/parsePgnTree";
+import { AnnotatedGame, MoveNode } from "../lib/parsePgnTree";
+import {
+  Breadcrumb,
+  backToParent,
+  collectAllKeys,
+  collectLineKeys,
+  collectPathKeys,
+  fenAt,
+  findLinePrefix,
+  navigateTo,
+  pathSteps,
+  resolvePath,
+} from "../lib/moveTreeNav";
+import { serializeMovetext } from "../lib/serializeMovetext";
 import { MoveStats } from "../types";
+import AnnotatedMoveList from "./AnnotatedMoveList";
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
 
 export interface MovesEditor {
   /** True when editing — host swaps the board / panel into edit mode. */
   active: boolean;
-  /** True when initial main-line had annotations and the user hasn't yet OK'd dropping them. */
-  needsClobberAck: boolean;
-  /** Current SAN list under edit. */
-  moves: string[];
-  /** Half-move cursor 0..moves.length. */
-  cursor: number;
-  /** FEN at cursor — used as the board's `position`. */
+  /** Working copy of the move tree under edit (null when inactive). */
+  game: AnnotatedGame | null;
+  /** Line currently being edited (main line or a variation array). */
+  activeLine: MoveNode[];
+  /** Half-move cursor 0..activeLine.length within `activeLine`. */
+  activeIndex: number;
+  /** Stack of parent lines from the main line down to `activeLine`. */
+  breadcrumbs: Breadcrumb[];
+  /** FEN at the cursor — used as the board's `position`. */
   fen: string;
   /** Side to move at cursor. */
   sideToMove: "w" | "b";
-  /** Pending mid-line overwrite waiting on user confirm. */
-  pendingOverwrite: { san: string } | null;
-  /** Pending promotion — board awaits piece choice. */
+  /** Pending mid-line divergence awaiting the new-variation / new-main-line /
+   *  overwrite choice. */
+  pendingDivergence: { san: string; node: MoveNode } | null;
+  /** Pending pawn promotion — board awaits piece choice. */
   pendingPromotion: { from: string; to: string } | null;
   saving: boolean;
   error: string | null;
+  /** True once any edit has been made (used to gate autosave-on-switch). */
+  dirty: boolean;
+  /** Trailing comment of the move at the cursor ("" at a line start). */
+  moveComment: string;
+  /** Intro comment of the current line (game start comment / variation intro). */
+  lineComment: string;
+  /** Set (blank clears) the trailing comment of the move at the cursor. */
+  setMoveComment(text: string): void;
+  /** Set (blank clears) the current line's intro comment. */
+  setLineComment(text: string): void;
 
   // ── Click-to-move state ──────────────────────────────────────────────────
   /** Square currently selected via click (null = none). */
@@ -47,84 +79,61 @@ export interface MovesEditor {
   /** True iff a mousedown on `square` should kick off the one-click flow
    *  (no source pre-selected; square is empty or holds an opponent piece). */
   shouldHandleAsDestination(square: string): boolean;
-  /** Best-source heuristic for the given destination. Returns null if no
-   *  legal move lands on `square`. Ranks ambiguous candidates by DB
-   *  popularity, then from-square lexicographic. */
+  /** Best-source heuristic for the given destination. */
   pickSourceFor(square: string): string | null;
-  /** Begin a one-click gesture for `square`:
-   *   - single legal source: arrow is shown immediately.
-   *   - multiple legal sources + DB data loaded: arrow with most-popular
-   *     candidate (or lex fallback when this position isn't in the DB).
-   *   - multiple legal sources + DB data still in flight: NO arrow yet;
-   *     materialises when the fetch lands. */
+  /** Begin a one-click gesture for `square`. */
   requestPreview(square: string): void;
   clearPreview(): void;
-  /** End the gesture. If an arrow is shown, the move is played immediately.
-   *  If we were still waiting for DB data (silent gesture), the move is
-   *  played as soon as the fetch lands. */
+  /** End the gesture — plays immediately if an arrow is shown, else when the
+   *  DB popularity data lands. */
   commitPreview(): void;
-  /** True while a gesture is active (visible arrow OR silent wait). Hosts
-   *  use this to keep tracking pointer move/up after a silent press. */
+  /** True while a gesture is active (visible arrow OR silent wait). */
   gestureActive: boolean;
-  /** Update the gesture as the pointer moves to `sq`. The press locks the
-   *  destination square; subsequent slides only let the user pick the source
-   *  piece. If `sq` is a legal source for the locked destination, the
-   *  arrow's `from` snaps to `sq` and silent-wait is cancelled. Any other
-   *  cursor square (own pieces that can't reach the dest, empty squares,
-   *  etc.) leaves the gesture untouched so the user can move freely without
-   *  cancelling. To target a different destination, release and re-press. */
+  /** Update the gesture as the pointer moves to `sq`. */
   dragTo(sq: string): void;
-  /** Warm the position-moves cache for `fen` without touching the editor's
-   *  state. Hosts call this while just *viewing* a game so that the moment
-   *  edit mode is entered (or a new ply navigated to) the one-click
-   *  heuristic already has the popularity data. No-op for cached fens. */
+  /** Warm the position-moves cache for `fen` without touching editor state. */
   prefetchPositionMoves(fen: string): void;
 
   // ── Undo / Redo ──────────────────────────────────────────────────────────
-  /** True when there's at least one snapshot on the undo stack. */
   canUndo: boolean;
-  /** True when there's at least one snapshot on the redo stack. */
   canRedo: boolean;
 
-  /** Begin editing from the given main line, positioned at `cursor` half-moves. */
-  start(mainLine: MoveNode[], cursor: number): void;
+  /** Begin editing the given game, positioned at (line, index, breadcrumbs).
+   *  The game is deep-cloned so the viewer's tree is never mutated. */
+  start(game: AnnotatedGame, line: MoveNode[], index: number, breadcrumbs: Breadcrumb[]): void;
   cancel(): void;
-  ackClobber(): void;
+  /** Jump the cursor to (line, index), entering a variation if needed. */
+  navigate(line: MoveNode[], index: number): void;
+  /** Move the cursor up/down within the current line (clamped). */
   setCursor(i: number): void;
-  /** Try to play a move from the board. Returns true if the move was accepted
-   *  (it may be deferred via the overwrite or promotion flows). */
+  /** Step back to the parent line (when inside a variation). */
+  goBackToParent(): void;
   tryMove(from: string, to: string, promotion?: "q" | "r" | "b" | "n"): boolean;
-  /** Handle a click on a square (click-to-move flow):
-   *   - no selection + own piece → select.
-   *   - same square clicked again → deselect.
-   *   - legal destination → play (or surface promotion / overwrite).
-   *   - own piece on a non-legal square → switch selection.
-   *   - empty / opponent piece → clear selection. */
   clickSquare(square: string): void;
+  /** Resolve a pending divergence. */
   commitOverwrite(): void;
-  cancelOverwrite(): void;
+  commitNewVariation(): void;
+  commitNewMainLine(): void;
+  cancelDivergence(): void;
   commitPromotion(piece: "q" | "r" | "b" | "n"): void;
   cancelPromotion(): void;
   deleteFromHere(): void;
-  /** Undo the most recent edit (move add, mid-line overwrite, or
-   *  delete-from-here). Restores both the SAN list and the cursor position
-   *  to their pre-edit state. No-op when the stack is empty. */
   undo(): void;
-  /** Re-apply the most recently undone edit. No-op when the redo stack is
-   *  empty (which it is right after a fresh edit). */
   redo(): void;
   save(): void;
 }
 
 /**
- * Run `chess-db games set-moves` through the Tauri sidecar. Standalone so
- * the editor's "Done" button and the GameBoard's game-switch autosave can
- * share the same code path. Resolves the terminal event explicitly to
- * avoid the listen/invoke race.
+ * Run `chess-db games set-moves` through the Tauri sidecar, passing the full
+ * PGN movetext (with any variations) over stdin so we don't hit Windows
+ * command-line length limits or special-char escaping issues. Standalone so the
+ * editor's "Done" button and the GameBoard's game-switch autosave share one
+ * code path. Resolves the terminal event explicitly to avoid the listen/invoke
+ * race.
  */
-export async function saveMovesViaSidecar(
+export async function saveMovetextViaSidecar(
   gameId: number,
-  moves: string[],
+  movetext: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const eventId = crypto.randomUUID();
   const eventName = `chess-db:${eventId}`;
@@ -146,8 +155,9 @@ export async function saveMovesViaSidecar(
 
   try {
     await invoke("run_chess_db", {
-      args: ["games", "set-moves", String(gameId), "--moves", moves.join(" ")],
+      args: ["games", "set-moves", String(gameId), "--moves-stdin"],
       eventId,
+      stdin: movetext,
     });
     const terminal = await Promise.race([
       terminalPromise,
@@ -166,108 +176,83 @@ export async function saveMovesViaSidecar(
 
 interface UseMovesEditorOpts {
   gameId: number | null;
-  /** Fires on successful save. `focusIndex` is the half-move ply the host
-   *  should restore the read-only cursor to (defaults to the end of the
-   *  newly-saved line so the user keeps looking at the last move). */
+  /** Fires on successful save. `focusIndex` is the main-line ply the host
+   *  should restore the read-only cursor to after reload. */
   onSaved?: (focusIndex: number) => void;
 }
 
-/** Detect annotations on the main line (variations, comments, NAGs, arrows, circles). */
-export function isMainLineAnnotated(mainLine: MoveNode[]): boolean {
-  for (const n of mainLine) {
-    if (n.variations.length > 0) return true;
-    const a = n.annotations;
-    if (a.comment || a.nag || (a.arrows && a.arrows.length) || (a.circles && a.circles.length)) return true;
-  }
-  return false;
-}
-
-/** Replay `moves[0..ply]` and return the resulting FEN. Stops on first
- *  illegal move (shouldn't happen — we validate on add). */
-function fenAtPly(moves: string[], ply: number): string {
-  const c = new Chess();
-  for (let i = 0; i < ply; i++) {
-    try { c.move(moves[i]); } catch { break; }
-  }
-  return c.fen();
-}
-
-function turnAtPly(moves: string[], ply: number): "w" | "b" {
-  const c = new Chess();
-  for (let i = 0; i < ply; i++) {
-    try { c.move(moves[i]); } catch { break; }
-  }
-  return c.turn();
+/** A new leaf move node built from a chess.js move result. */
+function makeNode(result: { san: string; color: "w" | "b" }, fenAfter: string): MoveNode {
+  return { san: result.san, color: result.color, fen: fenAfter, annotations: {}, variations: [] };
 }
 
 export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEditor {
   const [active, setActive] = useState(false);
-  const [needsClobberAck, setNeedsClobberAck] = useState(false);
-  const [moves, setMoves] = useState<string[]>([]);
-  const [cursor, setCursor] = useState(0);
-  const [pendingOverwrite, setPendingOverwrite] = useState<{ san: string } | null>(null);
+  const [game, setGame] = useState<AnnotatedGame | null>(null);
+  const [activeLine, setActiveLine] = useState<MoveNode[]>([]);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([]);
+  const [pendingDivergence, setPendingDivergence] = useState<{ san: string; node: MoveNode } | null>(null);
   const [pendingPromotion, setPendingPromotion] = useState<{ from: string; to: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
-  // Undo / redo history of (moves, cursor) snapshots. New edits push to undo
-  // and clear redo (standard editor semantics — the redo branch is invalid
-  // once you diverge from it).
-  type Snapshot = { moves: string[]; cursor: number };
+  const [dirty, setDirty] = useState(false);
+
+  // Undo / redo: each snapshot is a deep clone of the working tree plus a
+  // serialisable path to the cursor, so restoring never shares array
+  // identities with the live tree.
+  type Snapshot = { game: AnnotatedGame; path: ReturnType<typeof pathSteps>; activeIndex: number };
   const [undoStack, setUndoStack] = useState<Snapshot[]>([]);
   const [redoStack, setRedoStack] = useState<Snapshot[]>([]);
 
-  /** Snapshot the current (moves, cursor) onto the undo stack and clear
-   *  redo. Call BEFORE applying an edit. */
-  function pushUndo() {
-    setUndoStack((s) => [...s, { moves: moves.slice(), cursor }]);
-    setRedoStack([]);
-  }
-
-  const fen = useMemo(() => active ? fenAtPly(moves, cursor) : "", [active, moves, cursor]);
-  const sideToMove = useMemo<"w" | "b">(
-    () => active ? turnAtPly(moves, cursor) : "w",
-    [active, moves, cursor],
+  const fen = useMemo(
+    () => (active && game ? fenAt(game, breadcrumbs, activeLine, activeIndex) : ""),
+    [active, game, breadcrumbs, activeLine, activeIndex],
   );
+  const sideToMove = useMemo<"w" | "b">(() => {
+    if (!active || !fen) return "w";
+    try { return new Chess(fen).turn(); } catch { return "w"; }
+  }, [active, fen]);
 
-  /** Legal destinations from the currently selected square — used by the host
-   *  to render move-hint dots. Empty when nothing is selected. */
   const legalDestinations = useMemo<string[]>(() => {
-    if (!active || !selectedSquare) return [];
+    if (!active || !selectedSquare || !fen) return [];
     try {
-      const c = new Chess(fenAtPly(moves, cursor));
+      const c = new Chess(fen);
       return c.moves({ square: selectedSquare as never, verbose: true }).map((m) => m.to as string);
     } catch {
       return [];
     }
-  }, [active, selectedSquare, moves, cursor]);
+  }, [active, selectedSquare, fen]);
 
-  // Selection should not survive cursor jumps or modal toggles — those change
-  // the position context and the highlighted square would be stale.
-  useEffect(() => { setSelectedSquare(null); }, [cursor, pendingOverwrite, pendingPromotion, needsClobberAck]);
+  // Two distinct comment slots for the current position:
+  //  - moveComment: the trailing comment of the move at the cursor ("" at a line start).
+  //  - lineComment: the current line's intro — the game's leading comment on the
+  //    main line, or the variation's first-move preComment inside a variation.
+  const moveComment = useMemo<string>(
+    () => (active && activeIndex > 0 ? activeLine[activeIndex - 1]?.annotations.comment ?? "" : ""),
+    [active, activeLine, activeIndex],
+  );
+  const lineComment = useMemo<string>(() => {
+    if (!active || !game) return "";
+    return breadcrumbs.length === 0 ? game.startComment ?? "" : activeLine[0]?.preComment ?? "";
+  }, [active, game, activeLine, breadcrumbs]);
+
+  // Selection / preview must not survive a position change.
+  useEffect(() => { setSelectedSquare(null); }, [activeLine, activeIndex, breadcrumbs, pendingDivergence, pendingPromotion]);
 
   // ── One-click destination ───────────────────────────────────────────────
   const [previewMove, setPreviewMove] = useState<{ from: string; to: string } | null>(null);
-  // Destination square in a "silent" gesture state — the user has pressed
-  // (or released) on a square that has multiple legal sources, but the
-  // popularity fetch hasn't landed yet, so we don't know which one to draw.
-  // `committed=false` means "still pressing, materialise an arrow when data
-  // arrives". `committed=true` means "user already released, just play the
-  // most-popular move once data arrives".
   const [pendingDest, setPendingDest] = useState<{ sq: string; committed: boolean } | null>(null);
-  // Tagged with the fen the data is for. The slice is only used when the tag
-  // matches the current fen; mismatches (initial empty, in-flight fetch, or
-  // leftover from a previous cursor) are treated as "not yet loaded".
   const [positionMovesData, setPositionMovesData] = useState<{ fen: string; moves: MoveStats[] } | null>(null);
   const positionMovesCacheRef = useRef<Map<string, MoveStats[]>>(new Map());
   const positionMoves: MoveStats[] = positionMovesData?.fen === fen ? positionMovesData.moves : [];
   const positionMovesLoading = active && fen !== "" && positionMovesData?.fen !== fen;
 
-  // Same guard as `selectedSquare` above — stale preview after the position changes.
   useEffect(() => {
     setPreviewMove(null);
     setPendingDest(null);
-  }, [cursor, pendingOverwrite, pendingPromotion, needsClobberAck]);
+  }, [activeLine, activeIndex, breadcrumbs, pendingDivergence, pendingPromotion]);
 
   useEffect(() => {
     if (!active || !fen) return;
@@ -284,8 +269,6 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     return () => ctrl.abort();
   }, [active, fen]);
 
-  // Tracks in-flight prefetches so we don't fire duplicates for the same fen
-  // (e.g. when the host re-renders rapidly while navigating plies).
   const prefetchInFlightRef = useRef<Set<string>>(new Set());
   function prefetchPositionMoves(fenStr: string) {
     if (!fenStr) return;
@@ -333,8 +316,6 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     return candidates[0].from;
   }
 
-  /** Count legal moves landing on `square` without consulting the DB. Used by
-   *  `requestPreview` to decide between immediate-arrow and silent-wait. */
   function countLegalSourcesFor(square: string): number {
     if (!active) return 0;
     try {
@@ -343,7 +324,6 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     } catch { return 0; }
   }
 
-  /** Is there a legal move from `src` landing on `dest`? */
   function isLegalSourceFor(src: string, dest: string): boolean {
     if (!active) return false;
     try {
@@ -357,17 +337,12 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     const currentDest = previewMove?.to ?? pendingDest?.sq ?? null;
     if (!currentDest) return;
     if (sq === currentDest) return;
-    if (sq === previewMove?.from) return; // already showing this source
-    // Reverse drag: user is picking the source piece for the locked dest.
+    if (sq === previewMove?.from) return;
     if (isLegalSourceFor(sq, currentDest)) {
       setPendingDest(null);
       setPreviewMove({ from: sq, to: currentDest });
       return;
     }
-    // Anything else — passing over an empty square, an own piece that can't
-    // reach the dest, an opponent piece — leaves the current arrow alone.
-    // The press locks the destination; to retarget, the user releases and
-    // presses again.
   }
 
   function requestPreview(square: string) {
@@ -378,10 +353,6 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
       setPendingDest(null);
       return;
     }
-    // Unambiguous, or popularity data is already loaded for this position
-    // (even if the position itself has no DB games, the load is complete
-    // and the lex tiebreak gives the "best guess" fallback the user agreed
-    // to in that case): pick now and show the arrow.
     if (n === 1 || !positionMovesLoading) {
       const src = pickSourceFor(square);
       setPendingDest(null);
@@ -389,13 +360,11 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
       else setPreviewMove(null);
       return;
     }
-    // Ambiguous + data still loading: wait silently — no arrow, no fallback.
     setPreviewMove(null);
     setPendingDest({ sq: square, committed: false });
   }
 
   function commitPreview() {
-    // Arrow visible → user has seen and agreed; commit immediately.
     if (previewMove) {
       const { from, to } = previewMove;
       setPreviewMove(null);
@@ -403,16 +372,11 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
       tryMove(from, to);
       return;
     }
-    // Silent gesture → mark it for deferred commit. The resolution effect
-    // below will play the most-popular move once data lands.
     if (pendingDest && !pendingDest.committed) {
       setPendingDest({ sq: pendingDest.sq, committed: true });
     }
   }
 
-  // Resolve a pending silent gesture once popularity data lands: either
-  // promote it to a visible arrow (if user is still pressing) or play the
-  // move (if they've already released).
   useEffect(() => {
     if (positionMovesLoading) return;
     if (!pendingDest) return;
@@ -422,53 +386,106 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     setPendingDest(null);
     if (committed) tryMove(src, sq);
     else setPreviewMove({ from: src, to: sq });
-    // pickSourceFor / tryMove close over the latest state already.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [positionMovesLoading, positionMovesData, pendingDest]);
 
+  // ── Tree editing core ─────────────────────────────────────────────────────
+
+  /** Apply a structural edit: snapshot the current tree for undo, deep-clone it,
+   *  re-resolve the cursor path in the clone, run `fn` to mutate it, and commit
+   *  the new state. `fn` receives the cloned line/index/breadcrumbs and returns
+   *  the cursor position to land on. */
+  function applyEdit(
+    fn: (ctx: { game: AnnotatedGame; line: MoveNode[]; index: number; breadcrumbs: Breadcrumb[] }) =>
+      { line: MoveNode[]; index: number; breadcrumbs: Breadcrumb[] },
+  ) {
+    if (!game) return;
+    const steps = pathSteps(game.mainLine, activeLine) ?? [];
+    const snap: Snapshot = { game: structuredClone(game), path: steps, activeIndex };
+    setUndoStack((s) => [...s, snap]);
+    setRedoStack([]);
+    setDirty(true);
+
+    const clone = structuredClone(game);
+    const { line, breadcrumbs: bc } = resolvePath(clone.mainLine, steps);
+    const result = fn({ game: clone, line, index: activeIndex, breadcrumbs: bc });
+    setGame(clone);
+    setActiveLine(result.line);
+    setActiveIndex(result.index);
+    setBreadcrumbs(result.breadcrumbs);
+  }
+
   function reset() {
     setActive(false);
-    setNeedsClobberAck(false);
-    setMoves([]);
-    setCursor(0);
-    setPendingOverwrite(null);
+    setGame(null);
+    setActiveLine([]);
+    setActiveIndex(0);
+    setBreadcrumbs([]);
+    setPendingDivergence(null);
     setPendingPromotion(null);
     setSelectedSquare(null);
     setPreviewMove(null);
     setPendingDest(null);
     setUndoStack([]);
     setRedoStack([]);
+    setDirty(false);
     setError(null);
     setSaving(false);
   }
 
-  function start(mainLine: MoveNode[], at: number) {
-    setMoves(mainLine.map((n) => n.san));
-    setCursor(Math.max(0, Math.min(mainLine.length, at)));
-    setNeedsClobberAck(isMainLineAnnotated(mainLine));
-    setPendingOverwrite(null);
+  function start(g: AnnotatedGame, line: MoveNode[], at: number, _bc: Breadcrumb[]) {
+    const clone = structuredClone(g);
+    const steps = pathSteps(g.mainLine, line) ?? [];
+    const { line: clonedLine, breadcrumbs: clonedBc } = resolvePath(clone.mainLine, steps);
+    setGame(clone);
+    setActiveLine(clonedLine);
+    setActiveIndex(Math.max(0, Math.min(clonedLine.length, at)));
+    setBreadcrumbs(clonedBc);
+    setPendingDivergence(null);
     setPendingPromotion(null);
     setUndoStack([]);
     setRedoStack([]);
+    setDirty(false);
     setError(null);
     setActive(true);
   }
 
   function cancel() { reset(); }
-  function ackClobber() { setNeedsClobberAck(false); }
+
+  function navigate(line: MoveNode[], index: number) {
+    if (!game) return;
+    const r = navigateTo(game.mainLine, line, index);
+    setActiveLine(r.activeLine);
+    setActiveIndex(r.activeIndex);
+    setBreadcrumbs(r.breadcrumbs);
+  }
+
+  function setCursor(i: number) {
+    setActiveIndex(Math.max(0, Math.min(activeLine.length, i)));
+  }
+
+  function goBackToParent() {
+    const r = backToParent(breadcrumbs);
+    if (r) {
+      setActiveLine(r.activeLine);
+      setActiveIndex(r.activeIndex);
+      setBreadcrumbs(r.breadcrumbs);
+    }
+  }
 
   function tryMove(from: string, to: string, promotion?: "q" | "r" | "b" | "n"): boolean {
-    let result;
+    let result: ReturnType<Chess["move"]> | null;
+    let fenAfter = "";
     try {
-      const c = new Chess(fenAtPly(moves, cursor));
+      const c = new Chess(fen);
       result = c.move({ from, to, promotion });
+      fenAfter = c.fen();
     } catch { result = null; }
 
     if (!result && !promotion) {
-      // Maybe a promotion is required. If a queen-promotion would succeed,
-      // surface the chooser instead of treating it as illegal.
+      // Maybe a promotion is required — surface the chooser if a queen promo is legal.
       try {
-        const c2 = new Chess(fenAtPly(moves, cursor));
+        const c2 = new Chess(fen);
         const promo = c2.move({ from, to, promotion: "q" });
         if (promo) {
           setPendingPromotion({ from, to });
@@ -479,29 +496,88 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     }
     if (!result) return false;
 
-    const san = result.san;
-    if (cursor < moves.length) {
-      // Same move as the one already recorded at this ply — just advance the
-      // cursor; nothing to discard, no confirm needed.
-      if (moves[cursor] === san) {
-        setCursor((c) => c + 1);
+    const node = makeNode({ san: result.san, color: result.color as "w" | "b" }, fenAfter);
+
+    if (activeIndex < activeLine.length) {
+      // Same move already recorded here — just advance.
+      if (activeLine[activeIndex].san === node.san) {
+        setActiveIndex((c) => c + 1);
         return true;
       }
-      setPendingOverwrite({ san });
+      // Divergent move — let the user choose how to graft it in.
+      setPendingDivergence({ san: node.san, node });
       return true;
     }
-    pushUndo();
-    setMoves((m) => [...m.slice(0, cursor), san]);
-    setCursor((c) => c + 1);
+
+    // At the tip — extend the line.
+    applyEdit(({ line, index, breadcrumbs: bc }) => {
+      line.push(node);
+      return { line, index: index + 1, breadcrumbs: bc };
+    });
     return true;
   }
 
   function commitOverwrite() {
-    if (!pendingOverwrite) return;
-    pushUndo();
-    setMoves((m) => [...m.slice(0, cursor), pendingOverwrite.san]);
-    setCursor((c) => c + 1);
-    setPendingOverwrite(null);
+    const pd = pendingDivergence;
+    if (!pd) return;
+    setPendingDivergence(null);
+    applyEdit(({ line, index, breadcrumbs: bc }) => {
+      line.length = index;
+      line.push(pd.node);
+      return { line, index: index + 1, breadcrumbs: bc };
+    });
+  }
+
+  function commitNewVariation() {
+    const pd = pendingDivergence;
+    if (!pd) return;
+    setPendingDivergence(null);
+    applyEdit(({ line, index, breadcrumbs: bc }) => {
+      const target = line[index];
+      const newVar = [pd.node];
+      target.variations.push(newVar);
+      return { line: newVar, index: 1, breadcrumbs: [...bc, { line, index }] };
+    });
+  }
+
+  function commitNewMainLine() {
+    const pd = pendingDivergence;
+    if (!pd) return;
+    setPendingDivergence(null);
+    applyEdit(({ line, index, breadcrumbs: bc }) => {
+      const tail = line.slice(index); // existing continuation, demoted
+      line.length = index;
+      pd.node.variations = [tail];
+      line.push(pd.node);
+      return { line, index: index + 1, breadcrumbs: bc };
+    });
+  }
+
+  function cancelDivergence() { setPendingDivergence(null); }
+
+  /** Set (blank clears) the trailing comment of the move at the cursor. */
+  function setMoveComment(text: string) {
+    if (!game) return;
+    const value = text.trim() ? text : undefined;
+    applyEdit(({ line, index, breadcrumbs: bc }) => {
+      if (index > 0) {
+        const node = line[index - 1];
+        node.annotations = { ...node.annotations, comment: value };
+      }
+      return { line, index, breadcrumbs: bc };
+    });
+  }
+
+  /** Set (blank clears) the current line's intro comment — the game start
+   *  comment on the main line, or the variation's first-move preComment. */
+  function setLineComment(text: string) {
+    if (!game) return;
+    const value = text.trim() ? text : undefined;
+    applyEdit(({ game: g, line, index, breadcrumbs: bc }) => {
+      if (bc.length === 0) g.startComment = value;
+      else if (line[0]) line[0].preComment = value; // variation intro (line is non-empty)
+      return { line, index, breadcrumbs: bc };
+    });
   }
 
   function commitPromotion(piece: "q" | "r" | "b" | "n") {
@@ -512,40 +588,55 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
   }
 
   function deleteFromHere() {
-    if (cursor === moves.length) return;
-    pushUndo();
-    setMoves((m) => m.slice(0, cursor));
+    if (activeIndex >= activeLine.length) return;
+    applyEdit(({ line, index, breadcrumbs: bc }) => {
+      line.length = index;
+      // Emptied a variation from its start → drop it and step up to the parent.
+      if (line.length === 0 && bc.length > 0) {
+        const parentBc = bc[bc.length - 1];
+        const branchNode = parentBc.line[parentBc.index];
+        branchNode.variations = branchNode.variations.filter((v) => v !== line);
+        return { line: parentBc.line, index: parentBc.index, breadcrumbs: bc.slice(0, -1) };
+      }
+      return { line, index, breadcrumbs: bc };
+    });
   }
 
   function undo() {
-    setUndoStack((stack) => {
-      if (stack.length === 0) return stack;
-      const prev = stack[stack.length - 1];
-      setRedoStack((r) => [...r, { moves: moves.slice(), cursor }]);
-      setMoves(prev.moves);
-      setCursor(prev.cursor);
-      setSelectedSquare(null);
-      return stack.slice(0, -1);
-    });
+    if (undoStack.length === 0 || !game) return;
+    const prev = undoStack[undoStack.length - 1];
+    const cur: Snapshot = { game: structuredClone(game), path: pathSteps(game.mainLine, activeLine) ?? [], activeIndex };
+    setRedoStack((r) => [...r, cur]);
+    const clone = structuredClone(prev.game);
+    const { line, breadcrumbs: bc } = resolvePath(clone.mainLine, prev.path ?? []);
+    setGame(clone);
+    setActiveLine(line);
+    setActiveIndex(prev.activeIndex);
+    setBreadcrumbs(bc);
+    setSelectedSquare(null);
+    setUndoStack((s) => s.slice(0, -1));
   }
 
   function redo() {
-    setRedoStack((stack) => {
-      if (stack.length === 0) return stack;
-      const next = stack[stack.length - 1];
-      setUndoStack((u) => [...u, { moves: moves.slice(), cursor }]);
-      setMoves(next.moves);
-      setCursor(next.cursor);
-      setSelectedSquare(null);
-      return stack.slice(0, -1);
-    });
+    if (redoStack.length === 0 || !game) return;
+    const next = redoStack[redoStack.length - 1];
+    const cur: Snapshot = { game: structuredClone(game), path: pathSteps(game.mainLine, activeLine) ?? [], activeIndex };
+    setUndoStack((u) => [...u, cur]);
+    const clone = structuredClone(next.game);
+    const { line, breadcrumbs: bc } = resolvePath(clone.mainLine, next.path ?? []);
+    setGame(clone);
+    setActiveLine(line);
+    setActiveIndex(next.activeIndex);
+    setBreadcrumbs(bc);
+    setSelectedSquare(null);
+    setRedoStack((s) => s.slice(0, -1));
   }
 
   function clickSquare(square: string) {
     if (!active) return;
-    if (pendingOverwrite || pendingPromotion || needsClobberAck || saving) return;
+    if (pendingDivergence || pendingPromotion || saving) return;
 
-    const board = new Chess(fenAtPly(moves, cursor));
+    const board = new Chess(fen);
     const piece = board.get(square as never);
     const isOwnPiece = piece && piece.color === board.turn();
 
@@ -562,18 +653,17 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
       setSelectedSquare(null);
       return;
     }
-    // Move was illegal. If the new square holds our own piece, switch selection;
-    // otherwise clear it.
     setSelectedSquare(isOwnPiece ? square : null);
   }
 
   async function save() {
-    if (saving || gameId === null) return;
+    if (saving || gameId === null || !game) return;
     setSaving(true);
     setError(null);
-    const result = await saveMovesViaSidecar(gameId, moves);
+    const movetext = serializeMovetext(game);
+    const result = await saveMovetextViaSidecar(gameId, movetext);
     if (result.ok) {
-      const focusIndex = moves.length;
+      const focusIndex = activeLine === game.mainLine ? activeIndex : game.mainLine.length;
       onSaved?.(focusIndex);
       reset();
     } else {
@@ -584,15 +674,21 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
 
   return {
     active,
-    needsClobberAck,
-    moves,
-    cursor,
+    game,
+    activeLine,
+    activeIndex,
+    breadcrumbs,
     fen,
     sideToMove,
-    pendingOverwrite,
+    pendingDivergence,
     pendingPromotion,
     saving,
     error,
+    dirty,
+    moveComment,
+    lineComment,
+    setMoveComment,
+    setLineComment,
     selectedSquare,
     legalDestinations,
     previewMove,
@@ -608,12 +704,15 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     canRedo: redoStack.length > 0,
     start,
     cancel,
-    ackClobber,
+    navigate,
     setCursor,
+    goBackToParent,
     tryMove,
     clickSquare,
     commitOverwrite,
-    cancelOverwrite: () => setPendingOverwrite(null),
+    commitNewVariation,
+    commitNewMainLine,
+    cancelDivergence,
     commitPromotion,
     cancelPromotion: () => setPendingPromotion(null),
     deleteFromHere,
@@ -623,101 +722,186 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
   };
 }
 
-// ── UI: side panel (right column replacement) ────────────────────────────────
+// ── UI: side panel (move list with variations) ───────────────────────────────
 
-export function MovesEditorRightPanel({ editor }: { editor: MovesEditor }) {
-  const cursorAtEnd = editor.cursor === editor.moves.length;
-  const pairs: Array<{ moveNo: number; white: string; black: string | null }> = [];
-  for (let i = 0; i < editor.moves.length; i += 2) {
-    pairs.push({
-      moveNo: Math.floor(i / 2) + 1,
-      white: editor.moves[i],
-      black: editor.moves[i + 1] ?? null,
-    });
+/** The editing move list: the same recursive variation renderer the viewer
+ *  uses, fed by the editor's working tree. Owns its own collapse / annotation
+ *  display state. */
+export function MovesEditorMoveList({ editor }: { editor: MovesEditor }) {
+  const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(new Set());
+  const [partialNodes, setPartialNodes] = useState<Set<string>>(new Set());
+  const [showAnnotations, setShowAnnotations] = useState(true);
+
+  const game = editor.game;
+  const inSubVariation = editor.breadcrumbs.length > 0;
+
+  function handleToggleCollapse(key: string) {
+    if (collapsedNodes.has(key)) {
+      setCollapsedNodes((prev) => { const next = new Set(prev); next.delete(key); return next; });
+      setPartialNodes((prev) => { const next = new Set(prev); next.delete(key); return next; });
+    } else if (partialNodes.has(key)) {
+      setPartialNodes((prev) => { const next = new Set(prev); next.delete(key); return next; });
+    } else {
+      setCollapsedNodes((prev) => { const next = new Set(prev); next.add(key); return next; });
+      setPartialNodes((prev) => { const next = new Set(prev); next.delete(key); return next; });
+    }
+  }
+
+  function handleExpandAll() { setCollapsedNodes(new Set()); setPartialNodes(new Set()); }
+
+  function handleCollapseAll() {
+    if (!game) return;
+    const allKeys = collectAllKeys(game.mainLine, "m");
+    const pathKeys = new Set(collectPathKeys(editor.activeLine, game.mainLine, "m") ?? []);
+    setCollapsedNodes(new Set(allKeys.filter((k) => !pathKeys.has(k))));
+    setPartialNodes(new Set(pathKeys));
+  }
+
+  function handleExpandSubVariations() {
+    if (!game) return;
+    const prefix = findLinePrefix(editor.activeLine, game.mainLine, "m");
+    if (!prefix) return;
+    const keys = collectLineKeys(editor.activeLine, prefix);
+    setCollapsedNodes((prev) => { const next = new Set(prev); for (const k of keys) next.delete(k); return next; });
+  }
+
+  function handleCollapseSubVariations() {
+    if (!game) return;
+    const prefix = findLinePrefix(editor.activeLine, game.mainLine, "m");
+    if (!prefix) return;
+    const keys = collectLineKeys(editor.activeLine, prefix);
+    setCollapsedNodes((prev) => { const next = new Set(prev); for (const k of keys) next.add(k); return next; });
   }
 
   return (
-    <div className="h-full flex flex-col gap-2 px-2 py-2">
-      <div className="text-label-sm text-on-surface-variant uppercase tracking-wider px-1">Editing moves</div>
-      <div className="flex-1 min-h-0 overflow-y-auto bg-surface-container-lowest rounded-md p-3 font-mono text-body-sm">
-        {pairs.length === 0 && (
-          <div className="text-on-surface-variant italic">
+    <div className="h-full flex flex-col">
+      <div className="text-label-sm text-on-surface-variant uppercase tracking-wider px-3 pt-2 pb-1 shrink-0">Editing moves</div>
+      <div className="flex-1 min-h-0 flex flex-col">
+        {game && game.mainLine.length > 0 ? (
+          <AnnotatedMoveList
+            game={game}
+            activeLine={editor.activeLine}
+            activeIndex={editor.activeIndex}
+            showAnnotations={showAnnotations}
+            collapsedNodes={collapsedNodes}
+            partialNodes={partialNodes}
+            inSubVariation={inSubVariation}
+            breadcrumbs={editor.breadcrumbs}
+            onNavigate={(line, index) => editor.navigate(line, index)}
+            onToggleCollapse={handleToggleCollapse}
+            onExpandAll={handleExpandAll}
+            onCollapseAll={handleCollapseAll}
+            onExpandSubVariations={handleExpandSubVariations}
+            onCollapseSubVariations={handleCollapseSubVariations}
+            onToggleAnnotations={() => setShowAnnotations((s) => !s)}
+          />
+        ) : (
+          <div className="flex-1 px-3 py-2 text-on-surface-variant italic font-mono text-body-sm">
             No moves yet — drag a piece on the board to start.
           </div>
         )}
-        {pairs.map(({ moveNo, white, black }, pairIdx) => {
-          const whitePly = pairIdx * 2 + 1;
-          const blackPly = pairIdx * 2 + 2;
-          return (
-            <span key={pairIdx} className="inline-flex items-baseline mr-2">
-              <span className="text-on-surface-variant mr-1">{moveNo}.</span>
-              <PlyButton san={white} active={editor.cursor === whitePly} onClick={() => editor.setCursor(whitePly)} />
-              {black && (
-                <>
-                  {" "}
-                  <PlyButton san={black} active={editor.cursor === blackPly} onClick={() => editor.setCursor(blackPly)} />
-                </>
-              )}
-            </span>
-          );
-        })}
       </div>
-
-      <div className="text-label-sm text-on-surface-variant px-1">
-        {cursorAtEnd
-          ? "Drag a piece to add the next move."
-          : `Cursor mid-line. Dragging a piece will overwrite ${editor.moves.length - editor.cursor} move(s).`}
-      </div>
-
       {editor.error && (
-        <div className="text-body-sm text-error whitespace-pre-wrap break-words px-1">{editor.error}</div>
+        <div className="shrink-0 px-3 pb-2 text-body-sm text-error whitespace-pre-wrap break-words">{editor.error}</div>
       )}
     </div>
-  );
-}
-
-function PlyButton({ san, active, onClick }: { san: string; active: boolean; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`px-1.5 rounded-sm transition-colors duration-short3 ease-standard ${
-        active
-          ? "bg-secondary-container text-on-secondary-container"
-          : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
-      }`}
-    >
-      {san}
-    </button>
   );
 }
 
 // ── UI: bottom toolbar (replaces nav controls when editing) ──────────────────
 
 export function MovesEditorToolbar({ editor }: { editor: MovesEditor }) {
-  const cursorAtEnd = editor.cursor === editor.moves.length;
-  // M3 icon button — circular, state-layer overlay
+  const cursorAtEnd = editor.activeIndex === editor.activeLine.length;
+  const inSubVariation = editor.breadcrumbs.length > 0;
   const iconBtn = "w-8 h-8 inline-flex items-center justify-center rounded-full text-on-surface-variant text-label-md hover:bg-on-surface/8 active:bg-on-surface/12 disabled:opacity-40 disabled:hover:bg-transparent transition-colors duration-short3 ease-standard";
-  // M3 text button — pill, primary text
   const textBtn = "h-8 px-3 inline-flex items-center gap-1 rounded-full text-primary text-label-md hover:bg-primary/8 active:bg-primary/12 disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-colors duration-short3 ease-standard";
   return (
     <div className="shrink-0 flex items-center justify-center gap-1 flex-wrap">
-      <button onClick={() => editor.setCursor(0)} disabled={editor.cursor === 0} className={iconBtn} title="Go to start">⟪</button>
-      <button onClick={() => editor.setCursor(Math.max(0, editor.cursor - 1))} disabled={editor.cursor === 0} className={iconBtn} title="Previous move">‹</button>
+      <button onClick={editor.goBackToParent} disabled={!inSubVariation} className={iconBtn} title="Back to parent line">↩</button>
+      <button onClick={() => editor.setCursor(0)} disabled={editor.activeIndex === 0} className={iconBtn} title="Go to start">⟪</button>
+      <button onClick={() => editor.setCursor(Math.max(0, editor.activeIndex - 1))} disabled={editor.activeIndex === 0} className={iconBtn} title="Previous move">‹</button>
       <span className="text-label-sm text-on-surface-variant mx-1 select-none">
-        {editor.cursor} / {editor.moves.length}
+        {editor.activeIndex} / {editor.activeLine.length}
       </span>
-      <button onClick={() => editor.setCursor(Math.min(editor.moves.length, editor.cursor + 1))} disabled={cursorAtEnd} className={iconBtn} title="Next move">›</button>
-      <button onClick={() => editor.setCursor(editor.moves.length)} disabled={cursorAtEnd} className={iconBtn} title="Go to end">⟫</button>
+      <button onClick={() => editor.setCursor(Math.min(editor.activeLine.length, editor.activeIndex + 1))} disabled={cursorAtEnd} className={iconBtn} title="Next move">›</button>
+      <button onClick={() => editor.setCursor(editor.activeLine.length)} disabled={cursorAtEnd} className={iconBtn} title="Go to end">⟫</button>
       <div className="w-px h-5 bg-outline-variant mx-2" />
       <button onClick={editor.undo} disabled={!editor.canUndo} className={textBtn} title="Undo last edit (Ctrl+Z)">↶ Undo</button>
       <button onClick={editor.redo} disabled={!editor.canRedo} className={textBtn} title="Redo (Ctrl+Y or Ctrl+Shift+Z)">↷ Redo</button>
-      {/* Tonal error button — destructive but reversible */}
       <button
         onClick={editor.deleteFromHere}
         disabled={cursorAtEnd}
         className="h-8 px-3 inline-flex items-center rounded-full bg-error-container text-on-error-container text-label-md hover:brightness-110 active:brightness-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:brightness-100 transition-all duration-short3 ease-standard"
         title="Truncate from this position onwards"
       >Delete from here</button>
+    </div>
+  );
+}
+
+// ── UI: annotation editor (comment for the current position) ─────────────────
+
+/** One labelled comment box. Holds a local draft and commits on blur, so
+ *  typing produces one undo entry per edit session rather than one per
+ *  keystroke. `resetKey` forces the draft to reload when the cursor moves. */
+function CommentField({ label, value, resetKey, placeholder, onCommit }: {
+  label: string;
+  value: string;
+  resetKey: string;
+  placeholder: string;
+  onCommit: (text: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => {
+    setDraft(value);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, resetKey]);
+  return (
+    <div className="flex flex-col flex-1 min-h-[2.75em]">
+      <span className="text-label-sm text-on-surface-variant select-none">{label}</span>
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => { if (draft !== value) onCommit(draft); }}
+        placeholder={placeholder}
+        className="flex-1 w-full resize-none bg-transparent outline-none text-body-md text-on-surface placeholder:text-on-surface-variant placeholder:italic"
+      />
+    </div>
+  );
+}
+
+/** Annotation editor for the current position. On the first move of a line it
+ *  shows BOTH the line's intro comment and the move's trailing comment; on
+ *  later moves only the trailing comment; at a bare line start only the intro. */
+export function MovesEditorAnnotation({ editor }: { editor: MovesEditor }) {
+  const idx = editor.activeIndex;
+  const inVariation = editor.breadcrumbs.length > 0;
+  const resetKey = `${editor.breadcrumbs.length}:${idx}`;
+  const introLabel = inVariation ? "Comment before this line" : "Initial game comment";
+
+  const showIntro = idx <= 1;  // bare line start (0) or first move of the line (1)
+  const showMove = idx > 0;    // any reached move
+
+  return (
+    <div className="h-full flex flex-col gap-2 overflow-y-auto">
+      {showIntro && (
+        <CommentField
+          label={introLabel}
+          value={editor.lineComment}
+          resetKey={`intro-${resetKey}`}
+          placeholder="Add a comment…"
+          onCommit={editor.setLineComment}
+        />
+      )}
+      {showIntro && showMove && <div className="border-t border-outline-variant shrink-0" />}
+      {showMove && (
+        <CommentField
+          label="Comment after this move"
+          value={editor.moveComment}
+          resetKey={`move-${resetKey}`}
+          placeholder="Add a comment…"
+          onCommit={editor.setMoveComment}
+        />
+      )}
     </div>
   );
 }
@@ -762,82 +946,62 @@ export function MovesEditorPromotionChooser({
   );
 }
 
-export function MovesEditorOverwriteConfirm({
-  san, droppedCount, onConfirm, onCancel,
+/** Divergence chooser — shown when a played move differs from the move already
+ *  recorded at the cursor. Lets the user branch instead of only overwriting. */
+export function MovesEditorDivergenceChoice({
+  san, droppedCount, onNewVariation, onNewMainLine, onOverwrite, onCancel,
 }: {
   san: string;
   droppedCount: number;
-  onConfirm: () => void;
+  onNewVariation: () => void;
+  onNewMainLine: () => void;
+  onOverwrite: () => void;
   onCancel: () => void;
 }) {
-  return (
-    <div className="absolute inset-0 z-30 flex items-center justify-center bg-on-surface/40" onClick={onCancel}>
-      <div
-        className="bg-surface-container-high rounded-xl shadow-2xl p-6 w-[26rem] max-w-[88vw]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="text-title-md text-on-surface mb-2">Overwrite future moves?</div>
-        <p className="text-body-md text-on-surface-variant mb-5">
-          This will discard {droppedCount} move(s) from here onwards and replace them with{" "}
-          <span className="text-on-surface font-mono">{san}</span>.
-        </p>
-        <div className="flex justify-end gap-2">
-          {/* Text button — cancel */}
-          <button
-            onClick={onCancel}
-            className="h-9 px-4 rounded-full text-primary text-label-lg hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard"
-          >Cancel</button>
-          {/* Filled tonal warning — destructive but reversible */}
-          <button
-            onClick={onConfirm}
-            className="h-9 px-4 rounded-full bg-warning-container text-on-warning-container text-label-lg hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard"
-          >Discard and replace</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-export function MovesEditorAnnotationGate({
-  onContinue, onCancel,
-}: {
-  onContinue: () => void;
-  onCancel: () => void;
-}) {
-  // Esc cancels.
+  // Keyboard: Esc cancels; 1/2/3 pick the options; Enter = new variation.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onCancel();
+      if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+      else if (e.key === "1" || e.key === "Enter") { e.preventDefault(); onNewVariation(); }
+      else if (e.key === "2") { e.preventDefault(); onNewMainLine(); }
+      else if (e.key === "3") { e.preventDefault(); onOverwrite(); }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onCancel]);
+  }, [onNewVariation, onNewMainLine, onOverwrite, onCancel]);
 
+  const optionBtn = "w-full text-left px-4 py-3 rounded-lg bg-surface-container-highest hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard flex flex-col gap-0.5";
   return (
     <div className="absolute inset-0 z-30 flex items-center justify-center bg-on-surface/40" onClick={onCancel}>
       <div
-        className="bg-surface-container-high rounded-xl shadow-2xl p-6 w-[28rem] max-w-[92vw]"
+        className="bg-surface-container-high rounded-xl shadow-2xl p-6 w-[30rem] max-w-[92vw]"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="text-title-md text-on-surface mb-2">Edit moves</h2>
-        <p className="text-body-md text-on-surface mb-3">
-          This game has <span className="text-warning">annotations</span> (variations,
-          comments, NAGs, or arrows). Phase 1 of the moves editor only supports linear
-          main-line edits — saving will{" "}
-          <span className="text-warning">drop all annotations</span> from this game.
+        <div className="text-title-md text-on-surface mb-1">
+          Play <span className="font-mono text-primary">{san}</span> as…
+        </div>
+        <p className="text-body-sm text-on-surface-variant mb-4">
+          A different move is already recorded here. Choose how to add it.
         </p>
-        <p className="text-body-md text-on-surface-variant mb-5">
-          A future update will preserve them. Continue anyway?
-        </p>
-        <div className="flex justify-end gap-2">
+        <div className="flex flex-col gap-2 mb-4">
+          <button onClick={onNewVariation} className={optionBtn} autoFocus>
+            <span className="text-label-lg text-on-surface">New variation</span>
+            <span className="text-body-sm text-on-surface-variant">Keep the current line; add {san} as an alternative branch.</span>
+          </button>
+          <button onClick={onNewMainLine} className={optionBtn}>
+            <span className="text-label-lg text-on-surface">New main line</span>
+            <span className="text-body-sm text-on-surface-variant">Make {san} the main move; demote the current continuation to a variation.</span>
+          </button>
+          <button onClick={onOverwrite} className={optionBtn}>
+            <span className="text-label-lg text-on-surface">Overwrite</span>
+            <span className="text-body-sm text-on-surface-variant">Discard {droppedCount} move(s) from here and replace with {san}.</span>
+          </button>
+        </div>
+        <div className="flex justify-end">
           <button
             onClick={onCancel}
             className="h-9 px-4 rounded-full text-primary text-label-lg hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard"
           >Cancel</button>
-          <button
-            onClick={onContinue}
-            className="h-9 px-4 rounded-full bg-warning-container text-on-warning-container text-label-lg hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard"
-          >Continue, drop annotations</button>
         </div>
       </div>
     </div>
