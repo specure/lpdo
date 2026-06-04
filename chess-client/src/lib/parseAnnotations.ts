@@ -77,6 +77,7 @@ export const NAG_MAP: Record<number, string> = {
   5: "!?",
   6: "?!",
   10: "=",
+  13: "∞",   // ∞ (unclear)
   14: "+=",
   15: "=+",
   16: "\u00b1",   // ±
@@ -90,6 +91,11 @@ export const NAG_MAP: Record<number, string> = {
 
 export function nagToSymbol(nag: number): string {
   return NAG_MAP[nag] ?? `$${nag}`;
+}
+
+/** Render a move's NAG codes as a display string (e.g. [1, 16] → "!±"). */
+export function nagsToString(nags?: number[]): string {
+  return (nags ?? []).map(nagToSymbol).join("");
 }
 
 // ── Inverses (for serialising a move tree back to PGN movetext) ───────────────

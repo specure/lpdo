@@ -1,5 +1,5 @@
 import type { AnnotatedGame, Annotations, MoveNode } from "./parsePgnTree";
-import { encodeCal, encodeCsl, symbolToNag } from "./parseAnnotations";
+import { encodeCal, encodeCsl } from "./parseAnnotations";
 
 // Inverse of `parsePgnTree`: turn a (possibly annotated, possibly branched)
 // move tree back into PGN movetext. Emits movetext only — no tag pairs and no
@@ -45,8 +45,7 @@ function serializeLine(line: MoveNode[], firstMoveNo: number, firstIsWhite: bool
 
     parts.push(node.san);
 
-    const nag = node.annotations.nag ? symbolToNag(node.annotations.nag) : null;
-    if (nag !== null) parts.push(`$${nag}`);
+    for (const nag of node.annotations.nags ?? []) parts.push(`$${nag}`);
 
     const comment = encodeComment(node.annotations);
     if (comment) parts.push(comment);

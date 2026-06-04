@@ -1,11 +1,12 @@
 import { Chess } from "chess.js";
-import { parseComment, nagToSymbol, CalArrow, CslCircle } from "./parseAnnotations";
+import { parseComment, CalArrow, CslCircle } from "./parseAnnotations";
 
 export interface Annotations {
   comment?: string;
   arrows?: CalArrow[];
   circles?: CslCircle[];
-  nag?: string;
+  /** NAG codes (PGN $n) on this move, in order — e.g. [1, 16] for "!" + "±". */
+  nags?: number[];
 }
 
 export interface MoveNode {
@@ -161,7 +162,8 @@ class Parser {
       if (tok.type === "nag") {
         this.next();
         if (nodes.length > 0) {
-          nodes[nodes.length - 1].annotations.nag = nagToSymbol(parseInt(tok.value, 10));
+          const ann = nodes[nodes.length - 1].annotations;
+          (ann.nags ??= []).push(parseInt(tok.value, 10));
         }
         continue;
       }
@@ -190,7 +192,7 @@ class Parser {
         while (this.peek()?.type === "nag" || this.peek()?.type === "comment") {
           const t = this.next()!;
           if (t.type === "nag") {
-            node.annotations.nag = nagToSymbol(parseInt(t.value, 10));
+            (node.annotations.nags ??= []).push(parseInt(t.value, 10));
           } else if (t.type === "comment") {
             this.attachComment(node, t.value);
           }

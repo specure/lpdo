@@ -23,11 +23,13 @@ import {
   collectPathKeys,
   fenAt,
   findLinePrefix,
+  getMoveNum,
   navigateTo,
   pathSteps,
   resolvePath,
 } from "../lib/moveTreeNav";
 import { serializeMovetext } from "../lib/serializeMovetext";
+import { nagToSymbol, nagsToString } from "../lib/parseAnnotations";
 import { MoveStats } from "../types";
 import AnnotatedMoveList from "./AnnotatedMoveList";
 
@@ -66,10 +68,14 @@ export interface MovesEditor {
   moveComment: string;
   /** Intro comment of the current line (game start comment / variation intro). */
   lineComment: string;
+  /** NAG codes on the move at the cursor. */
+  currentNags: number[];
   /** Set (blank clears) the trailing comment of the move at the cursor. */
   setMoveComment(text: string): void;
   /** Set (blank clears) the current line's intro comment. */
   setLineComment(text: string): void;
+  /** Toggle a NAG code on the move at the cursor. */
+  toggleNag(nag: number): void;
 
   // ── Click-to-move state ──────────────────────────────────────────────────
   /** Square currently selected via click (null = none). */
@@ -201,6 +207,18 @@ function detectGameEnd(mainLine: MoveNode[]): boolean {
   return last.variations.some((v) => v.length > 0 && v[0].san === last.san);
 }
 
+// Common NAGs offered in the editor, split into move-quality and position
+// groups. At most one NAG of each group may sit on a move, and a move NAG
+// always sorts before a position NAG.
+const MOVE_NAGS = [1, 3, 5, 6, 2, 4];                   // ! !! !? ?! ? ??
+const POSITION_NAGS = [10, 13, 14, 15, 16, 17, 18, 19]; // = ∞ += =+ ± ∓ +- -+
+/** Sort/category rank: move NAGs (0) before position NAGs (1) before others (2). */
+function nagRank(n: number): number {
+  if (MOVE_NAGS.includes(n)) return 0;
+  if (POSITION_NAGS.includes(n)) return 1;
+  return 2;
+}
+
 export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEditor {
   const [active, setActive] = useState(false);
   const [game, setGame] = useState<AnnotatedGame | null>(null);
@@ -255,6 +273,11 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     if (!active || !game) return "";
     return breadcrumbs.length === 0 ? game.startComment ?? "" : activeLine[0]?.preComment ?? "";
   }, [active, game, activeLine, breadcrumbs]);
+  // NAG codes on the move at the cursor.
+  const currentNags = useMemo<number[]>(
+    () => (active && activeIndex > 0 ? activeLine[activeIndex - 1]?.annotations.nags ?? [] : []),
+    [active, activeLine, activeIndex],
+  );
 
   // Selection / preview must not survive a position change.
   useEffect(() => { setSelectedSquare(null); }, [activeLine, activeIndex, breadcrumbs, pendingDivergence, pendingPromotion]);
@@ -623,6 +646,26 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     });
   }
 
+  /** Toggle a NAG on the move at the cursor. Adding one replaces any existing
+   *  NAG of the same group (move / position); the result is ordered move-first. */
+  function toggleNag(nag: number) {
+    if (!game || activeIndex < 1) return;
+    applyEdit(({ line, index, breadcrumbs: bc }) => {
+      const node = line[index - 1];
+      const existing = node.annotations.nags ?? [];
+      let next: number[];
+      if (existing.includes(nag)) {
+        next = existing.filter((x) => x !== nag); // toggle off
+      } else {
+        next = existing.filter((x) => nagRank(x) !== nagRank(nag)); // drop same-group NAG
+        next.push(nag);
+      }
+      next.sort((a, b) => nagRank(a) - nagRank(b)); // move NAGs before position NAGs
+      node.annotations = { ...node.annotations, nags: next.length ? next : undefined };
+      return { line, index, breadcrumbs: bc };
+    });
+  }
+
   /** Set (blank clears) the current line's intro comment — the game start
    *  comment on the main line, or the variation's first-move preComment. */
   function setLineComment(text: string) {
@@ -746,8 +789,10 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     markGameEnd,
     moveComment,
     lineComment,
+    currentNags,
     setMoveComment,
     setLineComment,
+    toggleNag,
     selectedSquare,
     legalDestinations,
     previewMove,
@@ -899,15 +944,17 @@ export function MovesEditorMoveList({ editor }: { editor: MovesEditor }) {
 
 export function MovesEditorToolbar({ editor }: { editor: MovesEditor }) {
   const cursorAtEnd = editor.activeIndex === editor.activeLine.length;
-  const inSubVariation = editor.breadcrumbs.length > 0;
   const iconBtn = "w-8 h-8 inline-flex items-center justify-center rounded-full text-on-surface-variant text-label-md hover:bg-on-surface/8 active:bg-on-surface/12 disabled:opacity-40 disabled:hover:bg-transparent transition-colors duration-short3 ease-standard";
+  const node = editor.activeIndex > 0 ? editor.activeLine[editor.activeIndex - 1] : null;
+  const label = node
+    ? `${getMoveNum(node)}${node.color === "w" ? "." : "..."}${node.san}${nagsToString(node.annotations.nags)}`
+    : "Start";
   return (
     <div className="shrink-0 flex items-center justify-center gap-1 flex-wrap">
-      <button onClick={editor.goBackToParent} disabled={!inSubVariation} className={iconBtn} title="Back to parent line">↩</button>
       <button onClick={() => editor.setCursor(0)} disabled={editor.activeIndex === 0} className={iconBtn} title="Go to start">⟪</button>
       <button onClick={() => editor.setCursor(Math.max(0, editor.activeIndex - 1))} disabled={editor.activeIndex === 0} className={iconBtn} title="Previous move">‹</button>
-      <span className="text-label-sm text-on-surface-variant mx-1 select-none">
-        {editor.activeIndex} / {editor.activeLine.length}
+      <span className="text-label-md text-on-surface-variant font-mono mx-2 min-w-[3.5rem] text-center select-none">
+        {label}
       </span>
       <button onClick={() => editor.setCursor(Math.min(editor.activeLine.length, editor.activeIndex + 1))} disabled={cursorAtEnd} className={iconBtn} title="Next move">›</button>
       <button onClick={() => editor.setCursor(editor.activeLine.length)} disabled={cursorAtEnd} className={iconBtn} title="Go to end">⟫</button>
@@ -946,9 +993,35 @@ function CommentField({ label, value, resetKey, placeholder, onCommit }: {
   );
 }
 
+/** Compact single-row toggle palette for the common NAGs on the current move.
+ *  Move-quality glyphs, a divider, then position glyphs. */
+function NagPalette({ editor }: { editor: MovesEditor }) {
+  const base = "min-w-[1.6rem] h-6 px-1 inline-flex items-center justify-center rounded font-mono text-body-sm transition-colors duration-short3 ease-standard";
+  const idle = "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12";
+  const active = "bg-secondary-container text-on-secondary-container";
+  const chip = (n: number) => (
+    <button
+      key={n}
+      onClick={() => editor.toggleNag(n)}
+      className={`${base} ${editor.currentNags.includes(n) ? active : idle}`}
+      title={`NAG $${n}`}
+    >
+      {nagToSymbol(n)}
+    </button>
+  );
+  return (
+    <div className="flex flex-wrap items-center gap-0.5 shrink-0">
+      {MOVE_NAGS.map(chip)}
+      <span className="w-px h-4 bg-outline-variant mx-1" />
+      {POSITION_NAGS.map(chip)}
+    </div>
+  );
+}
+
 /** Annotation editor for the current position. On the first move of a line it
  *  shows BOTH the line's intro comment and the move's trailing comment; on
- *  later moves only the trailing comment; at a bare line start only the intro. */
+ *  later moves only the trailing comment; at a bare line start only the intro.
+ *  On any reached move it also shows the NAG palette. */
 export function MovesEditorAnnotation({ editor }: { editor: MovesEditor }) {
   const idx = editor.activeIndex;
   const inVariation = editor.breadcrumbs.length > 0;
@@ -970,6 +1043,7 @@ export function MovesEditorAnnotation({ editor }: { editor: MovesEditor }) {
         />
       )}
       {showIntro && showMove && <div className="border-t border-outline-variant shrink-0" />}
+      {showMove && <NagPalette editor={editor} />}
       {showMove && (
         <CommentField
           label="Comment after this move"

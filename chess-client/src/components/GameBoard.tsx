@@ -20,6 +20,7 @@ import {
 } from "./MovesEditor";
 import { serializeMovetext } from "../lib/serializeMovetext";
 import type { CalArrow, CslCircle } from "../lib/parseAnnotations";
+import { nagsToString } from "../lib/parseAnnotations";
 import AnnotatedMoveList from "./AnnotatedMoveList";
 import {
   Breadcrumb,
@@ -1144,7 +1145,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     function moveLabel(n: MoveNode): string {
       const num = getMoveNum(n);
       const prefix = n.color === "w" ? `${num}.` : `${num}...`;
-      return prefix + n.san + (n.annotations.nag ?? "");
+      return prefix + n.san + nagsToString(n.annotations.nags);
     }
 
     const choices: { label: string; line: MoveNode[]; index: number }[] = [
@@ -1587,7 +1588,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
         {/* Annotation editor — only while editing. In view mode comments are
             read inline in the move list, so no separate panel is needed. */}
         {movesEditor.active && (
-          <div className="shrink-0 flex flex-col bg-surface-container-low rounded-md relative" style={{ height: `${Math.max(annotationPanelHeight, 8)}em` }}>
+          <div className="shrink-0 flex flex-col bg-surface-container-low rounded-md relative" style={{ height: `${Math.max(annotationPanelHeight, 6)}em` }}>
             {/* Drag handle */}
             <div
               onMouseDown={handlePanelDragStart}

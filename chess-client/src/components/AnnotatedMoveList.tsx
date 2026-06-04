@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef } from "react";
 import { AnnotatedGame, MoveNode } from "../lib/parsePgnTree";
 import { Breadcrumb, getMoveNum } from "../lib/moveTreeNav";
+import { nagsToString } from "../lib/parseAnnotations";
 
 // Recursive move-list renderer with full variation / comment / NAG / graphics
 // display. Purely presentational: all cursor and collapse state lives in the
@@ -114,7 +115,7 @@ export default function AnnotatedMoveList({
               : "text-on-surface hover:bg-on-surface/8"
           }`}
         >
-          {numPrefix}{node.san}{node.annotations.nag ?? ""}
+          {numPrefix}{node.san}{nagsToString(node.annotations.nags)}
         </span>
       );
 
