@@ -20,6 +20,11 @@ node_modules/
 *.duckdb
 *.db
 
+# Local dev/debug helper scripts (per-machine, hardcoded paths) — not for the repo
+/rebuild.sh
+/rebuild-v2.sh
+/findline.sh
+
 # OS / editor junk
 .DS_Store
 *.swp
