@@ -25,6 +25,7 @@ import AnnotatedMoveList from "./AnnotatedMoveList";
 import {
   Breadcrumb,
   getMoveNum,
+  fenAt,
   findPathToLine,
   collectAllKeys,
   collectPathKeys,
@@ -1323,6 +1324,25 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     return styles;
   }, [movesEditor.active, movesEditor.selectedSquare, movesEditor.legalDestinations, movesEditor.fen]);
 
+  // Last-move highlight while editing — same shading as view mode, computed
+  // from the editor's own cursor (the viewer's is frozen during edit).
+  const editorLastMoveSquares: Record<string, React.CSSProperties> = useMemo(() => {
+    if (!movesEditor.active || !movesEditor.game || movesEditor.activeIndex < 1) return {};
+    const line = movesEditor.activeLine;
+    const node = line[movesEditor.activeIndex - 1];
+    if (!node) return {};
+    const prevFen = fenAt(movesEditor.game, movesEditor.breadcrumbs, line, movesEditor.activeIndex - 1);
+    try {
+      const chess = new Chess(prevFen);
+      const played = chess.moves({ verbose: true }).find((m) => m.san === node.san);
+      if (played) {
+        const hl: React.CSSProperties = { background: "rgba(100, 160, 255, 0.35)" };
+        return { [played.from]: hl, [played.to]: hl };
+      }
+    } catch { /* ignore */ }
+    return {};
+  }, [movesEditor.active, movesEditor.game, movesEditor.activeLine, movesEditor.activeIndex, movesEditor.breadcrumbs]);
+
 
   const annotationArrows: CalArrow[] = useMemo(() => {
     const source = useAnnotated && activeIndex === 0
@@ -1489,7 +1509,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
                 position: currentFen,
                 boardOrientation: flipped ? "black" : "white",
                 allowDragging: movesEditor.active && !movesEditor.pendingDivergence && !movesEditor.pendingPromotion,
-                squareStyles: movesEditor.active ? editorSquareStyles : lastMoveSquares,
+                squareStyles: movesEditor.active ? { ...editorLastMoveSquares, ...editorSquareStyles } : lastMoveSquares,
                 allowDrawingArrows: false,
                 darkSquareStyle: { backgroundColor: "var(--color-board-game-dark)" },
                 lightSquareStyle: { backgroundColor: "var(--color-board-game-light)" },
@@ -1587,10 +1607,10 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
                 <>
                   <button onClick={() => goTo(0)} disabled={effectiveIndex === 0} className={navBtn} title="First move (↑)"><IconFirst /></button>
                   <button onClick={() => goTo(effectiveIndex - 1)} disabled={effectiveIndex === 0} className={navBtn} title="Previous move (←)"><IconPrev /></button>
-                  <span className="text-label-md text-on-surface-variant w-24 text-center select-none">
+                  <span className="text-label-md text-on-surface-variant font-mono w-24 text-center select-none">
                     {effectiveIndex === 0 || !currentMoveNode
                       ? "Start"
-                      : `Move ${getMoveNum(currentMoveNode)} ${currentMoveNode.color === "w" ? "(W)" : "(B)"}`}
+                      : `${getMoveNum(currentMoveNode)}${currentMoveNode.color === "w" ? "." : "..."}${currentMoveNode.san}${nagsToString(currentMoveNode.annotations.nags)}`}
                   </span>
                   <button onClick={() => goTo(effectiveIndex + 1)} disabled={effectiveIndex === maxIndex} className={navBtn} title="Next move (→)"><IconNext /></button>
                   <button onClick={() => goTo(maxIndex)} disabled={effectiveIndex === maxIndex} className={navBtn} title="Last move (↓)"><IconLast /></button>
