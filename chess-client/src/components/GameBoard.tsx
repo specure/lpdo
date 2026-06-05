@@ -299,6 +299,9 @@ interface Props {
   /** Fires when the user mutates the game from the DetailsPanel (soft-delete,
    * restore, future edits) so parents can re-fetch lists, counts, etc. */
   onGameMutated?: () => void;
+  /** Reports when the moves editor enters/leaves edit mode, so the host can
+   * suspend list-level arrow-key navigation while editing. */
+  onEditingChange?: (editing: boolean) => void;
 }
 
 // Tags shown in the compact view always; rest only appear when expanded.
@@ -715,7 +718,7 @@ function DetailsPanel({
   );
 }
 
-export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated }: Props) {
+export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange }: Props) {
   const [detail, setDetail] = useState<GameDetail | null>(null);
   const [detailReloadKey, setDetailReloadKey] = useState(0);
   const [detailsOpen, setDetailsOpen] = useState<boolean>(
@@ -780,6 +783,13 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   // with a new game.id.
   const editorRef = useRef(movesEditor);
   editorRef.current = movesEditor;
+
+  // Tell the host when we're editing so it can suspend list arrow-key nav.
+  useEffect(() => {
+    onEditingChange?.(movesEditor.active);
+    return () => onEditingChange?.(false);
+  }, [movesEditor.active, onEditingChange]);
+
   const prevGameIdRef = useRef<number | null>(null);
   useEffect(() => {
     const prevId = prevGameIdRef.current;
@@ -1202,6 +1212,13 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
         if ((e.ctrlKey || e.metaKey) && ((e.key === "z" || e.key === "Z") && e.shiftKey || e.key === "y" || e.key === "Y")) {
           if (movesEditor.canRedo) { e.preventDefault(); movesEditor.redo(); }
           return;
+        }
+        // Ctrl/Cmd+Shift+Up/Down = promote / demote variation.
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "ArrowUp") {
+          e.preventDefault(); if (movesEditor.canPromote) movesEditor.promoteVariation(); return;
+        }
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "ArrowDown") {
+          e.preventDefault(); if (movesEditor.canDemote) movesEditor.demoteLine(); return;
         }
         if (e.key === "ArrowLeft")  {
           e.preventDefault();

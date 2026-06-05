@@ -119,6 +119,14 @@ export interface MovesEditor {
   setCursor(i: number): void;
   /** Step back to the parent line (when inside a variation). */
   goBackToParent(): void;
+  /** True when inside a variation (promote available). */
+  canPromote: boolean;
+  /** True when the move at the cursor has a variation (demote available). */
+  canDemote: boolean;
+  /** Promote the current variation one level toward the main line. */
+  promoteVariation(): void;
+  /** Demote the current move's continuation in favour of its first variation. */
+  demoteLine(): void;
   tryMove(from: string, to: string, promotion?: "q" | "r" | "b" | "n"): boolean;
   clickSquare(square: string): void;
   /** Resolve a pending divergence. */
@@ -516,6 +524,51 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     }
   }
 
+  /** Promote the current variation one level: it replaces the parent line's
+   *  continuation at the branch, and the old continuation (plus any sibling
+   *  variations) is demoted to a variation of the promoted line's first move.
+   *  Repeat to reach the main line. */
+  function promoteVariation() {
+    if (!game || breadcrumbs.length === 0) return; // only meaningful inside a variation
+    applyEdit(({ line, index, breadcrumbs: bc }) => {
+      const parentBc = bc[bc.length - 1];
+      const parentLine = parentBc.line;
+      const branchIndex = parentBc.index;
+      const branchMove = parentLine[branchIndex];
+      const promoted = line; // current variation (a member of branchMove.variations)
+      const siblings = branchMove.variations.filter((v) => v !== promoted);
+      const oldTail = parentLine.slice(branchIndex); // old main continuation [branchMove, …]
+      branchMove.variations = [];
+      parentLine.length = branchIndex;
+      parentLine.push(...promoted);
+      const head = parentLine[branchIndex]; // promoted line's first move
+      head.variations = [oldTail, ...siblings, ...head.variations];
+      return { line: parentLine, index: branchIndex + index, breadcrumbs: bc.slice(0, -1) };
+    });
+  }
+
+  /** Demote the current move's continuation: it becomes a variation and the
+   *  first existing variation takes its place on the line. Inverse of promote;
+   *  the cursor follows the demoted (original) moves. */
+  function demoteLine() {
+    if (!game || activeIndex < 1) return;
+    const cur = activeLine[activeIndex - 1];
+    if (!cur || cur.variations.length === 0) return;
+    applyEdit(({ line, index, breadcrumbs: bc }) => {
+      const branchIndex = index - 1;
+      const branchMove = line[branchIndex];
+      const firstVar = branchMove.variations[0];
+      const siblings = branchMove.variations.slice(1);
+      const oldTail = line.slice(branchIndex); // current continuation [branchMove, …]
+      branchMove.variations = [];
+      line.length = branchIndex;
+      line.push(...firstVar);
+      const head = line[branchIndex]; // promoted variation's first move
+      head.variations = [oldTail, ...siblings, ...head.variations];
+      return { line: oldTail, index: index - branchIndex, breadcrumbs: [...bc, { line, index: branchIndex }] };
+    });
+  }
+
   /** Toggle "game end / analysis" mode (main line only). Turning it on while the
    *  cursor is mid-main-line splits the line: the tail after the cursor is moved
    *  into an analysis pseudo-variation on the last kept move. At the tip it just
@@ -811,6 +864,10 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     navigate,
     setCursor,
     goBackToParent,
+    canPromote: breadcrumbs.length > 0,
+    canDemote: activeIndex >= 1 && (activeLine[activeIndex - 1]?.variations.length ?? 0) > 0,
+    promoteVariation,
+    demoteLine,
     tryMove,
     clickSquare,
     commitOverwrite,
@@ -911,6 +968,12 @@ export function MovesEditorMoveList({ editor }: { editor: MovesEditor }) {
       <div className="shrink-0 px-3 py-1.5 flex items-center gap-1 flex-wrap border-t border-outline-variant">
         <button onClick={editor.undo} disabled={!editor.canUndo} className={editActionBtn} title="Undo last edit (Ctrl+Z)">↶ Undo</button>
         <button onClick={editor.redo} disabled={!editor.canRedo} className={editActionBtn} title="Redo (Ctrl+Y or Ctrl+Shift+Z)">↷ Redo</button>
+        {editor.canPromote && (
+          <button onClick={editor.promoteVariation} className={editActionBtn} title="Promote this variation toward the main line (Ctrl+Shift+↑)">⤴ Promote</button>
+        )}
+        {editor.canDemote && (
+          <button onClick={editor.demoteLine} className={editActionBtn} title="Demote this line; its first variation takes its place (Ctrl+Shift+↓)">⤵ Demote</button>
+        )}
         <button
           onClick={editor.deleteFromHere}
           disabled={editor.activeIndex === 0}
@@ -945,7 +1008,15 @@ export function MovesEditorMoveList({ editor }: { editor: MovesEditor }) {
 export function MovesEditorToolbar({ editor }: { editor: MovesEditor }) {
   const cursorAtEnd = editor.activeIndex === editor.activeLine.length;
   const iconBtn = "w-8 h-8 inline-flex items-center justify-center rounded-full text-on-surface-variant text-label-md hover:bg-on-surface/8 active:bg-on-surface/12 disabled:opacity-40 disabled:hover:bg-transparent transition-colors duration-short3 ease-standard";
-  const node = editor.activeIndex > 0 ? editor.activeLine[editor.activeIndex - 1] : null;
+  // The move that reached the current position. At a variation's start that's
+  // the parent line's move just before the branch, not "Start".
+  let node: MoveNode | null = null;
+  if (editor.activeIndex > 0) {
+    node = editor.activeLine[editor.activeIndex - 1];
+  } else if (editor.breadcrumbs.length > 0) {
+    const bc = editor.breadcrumbs[editor.breadcrumbs.length - 1];
+    node = bc.line[bc.index - 1] ?? null;
+  }
   const label = node
     ? `${getMoveNum(node)}${node.color === "w" ? "." : "..."}${node.san}${nagsToString(node.annotations.nags)}`
     : "Start";

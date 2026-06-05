@@ -212,6 +212,8 @@ export default function App() {
   const [topGame, setTopGame] = useState<GameSummary | null>(null);
   const [moveSequence, setMoveSequence] = useState<string[]>([]);
   const [positionModeActive, setPositionModeActive] = useState(false);
+  // True while the moves editor is active, so list arrow-key nav is suspended.
+  const [editing, setEditing] = useState(false);
   const [positionMoveStats, setPositionMoveStats] = useState<MoveStats[]>([]);
   const [positionSelectedSan, setPositionSelectedSan] = useState<string | null>(null);
   const [showSetup, setShowSetup] = useState(false);
@@ -603,6 +605,7 @@ export default function App() {
                   onMoveReset={handleMoveReset}
                   onPositionModeChange={setPositionModeActive}
                   arrowKeysActive={positionModeActive && selectedGame === null}
+                  editing={editing}
                   onTopGameChange={setTopGame}
                   onMoveStatsChange={setPositionMoveStats}
                   onSelectedMoveChange={setPositionSelectedSan}
@@ -626,6 +629,7 @@ export default function App() {
                   moveSequence={positionModeActive ? moveSequence : undefined}
                   onBackToPosition={positionModeActive ? () => setSelectedGame(null) : undefined}
                   onGameMutated={onGameMutated}
+                  onEditingChange={setEditing}
                 />
               ) : positionModeActive ? (
                 <PositionBoard

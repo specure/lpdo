@@ -39,6 +39,8 @@ interface Props {
   onMoveReset: () => void;
   onPositionModeChange: (active: boolean) => void;
   arrowKeysActive: boolean;
+  /** Suspend list arrow-key navigation (e.g. while the moves editor is active). */
+  editing?: boolean;
   onTopGameChange?: (game: GameSummary | null) => void;
   onMoveStatsChange?: (stats: MoveStats[]) => void;
   onSelectedMoveChange?: (san: string | null) => void;
@@ -74,6 +76,7 @@ export default function GameList({
   onMoveReset,
   onPositionModeChange,
   arrowKeysActive,
+  editing = false,
   onTopGameChange,
   onMoveStatsChange,
   onSelectedMoveChange,
@@ -309,11 +312,14 @@ export default function GameList({
 
   // Arrow key navigation between games when a game is selected
   useEffect(() => {
-    if (selectedId === null || arrowKeysActive) return;
+    if (selectedId === null || arrowKeysActive || editing) return;
 
     function handleKeyDown(e: KeyboardEvent) {
       const tag = (document.activeElement as HTMLElement)?.tagName?.toLowerCase();
       if (tag === "input" || tag === "textarea" || tag === "select") return;
+      // Plain arrows only — let modified arrows (e.g. Ctrl+Shift+Up/Down for the
+      // moves editor's promote/demote) fall through to other handlers.
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
       if (e.key !== "ArrowUp" && e.key !== "ArrowDown" && e.key !== "Enter") return;
       e.preventDefault();
       if (e.key === "Enter") return; // no-op for now; later: open in new window
@@ -328,7 +334,7 @@ export default function GameList({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedId, arrowKeysActive, games, onSelect]);
+  }, [selectedId, arrowKeysActive, editing, games, onSelect]);
 
   // Scroll and focus selected game row after keyboard navigation
   useEffect(() => {
@@ -346,6 +352,8 @@ export default function GameList({
     function handleKeyDown(e: KeyboardEvent) {
       const tag = (document.activeElement as HTMLElement)?.tagName?.toLowerCase();
       if (tag === "input" || tag === "textarea" || tag === "select") return;
+      // Plain arrows only — don't hijack modified arrows (e.g. Ctrl+Shift+Up/Down).
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
 
       if (e.key === "ArrowUp") {
         e.preventDefault();
