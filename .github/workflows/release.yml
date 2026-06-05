@@ -106,12 +106,17 @@ jobs:
           prerelease: false
           args: --bundles ${{ matrix.bundles }}
 
-  # Auto-fill the draft release body with a changelog built from the commit log
-  # since the previous tag. GitHub's native "generate notes" is PR-based and this
-  # repo commits straight to main, so it would yield only a compare link — a
-  # commit-log changelog is what's actually useful here. Runs once after both
-  # platform builds, and only when the body is still empty, so hand-written notes
-  # (e.g. a curated highlights release) are never overwritten.
+  # Auto-fill the draft release body. Source of truth is the matching section of
+  # CHANGELOG.md (so the file and the published notes never drift); if no section
+  # exists for this version, fall back to a changelog built from the commit log
+  # since the previous tag (GitHub's native generator is PR-based and this repo
+  # commits straight to main, so it would yield only a compare link). Runs once
+  # after both platform builds, and only when the body is still empty, so notes
+  # written by hand on the draft are never overwritten.
+  #
+  # For the CHANGELOG path to work, the version's section must already exist at
+  # the tagged commit — i.e. move "## [Unreleased]" to "## [X.Y.Z] - DATE" and
+  # commit it before tagging the release.
   release-notes:
     needs: build
     runs-on: ubuntu-22.04
@@ -122,7 +127,7 @@ jobs:
         with:
           fetch-depth: 0   # full history + tags, to diff against the previous tag
 
-      - name: Generate release notes from commit log
+      - name: Generate release notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
@@ -136,19 +141,28 @@ jobs:
           fi
           # Previous version tag = the next-lower tag in version order.
           prev=$(git tag --sort=-version:refname | awk -v cur="$TAG" 'found{print;exit} $0==cur{found=1}')
-          if [ -n "$prev" ]; then
-            range="$prev..$TAG"
-            footer="**Full Changelog**: https://github.com/$REPO/compare/$prev...$TAG"
-          else
-            range="$TAG"
-            footer=""
+          [ -n "$prev" ] && footer="**Full Changelog**: https://github.com/$REPO/compare/$prev...$TAG" || footer=""
+
+          # Pull the section for this version out of CHANGELOG.md: everything
+          # between "## [X.Y.Z]" and the next "## " heading or link-ref block.
+          version="${TAG#v}"
+          section=""
+          if [ -f CHANGELOG.md ]; then
+            section=$(awk -v ver="$version" '
+              $0 ~ ("^## \\[" ver "\\]") { cap=1; next }
+              cap && (/^## / || /^\[[^]]+\]:/) { exit }
+              cap { print }
+            ' CHANGELOG.md | sed -e '/./,$!d' | tac | sed -e '/./,$!d' | tac)  # trim blank top+bottom
           fi
-          {
-            echo "## What's changed"
-            echo
-            git log --no-merges --pretty=format:'- %s' "$range"
-            echo
-            [ -n "$footer" ] && { echo; echo "$footer"; }
-          } > notes.md
-          echo "----- generated notes -----"; cat notes.md; echo "---------------------------"
+
+          if [ -n "$section" ]; then
+            echo "Using CHANGELOG.md section for $version."
+            { printf '%s\n' "$section"; [ -n "$footer" ] && { echo; echo "$footer"; }; } > notes.md
+          else
+            echo "No CHANGELOG.md section for $version; falling back to commit log."
+            { echo "## What's changed"; echo;
+              git log --no-merges --pretty=format:'- %s' "${prev:+$prev..}$TAG"; echo;
+              [ -n "$footer" ] && { echo; echo "$footer"; }; } > notes.md
+          fi
+          echo "----- release notes -----"; cat notes.md; echo "-------------------------"
           gh release edit "$TAG" --notes-file notes.md

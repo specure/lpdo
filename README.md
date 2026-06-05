@@ -17,7 +17,10 @@ It is built with [Tauri](https://tauri.app/) (a React front end and a Rust back
 end) and uses an embedded [DuckDB](https://duckdb.org/) database for fast queries
 over large collections (hundreds of thousands of games).
 
-> **Status:** early / `0.1.0`. Linux is the primary supported platform today.
+> **Status:** active development. Linux is the primary supported platform today.
+> Grab the newest build from the [latest release](https://github.com/specure/lpdo/releases/latest)
+> (`.deb`/`.AppImage` for Linux, `.exe` for Windows), and see the
+> [changelog](CHANGELOG.md) for what's new in each version.
 
 ## Features
 
