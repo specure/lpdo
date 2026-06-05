@@ -105,3 +105,50 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: --bundles ${{ matrix.bundles }}
+
+  # Auto-fill the draft release body with a changelog built from the commit log
+  # since the previous tag. GitHub's native "generate notes" is PR-based and this
+  # repo commits straight to main, so it would yield only a compare link — a
+  # commit-log changelog is what's actually useful here. Runs once after both
+  # platform builds, and only when the body is still empty, so hand-written notes
+  # (e.g. a curated highlights release) are never overwritten.
+  release-notes:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # full history + tags, to diff against the previous tag
+
+      - name: Generate release notes from commit log
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          current=$(gh release view "$TAG" --json body --jq '.body // ""' || echo "")
+          if [ -n "$current" ]; then
+            echo "Release $TAG already has notes; leaving them untouched."
+            exit 0
+          fi
+          # Previous version tag = the next-lower tag in version order.
+          prev=$(git tag --sort=-version:refname | awk -v cur="$TAG" 'found{print;exit} $0==cur{found=1}')
+          if [ -n "$prev" ]; then
+            range="$prev..$TAG"
+            footer="**Full Changelog**: https://github.com/$REPO/compare/$prev...$TAG"
+          else
+            range="$TAG"
+            footer=""
+          fi
+          {
+            echo "## What's changed"
+            echo
+            git log --no-merges --pretty=format:'- %s' "$range"
+            echo
+            [ -n "$footer" ] && { echo; echo "$footer"; }
+          } > notes.md
+          echo "----- generated notes -----"; cat notes.md; echo "---------------------------"
+          gh release edit "$TAG" --notes-file notes.md

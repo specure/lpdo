@@ -11,7 +11,9 @@ import PrepPlayerList from "./components/prep/PrepPlayerList";
 import DirectoryBrowser from "./components/local/DirectoryBrowser";
 import LocalGameList from "./components/local/LocalGameList";
 import HomeEmptyState from "./components/HomeEmptyState";
+import UpdateBanner from "./components/UpdateBanner";
 import { loadMyPlayer } from "./components/MyStatsWidget";
+import { useUpdateCheck } from "./hooks/useUpdateCheck";
 import { GameSummary, LocalGame, MoveStats, PlayerInfo, PrepContext, StatusInfo } from "./types";
 
 type ServerStatus = "checking" | "connected" | "disconnected";
@@ -203,6 +205,7 @@ export default function App() {
   const { step, setStep, max } = useFontScale();
   const { hc, toggle: toggleHc } = useHighContrast();
   const { scheme, toggle: toggleScheme } = useColorScheme();
+  const { show: showUpdate, info: updateInfo, dismiss: dismissUpdate } = useUpdateCheck();
   const { recent: recentPlayers, add: addRecentPlayer, remove: removeRecentPlayer } = useRecentPlayers();
   const { recent: recentPgnFiles, add: addRecentPgnFile } = useRecentPgnFiles();
   const playerSearchRef = useRef<HTMLInputElement | null>(null);
@@ -423,6 +426,10 @@ export default function App() {
           <StatusBadge status={status} />
         </div>
       </header>
+
+      {showUpdate && updateInfo && (
+        <UpdateBanner info={updateInfo} onDismiss={dismissUpdate} />
+      )}
 
       {/* Body */}
 
