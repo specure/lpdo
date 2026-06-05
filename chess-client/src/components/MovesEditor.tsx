@@ -15,6 +15,7 @@ import { Chess } from "chess.js";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { AnnotatedGame, MoveNode } from "../lib/parsePgnTree";
+import type { CalArrow, CslCircle } from "../lib/parseAnnotations";
 import {
   Breadcrumb,
   backToParent,
@@ -29,7 +30,7 @@ import {
   resolvePath,
 } from "../lib/moveTreeNav";
 import { serializeMovetext } from "../lib/serializeMovetext";
-import { nagToSymbol, nagsToString } from "../lib/parseAnnotations";
+import { nagToSymbol, nagsToString, DRAW_COLORS } from "../lib/parseAnnotations";
 import { MoveStats } from "../types";
 import AnnotatedMoveList from "./AnnotatedMoveList";
 
@@ -76,6 +77,25 @@ export interface MovesEditor {
   setLineComment(text: string): void;
   /** Toggle a NAG code on the move at the cursor. */
   toggleNag(nag: number): void;
+
+  // ── Graphical annotations (arrows / circles on the current position) ───────
+  /** Arrows on the current position (the move at the cursor / game start). */
+  currentArrows: CalArrow[];
+  /** Circles on the current position. */
+  currentCircles: CslCircle[];
+  /** Currently selected drawing colour (an rgba string from DRAW_COLORS). */
+  drawColor: string;
+  setDrawColor(rgba: string): void;
+  /** Toggle a circle on `square` with the active colour (re-draw clears it;
+   *  a different colour replaces it). */
+  toggleCircle(square: string): void;
+  /** Toggle an arrow `from`→`to` with the active colour. */
+  toggleArrow(from: string, to: string): void;
+  /** Remove all arrows and circles from the current position. */
+  clearAnnotations(): void;
+  /** True when the cursor sits on a position that can own graphics (a real
+   *  move, or the game start on the main line). */
+  canDraw: boolean;
 
   // ── Click-to-move state ──────────────────────────────────────────────────
   /** Square currently selected via click (null = none). */
@@ -242,6 +262,8 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
   // "Game end" / analysis mode: when on, a move played at the main-line tip
   // branches into an analysis pseudo-variation instead of extending the game.
   const [gameEndMarked, setGameEndMarked] = useState(false);
+  // Active drawing colour for graphical annotations (default green).
+  const [drawColor, setDrawColor] = useState<string>(DRAW_COLORS[0].rgba);
 
   // Undo / redo: each snapshot is a deep clone of the working tree plus a
   // serialisable path to the cursor, so restoring never shares array
@@ -286,6 +308,21 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     () => (active && activeIndex > 0 ? activeLine[activeIndex - 1]?.annotations.nags ?? [] : []),
     [active, activeLine, activeIndex],
   );
+
+  // The position can own graphics when the cursor is on a real move, or at the
+  // game start on the main line (which maps to AnnotatedGame.startAnnotations).
+  // A bare variation start has no node to attach graphics to.
+  const canDraw = active && (activeIndex > 0 || breadcrumbs.length === 0);
+  const currentArrows = useMemo<CalArrow[]>(() => {
+    if (!active || !game) return [];
+    if (activeIndex > 0) return activeLine[activeIndex - 1]?.annotations.arrows ?? [];
+    return breadcrumbs.length === 0 ? game.startAnnotations?.arrows ?? [] : [];
+  }, [active, game, activeLine, activeIndex, breadcrumbs]);
+  const currentCircles = useMemo<CslCircle[]>(() => {
+    if (!active || !game) return [];
+    if (activeIndex > 0) return activeLine[activeIndex - 1]?.annotations.circles ?? [];
+    return breadcrumbs.length === 0 ? game.startAnnotations?.circles ?? [] : [];
+  }, [active, game, activeLine, activeIndex, breadcrumbs]);
 
   // Selection / preview must not survive a position change.
   useEffect(() => { setSelectedSquare(null); }, [activeLine, activeIndex, breadcrumbs, pendingDivergence, pendingPromotion]);
@@ -731,6 +768,73 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     });
   }
 
+  // Resolve (inside a cloned applyEdit context) the annotations slot the
+  // current position's graphics live on: the reached move's annotations, or the
+  // game's startAnnotations at the main-line start. Returns null at a bare
+  // variation start (no owning node). Mutated in place — the tree is a clone.
+  function posGraphics(
+    g: AnnotatedGame,
+    line: MoveNode[],
+    index: number,
+    bc: Breadcrumb[],
+  ): { arrows?: CalArrow[]; circles?: CslCircle[] } | null {
+    if (index > 0) return line[index - 1].annotations;
+    if (bc.length === 0) return (g.startAnnotations ??= {});
+    return null;
+  }
+
+  /** Toggle a circle on `square` with the active colour. Re-drawing the same
+   *  square+colour removes it; a different colour replaces it. */
+  function toggleCircle(square: string) {
+    if (!game || !canDraw) return;
+    const color = drawColor;
+    applyEdit(({ game: g, line, index, breadcrumbs: bc }) => {
+      const slot = posGraphics(g, line, index, bc);
+      if (slot) {
+        const list = slot.circles ?? [];
+        const existing = list.find((c) => c.square === square);
+        const next = existing && existing.color === color
+          ? list.filter((c) => c.square !== square)
+          : [...list.filter((c) => c.square !== square), { square, color }];
+        slot.circles = next.length ? next : undefined;
+      }
+      return { line, index, breadcrumbs: bc };
+    });
+  }
+
+  /** Toggle an arrow `from`→`to` with the active colour (same toggle/replace
+   *  semantics as circles, keyed by the from+to pair). */
+  function toggleArrow(from: string, to: string) {
+    if (!game || !canDraw) return;
+    const color = drawColor;
+    applyEdit(({ game: g, line, index, breadcrumbs: bc }) => {
+      const slot = posGraphics(g, line, index, bc);
+      if (slot) {
+        const list = slot.arrows ?? [];
+        const same = (a: CalArrow) => a.from === from && a.to === to;
+        const existing = list.find(same);
+        const next = existing && existing.color === color
+          ? list.filter((a) => !same(a))
+          : [...list.filter((a) => !same(a)), { from, to, color }];
+        slot.arrows = next.length ? next : undefined;
+      }
+      return { line, index, breadcrumbs: bc };
+    });
+  }
+
+  /** Remove all arrows and circles from the current position. */
+  function clearAnnotations() {
+    if (!game || !canDraw) return;
+    applyEdit(({ game: g, line, index, breadcrumbs: bc }) => {
+      const slot = posGraphics(g, line, index, bc);
+      if (slot) {
+        slot.arrows = undefined;
+        slot.circles = undefined;
+      }
+      return { line, index, breadcrumbs: bc };
+    });
+  }
+
   function commitPromotion(piece: "q" | "r" | "b" | "n") {
     if (!pendingPromotion) return;
     const { from, to } = pendingPromotion;
@@ -846,6 +950,14 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     setMoveComment,
     setLineComment,
     toggleNag,
+    currentArrows,
+    currentCircles,
+    drawColor,
+    setDrawColor,
+    toggleCircle,
+    toggleArrow,
+    clearAnnotations,
+    canDraw,
     selectedSquare,
     legalDestinations,
     previewMove,
@@ -1089,6 +1201,41 @@ function NagPalette({ editor }: { editor: MovesEditor }) {
   );
 }
 
+/** Colour swatches for graphical annotations plus a clear button. Ctrl+click /
+ *  Ctrl+drag on the board draws with the selected colour; the gesture handling
+ *  lives in GameBoard, this only picks the colour and clears. */
+function GraphicsPalette({ editor }: { editor: MovesEditor }) {
+  const hasGraphics = editor.currentArrows.length > 0 || editor.currentCircles.length > 0;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 shrink-0 py-1">
+      <span className="text-label-sm text-on-surface-variant select-none">Draw</span>
+      {DRAW_COLORS.map((c) => {
+        const selected = editor.drawColor === c.rgba;
+        return (
+          <button
+            key={c.code}
+            onClick={() => editor.setDrawColor(c.rgba)}
+            title={c.label}
+            aria-label={c.label}
+            className={`w-5 h-5 rounded-full transition-shadow duration-short3 ease-standard ${
+              selected ? "ring-2 ring-on-surface" : "ring-1 ring-outline-variant hover:ring-on-surface-variant"
+            }`}
+            style={{ backgroundColor: c.rgba }}
+          />
+        );
+      })}
+      <button
+        onClick={editor.clearAnnotations}
+        disabled={!hasGraphics}
+        title="Remove all arrows and circles on this position"
+        className="ml-1 h-6 px-2 inline-flex items-center rounded-full text-label-sm text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 disabled:opacity-40 disabled:hover:bg-transparent transition-colors duration-short3 ease-standard"
+      >
+        Clear
+      </button>
+    </div>
+  );
+}
+
 /** Annotation editor for the current position. On the first move of a line it
  *  shows BOTH the line's intro comment and the move's trailing comment; on
  *  later moves only the trailing comment; at a bare line start only the intro.
@@ -1102,8 +1249,23 @@ export function MovesEditorAnnotation({ editor }: { editor: MovesEditor }) {
   const showIntro = idx <= 1;  // bare line start (0) or first move of the line (1)
   const showMove = idx > 0;    // any reached move
 
+  const showControls = editor.canDraw || showMove;
+
   return (
     <div className="h-full flex flex-col gap-2 overflow-y-auto">
+      {showControls && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 shrink-0">
+          {editor.canDraw && <GraphicsPalette editor={editor} />}
+          {editor.canDraw && showMove && <span className="w-px h-4 bg-outline-variant" />}
+          {showMove && <NagPalette editor={editor} />}
+          {editor.canDraw && (
+            <span className="text-label-sm text-on-surface-variant/70 select-none ml-auto pl-2">
+              Ctrl+click circle · Ctrl+drag arrow
+            </span>
+          )}
+        </div>
+      )}
+      {showControls && (showIntro || showMove) && <div className="border-t border-outline-variant shrink-0" />}
       {showIntro && (
         <CommentField
           label={introLabel}
@@ -1114,7 +1276,6 @@ export function MovesEditorAnnotation({ editor }: { editor: MovesEditor }) {
         />
       )}
       {showIntro && showMove && <div className="border-t border-outline-variant shrink-0" />}
-      {showMove && <NagPalette editor={editor} />}
       {showMove && (
         <CommentField
           label="Comment after this move"

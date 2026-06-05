@@ -15,17 +15,34 @@ export interface ParsedComment {
   circles: CslCircle[];
 }
 
+// PGN colour codes → rgba. G/R/Y/B are the portable, widely-supported set;
+// M (magenta) and C (cyan) are LPDO extensions — they round-trip here but other
+// PGN tools may ignore them on import.
 const COLOR_MAP: Record<string, string> = {
   G: "rgba(0, 220, 0, 0.7)",
   R: "rgba(255, 50, 50, 0.7)",
   B: "rgba(70, 130, 255, 0.7)",
   Y: "rgba(255, 230, 0, 0.7)",
+  M: "rgba(220, 50, 220, 0.7)",
+  C: "rgba(0, 200, 210, 0.7)",
+  O: "rgba(255, 140, 0, 0.7)",
 };
+
+/** Ordered colour choices for the drawing palette (rgba is the stored value). */
+export const DRAW_COLORS: { code: string; label: string; rgba: string }[] = [
+  { code: "G", label: "Green", rgba: COLOR_MAP.G },
+  { code: "R", label: "Red", rgba: COLOR_MAP.R },
+  { code: "Y", label: "Yellow", rgba: COLOR_MAP.Y },
+  { code: "B", label: "Blue", rgba: COLOR_MAP.B },
+  { code: "M", label: "Magenta", rgba: COLOR_MAP.M },
+  { code: "C", label: "Cyan", rgba: COLOR_MAP.C },
+  { code: "O", label: "Orange", rgba: COLOR_MAP.O },
+];
 
 const CAL_RE = /\[%cal\s+([^\]]+)\]/g;
 const CSL_RE = /\[%csl\s+([^\]]+)\]/g;
-const ARROW_ENTRY_RE = /([GRBY])([a-h][1-8])([a-h][1-8])/g;
-const CIRCLE_ENTRY_RE = /([GRBY])([a-h][1-8])/g;
+const ARROW_ENTRY_RE = /([GRBYMCO])([a-h][1-8])([a-h][1-8])/g;
+const CIRCLE_ENTRY_RE = /([GRBYMCO])([a-h][1-8])/g;
 
 export function parseComment(raw: string): ParsedComment {
   const arrows: CalArrow[] = [];

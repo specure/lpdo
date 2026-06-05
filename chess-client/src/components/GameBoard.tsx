@@ -20,7 +20,7 @@ import {
 } from "./MovesEditor";
 import { serializeMovetext } from "../lib/serializeMovetext";
 import type { CalArrow, CslCircle } from "../lib/parseAnnotations";
-import { nagsToString } from "../lib/parseAnnotations";
+import { nagsToString, nagToSymbol } from "../lib/parseAnnotations";
 import AnnotatedMoveList from "./AnnotatedMoveList";
 import {
   Breadcrumb,
@@ -283,6 +283,69 @@ function AnnotationOverlay({ arrows, circles, flipped, size }: {
         );
       })}
     </svg>
+  );
+}
+
+// ── Move-quality NAG badge (chess.com-style) ───────────────────────────────
+//
+// Move-classification NAGs ($1..$6) are shown as a small coloured bubble at the
+// top-right corner of the move's destination square. Position-evaluation NAGs
+// (±, =, ∞, …) are deliberately excluded — they describe the position, not the
+// move, so they stay in the move list / annotation panel only.
+const NAG_BADGE_COLOR: Record<number, string> = {
+  3: "#26c2a3", // !!  brilliant — teal
+  1: "#81b64c", // !   good       — green
+  5: "#7a6ad8", // !?  interesting — purple
+  6: "#e6912c", // ?!  dubious    — amber
+  2: "#e0703a", // ?   mistake    — orange
+  4: "#ca3431", // ??  blunder    — red
+};
+
+function MoveNagBadge({ square, nag, flipped, size }: {
+  square: string;
+  nag: number;
+  flipped: boolean;
+  size: number;
+}) {
+  const sqSize = size / 8;
+  const col = square.charCodeAt(0) - 97; // a=0..h=7
+  const row = parseInt(square[1], 10) - 1; // 1=0..8=7
+  // Square centre (mirror of AnnotationOverlay.squareCenter).
+  const cx = flipped ? (7 - col + 0.5) * sqSize : (col + 0.5) * sqSize;
+  const cy = flipped ? (row + 0.5) * sqSize : (7 - row + 0.5) * sqSize;
+  // Sit in the square's upper-right area (pulled in from the corner toward the
+  // centre), clamped so the badge stays fully on the board at edge squares.
+  const d = sqSize * 0.5; // diameter — always a circle
+  const inset = sqSize * 0.1;
+  const half = d / 2;
+  const x = Math.min(Math.max(cx + sqSize / 2 - inset, half), size - half);
+  const y = Math.min(Math.max(cy - sqSize / 2 + inset, half), size - half);
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: x,
+        top: y,
+        transform: "translate(-50%, -50%)",
+        width: d,
+        height: d,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: NAG_BADGE_COLOR[nag] ?? "#7a6ad8",
+        color: "#fff",
+        fontWeight: 700,
+        fontSize: sqSize * 0.24,
+        lineHeight: 1,
+        borderRadius: "50%",
+        boxShadow: "0 1px 3px rgba(0,0,0,0.45)",
+        whiteSpace: "nowrap",
+        pointerEvents: "none",
+        zIndex: 25,
+      }}
+    >
+      {nagToSymbol(nag)}
+    </div>
   );
 }
 
@@ -748,6 +811,9 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   // the DB fetch landing (silent wait), and pointermove after that release
   // would otherwise overwrite the just-committed flag.
   const oneClickPressedRef = useRef(false);
+  // Graphical-annotation drawing gesture (Ctrl+click/drag while editing).
+  const drawingRef = useRef<{ from: string } | null>(null);
+  const [drawPreview, setDrawPreview] = useState<{ from: string; to: string; color: string } | null>(null);
   const [showAnnotations, setShowAnnotations] = useState(true);
   const [moveListWidth, setMoveListWidth] = useState(() => {
     const saved = localStorage.getItem("moveListWidth");
@@ -757,7 +823,10 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(new Set());
   const [partialNodes, setPartialNodes] = useState<Set<string>>(new Set());
-  const [annotationPanelHeight, setAnnotationPanelHeight] = useState(3); // in em units
+  // null = auto-fit the annotation content (default); a number (em) is an
+  // explicit height set by dragging the divider.
+  const [annotationPanelHeight, setAnnotationPanelHeight] = useState<number | null>(null);
+  const annotationPanelRef = useRef<HTMLDivElement>(null);
   const panelDragRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
   // Variation choice modal
@@ -869,11 +938,17 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   const handlePanelDragStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const emSize = parseFloat(getComputedStyle(document.documentElement).fontSize);
-    panelDragRef.current = { startY: e.clientY, startHeight: annotationPanelHeight };
+    // Start the drag from the currently-rendered height (the auto-fit height
+    // when no explicit height has been set yet).
+    const measured = annotationPanelRef.current
+      ? annotationPanelRef.current.getBoundingClientRect().height / emSize
+      : 9;
+    const startHeight = annotationPanelHeight ?? measured;
+    panelDragRef.current = { startY: e.clientY, startHeight };
     const onMove = (ev: MouseEvent) => {
       if (!panelDragRef.current) return;
       const deltaEm = (panelDragRef.current.startY - ev.clientY) / emSize;
-      setAnnotationPanelHeight(Math.max(3, panelDragRef.current.startHeight + deltaEm));
+      setAnnotationPanelHeight(Math.max(6, panelDragRef.current.startHeight + deltaEm));
     };
     const onUp = () => {
       panelDragRef.current = null;
@@ -1358,6 +1433,36 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     return source ?? [];
   }, [useAnnotated, activeIndex, currentMoveNode, annotatedGame]);
 
+  // Move-quality NAG badge for the current move (destination square + NAG),
+  // for both view and edit mode. Uses the move just reached at the cursor.
+  const moveNagBadge = useMemo<{ square: string; nag: number } | null>(() => {
+    let node: MoveNode | null = null;
+    let prevFen: string | null = null;
+    if (movesEditor.active) {
+      if (movesEditor.game && movesEditor.activeIndex >= 1) {
+        const line = movesEditor.activeLine;
+        node = line[movesEditor.activeIndex - 1] ?? null;
+        if (node) prevFen = fenAt(movesEditor.game, movesEditor.breadcrumbs, line, movesEditor.activeIndex - 1);
+      }
+    } else if (useAnnotated && activeIndex >= 1) {
+      node = activeLine[activeIndex - 1] ?? null;
+      prevFen = activeIndex >= 2 ? activeLine[activeIndex - 2].fen : (annotatedGame?.startFen ?? null);
+    }
+    if (!node || !prevFen) return null;
+    const nag = (node.annotations.nags ?? []).find((n) => n in NAG_BADGE_COLOR);
+    if (nag === undefined) return null;
+    try {
+      const chess = new Chess(prevFen);
+      const played = chess.moves({ verbose: true }).find((m) => m.san === node!.san);
+      return played ? { square: played.to, nag } : null;
+    } catch {
+      return null;
+    }
+  }, [
+    movesEditor.active, movesEditor.game, movesEditor.activeLine, movesEditor.activeIndex, movesEditor.breadcrumbs,
+    useAnnotated, activeLine, activeIndex, annotatedGame,
+  ]);
+
   // ── Render ─────────────────────────────────────────────────────────────
 
   if (loading) {
@@ -1436,18 +1541,15 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
 
         {/* Edit-mode banner — M3 prominent banner using primary-container */}
         {movesEditor.active && (
-          <div className="shrink-0 flex items-center gap-3 px-4 py-3 rounded-md bg-primary-container text-on-primary-container text-body-sm">
+          <div className="shrink-0 flex items-center gap-3 px-4 py-1.5 rounded-md bg-primary-container text-on-primary-container text-body-sm">
             <span className="flex-1 min-w-0">
-              <span className="font-medium">Editing moves.</span>{" "}
-              <span className="opacity-80">
-                Drag, or click source then destination, to play. Click a move in the side panel to position the cursor.
-              </span>
+              <span className="font-medium">Editing moves…</span>
             </span>
             {/* Text button on the container */}
             <button
               onClick={movesEditor.cancel}
               disabled={movesEditor.saving}
-              className="h-8 px-3 inline-flex items-center rounded-full text-on-primary-container text-label-md hover:bg-on-primary-container/10 active:bg-on-primary-container/15 disabled:opacity-50 transition-colors duration-short3 ease-standard"
+              className="h-7 px-3 inline-flex items-center rounded-full text-on-primary-container text-label-md hover:bg-on-primary-container/10 active:bg-on-primary-container/15 disabled:opacity-50 transition-colors duration-short3 ease-standard"
               title="Exit without saving"
             >
               Discard
@@ -1456,7 +1558,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             <button
               onClick={movesEditor.save}
               disabled={movesEditor.saving}
-              className="h-8 px-4 inline-flex items-center rounded-full bg-primary text-on-primary text-label-md hover:brightness-110 active:brightness-95 disabled:opacity-50 transition-all duration-short3 ease-standard"
+              className="h-7 px-4 inline-flex items-center rounded-full bg-primary text-on-primary text-label-md hover:brightness-110 active:brightness-95 disabled:opacity-50 transition-all duration-short3 ease-standard"
               title="Save and switch back to read-only"
             >
               {movesEditor.saving ? "Saving…" : "Done"}
@@ -1468,6 +1570,21 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
         <div ref={boardContainerRef} className="flex-1 min-h-0 min-w-0 overflow-hidden flex items-center justify-center relative">
           <div
             style={{ width: squareSize, height: squareSize, flexShrink: 0, position: "relative" }}
+            onPointerDownCapture={(e) => {
+              // Ctrl/Cmd + pointer starts a graphical-annotation gesture. Run in
+              // the capture phase and stop propagation so react-chessboard never
+              // begins a piece drag (works even when starting on an own piece).
+              if (!movesEditor.active || !movesEditor.canDraw) return;
+              if (!(e.ctrlKey || e.metaKey)) return;
+              if (movesEditor.pendingDivergence || movesEditor.pendingPromotion) return;
+              const sq = resolveSquareFromPointer(e, flipped);
+              if (!sq) return;
+              drawingRef.current = { from: sq };
+              setDrawPreview({ from: sq, to: sq, color: movesEditor.drawColor });
+              try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* no-op */ }
+              e.stopPropagation();
+              e.preventDefault();
+            }}
             onPointerDown={(e) => {
               if (!movesEditor.active) return;
               if (movesEditor.pendingDivergence || movesEditor.pendingPromotion) return;
@@ -1485,6 +1602,12 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
               e.preventDefault();
             }}
             onPointerMove={(e) => {
+              // Drawing gesture: track the hovered square for the live preview.
+              if (drawingRef.current) {
+                const sq = resolveSquareFromPointer(e, flipped);
+                setDrawPreview({ from: drawingRef.current.from, to: sq ?? drawingRef.current.from, color: movesEditor.drawColor });
+                return;
+              }
               // Only follow the cursor while the user is still pressing —
               // after release, the gesture may stay "active" (silent wait
               // for DB data) but the user is no longer aiming.
@@ -1495,6 +1618,18 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
               movesEditor.dragTo(sq);
             }}
             onPointerUp={(e) => {
+              // Drawing gesture: same square → circle, different → arrow.
+              if (drawingRef.current) {
+                const from = drawingRef.current.from;
+                drawingRef.current = null;
+                setDrawPreview(null);
+                const sq = resolveSquareFromPointer(e, flipped);
+                if (sq) {
+                  if (sq === from) movesEditor.toggleCircle(from);
+                  else movesEditor.toggleArrow(from, sq);
+                }
+                return;
+              }
               if (!oneClickPressedRef.current) return;
               oneClickPressedRef.current = false;
               if (!movesEditor.gestureActive) return;
@@ -1502,7 +1637,12 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
               if (!sq) { movesEditor.clearPreview(); return; }
               movesEditor.commitPreview();
             }}
-            onPointerCancel={() => { oneClickPressedRef.current = false; movesEditor.clearPreview(); }}
+            onPointerCancel={() => {
+              drawingRef.current = null;
+              setDrawPreview(null);
+              oneClickPressedRef.current = false;
+              movesEditor.clearPreview();
+            }}
           >
             <Chessboard
               options={{
@@ -1525,7 +1665,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
                   : undefined,
               }}
             />
-            {/* Custom annotation overlay (arrows + circles) — hidden during edit */}
+            {/* Custom annotation overlay (arrows + circles) in view mode */}
             {!movesEditor.active && (annotationArrows.length > 0 || annotationCircles.length > 0) && (
               <AnnotationOverlay
                 arrows={annotationArrows}
@@ -1533,6 +1673,28 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
                 flipped={flipped}
                 size={squareSize}
               />
+            )}
+            {/* Saved graphics on the current position while editing */}
+            {movesEditor.active && (movesEditor.currentArrows.length > 0 || movesEditor.currentCircles.length > 0) && (
+              <AnnotationOverlay
+                arrows={movesEditor.currentArrows}
+                circles={movesEditor.currentCircles}
+                flipped={flipped}
+                size={squareSize}
+              />
+            )}
+            {/* Live preview of the arrow/circle being drawn */}
+            {movesEditor.active && drawPreview && (
+              <AnnotationOverlay
+                arrows={drawPreview.from !== drawPreview.to ? [{ from: drawPreview.from, to: drawPreview.to, color: drawPreview.color }] : []}
+                circles={drawPreview.from === drawPreview.to ? [{ square: drawPreview.from, color: drawPreview.color }] : []}
+                flipped={flipped}
+                size={squareSize}
+              />
+            )}
+            {/* Move-quality NAG badge on the destination square */}
+            {moveNagBadge && (
+              <MoveNagBadge square={moveNagBadge.square} nag={moveNagBadge.nag} flipped={flipped} size={squareSize} />
             )}
             {/* One-click destination preview — shown while the pointer is held */}
             {movesEditor.active && movesEditor.previewMove && (
@@ -1625,7 +1787,11 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
         {/* Annotation editor — only while editing. In view mode comments are
             read inline in the move list, so no separate panel is needed. */}
         {movesEditor.active && (
-          <div className="shrink-0 flex flex-col bg-surface-container-low rounded-md relative" style={{ height: `${Math.max(annotationPanelHeight, 6)}em` }}>
+          <div
+            ref={annotationPanelRef}
+            className="shrink-0 flex flex-col bg-surface-container-low rounded-md relative max-h-[45vh]"
+            style={annotationPanelHeight != null ? { height: `${annotationPanelHeight}em` } : undefined}
+          >
             {/* Drag handle */}
             <div
               onMouseDown={handlePanelDragStart}
