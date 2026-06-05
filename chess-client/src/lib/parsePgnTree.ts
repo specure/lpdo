@@ -1,11 +1,12 @@
 import { Chess } from "chess.js";
-import { parseComment, nagToSymbol, CalArrow, CslCircle } from "./parseAnnotations";
+import { parseComment, CalArrow, CslCircle } from "./parseAnnotations";
 
 export interface Annotations {
   comment?: string;
   arrows?: CalArrow[];
   circles?: CslCircle[];
-  nag?: string;
+  /** NAG codes (PGN $n) on this move, in order — e.g. [1, 16] for "!" + "±". */
+  nags?: number[];
 }
 
 export interface MoveNode {
@@ -14,6 +15,10 @@ export interface MoveNode {
   fen: string;
   annotations: Annotations;
   variations: MoveNode[][];
+  /** Comment shown BEFORE this move — used for line intros (a comment at the
+   *  start of a variation). The mainline's intro lives on `AnnotatedGame.startComment`
+   *  instead, since the mainline can be empty (no first node to attach to). */
+  preComment?: string;
 }
 
 export interface AnnotatedGame {
@@ -157,7 +162,8 @@ class Parser {
       if (tok.type === "nag") {
         this.next();
         if (nodes.length > 0) {
-          nodes[nodes.length - 1].annotations.nag = nagToSymbol(parseInt(tok.value, 10));
+          const ann = nodes[nodes.length - 1].annotations;
+          (ann.nags ??= []).push(parseInt(tok.value, 10));
         }
         continue;
       }
@@ -186,7 +192,7 @@ class Parser {
         while (this.peek()?.type === "nag" || this.peek()?.type === "comment") {
           const t = this.next()!;
           if (t.type === "nag") {
-            node.annotations.nag = nagToSymbol(parseInt(t.value, 10));
+            (node.annotations.nags ??= []).push(parseInt(t.value, 10));
           } else if (t.type === "comment") {
             this.attachComment(node, t.value);
           }
@@ -198,9 +204,13 @@ class Parser {
           const varChess = new Chess();
           varChess.load(preFen);
           const variation = this.parseLine(varChess);
-          // Filter out comment-sentinel nodes
           const realMoves = variation.filter(n => n.san !== "");
           if (realMoves.length > 0) {
+            // A leading comment in the variation is parsed as a sentinel
+            // (san: ""). Attach it to the first real move as its pre-comment
+            // (the line's intro) instead of dropping it.
+            const lead = variation.find(n => n.san === "");
+            if (lead?.annotations.comment) realMoves[0].preComment = lead.annotations.comment;
             node.variations.push(realMoves);
           }
           if (this.peek()?.type === "var_end") this.next(); // consume ')'

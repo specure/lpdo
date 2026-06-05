@@ -77,6 +77,7 @@ export const NAG_MAP: Record<number, string> = {
   5: "!?",
   6: "?!",
   10: "=",
+  13: "∞",   // ∞ (unclear)
   14: "+=",
   15: "=+",
   16: "\u00b1",   // ±
@@ -90,4 +91,50 @@ export const NAG_MAP: Record<number, string> = {
 
 export function nagToSymbol(nag: number): string {
   return NAG_MAP[nag] ?? `$${nag}`;
+}
+
+/** Render a move's NAG codes as a display string (e.g. [1, 16] → "!±"). */
+export function nagsToString(nags?: number[]): string {
+  return (nags ?? []).map(nagToSymbol).join("");
+}
+
+// ── Inverses (for serialising a move tree back to PGN movetext) ───────────────
+
+const SYMBOL_TO_NAG: Record<string, number> = Object.fromEntries(
+  Object.entries(NAG_MAP).map(([n, sym]) => [sym, Number(n)]),
+);
+
+/** Inverse of `nagToSymbol`: map a NAG symbol back to its numeric code, or null
+ *  if it isn't a recognised NAG. Also handles the `$N` passthrough that
+ *  `nagToSymbol` emits for codes outside `NAG_MAP`. */
+export function symbolToNag(symbol: string): number | null {
+  if (symbol in SYMBOL_TO_NAG) return SYMBOL_TO_NAG[symbol];
+  const m = symbol.match(/^\$(\d+)$/);
+  if (m) return Number(m[1]);
+  return null;
+}
+
+// rgba string → single-letter code (reverse of COLOR_MAP). Exact-string match;
+// arrows/circles created in-app and those parsed from PGN both use the same
+// COLOR_MAP constants, so the rgba values match exactly.
+const RGBA_TO_CODE: Record<string, string> = Object.fromEntries(
+  Object.entries(COLOR_MAP).map(([code, rgba]) => [rgba, code]),
+);
+
+function colorCode(rgba: string): string {
+  return RGBA_TO_CODE[rgba] ?? "G";
+}
+
+/** Encode arrows as a `[%cal ...]` tag, or "" when there are none. */
+export function encodeCal(arrows: CalArrow[]): string {
+  if (!arrows.length) return "";
+  const entries = arrows.map((a) => `${colorCode(a.color)}${a.from}${a.to}`).join(",");
+  return `[%cal ${entries}]`;
+}
+
+/** Encode circles as a `[%csl ...]` tag, or "" when there are none. */
+export function encodeCsl(circles: CslCircle[]): string {
+  if (!circles.length) return "";
+  const entries = circles.map((c) => `${colorCode(c.color)}${c.square}`).join(",");
+  return `[%csl ${entries}]`;
 }

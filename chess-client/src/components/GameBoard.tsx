@@ -11,14 +11,27 @@ import EditDbHeadersModal from "./EditDbHeadersModal";
 import CollectionPicker from "./CollectionPicker";
 import {
   useMovesEditor,
-  MovesEditorRightPanel,
+  MovesEditorMoveList,
   MovesEditorToolbar,
   MovesEditorPromotionChooser,
-  MovesEditorOverwriteConfirm,
-  MovesEditorAnnotationGate,
-  saveMovesViaSidecar,
+  MovesEditorDivergenceChoice,
+  MovesEditorAnnotation,
+  saveMovetextViaSidecar,
 } from "./MovesEditor";
+import { serializeMovetext } from "../lib/serializeMovetext";
 import type { CalArrow, CslCircle } from "../lib/parseAnnotations";
+import { nagsToString } from "../lib/parseAnnotations";
+import AnnotatedMoveList from "./AnnotatedMoveList";
+import {
+  Breadcrumb,
+  getMoveNum,
+  fenAt,
+  findPathToLine,
+  collectAllKeys,
+  collectPathKeys,
+  collectLineKeys,
+  findLinePrefix,
+} from "../lib/moveTreeNav";
 
 // SVG nav icons — always white, no emoji color issues
 const IconFirst = () => (
@@ -93,274 +106,6 @@ function buildGame(pgn: string): { fens: string[]; moves: MoveEntry[] } {
     moves.push({ index: i + 1, san: m.san, color: m.color });
   }
   return { fens, moves };
-}
-
-// ── Breadcrumb for variation navigation ──────────────────────────────────────
-
-interface Breadcrumb {
-  line: MoveNode[];
-  index: number;
-}
-
-// ── Annotated Move List ─────────────────────────────────────────────────────
-
-interface AnnotatedMoveListProps {
-  game: AnnotatedGame;
-  activeLine: MoveNode[];
-  activeIndex: number;
-  showAnnotations: boolean;
-  collapsedNodes: Set<string>;
-  partialNodes: Set<string>;
-  inSubVariation: boolean;
-  breadcrumbs: Breadcrumb[];
-  onNavigate: (line: MoveNode[], index: number) => void;
-  onToggleCollapse: (key: string) => void;
-  onExpandAll: () => void;
-  onCollapseAll: () => void;
-  onExpandSubVariations: () => void;
-  onCollapseSubVariations: () => void;
-  onToggleAnnotations: () => void;
-}
-
-function getMoveNum(node: MoveNode): number {
-  const fenParts = node.fen.split(" ");
-  const fullmove = parseInt(fenParts[5], 10);
-  if (node.color === "w") return fullmove;
-  return fullmove - 1;
-}
-
-function AnnotatedMoveList({
-  game, activeLine, activeIndex, showAnnotations, collapsedNodes, partialNodes, inSubVariation,
-  breadcrumbs, onNavigate, onToggleCollapse, onExpandAll, onCollapseAll,
-  onExpandSubVariations, onCollapseSubVariations, onToggleAnnotations,
-}: AnnotatedMoveListProps) {
-  const activeRef = useRef<HTMLSpanElement>(null);
-
-  // Build path map: for each line in the path, store the max move index that's "on the path"
-  const pathMap = useMemo(() => {
-    const map = new Map<MoveNode[], number>();
-    // Breadcrumbs: each entry's line is on the path up to its index
-    for (const bc of breadcrumbs) {
-      map.set(bc.line, bc.index);
-    }
-    // Active line: on the path up to activeIndex
-    map.set(activeLine, activeIndex);
-    return map;
-  }, [breadcrumbs, activeLine, activeIndex]);
-
-  useEffect(() => {
-    activeRef.current?.scrollIntoView({ block: "nearest" });
-  }, [activeIndex, activeLine]);
-
-  function renderLine(line: MoveNode[], pathPrefix: string, depth: number) {
-    const isActive = line === activeLine;
-    const pathMaxIndex = pathMap.get(line); // undefined if not on path
-    const elements: React.ReactNode[] = [];
-    let needsBlackNumber = false;
-
-    for (let i = 0; i < line.length; i++) {
-      const node = line[i];
-      const moveIdx = i + 1;
-      const isCurrentMove = isActive && activeIndex === moveIdx;
-      const isOnPath = pathMaxIndex !== undefined && moveIdx <= pathMaxIndex;
-      const moveNum = getMoveNum(node);
-      const nodeKey = `${pathPrefix}-${i}`;
-      const hasVariations = node.variations.length > 0;
-      const isCollapsed = hasVariations && collapsedNodes.has(nodeKey);
-
-      const showNumber = node.color === "w" || i === 0 || needsBlackNumber;
-      needsBlackNumber = false;
-
-      const isPartial = hasVariations && partialNodes.has(nodeKey);
-
-      // Variation toggle — show inline [+] when fully collapsed
-      if (hasVariations && isCollapsed) {
-        elements.push(
-          <span
-            key={`t-${i}`}
-            onClick={(e) => { e.stopPropagation(); onToggleCollapse(nodeKey); }}
-            className="cursor-pointer text-on-surface-variant hover:text-on-surface select-none border border-outline rounded-xs px-0.5 mr-1 leading-none align-middle transition-colors duration-short3 ease-standard"
-            style={{ fontSize: "0.75em" }}
-            title="Expand variations"
-          >+</span>
-        );
-      }
-
-      // Move (with optional move number as single clickable unit)
-      const numPrefix = showNumber
-        ? (node.color === "w" ? `${moveNum}.` : `${moveNum}...`)
-        : "";
-      elements.push(
-        <span
-          key={`m-${i}`}
-          ref={isCurrentMove ? activeRef : null}
-          onClick={() => onNavigate(line, moveIdx)}
-          className={`cursor-pointer rounded-sm transition-colors duration-short3 ease-standard ${
-            isCurrentMove
-              ? "bg-primary-container text-on-primary-container px-0.5"
-              : isOnPath
-              ? "text-primary"
-              : "text-on-surface hover:bg-on-surface/8"
-          }`}
-        >
-          {numPrefix}{node.san}{node.annotations.nag ?? ""}
-        </span>
-      );
-
-      const hasGraphical = (node.annotations.arrows?.length ?? 0) > 0 || (node.annotations.circles?.length ?? 0) > 0;
-      const hasComment = !!node.annotations.comment;
-      const hasIndicators = hasGraphical || (hasComment && !showAnnotations);
-
-      // Tighter space before indicators, normal space if no indicators
-      if (hasIndicators) {
-        elements.push(<span key={`s-${i}`} style={{ fontSize: "0.5em" }}>{" "}</span>);
-      } else {
-        elements.push(<span key={`s-${i}`}>{" "}</span>);
-      }
-
-      if (hasGraphical) {
-        elements.push(
-          <span key={`g-${i}`} className="text-xs opacity-70 annotation-hint">💠</span>
-        );
-      }
-
-      // Inline comment
-      if (hasComment) {
-        if (showAnnotations) {
-          // Space before comment text
-          if (hasGraphical) elements.push(<span key={`gs-${i}`} style={{ fontSize: "0.5em" }}>{" "}</span>);
-          elements.push(
-            <span key={`c-${i}`} className={`italic text-body-sm font-sans ${isOnPath ? "text-primary/70" : "text-on-surface-variant"}`}>
-              {node.annotations.comment}{" "}
-            </span>
-          );
-          if (node.color === "w") needsBlackNumber = true;
-        } else {
-          if (hasGraphical) elements.push(<span key={`gs-${i}`} style={{ fontSize: "0.3em" }}>{" "}</span>);
-          elements.push(
-            <span key={`c-${i}`} className="text-xs opacity-30 annotation-hint" title={node.annotations.comment}>💬</span>
-          );
-        }
-      }
-
-      // Trailing space after indicators/move
-      if (hasIndicators) {
-        elements.push(<span key={`st-${i}`}>{" "}</span>);
-      }
-
-      // Variations — after a variation block, black also needs move number
-      if (!isCollapsed && hasVariations) {
-        // In partial mode, only show variations that are on the path
-        const visibleVariations: { variation: MoveNode[]; vi: number }[] = [];
-        for (let vi = 0; vi < node.variations.length; vi++) {
-          const variation = node.variations[vi];
-          if (isPartial) {
-            // Only include if this variation is on the path (is activeLine or contains it)
-            const isOnPathVar = pathMap.has(variation) || variation === activeLine;
-            if (!isOnPathVar) {
-              // Check deeper
-              const hasPathDeeper = (function checkDeep(line: MoveNode[]): boolean {
-                for (const n of line) {
-                  for (const v of n.variations) {
-                    if (v === activeLine || pathMap.has(v) || checkDeep(v)) return true;
-                  }
-                }
-                return false;
-              })(variation);
-              if (!hasPathDeeper) continue;
-            }
-          }
-          visibleVariations.push({ variation, vi });
-        }
-
-        const shortVars: React.ReactNode[] = [];
-        const blockVars: React.ReactNode[] = [];
-
-        for (const { variation, vi } of visibleVariations) {
-          const varPath = `${nodeKey}-v${vi}`;
-          const isShort = variation.length <= 3 && variation.every(n => n.variations.length === 0 && !n.annotations.comment);
-
-          if (isShort) {
-            shortVars.push(
-              <span key={`v-${i}-${vi}`} className="text-on-surface-variant text-body-sm">
-                {"( "}
-                {renderLine(variation, varPath, depth + 1)}
-                {") "}
-              </span>
-            );
-          } else {
-            blockVars.push(
-              <div key={`v-${i}-${vi}`} className="text-body-sm text-on-surface-variant leading-normal">
-                {renderLine(variation, varPath, depth + 1)}
-              </div>
-            );
-          }
-        }
-
-        // Render short variations inline
-        for (const sv of shortVars) {
-          elements.push(sv);
-        }
-
-        // Render block variations in a single grouped container
-        if (blockVars.length > 0) {
-          const toggleLabel = isPartial ? "\u2026" : "\u2212"; // … or −
-          const toggleTitle = isPartial ? "Show all variations" : "Collapse variations";
-          elements.push(
-            <div key={`vg-${i}`} className="text-body-sm text-on-surface-variant my-0.5 ml-1 relative pl-3 leading-normal">
-              {/* Clickable border + collapse/partial button */}
-              <div
-                className="absolute left-0 top-0 bottom-0 w-3 cursor-pointer group"
-                onClick={() => onToggleCollapse(nodeKey)}
-                title={toggleTitle}
-              >
-                <div className="absolute left-0 top-0 bottom-0 w-px bg-outline-variant group-hover:bg-primary transition-colors duration-short3 ease-standard" />
-                <span
-                  className="absolute left-[-4px] top-0 text-on-surface-variant group-hover:text-on-surface select-none border border-outline group-hover:border-primary rounded-xs bg-surface px-0.5 leading-none transition-colors duration-short3 ease-standard"
-                  style={{ fontSize: "0.75em" }}
-                >{toggleLabel}</span>
-              </div>
-              {blockVars}
-            </div>
-          );
-        }
-
-        // After variations, next black move needs number
-        if (node.color === "w") needsBlackNumber = true;
-      }
-    }
-
-    return <>{elements}</>;
-  }
-
-  // M3 mini text-button used in the AnnotatedMoveList toolbar
-  const miniBtn = "text-label-sm px-2 h-6 inline-flex items-center rounded-full text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-colors duration-short3 ease-standard";
-
-  return (
-    <div className="flex flex-col flex-1 overflow-hidden">
-      <div className="flex-1 overflow-y-auto font-mono text-body-md px-2 py-1">
-        {showAnnotations && game.startComment && (
-          <div className="text-on-surface-variant italic text-body-sm mb-1 font-sans">{game.startComment}</div>
-        )}
-        <div className="leading-normal">
-          {renderLine(game.mainLine, "m", 0)}
-        </div>
-      </div>
-
-      {/* Bottom toolbar */}
-      <div className="shrink-0 px-2 py-1.5 flex items-center gap-1 flex-wrap">
-        <button onClick={onExpandAll} className={miniBtn} title="Expand all variations">All+</button>
-        <button onClick={onCollapseAll} className={miniBtn} title="Collapse all variations">All−</button>
-        <button onClick={onExpandSubVariations} disabled={!inSubVariation} className={miniBtn} title="Expand sub-variations in current line">Sub+</button>
-        <button onClick={onCollapseSubVariations} disabled={!inSubVariation} className={miniBtn} title="Collapse sub-variations in current line">Sub−</button>
-        <button
-          onClick={onToggleAnnotations}
-          className={`${miniBtn} ${showAnnotations ? "" : "opacity-50"}`}
-          title={showAnnotations ? "Hide annotations" : "Show annotations"}
-        >💬</button>
-      </div>
-    </div>
-  );
 }
 
 // ── Legacy Move List (for API-fetched games without tree) ───────────────────
@@ -555,6 +300,9 @@ interface Props {
   /** Fires when the user mutates the game from the DetailsPanel (soft-delete,
    * restore, future edits) so parents can re-fetch lists, counts, etc. */
   onGameMutated?: () => void;
+  /** Reports when the moves editor enters/leaves edit mode, so the host can
+   * suspend list-level arrow-key navigation while editing. */
+  onEditingChange?: (editing: boolean) => void;
 }
 
 // Tags shown in the compact view always; rest only appear when expanded.
@@ -708,7 +456,7 @@ function GameActionsBar({
 }: {
   detail: GameDetail;
   onDetailChanged: () => void;
-  /** Fires when the user clicks "Edit moves…" — host enters inline edit mode. */
+  /** Fires when the user clicks "Edit game…" — host enters inline edit mode. */
   onStartEditMoves: () => void;
   /** Details panel state — the toggle lives in this toolbar so it sits
    *  directly above the panel it controls. */
@@ -793,9 +541,9 @@ function GameActionsBar({
           onClick={onStartEditMoves}
           disabled={progress.running || !detail.pgn}
           className={tonalBtn}
-          title="Edit main-line moves"
+          title="Edit moves, variations and annotations"
         >
-          Edit moves…
+          Edit game…
         </button>
         <button
           onClick={handleExport}
@@ -971,7 +719,7 @@ function DetailsPanel({
   );
 }
 
-export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated }: Props) {
+export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange }: Props) {
   const [detail, setDetail] = useState<GameDetail | null>(null);
   const [detailReloadKey, setDetailReloadKey] = useState(0);
   const [detailsOpen, setDetailsOpen] = useState<boolean>(
@@ -1007,7 +755,6 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   });
   useEffect(() => { localStorage.setItem("moveListWidth", String(moveListWidth)); }, [moveListWidth]);
   const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
-  const [annotationPanelCollapsed, setAnnotationPanelCollapsed] = useState(true);
   const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(new Set());
   const [partialNodes, setPartialNodes] = useState<Set<string>>(new Set());
   const [annotationPanelHeight, setAnnotationPanelHeight] = useState(3); // in em units
@@ -1037,16 +784,23 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   // with a new game.id.
   const editorRef = useRef(movesEditor);
   editorRef.current = movesEditor;
+
+  // Tell the host when we're editing so it can suspend list arrow-key nav.
+  useEffect(() => {
+    onEditingChange?.(movesEditor.active);
+    return () => onEditingChange?.(false);
+  }, [movesEditor.active, onEditingChange]);
+
   const prevGameIdRef = useRef<number | null>(null);
   useEffect(() => {
     const prevId = prevGameIdRef.current;
     prevGameIdRef.current = game.id;
     if (prevId === null || prevId === game.id) return;
     const ed = editorRef.current;
-    if (ed.active && ed.moves.length > 0) {
-      const movesToSave = ed.moves.slice();
+    if (ed.active && ed.dirty && ed.game) {
+      const movetext = serializeMovetext(ed.game);
       ed.cancel();
-      saveMovesViaSidecar(prevId, movesToSave).then((res) => {
+      saveMovetextViaSidecar(prevId, movetext).then((res) => {
         if (!res.ok) {
           // Surface enough to debug, without blocking the new game's UI.
           // eslint-disable-next-line no-console
@@ -1057,6 +811,32 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
       });
     }
   }, [game.id, onGameMutated]);
+
+  // Also flush on unmount: switching to another page (PGNs / Home / Maintenance)
+  // unmounts this GameBoard entirely rather than just changing game.id, so the
+  // effect above never runs. Without this, in-progress edits would be lost.
+  // It's an in-app view switch (not a window reload), so the async save still
+  // completes after unmount.
+  const onGameMutatedRef = useRef(onGameMutated);
+  onGameMutatedRef.current = onGameMutated;
+  useEffect(() => {
+    return () => {
+      const ed = editorRef.current;
+      const id = prevGameIdRef.current;
+      if (id != null && ed.active && ed.dirty && ed.game) {
+        const movetext = serializeMovetext(ed.game);
+        saveMovetextViaSidecar(id, movetext).then((res) => {
+          if (!res.ok) {
+            // eslint-disable-next-line no-console
+            console.error(`Autosave on unmount (game ${id}) failed: ${res.error}`);
+          } else {
+            onGameMutatedRef.current?.();
+          }
+        });
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const boardContainerRef = useRef<HTMLDivElement>(null);
   const [squareSize, setSquareSize] = useState(480);
@@ -1265,24 +1045,6 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
 
   const effectiveIndex = useAnnotated ? activeIndex : currentIndex;
 
-  // Find the path from a root line down to a target variation line
-  // Stores the index of the move BEFORE the branching move (last move on the path)
-  function findPathToLine(root: MoveNode[], target: MoveNode[]): Breadcrumb[] | null {
-    if (root === target) return [];
-    for (let i = 0; i < root.length; i++) {
-      for (const variation of root[i].variations) {
-        if (variation === target) {
-          return [{ line: root, index: i }]; // i, not i+1: the branching move itself is NOT on the path
-        }
-        const deeper = findPathToLine(variation, target);
-        if (deeper) {
-          return [{ line: root, index: i }, ...deeper];
-        }
-      }
-    }
-    return null;
-  }
-
   function handleNavigateToVariation(line: MoveNode[], index: number) {
     if (line !== activeLine) {
       if (annotatedGame) {
@@ -1323,37 +1085,9 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     }
   }
 
-  function collectAllKeys(line: MoveNode[], prefix: string): string[] {
-    const keys: string[] = [];
-    for (let i = 0; i < line.length; i++) {
-      const node = line[i];
-      const nodeKey = `${prefix}-${i}`;
-      if (node.variations.length > 0) {
-        keys.push(nodeKey);
-        for (let vi = 0; vi < node.variations.length; vi++) {
-          keys.push(...collectAllKeys(node.variations[vi], `${nodeKey}-v${vi}`));
-        }
-      }
-    }
-    return keys;
-  }
-
   function handleExpandAll() {
     setCollapsedNodes(new Set());
     setPartialNodes(new Set());
-  }
-
-  // Find node keys that must stay expanded to keep the active line visible
-  function collectPathKeys(target: MoveNode[], line: MoveNode[], prefix: string): string[] | null {
-    if (target === line) return [];
-    for (let i = 0; i < line.length; i++) {
-      const nodeKey = `${prefix}-${i}`;
-      for (let vi = 0; vi < line[i].variations.length; vi++) {
-        const deeper = collectPathKeys(target, line[i].variations[vi], `${nodeKey}-v${vi}`);
-        if (deeper !== null) return [nodeKey, ...deeper];
-      }
-    }
-    return null;
   }
 
   function handleCollapseAll() {
@@ -1363,27 +1097,6 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     // Path nodes become partial (showing only on-path variation), rest become collapsed
     setCollapsedNodes(new Set(allKeys.filter(k => !pathKeys.has(k))));
     setPartialNodes(new Set(pathKeys));
-  }
-
-  function collectLineKeys(line: MoveNode[], prefix: string): string[] {
-    const keys: string[] = [];
-    for (let i = 0; i < line.length; i++) {
-      const nodeKey = `${prefix}-${i}`;
-      if (line[i].variations.length > 0) keys.push(nodeKey);
-    }
-    return keys;
-  }
-
-  // Find the path prefix for the active line by searching the tree
-  function findLinePrefix(target: MoveNode[], line: MoveNode[], prefix: string): string | null {
-    if (target === line) return prefix;
-    for (let i = 0; i < line.length; i++) {
-      for (let vi = 0; vi < line[i].variations.length; vi++) {
-        const result = findLinePrefix(target, line[i].variations[vi], `${prefix}-${i}-v${vi}`);
-        if (result) return result;
-      }
-    }
-    return null;
   }
 
   function handleExpandSubVariations() {
@@ -1410,27 +1123,48 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     });
   }
 
-  // Open variation choice modal for the move at activeLine[moveArrayIndex]
-  function openVarChoiceForNext(currentActiveIndex: number) {
-    const node = activeLine[currentActiveIndex]; // the move that has variations
+  // Current navigation context — the variation-choice menu and arrow keys work
+  // in both view mode (the viewer's cursor) and edit mode (the editor's cursor).
+  function currentNav(): { line: MoveNode[]; index: number; goTo: (line: MoveNode[], index: number) => void } {
+    if (movesEditor.active) {
+      return {
+        line: movesEditor.activeLine,
+        index: movesEditor.activeIndex,
+        goTo: (line, index) => {
+          if (line !== movesEditor.activeLine) movesEditor.navigate(line, index);
+          else movesEditor.setCursor(index);
+        },
+      };
+    }
+    return {
+      line: activeLine,
+      index: effectiveIndex,
+      goTo: (line, index) => {
+        if (line !== activeLine) handleNavigateToVariation(line, index);
+        else setActiveIndex(index);
+      },
+    };
+  }
+
+  // Open the variation-choice menu for the move about to be played (the move at
+  // the cursor that owns one or more variations).
+  function openVarChoiceForNext() {
+    const { line, index } = currentNav();
+    const node = line[index];
     if (!node) return;
 
     function moveLabel(n: MoveNode): string {
       const num = getMoveNum(n);
       const prefix = n.color === "w" ? `${num}.` : `${num}...`;
-      return prefix + n.san + (n.annotations.nag ?? "");
+      return prefix + n.san + nagsToString(n.annotations.nags);
     }
 
     const choices: { label: string; line: MoveNode[]; index: number }[] = [
-      { label: moveLabel(node), line: activeLine, index: currentActiveIndex + 1 },
+      { label: moveLabel(node), line, index: index + 1 },
     ];
     for (const variation of node.variations) {
       if (variation.length > 0) {
-        choices.push({
-          label: moveLabel(variation[0]),
-          line: variation,
-          index: 1,
-        });
+        choices.push({ label: moveLabel(variation[0]), line: variation, index: 1 });
       }
     }
     setVarChoice({ choices, selected: 0 });
@@ -1439,38 +1173,21 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   function confirmVarChoice() {
     if (!varChoice) return;
     const choice = varChoice.choices[varChoice.selected];
-    if (choice.line !== activeLine) {
-      handleNavigateToVariation(choice.line, choice.index);
-    } else {
-      setActiveIndex(choice.index);
-    }
+    currentNav().goTo(choice.line, choice.index);
     setVarChoice(null);
   }
 
   // Keyboard navigation
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // Edit mode steals arrow keys for cursor navigation. Skip when an
-      // overlay (gate / overwrite / promotion) is open so it can handle them.
-      if (movesEditor.active && !movesEditor.needsClobberAck && !movesEditor.pendingOverwrite && !movesEditor.pendingPromotion) {
-        // Ctrl/Cmd+Z = undo; Ctrl/Cmd+Shift+Z and Ctrl/Cmd+Y = redo.
-        if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z") && !e.shiftKey) {
-          if (movesEditor.canUndo) { e.preventDefault(); movesEditor.undo(); }
-          return;
-        }
-        if ((e.ctrlKey || e.metaKey) && ((e.key === "z" || e.key === "Z") && e.shiftKey || e.key === "y" || e.key === "Y")) {
-          if (movesEditor.canRedo) { e.preventDefault(); movesEditor.redo(); }
-          return;
-        }
-        if (e.key === "ArrowLeft")  { e.preventDefault(); movesEditor.setCursor(Math.max(0, movesEditor.cursor - 1)); return; }
-        if (e.key === "ArrowRight") { e.preventDefault(); movesEditor.setCursor(Math.min(movesEditor.moves.length, movesEditor.cursor + 1)); return; }
-        if (e.key === "ArrowUp")    { e.preventDefault(); movesEditor.setCursor(0); return; }
-        if (e.key === "ArrowDown")  { e.preventDefault(); movesEditor.setCursor(movesEditor.moves.length); return; }
-        if (e.key === "Escape")     { e.preventDefault(); movesEditor.cancel(); return; }
+      // Never hijack keys while the user is typing in a text field (e.g. the
+      // annotation comment box) — let arrows/Home/End/undo work natively there.
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
         return;
       }
-
-      // Variation choice modal is open
+      // Variation choice menu is open — handle it first so it works in both
+      // view and edit mode.
       if (varChoice) {
         e.preventDefault();
         if (e.key === "ArrowUp") {
@@ -1482,6 +1199,49 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
         } else if (e.key === "Escape" || e.key === "ArrowLeft") {
           setVarChoice(null);
         }
+        return;
+      }
+
+      // Edit mode steals arrow keys for cursor navigation. Skip when an
+      // overlay (divergence / promotion) is open so it can handle them.
+      if (movesEditor.active && !movesEditor.pendingDivergence && !movesEditor.pendingPromotion) {
+        // Ctrl/Cmd+Z = undo; Ctrl/Cmd+Shift+Z and Ctrl/Cmd+Y = redo.
+        if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z") && !e.shiftKey) {
+          if (movesEditor.canUndo) { e.preventDefault(); movesEditor.undo(); }
+          return;
+        }
+        if ((e.ctrlKey || e.metaKey) && ((e.key === "z" || e.key === "Z") && e.shiftKey || e.key === "y" || e.key === "Y")) {
+          if (movesEditor.canRedo) { e.preventDefault(); movesEditor.redo(); }
+          return;
+        }
+        // Ctrl/Cmd+Shift+Up/Down = promote / demote variation.
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "ArrowUp") {
+          e.preventDefault(); if (movesEditor.canPromote) movesEditor.promoteVariation(); return;
+        }
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "ArrowDown") {
+          e.preventDefault(); if (movesEditor.canDemote) movesEditor.demoteLine(); return;
+        }
+        if (e.key === "ArrowLeft")  {
+          e.preventDefault();
+          // At (or just inside) the start of a variation, step straight out to
+          // the parent line — same as view mode.
+          if (movesEditor.activeIndex <= 1 && movesEditor.breadcrumbs.length > 0) movesEditor.goBackToParent();
+          else movesEditor.setCursor(Math.max(0, movesEditor.activeIndex - 1));
+          return;
+        }
+        if (e.key === "ArrowRight") {
+          e.preventDefault();
+          // If the next move has variations, offer the choice menu (like view mode).
+          if (movesEditor.activeIndex < movesEditor.activeLine.length) {
+            const nextNode = movesEditor.activeLine[movesEditor.activeIndex];
+            if (nextNode.variations.length > 0) { openVarChoiceForNext(); return; }
+          }
+          movesEditor.setCursor(Math.min(movesEditor.activeLine.length, movesEditor.activeIndex + 1));
+          return;
+        }
+        if (e.key === "ArrowUp")    { e.preventDefault(); movesEditor.setCursor(0); return; }
+        if (e.key === "ArrowDown")  { e.preventDefault(); movesEditor.setCursor(movesEditor.activeLine.length); return; }
+        if (e.key === "Escape")     { e.preventDefault(); movesEditor.cancel(); return; }
         return;
       }
 
@@ -1499,8 +1259,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
         if (useAnnotated && effectiveIndex < activeLine.length) {
           const nextNode = activeLine[effectiveIndex]; // the move about to be played
           if (nextNode.variations.length > 0) {
-            // Present choice: nextNode (main) vs its variations
-            openVarChoiceForNext(effectiveIndex);
+            openVarChoiceForNext();
             return;
           }
         }
@@ -1509,7 +1268,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [effectiveIndex, goTo, varChoice, useAnnotated, activeLine, movesEditor.active, movesEditor.needsClobberAck, movesEditor.pendingOverwrite, movesEditor.pendingPromotion, movesEditor.cursor, movesEditor.moves.length, movesEditor.canUndo, movesEditor.canRedo]);
+  }, [effectiveIndex, goTo, varChoice, useAnnotated, activeLine, movesEditor.active, movesEditor.pendingDivergence, movesEditor.pendingPromotion, movesEditor.activeIndex, movesEditor.activeLine, movesEditor.breadcrumbs, movesEditor.canUndo, movesEditor.canRedo]);
 
   // ── Board annotations ──────────────────────────────────────────────────
 
@@ -1565,14 +1324,25 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     return styles;
   }, [movesEditor.active, movesEditor.selectedSquare, movesEditor.legalDestinations, movesEditor.fen]);
 
+  // Last-move highlight while editing — same shading as view mode, computed
+  // from the editor's own cursor (the viewer's is frozen during edit).
+  const editorLastMoveSquares: Record<string, React.CSSProperties> = useMemo(() => {
+    if (!movesEditor.active || !movesEditor.game || movesEditor.activeIndex < 1) return {};
+    const line = movesEditor.activeLine;
+    const node = line[movesEditor.activeIndex - 1];
+    if (!node) return {};
+    const prevFen = fenAt(movesEditor.game, movesEditor.breadcrumbs, line, movesEditor.activeIndex - 1);
+    try {
+      const chess = new Chess(prevFen);
+      const played = chess.moves({ verbose: true }).find((m) => m.san === node.san);
+      if (played) {
+        const hl: React.CSSProperties = { background: "rgba(100, 160, 255, 0.35)" };
+        return { [played.from]: hl, [played.to]: hl };
+      }
+    } catch { /* ignore */ }
+    return {};
+  }, [movesEditor.active, movesEditor.game, movesEditor.activeLine, movesEditor.activeIndex, movesEditor.breadcrumbs]);
 
-  // Arrows from annotations
-  // Current annotation text for the panel
-  const currentAnnotationText = useMemo(() => {
-    if (!useAnnotated) return null;
-    if (activeIndex === 0) return annotatedGame?.startComment ?? null;
-    return currentMoveNode?.annotations.comment ?? null;
-  }, [useAnnotated, activeIndex, annotatedGame, currentMoveNode]);
 
   const annotationArrows: CalArrow[] = useMemo(() => {
     const source = useAnnotated && activeIndex === 0
@@ -1647,7 +1417,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             detail={detail}
             onDetailChanged={() => { setDetailReloadKey((k) => k + 1); onGameMutated?.(); }}
             onStartEditMoves={() => {
-              if (annotatedGame) movesEditor.start(annotatedGame.mainLine, activeIndex);
+              if (annotatedGame) movesEditor.start(annotatedGame, activeLine, activeIndex, breadcrumbs);
             }}
             detailsOpen={detailsOpen}
             onToggleDetails={() => setDetailsOpen((o) => !o)}
@@ -1700,7 +1470,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             style={{ width: squareSize, height: squareSize, flexShrink: 0, position: "relative" }}
             onPointerDown={(e) => {
               if (!movesEditor.active) return;
-              if (movesEditor.pendingOverwrite || movesEditor.pendingPromotion || movesEditor.needsClobberAck) return;
+              if (movesEditor.pendingDivergence || movesEditor.pendingPromotion) return;
               const sq = resolveSquareFromPointer(e, flipped);
               if (!sq) return;
               if (!movesEditor.shouldHandleAsDestination(sq)) return;
@@ -1738,8 +1508,8 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
               options={{
                 position: currentFen,
                 boardOrientation: flipped ? "black" : "white",
-                allowDragging: movesEditor.active && !movesEditor.pendingOverwrite && !movesEditor.pendingPromotion && !movesEditor.needsClobberAck,
-                squareStyles: movesEditor.active ? editorSquareStyles : lastMoveSquares,
+                allowDragging: movesEditor.active && !movesEditor.pendingDivergence && !movesEditor.pendingPromotion,
+                squareStyles: movesEditor.active ? { ...editorLastMoveSquares, ...editorSquareStyles } : lastMoveSquares,
                 allowDrawingArrows: false,
                 darkSquareStyle: { backgroundColor: "var(--color-board-game-dark)" },
                 lightSquareStyle: { backgroundColor: "var(--color-board-game-light)" },
@@ -1779,12 +1549,6 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             )}
 
             {/* Editor overlays */}
-            {movesEditor.active && movesEditor.needsClobberAck && (
-              <MovesEditorAnnotationGate
-                onContinue={movesEditor.ackClobber}
-                onCancel={movesEditor.cancel}
-              />
-            )}
             {movesEditor.active && movesEditor.pendingPromotion && (
               <MovesEditorPromotionChooser
                 side={movesEditor.sideToMove}
@@ -1792,18 +1556,20 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
                 onCancel={movesEditor.cancelPromotion}
               />
             )}
-            {movesEditor.active && movesEditor.pendingOverwrite && (
-              <MovesEditorOverwriteConfirm
-                san={movesEditor.pendingOverwrite.san}
-                droppedCount={movesEditor.moves.length - movesEditor.cursor}
-                onConfirm={movesEditor.commitOverwrite}
-                onCancel={movesEditor.cancelOverwrite}
+            {movesEditor.active && movesEditor.pendingDivergence && (
+              <MovesEditorDivergenceChoice
+                san={movesEditor.pendingDivergence.san}
+                droppedCount={movesEditor.activeLine.length - movesEditor.activeIndex}
+                onNewVariation={movesEditor.commitNewVariation}
+                onNewMainLine={movesEditor.commitNewMainLine}
+                onOverwrite={movesEditor.commitOverwrite}
+                onCancel={movesEditor.cancelDivergence}
               />
             )}
           </div>
 
-          {/* Variation choice menu — M3 menu surface */}
-          {varChoice && !movesEditor.active && (
+          {/* Variation choice menu — M3 menu surface (works in view & edit mode) */}
+          {varChoice && (
             <div className="absolute inset-0 flex items-center justify-center z-20">
               <div className="bg-surface-container-high rounded-md shadow-xl py-2 min-w-40">
                 {varChoice.choices.map((choice, i) => (
@@ -1811,11 +1577,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
                     key={i}
                     onClick={() => {
                       const choice = varChoice.choices[i];
-                      if (choice.line !== activeLine) {
-                        handleNavigateToVariation(choice.line, choice.index);
-                      } else {
-                        setActiveIndex(choice.index);
-                      }
+                      currentNav().goTo(choice.line, choice.index);
                       setVarChoice(null);
                     }}
                     className={`w-full text-left px-4 py-2 text-body-md font-mono whitespace-nowrap transition-colors duration-short3 ease-standard ${
@@ -1845,10 +1607,10 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
                 <>
                   <button onClick={() => goTo(0)} disabled={effectiveIndex === 0} className={navBtn} title="First move (↑)"><IconFirst /></button>
                   <button onClick={() => goTo(effectiveIndex - 1)} disabled={effectiveIndex === 0} className={navBtn} title="Previous move (←)"><IconPrev /></button>
-                  <span className="text-label-md text-on-surface-variant w-24 text-center select-none">
+                  <span className="text-label-md text-on-surface-variant font-mono w-24 text-center select-none">
                     {effectiveIndex === 0 || !currentMoveNode
                       ? "Start"
-                      : `Move ${getMoveNum(currentMoveNode)} ${currentMoveNode.color === "w" ? "(W)" : "(B)"}`}
+                      : `${getMoveNum(currentMoveNode)}${currentMoveNode.color === "w" ? "." : "..."}${currentMoveNode.san}${nagsToString(currentMoveNode.annotations.nags)}`}
                   </span>
                   <button onClick={() => goTo(effectiveIndex + 1)} disabled={effectiveIndex === maxIndex} className={navBtn} title="Next move (→)"><IconNext /></button>
                   <button onClick={() => goTo(maxIndex)} disabled={effectiveIndex === maxIndex} className={navBtn} title="Last move (↓)"><IconLast /></button>
@@ -1860,38 +1622,19 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
           </div>
         )}
 
-        {/* Annotation panel — hidden during edit */}
-        {useAnnotated && !movesEditor.active && (
-          annotationPanelCollapsed ? (
-            <button
-              onClick={() => setAnnotationPanelCollapsed(false)}
-              className="shrink-0 h-7 flex items-center justify-center gap-2 bg-surface-container-low text-on-surface-variant hover:bg-on-surface/8 transition-colors duration-short3 ease-standard text-label-md"
-              title="Show annotations"
-            ><span>Annotations</span> <span>▼</span></button>
-          ) : (
-            <div className="shrink-0 flex flex-col bg-surface-container-low rounded-md relative" style={{ height: `${annotationPanelHeight}em` }}>
-              {/* Drag handle */}
-              <div
-                onMouseDown={handlePanelDragStart}
-                className="absolute left-0 right-0 top-0 h-1 cursor-row-resize hover:bg-primary/40 z-10 transition-colors duration-short3 ease-standard"
-              />
-              <div className="flex items-center justify-between px-3 shrink-0">
-                <span className="text-label-sm text-on-surface-variant uppercase tracking-wider select-none">Annotations</span>
-                <button
-                  onClick={() => setAnnotationPanelCollapsed(true)}
-                  className="w-6 h-6 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 transition-colors duration-short3 ease-standard text-label-sm"
-                  title="Hide annotations"
-                >▲</button>
-              </div>
-              <div className="flex-1 overflow-y-auto px-3 pb-2 text-body-md text-on-surface">
-                {currentAnnotationText ? (
-                  <span>{currentAnnotationText}</span>
-                ) : (
-                  <span className="text-on-surface-variant italic">No annotation for this position</span>
-                )}
-              </div>
+        {/* Annotation editor — only while editing. In view mode comments are
+            read inline in the move list, so no separate panel is needed. */}
+        {movesEditor.active && (
+          <div className="shrink-0 flex flex-col bg-surface-container-low rounded-md relative" style={{ height: `${Math.max(annotationPanelHeight, 6)}em` }}>
+            {/* Drag handle */}
+            <div
+              onMouseDown={handlePanelDragStart}
+              className="absolute left-0 right-0 top-0 h-1 cursor-row-resize hover:bg-primary/40 z-10 transition-colors duration-short3 ease-standard"
+            />
+            <div className="flex-1 overflow-y-auto px-3 pb-2 pt-2 text-body-md text-on-surface">
+              <MovesEditorAnnotation editor={movesEditor} />
             </div>
-          )
+          </div>
         )}
       </div>
 
@@ -1906,7 +1649,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
           className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/40 z-10 transition-colors duration-short3 ease-standard"
         />
         {movesEditor.active ? (
-          <MovesEditorRightPanel editor={movesEditor} />
+          <MovesEditorMoveList editor={movesEditor} />
         ) : useAnnotated ? (
           <AnnotatedMoveList
             game={annotatedGame!}

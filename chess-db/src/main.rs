@@ -289,21 +289,30 @@ enum GameCommands {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Replace a game's main-line moves. `--moves` is a single string of
-    /// space-separated SAN tokens (e.g. "e4 e5 Nf3 Nc6"). Headers and
-    /// player linkage are kept; movetext, move_count, opening_line and the
-    /// game's `positions` rows are all rebuilt. Empty `--moves` clears all
-    /// moves, leaving just the result token in the PGN body.
+    /// Replace a game's moves. The input is PGN movetext and MAY contain
+    /// variations (parenthesised lines), NAGs and comments — they are stored
+    /// verbatim in the `pgn` blob. Headers and player linkage are kept;
+    /// move_count, opening_line and the `positions` index are rebuilt from the
+    /// MAIN LINE only (variations are deliberately excluded from the position
+    /// index). Empty input clears all moves, leaving just the result token.
     ///
-    /// NOTE: variations, NAGs and comments on the existing pgn blob are
-    /// dropped — the new body is plain main-line SAN. UI should warn before
-    /// invoking this on annotated games.
+    /// Pass the movetext via `--moves`, or set `--moves-stdin` to read it from
+    /// standard input (preferred for movetext with variations/comments — it
+    /// avoids command-line length limits and quoting issues on Windows).
+    ///
+    /// NOTE: only the derived main line is validated against the rules; moves
+    /// inside variations are trusted as supplied (the editor validates them
+    /// client-side).
     SetMoves {
         /// Game ID
         id: u32,
-        /// Space-separated SAN moves; pass an empty string to clear all moves
-        #[arg(long)]
+        /// PGN movetext; pass an empty string to clear all moves. Ignored when
+        /// `--moves-stdin` is set.
+        #[arg(long, default_value = "")]
         moves: String,
+        /// Read the movetext from stdin instead of `--moves`.
+        #[arg(long)]
+        moves_stdin: bool,
     },
     /// Replace a game's PGN header tags. `--tags` takes a JSON array of
     /// {name, value} pairs (the full new tag set, not a diff). Updates the
@@ -486,10 +495,13 @@ fn do_set_moves(
     ).with_context(|| format!("game {} not found", id))?;
 
     // Split headers (everything up to and including the blank line) from the
-    // existing body. We discard the body — the new one is built from SAN.
+    // existing body. We replace the body with the supplied movetext.
     let headers = split_headers(&old_pgn);
 
-    // Parse SAN tokens, walk the board, validate every move.
+    // Derive the MAIN LINE (variations/comments/NAGs/numbers stripped) and walk
+    // the board to validate it and rebuild the position index. The full
+    // movetext — including variations — is stored verbatim below.
+    let mainline = mainline_san_tokens(moves_str);
     let depth = SET_MOVES_POSITION_DEPTH;
     let mut board = Chess::default();
     let mut sans: Vec<String> = Vec::new();
@@ -500,7 +512,7 @@ fn do_set_moves(
         positions.push((0, h.0 as i64, None));
     }
 
-    for (idx, tok) in moves_str.split_whitespace().enumerate() {
+    for (idx, tok) in mainline.iter().enumerate() {
         let san: San = tok.parse()
             .with_context(|| format!("move {} (\"{}\") is not valid SAN", idx + 1, tok))?;
         let mv = san.to_move(&board)
@@ -530,10 +542,20 @@ fn do_set_moves(
     ).unwrap_or(None);
     let result_token = result.as_deref().unwrap_or("*");
 
-    let body = if sans.is_empty() {
+    // Store the full movetext verbatim so variations/comments/NAGs survive,
+    // appending the canonical result token. Defensive: strip a trailing result
+    // token the client may have included.
+    let mut body_movetext = moves_str.trim();
+    for r in ["1-0", "0-1", "1/2-1/2", "*"] {
+        if let Some(s) = body_movetext.strip_suffix(r) {
+            body_movetext = s.trim_end();
+            break;
+        }
+    }
+    let body = if body_movetext.is_empty() {
         result_token.to_string()
     } else {
-        format!("{} {}", sans.join(" "), result_token)
+        format!("{} {}", body_movetext, result_token)
     };
     // PGN spec: a blank line separates the tag pairs from the movetext.
     // `headers` already ends with one `\n` (from split_headers), so adding
@@ -561,6 +583,58 @@ fn do_set_moves(
 
     reporter.done(format!("Game {} updated: {} half-move(s).", id, move_count));
     Ok(())
+}
+
+/// Extract the main-line SAN tokens from PGN movetext, skipping comments
+/// (`{ ... }`), variations (`( ... )`, nested), move numbers, NAGs (`$n`) and
+/// result tokens. Used to validate and index a game's main line while the full
+/// movetext (variations included) is stored verbatim.
+fn mainline_san_tokens(movetext: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut depth: i32 = 0; // parenthesis (variation) depth
+    let mut in_brace = false; // inside a { } comment
+
+    for ch in movetext.chars() {
+        if in_brace {
+            if ch == '}' {
+                in_brace = false;
+            }
+            continue;
+        }
+        match ch {
+            '{' => {
+                if !cur.is_empty() { tokens.push(std::mem::take(&mut cur)); }
+                in_brace = true;
+            }
+            '(' => {
+                if !cur.is_empty() { tokens.push(std::mem::take(&mut cur)); }
+                depth += 1;
+            }
+            ')' => {
+                if !cur.is_empty() { tokens.push(std::mem::take(&mut cur)); }
+                if depth > 0 { depth -= 1; }
+            }
+            c if c.is_whitespace() => {
+                if !cur.is_empty() { tokens.push(std::mem::take(&mut cur)); }
+            }
+            _ => {
+                if depth == 0 { cur.push(ch); }
+            }
+        }
+    }
+    if !cur.is_empty() { tokens.push(cur); }
+
+    tokens
+        .into_iter()
+        .filter(|t| {
+            if t.starts_with('$') { return false; } // NAG
+            if matches!(t.as_str(), "1-0" | "0-1" | "1/2-1/2" | "*") { return false; } // result
+            // move number like "12." or "12..." (only digits and dots)
+            if t.chars().all(|c| c.is_ascii_digit() || c == '.') { return false; }
+            true
+        })
+        .collect()
 }
 
 /// Return the tag-section of `pgn` — every leading line that starts with `[`
@@ -930,8 +1004,16 @@ async fn main() -> Result<()> {
                 }
                 println!("{} game(s) deleted.", games.len());
             }
-            GameCommands::SetMoves { id, moves } => {
-                do_set_moves(&conn, id, &moves, &reporter)?;
+            GameCommands::SetMoves { id, moves, moves_stdin } => {
+                let movetext = if moves_stdin {
+                    use std::io::Read;
+                    let mut buf = String::new();
+                    std::io::stdin().read_to_string(&mut buf)?;
+                    buf
+                } else {
+                    moves
+                };
+                do_set_moves(&conn, id, &movetext, &reporter)?;
             }
             GameCommands::SetHeaders { id, tags } => {
                 do_set_headers(&conn, id, &tags, &reporter)?;
