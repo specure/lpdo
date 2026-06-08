@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 
 // In-app update *check* (notify-only). LPDO is distributed via GitHub Releases
-// as a .deb/AppImage (Linux) and an NSIS installer (Windows) — none of which can
-// be auto-replaced from inside the running app without breaking dpkg's package
-// database (the .deb files live in root-owned /usr). So instead of downloading
+// as a .deb/AppImage (Linux), an NSIS installer (Windows) and a .dmg (macOS) —
+// none of which can be auto-replaced from inside the running app without
+// breaking dpkg's package database (the .deb files live in root-owned /usr) or
+// re-mounting the .app. So instead of downloading
 // and installing, we just compare the running version against the latest
 // published release and surface a banner with a download link. Updating stays a
 // manual `apt install ./lpdo_X.deb` (or re-download), which never conflicts with

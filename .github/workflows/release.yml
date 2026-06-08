@@ -1,16 +1,25 @@
 name: Release
 
-# Builds the LPDO desktop app for Debian/Linux and Windows and attaches the
-# installers to a DRAFT GitHub release for review before publishing.
+# Builds the LPDO desktop app for Debian/Linux, Windows and macOS (Apple
+# Silicon) and attaches the installers to a DRAFT GitHub release for review
+# before publishing.
 #
 # Triggered by pushing a version tag (e.g. `git tag v0.1.0 && git push origin v0.1.0`)
 # or manually via "Run workflow" (provide a tag name).
 #
-# Requires one repository secret:
+# Repository secrets (Settings → Secrets and variables → Actions):
 #   CHESSVAULT_NORMALISE_API_KEY — baked into the chess-db sidecar at compile time
-#   so the released app can use the name-normalisation cache service. Without it the
-#   app still works (FIDE-only normalisation). Settings → Secrets and variables →
-#   Actions → New repository secret.
+#     so the released app can use the name-normalisation cache service. Without it
+#     the app still works (FIDE-only normalisation).
+#
+#   macOS code-signing + notarization (optional — if unset, the .dmg builds
+#   unsigned and Gatekeeper warns on first open):
+#     APPLE_CERTIFICATE          — base64 of the Developer ID Application .p12
+#     APPLE_CERTIFICATE_PASSWORD — the .p12 export password
+#     APPLE_SIGNING_IDENTITY     — e.g. "Developer ID Application: SPECURE GmbH (4XZ94A6MUA)"
+#     APPLE_API_ISSUER           — App Store Connect API Issuer ID (UUID)
+#     APPLE_API_KEY              — App Store Connect API Key ID
+#     APPLE_API_KEY_P8           — contents of the App Store Connect API .p8 file
 
 on:
   push:
@@ -43,6 +52,15 @@ jobs:
             # do I click?" choice. .msi (WiX) dropped; re-add if enterprise/MDM
             # (Intune/GPO) deployment is ever needed.
             bundles: nsis
+          # macOS on Apple Silicon (M1+). The macos-14 runner is arm64, so the
+          # default host target is aarch64-apple-darwin — no extra rustup target
+          # needed. The .dmg is signed with the SPECURE GmbH Developer ID cert
+          # and notarized (see the APPLE_* env on the build step), so Gatekeeper
+          # opens it cleanly with no right-click workaround.
+          - os: macos-14
+            sidecar_src: target/release/chess-db
+            sidecar_dst: chess-client/src-tauri/binaries/chess-db-aarch64-apple-darwin
+            bundles: dmg
 
     runs-on: ${{ matrix.os }}
 
@@ -94,10 +112,33 @@ jobs:
           mkdir -p "$(dirname "${{ matrix.sidecar_dst }}")"
           cp "${{ matrix.sidecar_src }}" "${{ matrix.sidecar_dst }}"
 
+      # macOS notarization authenticates with an App Store Connect API key. The
+      # key's .p8 is a file on disk, but secrets are strings, so materialise it
+      # into the runner's temp dir and hand tauri-action the path. macOS only —
+      # the other targets don't sign.
+      - name: Write notarization API key
+        if: matrix.os == 'macos-14'
+        shell: bash
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          printf '%s' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+
       - name: Build app and attach to draft release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS code-signing + notarization. tauri-action imports the cert into
+          # a temporary keychain and runs notarytool when these are present; on
+          # Linux/Windows they're unset and ignored. If the cert secret is empty
+          # the macOS build still succeeds — just unsigned.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
         with:
           projectPath: chess-client
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
