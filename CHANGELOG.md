@@ -5,6 +5,17 @@ All notable changes to LPDO are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Import keeps annotations** — PGN import now preserves comments, NAGs and
+  variations (and ChessBase `[%cal]`/`[%csl]`/`[%eval]`/… directives) instead of
+  flattening games to their main line, so your own annotated games keep their
+  analysis. ChessBase's bulky whole-game `[%evp]` eval profile is dropped.
+  Applies to newly imported games — games already in your database are left as
+  they are, and re-importing under the default duplicate policy skips them, so
+  it won't refresh them with annotations.
+
 ## [0.2.0] - 2026-06-05
 
 A major upgrade to the move editor.
