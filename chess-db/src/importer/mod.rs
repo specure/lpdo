@@ -2,7 +2,6 @@ pub mod visitor;
 
 use crate::importer::visitor::GameVisitor;
 use anyhow::Result;
-use regex::Regex;
 use rayon::prelude::*;
 use duckdb::Connection;
 use indicatif::{MultiProgress, ProgressBar};
@@ -856,14 +855,6 @@ fn escape_tag_value(value: &str) -> String {
     out
 }
 
-fn strip_pgn_comments(pgn_bytes: &[u8]) -> Vec<u8> {
-    // Strip all { ... } comments. Handles encoding-unsafe bytes via from_utf8_lossy.
-    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    let re = RE.get_or_init(|| Regex::new(r"\{[^}]*\}").unwrap());
-    let text = String::from_utf8_lossy(pgn_bytes);
-    re.replace_all(&text, "").into_owned().into_bytes()
-}
-
 /// Imports a single PGN payload.
 ///
 /// `collection_id`: the collection this import targets. Existing games matched
@@ -885,12 +876,13 @@ fn process_pgn_bytes(
     file_pb: Option<&ProgressBar>,
     fast: bool,
 ) -> Result<(usize, usize, usize)> {
-    let pgn_bytes = &strip_pgn_comments(pgn_bytes);
-
+    // Comments, NAGs and variations are preserved by the visitor (see
+    // GameVisitor) and stored in the game's movetext, so the PGN is parsed
+    // as-is — no pre-stripping.
     let mut visitor = GameVisitor::new(max_position_depth);
     let inner: Box<dyn Read> = match file_pb {
-        Some(pb) => Box::new(pb.wrap_read(std::io::Cursor::new(pgn_bytes.as_slice()))),
-        None => Box::new(std::io::Cursor::new(pgn_bytes.as_slice())),
+        Some(pb) => Box::new(pb.wrap_read(std::io::Cursor::new(pgn_bytes))),
+        None => Box::new(std::io::Cursor::new(pgn_bytes)),
     };
     let mut reader = Reader::new(LineCountingReader::new(inner));
 
