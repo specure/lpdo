@@ -1,0 +1,62 @@
+name: CI
+
+# Fast pre-merge checks so dependency bumps and code changes don't land
+# unverified:
+#   * frontend  — `npm ci` + the production build (tsc + vite), which catches
+#                 dependency-bump breakage and TypeScript errors.
+#   * chess-db  — the Rust sidecar's unit tests (importer, etc.).
+#
+# The full Tauri bundle (and the signed macOS/Windows installers) is built by
+# release.yml on a version tag, so it's intentionally NOT repeated here — this
+# stays fast enough to run on every push and pull request, including Dependabot.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref (e.g. rapid pushes / PR updates).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: chess-client/package-lock.json
+      - name: Install dependencies
+        working-directory: chess-client
+        run: npm ci
+      - name: Build (tsc + vite)
+        working-directory: chess-client
+        run: npm run build
+
+  chess-db:
+    name: chess-db tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '.'
+      - name: Test
+        run: cargo test -p chess-db
+      # Lint is advisory for now — there's pre-existing clippy debt, so a finding
+      # surfaces in the log without blocking the merge. Tighten to a hard gate
+      # once the backlog is cleared.
+      - name: Clippy (advisory)
+        run: cargo clippy -p chess-db
+        continue-on-error: true
