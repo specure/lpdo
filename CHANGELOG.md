@@ -5,18 +5,15 @@ All notable changes to LPDO are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-- **macOS (Apple Silicon) release** — the workflow now builds a signed and
-  notarized `.dmg` for `aarch64-apple-darwin` alongside the Linux and Windows
-  installers, so it opens on macOS without a Gatekeeper warning.
-
 ## [0.2.0] - 2026-06-05
 
 A major upgrade to the move editor.
 
 ### Added
+- **macOS (Apple Silicon) build** — a signed and notarized `.dmg` for
+  `aarch64-apple-darwin` now ships alongside the Linux and Windows installers,
+  so it opens on macOS without a Gatekeeper warning. (Added to this release
+  after the initial publish.)
 - **Lossless editing with variations** — playing an alternative move mid-game
   offers **New variation**, **New main line**, or **Overwrite**
   (ChessBase/Lichess-style); the full move tree is preserved on save.
