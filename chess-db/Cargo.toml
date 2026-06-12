@@ -10,7 +10,7 @@ path = "src/main.rs"
 [dependencies]
 # PGN parsing
 pgn-reader = "0.28.0"
-shakmaty = "0.29.0"
+shakmaty = "0.30.0"
 
 # Database
 duckdb = { version = "1.10500.0", features = ["bundled"] }
