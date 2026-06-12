@@ -10,6 +10,11 @@
 # ecosystem instead of a flood; major bumps stay individual (they deserve a
 # closer look). Tauri's crates + JS packages are grouped separately because the
 # Rust crate and @tauri-apps/api must share a major.minor.
+#
+# `rebase-strategy: disabled` on each ecosystem stops Dependabot from
+# auto-rebasing every open PR whenever main moves — that was re-triggering the
+# (slow) CI on long-lived/deferred PRs on every single push. Rebase on demand
+# with `@dependabot rebase` instead.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -17,6 +22,7 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    rebase-strategy: disabled
     groups:
       tauri:
         patterns:
@@ -32,6 +38,7 @@ updates:
     directory: "/chess-client"
     schedule:
       interval: weekly
+    rebase-strategy: disabled
     groups:
       tauri-js:
         patterns:
@@ -45,6 +52,7 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    rebase-strategy: disabled
     # The Rust toolchain is pinned deliberately via /rust-toolchain.toml; the
     # dtolnay action also pre-creates future-version branches, so Dependabot
     # otherwise proposes non-existent Rust versions (e.g. 1.100.0). Bump it by
