@@ -60,4 +60,4 @@ tikv-jemallocator = "0.6"
 # exceed usable RAM on small boxes and make heavy ops like index-positions
 # thrash/OOM).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_SystemInformation", "Win32_Foundation"] }
+windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation", "Win32_Foundation"] }
