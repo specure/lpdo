@@ -12,7 +12,7 @@ fn memory_limit_str() -> String {
     if total_kb == 0 {
         return "8GiB".to_string();
     }
-    let limit_gib = (total_kb as u64 * 80 / 100) / (1024 * 1024);
+    let limit_gib = (total_kb * 80 / 100) / (1024 * 1024);
     format!("{}GiB", limit_gib.max(1))
 }
 
