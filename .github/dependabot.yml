@@ -5,6 +5,11 @@
 # at the workspace root ("/") — pointing it at the member crates (the previous
 # default behaviour) produced PRs that updated nested lockfiles the build never
 # reads, so the fixes never took effect. See /.gitignore.
+#
+# Updates are grouped so routine patch/minor bumps arrive as ONE PR per
+# ecosystem instead of a flood; major bumps stay individual (they deserve a
+# closer look). Tauri's crates + JS packages are grouped separately because the
+# Rust crate and @tauri-apps/api must share a major.minor.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -13,13 +18,15 @@ updates:
       interval: weekly
     open-pull-requests-limit: 10
     groups:
-      # Keep the Tauri crates moving together (their versions are coupled, and
-      # the JS @tauri-apps packages must match the crate major.minor).
       tauri:
         patterns:
           - "tauri"
           - "tauri-*"
           - "wry"
+      cargo-patch-minor:
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: npm
     directory: "/chess-client"
@@ -29,8 +36,22 @@ updates:
       tauri-js:
         patterns:
           - "@tauri-apps/*"
+      npm-patch-minor:
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+    # The Rust toolchain is pinned deliberately via /rust-toolchain.toml; the
+    # dtolnay action also pre-creates future-version branches, so Dependabot
+    # otherwise proposes non-existent Rust versions (e.g. 1.100.0). Bump it by
+    # hand alongside rust-toolchain.toml instead.
+    ignore:
+      - dependency-name: "dtolnay/rust-toolchain"
+    groups:
+      actions:
+        patterns:
+          - "*"
