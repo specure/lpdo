@@ -53,7 +53,7 @@ scraper = "0.23"
 
 # Allocator — jemalloc avoids glibc heap corruption with DuckDB on Linux
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
-tikv-jemallocator = "0.6"
+tikv-jemallocator = "0.7"
 
 # Windows: read physical RAM via GlobalMemoryStatusEx so DuckDB's memory_limit
 # is tuned to the machine instead of the conservative 8GiB fallback (which can
