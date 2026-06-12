@@ -5,7 +5,9 @@ All notable changes to LPDO are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-06-12
+
+Annotated PGN import.
 
 ### Added
 - **Import keeps annotations** — PGN import now preserves comments, NAGs and
@@ -15,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Applies to newly imported games — games already in your database are left as
   they are, and re-importing under the default duplicate policy skips them, so
   it won't refresh them with annotations.
+
+### Changed
+- Updated to **Tauri 2.11** and applied dependency **security updates**
+  (rustls-webpki, tar, and related crates).
 
 ## [0.2.0] - 2026-06-05
 
@@ -79,7 +85,8 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/specure/lpdo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/specure/lpdo/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/specure/lpdo/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/specure/lpdo/releases/tag/v0.1.0
