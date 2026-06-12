@@ -23,10 +23,10 @@ reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-fea
 tokio = { version = "1", features = ["full"] }
 
 # Progress
-indicatif = "0.17"
+indicatif = "0.18"
 
 # Zip extraction
-zip = "6"
+zip = "8"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -53,11 +53,11 @@ scraper = "0.23"
 
 # Allocator — jemalloc avoids glibc heap corruption with DuckDB on Linux
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
-tikv-jemallocator = "0.6"
+tikv-jemallocator = "0.7"
 
 # Windows: read physical RAM via GlobalMemoryStatusEx so DuckDB's memory_limit
 # is tuned to the machine instead of the conservative 8GiB fallback (which can
 # exceed usable RAM on small boxes and make heavy ops like index-positions
 # thrash/OOM).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_SystemInformation", "Win32_Foundation"] }
+windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation", "Win32_Foundation"] }
