@@ -21,7 +21,10 @@ permissions:
 # Cancel superseded runs on the same ref (e.g. rapid pushes / PR updates).
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded runs on PR branches (rapid pushes), but never on main —
+  # every main commit should get a completed CI run, since releases are tagged
+  # off main.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   frontend:
