@@ -47,12 +47,24 @@ jobs:
   chess-db:
     name: chess-db tests
     runs-on: ubuntu-22.04
+    env:
+      # Cache Rust compilation via sccache, backed by the GitHub Actions cache.
+      # The win: PR branches (e.g. Dependabot) start near-cold because branch
+      # caches are isolated, so they recompile the world — sccache restores
+      # per-crate compilations from main's cache even when the lockfile differs,
+      # turning the slow dependency-bump builds into mostly cache hits.
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v6
       # Version kept in sync with /rust-toolchain.toml (the source of truth).
       - uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: clippy
+      - uses: mozilla-actions/sccache-action@v0.0.10
+      # Keep rust-cache too: it restores a ready target/ for the common
+      # lock-unchanged build (fastest path), while sccache covers the
+      # lock-changed / cold-branch case with granular per-crate hits.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: '.'
@@ -60,3 +72,6 @@ jobs:
         run: cargo test -p chess-db
       - name: Clippy
         run: cargo clippy -p chess-db -- -D warnings
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
