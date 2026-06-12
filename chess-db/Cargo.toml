@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 # PGN parsing
-pgn-reader = "0.28.0"
+pgn-reader = "0.29.0"
 shakmaty = "0.29.0"
 
 # Database
