@@ -154,7 +154,7 @@ pub fn normalise_players(
             updated += 1;
             completed += 1;
             pb.inc(1);
-            if completed % report_every == 0 {
+            if completed.is_multiple_of(report_every) {
                 reporter.progress(completed as u64, total as u64, format!("Cached {} / {} players", completed, total));
             }
         }
@@ -250,7 +250,7 @@ pub fn normalise_players(
     for result in result_rx {
         // Batch pause: after every batch_size FIDE lookups (not counting the cache
         // pre-pass). Set the pause flag so workers also stop requesting during the break.
-        if fide_done > 0 && fide_done % batch_size == 0 {
+        if fide_done > 0 && fide_done.is_multiple_of(batch_size) {
             pb.set_message(format!(
                 "{}✓ {}? {}✗  — pausing {}s…",
                 updated, not_found, errors,

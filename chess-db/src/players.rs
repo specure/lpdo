@@ -91,7 +91,7 @@ pub fn import(conn: &Connection, path: &Path, reporter: &Reporter) -> Result<()>
             }
         };
 
-        if processed % 5000 == 0 {
+        if processed.is_multiple_of(5000) {
             reporter.progress(processed, total, format!("Imported {} / {} players", processed, total));
         }
 

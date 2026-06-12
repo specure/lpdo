@@ -1,3 +1,9 @@
+// The import/normalise pipeline has a handful of functions whose parameters are
+// genuinely all needed (DB handle, progress reporter, several independent knobs).
+// Bundling them into context structs wouldn't make the call sites clearer, so we
+// opt out of the arity lint crate-wide rather than scatter per-function allows.
+#![allow(clippy::too_many_arguments)]
+
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
@@ -16,6 +22,10 @@ mod twic;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
+
+/// A game row fetched for the `games delete` confirmation prompt:
+/// (id, white name, black name, date, event).
+type GameDeleteRow = (u32, String, String, Option<String>, Option<String>);
 
 /// Default storage directory for TWIC zip archives. Used by `download` and
 /// `import` when `--dir` is omitted. Matches the path the wizard and
@@ -184,6 +194,10 @@ enum Commands {
     },
 }
 
+// One subcommand variant carries many more inline args than the others; boxing
+// it would fight clap's derive for no real benefit (these are short-lived,
+// stack-allocated once at startup).
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum SearchCommands {
     /// Search games (unified: by player, by white/black, or by metadata)
@@ -883,7 +897,7 @@ fn do_backup(
         out.push_str(pgn.trim_end());
         out.push_str("\n\n");
         let done = i as u64 + 1;
-        if done % step == 0 || done == total {
+        if done.is_multiple_of(step) || done == total {
             reporter.progress(done, total, "");
         }
     }
@@ -964,7 +978,7 @@ async fn main() -> Result<()> {
             }
             GameCommands::Delete { ids, yes_all } => {
                 // Look up all games first; bail if any ID is not found
-                let mut games: Vec<(u32, String, String, Option<String>, Option<String>)> = Vec::new();
+                let mut games: Vec<GameDeleteRow> = Vec::new();
                 for id in &ids {
                     let row = conn.query_row(
                         "SELECT g.id, pw.name, pb.name, g.date, g.event
@@ -1092,7 +1106,7 @@ async fn main() -> Result<()> {
                 let current: Option<Option<String>> = conn.query_row(
                     "SELECT visibility FROM games WHERE id = ?",
                     duckdb::params![id],
-                    |r| Ok(r.get(0)?),
+                    |r| r.get(0),
                 ).ok();
                 let current = current.with_context(|| format!("game {} not found", id))?;
                 if current.as_deref() == Some(v.as_str()) {

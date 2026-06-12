@@ -517,8 +517,8 @@ pub fn position_moves(
     let total: i64 = stats.iter().map(|m| m.games).sum();
     println!("\nPosition moves ({} to move, {})  —  {} game(s)\n", side, pos_desc, total);
     println!(
-        "  {:<6}  {:>6}   {:>3} {:>3} {:>3}   {:<16} {:<15} {}",
-        "Move", "Games", "W%", "D%", "L%", "Elo p25/p50/p75", "Perf (±SE)", "Top players"
+        "  {:<6}  {:>6}   {:>3} {:>3} {:>3}   {:<16} {:<15} Top players",
+        "Move", "Games", "W%", "D%", "L%", "Elo p25/p50/p75", "Perf (±SE)"
     );
     println!("  {}", "─".repeat(74));
 

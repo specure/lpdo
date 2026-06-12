@@ -54,9 +54,5 @@ jobs:
           workspaces: '.'
       - name: Test
         run: cargo test -p chess-db
-      # Lint is advisory for now — there's pre-existing clippy debt, so a finding
-      # surfaces in the log without blocking the merge. Tighten to a hard gate
-      # once the backlog is cleared.
-      - name: Clippy (advisory)
-        run: cargo clippy -p chess-db
-        continue-on-error: true
+      - name: Clippy
+        run: cargo clippy -p chess-db -- -D warnings

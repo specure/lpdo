@@ -7,6 +7,7 @@ use shakmaty::zobrist::{Zobrist64, ZobristHash};
 use shakmaty::{Chess, EnPassantMode, Position};
 
 /// Accumulated tag data between begin_tags and begin_movetext.
+#[derive(Default)]
 pub struct Tags {
     pub white: Option<String>,
     pub black: Option<String>,
@@ -27,30 +28,6 @@ pub struct Tags {
     /// True when the game starts from a non-standard position (Chess960 or
     /// mid-game fragment).  Such games are skipped by the importer.
     pub non_standard: bool,
-}
-
-impl Default for Tags {
-    fn default() -> Self {
-        Self {
-            white: None,
-            black: None,
-            white_elo: None,
-            black_elo: None,
-            white_fide_id: None,
-            black_fide_id: None,
-            event: None,
-            site: None,
-            date: None,
-            event_date: None,
-            round: None,
-            result: None,
-            eco: None,
-            chessbase_id: None,
-            pgn_headers: String::new(),
-            start_pos: Chess::default(),
-            non_standard: false,
-        }
-    }
 }
 
 /// State accumulated during move parsing.

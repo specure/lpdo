@@ -1065,8 +1065,8 @@ fn get_or_create_player(
         // Back-fill: if this game brings a FIDE ID and the existing player
         // doesn't have one yet, queue an UPDATE so the player row gets it.
         if let Some(fid) = fide_id {
-            if !player_fide_id.contains_key(&id) {
-                player_fide_id.insert(id, fid);
+            if let std::collections::hash_map::Entry::Vacant(e) = player_fide_id.entry(id) {
+                e.insert(fid);
                 fide_id_cache.insert(fid, id);
                 backfill.push((id, fid));
             }
