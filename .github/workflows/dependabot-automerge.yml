@@ -1,0 +1,45 @@
+name: Dependabot auto-merge
+
+# Auto-merges ROUTINE Dependabot updates once CI is green — so weekly
+# patch/minor bumps don't pile up in the PR queue. It is deliberately narrow:
+#
+#   * Triggers on `workflow_run` of the CI workflow, so it only ever runs AFTER
+#     CI has finished — and the `conclusion == success` guard means a red build
+#     never merges. (No branch protection required for the gate.)
+#   * Only the grouped patch/minor branches (`*-patch-minor-*`, defined in
+#     dependabot.yml) are eligible. Major/breaking bumps get individual branches
+#     and the Tauri group needs coordinated Rust+JS bumps — those are NOT
+#     auto-merged and still come to a human.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    if: >
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]' &&
+      contains(github.event.workflow_run.head_branch, 'patch-minor')
+    steps:
+      - name: Merge the PR for this green CI run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          NUM=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open \
+                  --json number --jq '.[0].number // empty')
+          if [ -z "$NUM" ]; then
+            echo "No open PR for branch $BRANCH — nothing to merge."
+            exit 0
+          fi
+          echo "CI green on routine update PR #$NUM ($BRANCH) — squash-merging."
+          gh pr merge "$NUM" --repo "$REPO" --squash --delete-branch
