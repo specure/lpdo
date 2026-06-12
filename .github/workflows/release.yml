@@ -90,7 +90,7 @@ jobs:
 
       - name: Setup Rust
         # Version kept in sync with /rust-toolchain.toml (the source of truth).
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.100.0
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
