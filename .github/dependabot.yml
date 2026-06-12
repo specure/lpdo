@@ -1,0 +1,36 @@
+# Dependabot configuration.
+#
+# Rust is a Cargo *workspace*: the whole tree resolves to the single root
+# Cargo.lock, and per-member lockfiles are ignored by the build. So point cargo
+# at the workspace root ("/") — pointing it at the member crates (the previous
+# default behaviour) produced PRs that updated nested lockfiles the build never
+# reads, so the fixes never took effect. See /.gitignore.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      # Keep the Tauri crates moving together (their versions are coupled, and
+      # the JS @tauri-apps packages must match the crate major.minor).
+      tauri:
+        patterns:
+          - "tauri"
+          - "tauri-*"
+          - "wry"
+
+  - package-ecosystem: npm
+    directory: "/chess-client"
+    schedule:
+      interval: weekly
+    groups:
+      tauri-js:
+        patterns:
+          - "@tauri-apps/*"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

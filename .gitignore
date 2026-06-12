@@ -1,6 +1,12 @@
 # Rust build artifacts (workspace + every crate)
 target/
 
+# Cargo workspace: only the root Cargo.lock is authoritative. Member crates must
+# not carry their own lockfiles — Cargo ignores them in a workspace, and
+# Dependabot would otherwise "fix" lockfiles the build never reads.
+/chess-db/Cargo.lock
+/chess-client/src-tauri/Cargo.lock
+
 # Node
 node_modules/
 
