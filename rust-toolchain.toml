@@ -1,0 +1,11 @@
+# Pins the Rust toolchain so local builds and CI share one compiler — and one
+# clippy lint set. With the CI clippy step running `-D warnings`, a new stable
+# release could otherwise introduce a lint that fails the build with no code
+# change; pinning makes toolchain upgrades an explicit, reviewable bump here.
+#
+# Keep this version in sync with the `dtolnay/rust-toolchain@<version>` pins in
+# .github/workflows/ci.yml and .github/workflows/release.yml.
+[toolchain]
+channel = "1.96.0"
+components = ["clippy"]
+profile = "minimal"
