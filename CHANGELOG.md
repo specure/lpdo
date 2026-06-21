@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **CLI works while the server is running** — when the `lpdo-server` daemon is up
+  (and holds the database), long-running `chess-db` commands (download, import,
+  import-pgn, index-positions, games dedup/cleanup, players normalise/import/export,
+  backup) now **proxy to the daemon over HTTP** and stream the same progress,
+  instead of failing on the database lock. Falls back to direct access when no
+  daemon is running. New `--local` (force direct), `--remote` (force proxy), and
+  `--port` / `$LPDO_PORT` flags; Ctrl-C cancels the remote job; `--json` output is
+  unchanged. (Phase A of the CLI proxy — read/query commands come next.)
+
 ## [0.4.0] - 2026-06-21
 
 Player merge in the app, a reorganised Maintenance screen, and a smarter

@@ -15,6 +15,7 @@ mod jobs;
 mod normalise;
 mod players;
 mod progress;
+mod proxy;
 mod reporter;
 mod scheduler;
 mod search;
@@ -22,7 +23,7 @@ mod serve;
 mod service;
 mod twic;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 
@@ -67,6 +68,21 @@ struct Cli {
     /// Output progress as newline-delimited JSON (for machine consumption)
     #[arg(long, global = true)]
     json: bool,
+
+    /// Port of the lpdo-server daemon to proxy commands to (default 7777, or
+    /// $LPDO_PORT). When the daemon is running it owns the database, so
+    /// long-running commands are forwarded to it over HTTP.
+    #[arg(long, global = true)]
+    port: Option<u16>,
+
+    /// Force direct database access — never proxy to a running daemon. Also via
+    /// $LPDO_LOCAL=1. (The command will fail if the daemon holds the DB lock.)
+    #[arg(long, global = true)]
+    local: bool,
+
+    /// Force proxying to the daemon; error if none is reachable.
+    #[arg(long, global = true, conflicts_with = "local")]
+    remote: bool,
 
     #[command(subcommand)]
     command: Commands,
@@ -930,6 +946,88 @@ fn do_backup(
     Ok(())
 }
 
+/// Map a CLI command to the daemon job that performs it, or `None` if the
+/// command isn't a long-running job (those aren't proxyable yet — Phase B). The
+/// param keys match what `jobs::run_job` reads server-side. Some advanced flags
+/// (e.g. `--max-position-depth`) have no job param because the server hardcodes
+/// them; `warn_dropped_flags` notes when a non-default value is given.
+fn job_spec_for(command: &Commands) -> Option<proxy::JobSpec> {
+    use serde_json::json;
+    let (job_type, params) = match command {
+        Commands::Download { from, to, dir } => (
+            "download",
+            json!({ "from": from, "to": to, "dir": dir.to_string_lossy() }),
+        ),
+        Commands::Import { dir, fast, skip_dedup, .. } => (
+            "import",
+            json!({ "dir": dir.to_string_lossy(), "fast": fast, "skip_dedup": skip_dedup }),
+        ),
+        Commands::ImportPgn { path, collection, private, on_duplicate, fast, .. } => (
+            "import_pgn",
+            json!({
+                "path": path.to_string_lossy(), "collection": collection,
+                "on_duplicate": on_duplicate, "fast": fast, "private": private,
+            }),
+        ),
+        Commands::IndexPositions { rebuild, fast, .. } => (
+            "index_positions",
+            json!({ "rebuild": rebuild, "fast": fast }),
+        ),
+        Commands::Games { subcommand: GameCommands::Dedup { dry_run } } => (
+            "dedup_games",
+            json!({ "dry_run": dry_run }),
+        ),
+        Commands::Games { subcommand: GameCommands::Cleanup { non_standard, dry_run } } => (
+            "cleanup",
+            json!({ "non_standard": non_standard, "dry_run": dry_run }),
+        ),
+        Commands::Players {
+            subcommand: PlayersCommands::Normalise { dry_run, stop_on_errors, limit, .. },
+        } => (
+            "normalise",
+            json!({ "dry_run": dry_run, "stop_on_errors": stop_on_errors, "limit": limit }),
+        ),
+        Commands::Players { subcommand: PlayersCommands::Import { path } } => (
+            "players_import",
+            json!({ "path": path.to_string_lossy() }),
+        ),
+        Commands::Players { subcommand: PlayersCommands::Export { path } } => (
+            "players_export",
+            json!({ "path": path.to_string_lossy() }),
+        ),
+        Commands::Backup { collection, dir } => (
+            "backup",
+            json!({ "collection": collection, "dir": dir.to_string_lossy() }),
+        ),
+        _ => return None,
+    };
+    Some(proxy::JobSpec { job_type: job_type.to_string(), params })
+}
+
+/// Warn (on stderr) when a non-default value is supplied for a flag the daemon
+/// can't honour over the proxy because the job hardcodes it. Only fires for
+/// non-default values, so the common case is silent.
+fn warn_dropped_flags(command: &Commands) {
+    let warn = |flag: &str| {
+        eprintln!("note: --{flag} is ignored when proxying to the daemon (it uses its built-in default)");
+    };
+    match command {
+        Commands::Import { max_position_depth, reindex_threshold, .. } => {
+            if *max_position_depth != 40 { warn("max-position-depth"); }
+            if *reindex_threshold != 10 { warn("reindex-threshold"); }
+        }
+        Commands::ImportPgn { max_position_depth, reindex_threshold, skip_dedup, .. } => {
+            if *max_position_depth != 40 { warn("max-position-depth"); }
+            if *reindex_threshold != 10 { warn("reindex-threshold"); }
+            if *skip_dedup { warn("skip-dedup"); }
+        }
+        Commands::IndexPositions { max_position_depth, .. } if *max_position_depth != 40 => {
+            warn("max-position-depth");
+        }
+        _ => {}
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -952,6 +1050,47 @@ async fn main() -> Result<()> {
     // running server may hold open.
     if matches!(cli.command, Commands::Serve { .. }) {
         jobs::restore_snapshot_if_present(&cli.db)?;
+    }
+
+    // ── CLI → daemon proxy ────────────────────────────────────────────────────
+    // The lpdo-server daemon owns the database (single-writer lock), so when it's
+    // running we forward long-running "job" commands to it over HTTP rather than
+    // open the file here. `serve` itself must always open directly.
+    if !matches!(cli.command, Commands::Serve { .. }) {
+        let force_local = cli.local
+            || std::env::var("LPDO_LOCAL").map(|v| v == "1" || v == "true").unwrap_or(false);
+        let port = cli
+            .port
+            .or_else(|| std::env::var("LPDO_PORT").ok().and_then(|v| v.parse().ok()))
+            .unwrap_or(7777);
+
+        if !force_local {
+            if let Some(daemon) = proxy::detect_daemon(port).await {
+                // Surface a CLI/daemon version mismatch — a common gotcha when a
+                // stale `chess-db` on PATH talks to a freshly-built daemon.
+                if daemon.version != env!("CARGO_PKG_VERSION") {
+                    eprintln!(
+                        "note: this CLI is v{} but the daemon is v{} (API v{}) — they may disagree on behaviour",
+                        env!("CARGO_PKG_VERSION"), daemon.version, daemon.api_version,
+                    );
+                }
+                match job_spec_for(&cli.command) {
+                    Some(spec) => {
+                        warn_dropped_flags(&cli.command);
+                        return proxy::run_job_proxied(port, spec, cli.json).await;
+                    }
+                    None => bail!(
+                        "the lpdo-server daemon is running and holds the database lock, so \
+                         this command can't run directly, and it isn't proxyable yet (only \
+                         long-running job commands are, for now). Stop the daemon \
+                         (systemctl --user stop lpdo-server) and retry, or pass --local."
+                    ),
+                }
+            } else if cli.remote {
+                bail!("--remote: no lpdo-server daemon reachable on 127.0.0.1:{port}");
+            }
+            // No daemon and not --remote → fall through to direct database access.
+        }
     }
 
     let spinner = reporter.spinner();
