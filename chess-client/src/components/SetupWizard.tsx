@@ -4,6 +4,7 @@ import { useSidecarProgress } from "../hooks/useSidecarProgress";
 import AddGameDialog from "./AddGameDialog";
 import { ProfileSetupForm, loadMyPlayer, saveMyPlayer } from "./MyStatsWidget";
 import { TwicCredit, useTwicAck } from "./TwicCredit";
+import { getTwicFrom, setTwicFrom } from "../twicPrefs";
 import { PlayerInfo } from "../types";
 
 interface Props {
@@ -310,7 +311,8 @@ function StepProgress({ progress, label, cancellable = true }: { progress: Retur
 // Download and import TWIC in a single step (mirrors the Maintenance TWIC box).
 // The step counts as complete once issues are imported into the database.
 function TwicStep({ completed, onComplete, onRunningChange }: { completed: boolean; onComplete: () => void; onRunningChange: (r: boolean) => void }) {
-  const [fromIssue, setFromIssue] = useState("920");
+  // Shared with the Maintenance panel so the starting issue stays in sync.
+  const [fromIssue, setFromIssue] = useState(getTwicFrom());
   const [rerunning, setRerunning] = useState(false);
   const [twicAck, setTwicAck] = useTwicAck();
   const download = useSidecarProgress();
@@ -354,7 +356,7 @@ function TwicStep({ completed, onComplete, onRunningChange }: { completed: boole
           <input
             type="number"
             value={fromIssue}
-            onChange={(e) => setFromIssue(e.target.value)}
+            onChange={(e) => { setFromIssue(e.target.value); setTwicFrom(e.target.value); }}
             disabled={download.running || download.done}
             className="w-32 h-10 px-3 rounded-sm bg-transparent text-on-surface text-body-md font-mono border border-outline focus:outline-none focus:border-primary disabled:opacity-50 transition-colors duration-short3 ease-standard"
           />
