@@ -4,8 +4,9 @@ use crate::reporter::Reporter;
 use std::path::Path;
 
 /// Export all normalised players (fide_id IS NOT NULL AND name_normalised = TRUE)
-/// to a CSV file: fide_id,name
-pub fn export(conn: &Connection, path: &Path) -> Result<()> {
+/// to a CSV file: fide_id,name. Returns the number of rows written; on an empty
+/// result no file is created and `0` is returned.
+pub fn export(conn: &Connection, path: &Path) -> Result<usize> {
     let mut stmt = conn.prepare(
         "SELECT fide_id, name FROM players
          WHERE fide_id IS NOT NULL AND name_normalised = TRUE
@@ -19,7 +20,7 @@ pub fn export(conn: &Connection, path: &Path) -> Result<()> {
 
     if rows.is_empty() {
         println!("No normalised players to export.");
-        return Ok(());
+        return Ok(0);
     }
 
     let mut wtr = csv::Writer::from_path(path)
@@ -32,7 +33,7 @@ pub fn export(conn: &Connection, path: &Path) -> Result<()> {
     wtr.flush()?;
 
     println!("Exported {} normalised player(s) to {}.", rows.len(), path.display());
-    Ok(())
+    Ok(rows.len())
 }
 
 /// Import normalised player names from a CSV file produced by `export`.

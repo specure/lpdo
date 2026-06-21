@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Maintenance screen grouped into tabs** — the tools are split across
   **Databases**, **Players** and **Others** tabs (with the database overview
   pinned above) so the screen is no longer one long crowded grid.
+- **Player reference file: export + a file picker for import** — the *Player
+  reference file* card can now **export** your normalised players to a
+  date-stamped CSV (e.g. `20260621-players.csv`) in a chosen folder, with a
+  *Reveal in file manager* shortcut. The import path now has a **File…** picker
+  instead of only a plain text field.
 
 ## [0.3.0] - 2026-06-12
 

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { TwicCredit, useTwicAck } from "./TwicCredit";
 import { useSidecarProgress } from "../hooks/useSidecarProgress";
 import { getSchedule, updateSchedule, type ScheduleInfo } from "../api";
@@ -146,32 +147,114 @@ function DatabaseInfo({ status }: { status: StatusInfo | null }) {
 
 // ── Players section ───────────────────────────────────────────────────────────
 
+// Small outline button for the file/folder pickers (matches AddGameDialog).
+const pickerBtn =
+  "h-9 px-3 inline-flex items-center rounded-sm border border-outline text-on-surface-variant text-label-md hover:bg-on-surface/8 transition-colors duration-short3 ease-standard shrink-0";
+
+// Where player-reference exports are written by default. Mirrors the backup
+// folder; the chosen path is remembered across sessions.
+const PLAYERS_EXPORT_DIR = "~/lpdo/backup";
+const PLAYERS_EXPORT_DIR_KEY = "playersExportDir";
+
 function PlayersSection() {
   const [path, setPath] = useState("");
-  const progress = useSidecarProgress("maint-players-import");
+  const [exportDir, setExportDir] = useState(
+    () => localStorage.getItem(PLAYERS_EXPORT_DIR_KEY) || PLAYERS_EXPORT_DIR,
+  );
+  const importProgress = useSidecarProgress("maint-players-import");
+  const exportProgress = useSidecarProgress("maint-players-export");
 
-  function run() {
-    void progress.run(["players", "import", path]);
+  // Remember the export folder whenever the user edits or picks a new one.
+  useEffect(() => { localStorage.setItem(PLAYERS_EXPORT_DIR_KEY, exportDir); }, [exportDir]);
+
+  function runImport() {
+    void importProgress.run(["players", "import", path]);
+  }
+
+  function runExport() {
+    void exportProgress.run(["players", "export", "--dir", exportDir.trim() || PLAYERS_EXPORT_DIR]);
+  }
+
+  async function pickFile() {
+    const picked = await openDialog({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "CSV", extensions: ["csv"] }],
+    });
+    if (typeof picked === "string") setPath(picked);
+  }
+
+  async function pickFolder() {
+    const picked = await openDialog({ multiple: false, directory: true });
+    if (typeof picked === "string") setExportDir(picked);
   }
 
   return (
     <SectionCard title="Player reference file">
-      <p className="text-body-sm text-on-surface-variant">Re-import or update the player reference file with a newer version.</p>
-      {!progress.running && !progress.done && (
-        <div className="space-y-2">
-          <input
-            type="text"
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-            placeholder="/path/to/players.csv"
-            className="w-full h-9 px-3 rounded-sm bg-transparent text-on-surface placeholder:text-on-surface-variant text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
-          />
-          <ActionButton onClick={run} disabled={!path.trim()}>Import file…</ActionButton>
+      <p className="text-body-sm text-on-surface-variant">
+        Import a player reference file (FIDE-canonical names), or export your normalised players to a
+        timestamped CSV — e.g.{" "}
+        <span className="font-mono text-on-surface-variant">20260621-players.csv</span>.
+      </p>
+
+      <div className="space-y-3">
+        {/* Import */}
+        <div className="space-y-1">
+          <div className="text-label-md text-on-surface">Import</div>
+          {!importProgress.running && !importProgress.done && (
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={path}
+                  onChange={(e) => setPath(e.target.value)}
+                  placeholder="/path/to/players.csv"
+                  className="flex-1 h-9 px-3 rounded-sm bg-transparent text-on-surface placeholder:text-on-surface-variant text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
+                />
+                <button onClick={pickFile} className={pickerBtn}>File…</button>
+              </div>
+              <ActionButton onClick={runImport} disabled={!path.trim()}>Import file…</ActionButton>
+            </div>
+          )}
+          {(importProgress.running || importProgress.done) && (
+            <ProgressSection progress={importProgress} label="Importing…" />
+          )}
         </div>
-      )}
-      {(progress.running || progress.done) && (
-        <ProgressSection progress={progress} label="Importing…" />
-      )}
+
+        {/* Export */}
+        <div className="space-y-1 pt-3">
+          <div className="text-label-md text-on-surface">Export</div>
+          {!exportProgress.running && !exportProgress.done && (
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={exportDir}
+                  onChange={(e) => setExportDir(e.target.value)}
+                  placeholder={PLAYERS_EXPORT_DIR}
+                  className="flex-1 h-9 px-3 rounded-sm bg-transparent text-on-surface placeholder:text-on-surface-variant text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
+                />
+                <button onClick={pickFolder} className={pickerBtn}>Folder…</button>
+              </div>
+              <ActionButton onClick={runExport}>Export to a file</ActionButton>
+            </div>
+          )}
+          {(exportProgress.running || exportProgress.done) && (
+            <ProgressSection
+              progress={exportProgress}
+              label="Exporting…"
+              extra={exportProgress.donePath && (
+                <button
+                  onClick={() => { void revealItemInDir(exportProgress.donePath!); }}
+                  className="h-7 px-3 inline-flex items-center rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 transition-all duration-short3 ease-standard"
+                >
+                  Reveal in file manager
+                </button>
+              )}
+            />
+          )}
+        </div>
+      </div>
     </SectionCard>
   );
 }
