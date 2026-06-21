@@ -1,0 +1,18 @@
+# lpdo-desktop — metapackage for the default desktop install: the GUI plus the
+# system server. No files of its own.
+name: lpdo-desktop
+arch: all
+platform: linux
+version: ${LPDO_VERSION}
+section: metapackages
+priority: optional
+maintainer: "SPECURE GmbH <jozef.svrcek@specure.com>"
+homepage: "https://github.com/specure/lpdo"
+license: Apache-2.0
+description: |
+  LPDO desktop (metapackage).
+  Installs the LPDO graphical app and the system lpdo-server daemon together.
+depends:
+  - lpdo (= ${LPDO_VERSION})
+  - lpdo-server (= ${LPDO_VERSION})
+contents: []

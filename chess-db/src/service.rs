@@ -4,6 +4,11 @@
 //! on login, restarts on failure, and owns the database read-write so the server
 //! is always available and runs the in-process update scheduler — independent of
 //! the desktop app. Windows/macOS keep the app-managed model for now.
+//!
+//! Note: on an apt-managed install the **`lpdo-server` .deb** provides a systemd
+//! *system* service (data under `/var/lib/lpdo`) instead — that's authoritative
+//! there. This per-user install is for the AppImage / dev / non-packaged case;
+//! only one server can hold the DB lock + port 7777, so don't run both.
 
 use crate::ServiceCommands;
 use anyhow::Result;

@@ -1,0 +1,38 @@
+[Unit]
+Description=LPDO chess database server
+Documentation=https://github.com/specure/lpdo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lpdo
+Group=lpdo
+# chess-db's data paths derive from dirs::home_dir(), which honours $HOME on
+# Linux — so pointing HOME at the state dir places the database, TWIC zips, etc.
+# under /var/lib/lpdo/.chess-db/ with no code change.
+Environment=HOME=/var/lib/lpdo
+WorkingDirectory=/var/lib/lpdo
+ExecStart=/usr/bin/chess-db serve
+Restart=on-failure
+RestartSec=5
+
+# systemd creates and owns /var/lib/lpdo (lpdo:lpdo) before ExecStart, so the
+# package's postinst only has to create the user/group, not the directory.
+StateDirectory=lpdo
+StateDirectoryMode=0750
+
+# Hardening — compatible with a localhost listener writing to its state dir.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

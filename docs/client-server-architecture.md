@@ -177,9 +177,48 @@ dedicated box; only the host the client points at changes.
 
 | Platform | Installer | Component selection | Server runs as |
 |----------|-----------|---------------------|----------------|
-| Linux    | two `.deb`s (`lpdo`, `lpdod`) + an `lpdo-desktop` metapackage | via package choice (`apt`) | systemd service |
+| Linux    | `.deb`s (`lpdo-cli`, `lpdo-server`, `lpdo`) + an `lpdo-desktop` metapackage **(implemented)** | via package choice (`apt`) | systemd **system** service |
 | Windows  | one NSIS `.exe` (or MSI) | **yes** — NSIS components page / MSI feature tree | Windows Service |
 | macOS    | one `.pkg` (not `.dmg`) | **yes** — Installer "Custom Install" pane | launchd daemon |
+
+> **Linux is shipped (Phase 1).** Windows/macOS component selection is tracked
+> separately. The Linux family below is what the release builds today.
+
+### Installing on Linux (apt packages)
+
+The release attaches four `.deb`s:
+
+- **`lpdo-cli`** — the `chess-db` binary at `/usr/bin/chess-db` (CLI + client).
+- **`lpdo-server`** — the daemon as a **systemd system service** running as the
+  `lpdo` user, with the database under **`/var/lib/lpdo`** (`Depends: lpdo-cli`).
+- **`lpdo`** — the GUI (Tauri); `Recommends: lpdo-server`.
+- **`lpdo-desktop`** — metapackage pulling in `lpdo` + `lpdo-server`.
+
+```bash
+sudo apt install ./lpdo-desktop_*.deb ./lpdo_*.deb ./lpdo-server_*.deb ./lpdo-cli_*.deb   # full desktop
+sudo apt install ./lpdo-cli_*.deb                                                          # CLI only (thin client)
+sudo apt install ./lpdo-server_*.deb ./lpdo-cli_*.deb                                       # headless server box
+```
+
+Installing `lpdo-server` creates the `lpdo` user + `/var/lib/lpdo` and starts the
+service (listening on `127.0.0.1:7777`). Removing it keeps the data; `purge`
+keeps it too (the DB is large/expensive to rebuild) and prints how to delete it.
+
+**Per-user vs system service.** The runtime `chess-db service install` writes a
+*per-user* unit (`~/.config/systemd/user/lpdo-server.service`, data in
+`~/.chess-db`) — still used by the AppImage / dev. On an apt-managed host the
+**system** service is authoritative; only one server can hold the DB lock + port
+7777, so disable any per-user one: `systemctl --user disable --now lpdo-server`.
+
+**Migrating existing `~/.chess-db` data to the system server:**
+
+```bash
+sudo systemctl stop lpdo-server
+sudo install -d -o lpdo -g lpdo -m 0750 /var/lib/lpdo/.chess-db
+sudo cp -a ~/.chess-db/chess.db /var/lib/lpdo/.chess-db/chess.db
+sudo chown -R lpdo:lpdo /var/lib/lpdo
+sudo systemctl start lpdo-server
+```
 
 - **Linux** — two single-purpose packages. Keep the laptop install one command
   via a metapackage `lpdo-desktop` that depends on both (preferred), or

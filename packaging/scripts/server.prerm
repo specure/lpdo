@@ -1,0 +1,20 @@
+#!/bin/sh
+# prerm for lpdo-server — stop the service on removal.
+set -e
+
+case "$1" in
+  remove|deconfigure)
+    if [ -d /run/systemd/system ]; then
+      if command -v deb-systemd-invoke >/dev/null 2>&1; then
+        deb-systemd-invoke stop 'lpdo-server.service' >/dev/null 2>&1 || true
+      else
+        systemctl --system stop 'lpdo-server.service' >/dev/null 2>&1 || true
+      fi
+    fi
+    ;;
+  upgrade|failed-upgrade)
+    # Leave the running service alone across upgrades.
+    ;;
+esac
+
+exit 0
