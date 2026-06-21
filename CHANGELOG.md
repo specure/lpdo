@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`LPDO_DATA_DIR`** — set this environment variable to relocate all of
+  `chess-db`'s data (database, TWIC zips, backups) from the default `~/.chess-db`
+  to a chosen directory. Used by the packaged servers to keep data under a system
+  path (Linux `/var/lib/lpdo`, Windows `C:\ProgramData\LPDO`); unset behaviour is
+  unchanged.
 - **Linux apt packages** — the release now also builds four `.deb`s so the GUI,
   server, and CLI can be installed separately: **`lpdo-cli`** (the `chess-db`
   binary on `$PATH`), **`lpdo-server`** (the daemon as a systemd *system* service

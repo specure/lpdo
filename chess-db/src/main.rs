@@ -31,31 +31,44 @@ use std::path::{Path, PathBuf};
 /// (id, white name, black name, date, event).
 type GameDeleteRow = (u32, String, String, Option<String>, Option<String>);
 
+/// Root of LPDO's on-disk state. Honours `$LPDO_DATA_DIR` when set — used by the
+/// packaged servers to point at a system path (`/var/lib/lpdo` on Linux,
+/// `C:\ProgramData\LPDO` on Windows, where `dirs::home_dir()` can't be
+/// redirected via `$HOME`) — otherwise falls back to `~/.chess-db`. Centralising
+/// it here means the override reaches the CLI, `serve`, and the in-server update
+/// scheduler (which resolve paths through the functions below) alike.
+fn data_root() -> PathBuf {
+    match std::env::var_os("LPDO_DATA_DIR") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".chess-db"),
+    }
+}
+
 /// Default storage directory for TWIC zip archives. Used by `download` and
 /// `import` when `--dir` is omitted. Matches the path the wizard and
 /// MaintenancePanel write to so a CLI-only download is recognised by the GUI
 /// (and vice versa).
 fn default_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".chess-db")
-        .join("twic")
+    data_root().join("twic")
 }
 
 fn default_db_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".chess-db")
-        .join("chess.db")
+    data_root().join("chess.db")
 }
 
 /// Default destination for `backup`. Matches the path shown in the GUI's
-/// Maintenance panel so a manual CLI backup lands in the same place.
+/// Maintenance panel so a manual CLI backup lands in the same place. When
+/// unset, keeps the historical `~/lpdo/backup` (not under `.chess-db`).
 fn default_backup_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("lpdo")
-        .join("backup")
+    match std::env::var_os("LPDO_DATA_DIR") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir).join("backup"),
+        _ => dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("lpdo")
+            .join("backup"),
+    }
 }
 
 #[derive(Parser)]
@@ -1630,4 +1643,26 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_paths_honor_lpdo_data_dir() {
+        // Override set → everything is rooted at it.
+        std::env::set_var("LPDO_DATA_DIR", "/var/lib/lpdo");
+        assert_eq!(default_db_path(), PathBuf::from("/var/lib/lpdo/chess.db"));
+        assert_eq!(default_dir(), PathBuf::from("/var/lib/lpdo/twic"));
+        assert_eq!(default_backup_dir(), PathBuf::from("/var/lib/lpdo/backup"));
+
+        // Empty is treated as unset → falls back to ~/.chess-db.
+        std::env::set_var("LPDO_DATA_DIR", "");
+        assert!(default_db_path().ends_with(".chess-db/chess.db"));
+        assert!(default_dir().ends_with(".chess-db/twic"));
+
+        std::env::remove_var("LPDO_DATA_DIR");
+        assert!(default_db_path().ends_with(".chess-db/chess.db"));
+    }
 }
