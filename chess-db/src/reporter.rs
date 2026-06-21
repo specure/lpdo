@@ -1,120 +1,187 @@
 use indicatif::ProgressBar;
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use crate::progress;
 
-/// Abstracts over terminal (indicatif) and JSON stdout progress output.
-///
-/// - Terminal mode: progress bars render normally.
-/// - JSON mode: all bars are hidden; events emitted as newline-delimited JSON
-///   on stdout, flushed immediately for the Tauri sidecar reader.
+/// A structured progress event, mirroring the newline-delimited JSON the CLI
+/// emits in `--json` mode. The in-process channel sink uses this so the server
+/// can stream operation progress to HTTP clients without the operations
+/// themselves knowing anything about HTTP.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct JobEvent {
+    #[serde(rename = "type")]
+    pub kind: String, // "log" | "progress" | "done" | "error"
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+enum Sink {
+    /// Interactive terminal: indicatif progress bars + plain println.
+    Terminal,
+    /// Newline-delimited JSON on stdout (the CLI `--json` mode).
+    Json,
+    /// In-process channel (the server's job runner). The job manager owns the
+    /// receiver and forwards events to SSE subscribers.
+    Channel(tokio::sync::mpsc::UnboundedSender<JobEvent>),
+}
+
+/// Abstracts over terminal (indicatif), JSON stdout, and in-process channel
+/// progress output. Operations take `&Reporter` and report through it, so the
+/// same code path runs in the CLI and inside the server unchanged.
 pub struct Reporter {
-    json: bool,
+    sink: Sink,
+    /// Cooperative cancellation. Long operations that loop can poll
+    /// `is_cancelled()` to stop early; the job manager sets it on cancel.
+    cancel: Arc<AtomicBool>,
 }
 
 impl Reporter {
     pub fn new(json: bool) -> Self {
-        Self { json }
+        Self {
+            sink: if json { Sink::Json } else { Sink::Terminal },
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
     }
 
+    /// Build a reporter that streams events into `tx` (the server's job runner),
+    /// cancellable via the shared `cancel` flag.
+    pub fn channel(tx: tokio::sync::mpsc::UnboundedSender<JobEvent>, cancel: Arc<AtomicBool>) -> Self {
+        Self { sink: Sink::Channel(tx), cancel }
+    }
+
+    /// A reporter that discards all output — for synchronous server endpoints
+    /// that call an operation but don't stream its progress anywhere.
+    pub fn silent() -> Self {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        Self { sink: Sink::Channel(tx), cancel: Arc::new(AtomicBool::new(false)) }
+    }
+
+    /// True when output is machine-consumed (JSON stdout or in-process channel)
+    /// rather than an interactive terminal. Callers use this to suppress
+    /// terminal-only UI such as `MultiProgress` bars.
     pub fn is_json(&self) -> bool {
-        self.json
+        !matches!(self.sink, Sink::Terminal)
     }
 
-    fn emit(&self, value: serde_json::Value) {
+    /// Whether a cooperative-cancellation request is pending.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+
+    fn emit_json(&self, value: serde_json::Value) {
         let mut stdout = std::io::stdout().lock();
         let _ = writeln!(stdout, "{}", value);
         let _ = stdout.flush();
     }
 
-    /// Informational / intermediate message.
-    pub fn log(&self, msg: impl std::fmt::Display) {
-        if self.json {
-            self.emit(serde_json::json!({ "type": "log", "message": msg.to_string() }));
-        } else {
-            println!("{}", msg);
+    fn send(&self, ev: JobEvent) {
+        if let Sink::Channel(tx) = &self.sink {
+            let _ = tx.send(ev);
         }
     }
 
-    /// Progress update. Only emits in JSON mode; terminal output is handled by indicatif.
+    /// Informational / intermediate message.
+    pub fn log(&self, msg: impl std::fmt::Display) {
+        match &self.sink {
+            Sink::Terminal => println!("{}", msg),
+            Sink::Json => self.emit_json(serde_json::json!({ "type": "log", "message": msg.to_string() })),
+            Sink::Channel(_) => self.send(JobEvent {
+                kind: "log".into(), message: msg.to_string(), value: None, total: None, path: None,
+            }),
+        }
+    }
+
+    /// Progress update. No-op for the terminal sink (indicatif owns the bar).
     pub fn progress(&self, current: u64, total: u64, msg: impl std::fmt::Display) {
-        if self.json {
-            self.emit(serde_json::json!({
-                "type": "progress",
-                "value": current,
-                "total": total,
-                "message": msg.to_string()
-            }));
+        match &self.sink {
+            Sink::Terminal => {}
+            Sink::Json => self.emit_json(serde_json::json!({
+                "type": "progress", "value": current, "total": total, "message": msg.to_string()
+            })),
+            Sink::Channel(_) => self.send(JobEvent {
+                kind: "progress".into(), message: msg.to_string(),
+                value: Some(current), total: Some(total), path: None,
+            }),
         }
     }
 
     /// Final completion message.
     pub fn done(&self, msg: impl std::fmt::Display) {
-        if self.json {
-            self.emit(serde_json::json!({
-                "type": "done",
-                "value": 100,
-                "message": msg.to_string()
-            }));
-        } else {
-            println!("{}", msg);
+        match &self.sink {
+            Sink::Terminal => println!("{}", msg),
+            Sink::Json => self.emit_json(serde_json::json!({
+                "type": "done", "value": 100, "message": msg.to_string()
+            })),
+            Sink::Channel(_) => self.send(JobEvent {
+                kind: "done".into(), message: msg.to_string(),
+                value: Some(100), total: Some(100), path: None,
+            }),
         }
     }
 
     /// Completion event carrying a result file path, so the GUI can offer to
     /// reveal the produced file in the OS file manager.
     pub fn done_with_path(&self, msg: impl std::fmt::Display, path: impl std::fmt::Display) {
-        if self.json {
-            self.emit(serde_json::json!({
-                "type": "done",
-                "value": 100,
-                "message": msg.to_string(),
-                "path": path.to_string()
-            }));
-        } else {
-            println!("{}", msg);
+        match &self.sink {
+            Sink::Terminal => println!("{}", msg),
+            Sink::Json => self.emit_json(serde_json::json!({
+                "type": "done", "value": 100, "message": msg.to_string(), "path": path.to_string()
+            })),
+            Sink::Channel(_) => self.send(JobEvent {
+                kind: "done".into(), message: msg.to_string(),
+                value: Some(100), total: Some(100), path: Some(path.to_string()),
+            }),
         }
     }
 
     /// Error message.
     pub fn error(&self, msg: impl std::fmt::Display) {
-        if self.json {
-            self.emit(serde_json::json!({ "type": "error", "message": msg.to_string() }));
-        } else {
-            eprintln!("{}", msg);
+        match &self.sink {
+            Sink::Terminal => eprintln!("{}", msg),
+            Sink::Json => self.emit_json(serde_json::json!({ "type": "error", "message": msg.to_string() })),
+            Sink::Channel(_) => self.send(JobEvent {
+                kind: "error".into(), message: msg.to_string(), value: None, total: None, path: None,
+            }),
         }
     }
 
-    /// Create a count-based progress bar (hidden in JSON mode).
+    /// Create a count-based progress bar (hidden unless interactive terminal).
     pub fn bar(&self, len: u64) -> ProgressBar {
-        if self.json {
-            ProgressBar::hidden()
-        } else {
+        if matches!(self.sink, Sink::Terminal) {
             let pb = ProgressBar::new(len);
             pb.set_style(progress::bar_style());
             pb
+        } else {
+            ProgressBar::hidden()
         }
     }
 
-    /// Create a count-based progress bar with ETA (hidden in JSON mode).
+    /// Create a count-based progress bar with ETA (hidden unless interactive).
     pub fn bar_with_eta(&self, len: u64) -> ProgressBar {
-        if self.json {
-            ProgressBar::hidden()
-        } else {
+        if matches!(self.sink, Sink::Terminal) {
             let pb = ProgressBar::new(len);
             pb.set_style(progress::bar_style_with_eta());
             pb
+        } else {
+            ProgressBar::hidden()
         }
     }
 
-    /// Create a spinner (hidden in JSON mode).
+    /// Create a spinner (hidden unless interactive terminal).
     pub fn spinner(&self) -> ProgressBar {
-        if self.json {
-            ProgressBar::hidden()
-        } else {
+        if matches!(self.sink, Sink::Terminal) {
             let pb = ProgressBar::new_spinner();
             pb.set_style(progress::spinner_style());
             pb.enable_steady_tick(std::time::Duration::from_millis(80));
             pb
+        } else {
+            ProgressBar::hidden()
         }
     }
 }

@@ -1,11 +1,15 @@
 use axum::{
     extract::{Path as AxumPath, Query, State},
     http::StatusCode,
-    routing::get,
+    response::sse::{Event, KeepAlive, Sse},
+    routing::{get, post},
     Json, Router,
 };
 use duckdb::Connection;
 use serde::{Deserialize, Serialize};
+use std::convert::Infallible;
+use std::sync::Arc;
+use tokio_stream::StreamExt;
 use tower_http::cors::CorsLayer;
 use shakmaty::fen::Fen;
 use shakmaty::san::San;
@@ -13,56 +17,30 @@ use shakmaty::zobrist::{Zobrist64, ZobristHash};
 use shakmaty::{Chess, EnPassantMode, Position};
 use anyhow::Result;
 
+use crate::jobs::{ConnActor, JobManager, ReadPool};
+
 type ApiResult<T> = std::result::Result<Json<T>, (StatusCode, String)>;
 
 fn db_err<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
 
-// ── DB actor ──────────────────────────────────────────────────────────────────
+// ── Server state ────────────────────────────────────────────────────────────
 //
-// A single dedicated OS thread owns the DuckDB Connection for its entire
-// lifetime.  Handlers send closures via a channel and await the result on a
-// oneshot.  The connection is never moved between threads, avoiding the
-// thread-affinity issues that caused hangs with spawn_blocking + Mutex.
-
-type WorkFn = Box<dyn FnOnce(&Connection) + Send + 'static>;
-
-#[derive(Clone)]
-pub struct DbHandle {
-    tx: std::sync::mpsc::SyncSender<WorkFn>,
-}
-
-impl DbHandle {
-    fn new(conn: Connection) -> Self {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<WorkFn>(128);
-        std::thread::Builder::new()
-            .name("duckdb".into())
-            .spawn(move || {
-                for work in rx {
-                    work(&conn);
-                }
-            })
-            .expect("failed to spawn db thread");
-        DbHandle { tx }
-    }
-
-    async fn run<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&Connection) -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(Box::new(move |conn| { let _ = resp_tx.send(f(conn)); }))
-            .expect("db thread gone");
-        resp_rx.await.expect("db thread dropped sender")
-    }
-}
+// The server owns the database read-write. Query handlers read through a pool
+// of cloned connections (concurrent under DuckDB MVCC); quick mutations and
+// long-running jobs run on a single writer connection so all writes serialize.
+// The connection actors live in `crate::jobs`.
 
 #[derive(Clone)]
 pub struct AppState {
-    pub db: DbHandle,
+    /// Pool of read connections for query handlers.
+    pub reads: ReadPool,
+    /// The single writer connection — quick mutations run here, serialized with
+    /// jobs.
+    pub writer: ConnActor,
+    /// Long-running mutation jobs (import, download, normalise, …).
+    pub jobs: Arc<JobManager>,
 }
 
 // ── Response types ────────────────────────────────────────────────────────────
@@ -537,7 +515,7 @@ fn build_games_sql(
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 async fn collections_handler(State(state): State<AppState>) -> ApiResult<Vec<CollectionInfo>> {
-    state.db.run(|conn| {
+    state.reads.run(|conn| {
         let mut stmt = conn.prepare(
             "SELECT c.id, c.name, COUNT(gc.game_id)
              FROM collections c
@@ -558,7 +536,7 @@ async fn collections_handler(State(state): State<AppState>) -> ApiResult<Vec<Col
 }
 
 async fn status_handler(State(state): State<AppState>) -> ApiResult<StatusInfo> {
-    state.db.run(|conn| {
+    state.reads.run(|conn| {
         Ok(Json(StatusInfo {
             issues:     conn.query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0)).unwrap_or(0),
             downloaded: conn.query_row("SELECT COUNT(*) FROM issues WHERE downloaded = TRUE", [], |r| r.get(0)).unwrap_or(0),
@@ -580,7 +558,7 @@ async fn players_handler(
     State(state): State<AppState>,
     Query(q): Query<PlayersQuery>,
 ) -> ApiResult<Vec<PlayerInfo>> {
-    state.db.run(move |conn| {
+    state.reads.run(move |conn| {
         let mut params: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
 
         let sql = if let Some(id) = q.fide_id {
@@ -623,7 +601,7 @@ async fn games_handler(
         None
     };
 
-    state.db.run(move |conn| {
+    state.reads.run(move |conn| {
         let (sql, params) = build_games_sql(
             q.name.as_deref(), q.fide_id, q.player_id, q.color.as_deref(), q.opponent.as_deref(),
             q.white.as_deref(), q.black.as_deref(), q.white_fide_id, q.black_fide_id,
@@ -669,7 +647,7 @@ async fn game_by_id_handler(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<u32>,
 ) -> ApiResult<GameDetail> {
-    state.db.run(move |conn| {
+    state.reads.run(move |conn| {
         let sql = "
             SELECT g.id, pw.name, pb.name, pw.fide_id, pb.fide_id,
                    g.white_elo, g.black_elo,
@@ -720,7 +698,7 @@ async fn position_handler(
     let hash_i64: i64 = hash.0 as i64;
 
     let count = q.count;
-    state.db.run(move |conn| {
+    state.reads.run(move |conn| {
         if count {
             let n: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM positions p
@@ -788,7 +766,7 @@ async fn position_moves_handler(
     let name_pattern = q.name.as_deref().map(|n| format!("%{}%", normalize_name(n)));
     let white_pattern = q.white.as_deref().map(|n| format!("%{}%", normalize_name(n)));
     let black_pattern = q.black.as_deref().map(|n| format!("%{}%", normalize_name(n)));
-    state.db.run(move |conn| {
+    state.reads.run(move |conn| {
         let stats = crate::db::queries::position_moves(
             conn, hash_i64,
             q.player_id,
@@ -811,7 +789,7 @@ async fn delete_game_handler(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<u32>,
 ) -> std::result::Result<StatusCode, (StatusCode, String)> {
-    state.db.run(move |conn| {
+    state.writer.run(move |conn| {
         // Fetch player IDs before deleting so we can update their counts.
         let players: Option<(u32, u32)> = conn.query_row(
             "SELECT white_id, black_id FROM games WHERE id = ?",
@@ -842,7 +820,7 @@ async fn merge_players_handler(
     if keep_id == drop_id {
         return Err((StatusCode::BAD_REQUEST, "keep and drop IDs must differ".to_string()));
     }
-    state.db.run(move |conn| {
+    state.writer.run(move |conn| {
         // Verify both players exist
         let keep_exists: bool = conn
             .query_row("SELECT COUNT(*) FROM players WHERE id = ?", duckdb::params![keep_id], |r| r.get::<_, i64>(0))
@@ -877,29 +855,280 @@ async fn player_stats_handler(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<u32>,
 ) -> ApiResult<PlayerStats> {
-    state.db.run(move |conn| {
+    state.reads.run(move |conn| {
         let stats = crate::db::queries::player_stats(conn, id).map_err(db_err)?;
         Ok(Json(PlayerStats::from(stats)))
+    }).await
+}
+
+// ── Jobs (long-running mutations) ─────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct JobRequest {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    params: serde_json::Value,
+}
+
+async fn create_job_handler(
+    State(state): State<AppState>,
+    Json(req): Json<JobRequest>,
+) -> ApiResult<serde_json::Value> {
+    let id = state.jobs.submit(req.kind, req.params);
+    Ok(Json(serde_json::json!({ "job_id": id })))
+}
+
+async fn list_jobs_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::to_value(state.jobs.list()).unwrap_or_default())
+}
+
+async fn get_job_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> ApiResult<serde_json::Value> {
+    match state.jobs.snapshot(&id) {
+        Some(s) => Ok(Json(serde_json::to_value(s).map_err(db_err)?)),
+        None => Err((StatusCode::NOT_FOUND, format!("job {} not found", id))),
+    }
+}
+
+async fn cancel_job_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> std::result::Result<StatusCode, (StatusCode, String)> {
+    if state.jobs.cancel(&id) {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((StatusCode::NOT_FOUND, format!("job {} not found", id)))
+    }
+}
+
+/// Server-Sent Events stream of a job's progress: replays buffered events, then
+/// streams live ones. The client closes the stream when it sees done/error.
+async fn job_events_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> std::result::Result<Sse<impl tokio_stream::Stream<Item = std::result::Result<Event, Infallible>>>, (StatusCode, String)> {
+    let slot = state
+        .jobs
+        .get(&id)
+        .ok_or((StatusCode::NOT_FOUND, format!("job {} not found", id)))?;
+    let (buffered, rx) = slot.subscribe();
+    let live = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(|r| r.ok());
+    let stream = tokio_stream::iter(buffered)
+        .chain(live)
+        .map(|ev| Ok(Event::default().json_data(&ev).unwrap_or_default()));
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+// ── Quick mutations (synchronous, run on the writer) ──────────────────────────
+
+#[derive(Deserialize)]
+struct VisibilityBody { visibility: String }
+#[derive(Deserialize)]
+struct CollectionBody { name: String }
+#[derive(Deserialize)]
+struct MovesBody { moves: String }
+
+fn msg(text: String) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "message": text }))
+}
+
+async fn soft_delete_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<u32>,
+) -> ApiResult<serde_json::Value> {
+    state.writer.run(move |conn| {
+        let row: Option<(u32, u32, Option<String>)> = conn.query_row(
+            "SELECT white_id, black_id, CAST(deleted_at AS VARCHAR) FROM games WHERE id = ?",
+            duckdb::params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).ok();
+        let (white_id, black_id, already) = row
+            .ok_or((StatusCode::NOT_FOUND, format!("game {} not found", id)))?;
+        if already.is_some() {
+            return Ok(msg(format!("Game {} already soft-deleted.", id)));
+        }
+        conn.execute("UPDATE games SET deleted_at = CAST(NOW() AS TIMESTAMP) WHERE id = ?", duckdb::params![id]).map_err(db_err)?;
+        crate::db::queries::recalculate_game_count_for(conn, white_id).map_err(db_err)?;
+        if black_id != white_id {
+            crate::db::queries::recalculate_game_count_for(conn, black_id).map_err(db_err)?;
+        }
+        Ok(msg(format!("Game {} soft-deleted.", id)))
+    }).await
+}
+
+async fn restore_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<u32>,
+) -> ApiResult<serde_json::Value> {
+    state.writer.run(move |conn| {
+        let row: Option<(u32, u32, Option<String>)> = conn.query_row(
+            "SELECT white_id, black_id, CAST(deleted_at AS VARCHAR) FROM games WHERE id = ?",
+            duckdb::params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).ok();
+        let (white_id, black_id, was_deleted) = row
+            .ok_or((StatusCode::NOT_FOUND, format!("game {} not found", id)))?;
+        if was_deleted.is_none() {
+            return Ok(msg(format!("Game {} is not deleted.", id)));
+        }
+        conn.execute("UPDATE games SET deleted_at = NULL WHERE id = ?", duckdb::params![id]).map_err(db_err)?;
+        crate::db::queries::recalculate_game_count_for(conn, white_id).map_err(db_err)?;
+        if black_id != white_id {
+            crate::db::queries::recalculate_game_count_for(conn, black_id).map_err(db_err)?;
+        }
+        Ok(msg(format!("Game {} restored.", id)))
+    }).await
+}
+
+async fn set_visibility_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<u32>,
+    Json(body): Json<VisibilityBody>,
+) -> ApiResult<serde_json::Value> {
+    let v = body.visibility.trim().to_lowercase();
+    if v != "public" && v != "private" {
+        return Err((StatusCode::BAD_REQUEST, format!("visibility must be 'public' or 'private', got {:?}", body.visibility)));
+    }
+    state.writer.run(move |conn| {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM games WHERE id = ?)", duckdb::params![id], |r| r.get(0),
+        ).unwrap_or(false);
+        if !exists {
+            return Err((StatusCode::NOT_FOUND, format!("game {} not found", id)));
+        }
+        conn.execute("UPDATE games SET visibility = ? WHERE id = ?", duckdb::params![v, id]).map_err(db_err)?;
+        Ok(msg(format!("Game {} set to {}.", id, v)))
+    }).await
+}
+
+async fn add_collection_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<u32>,
+    Json(body): Json<CollectionBody>,
+) -> ApiResult<serde_json::Value> {
+    let name = body.name.trim().to_string();
+    if name.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "collection name must not be empty".into()));
+    }
+    state.writer.run(move |conn| {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM games WHERE id = ?)", duckdb::params![id], |r| r.get(0),
+        ).unwrap_or(false);
+        if !exists {
+            return Err((StatusCode::NOT_FOUND, format!("game {} not found", id)));
+        }
+        let collection_id = crate::importer::upsert_collection(conn, &name).map_err(db_err)?;
+        conn.execute(
+            "INSERT INTO game_collections (game_id, collection_id) VALUES (?, ?)
+             ON CONFLICT (game_id, collection_id) DO NOTHING",
+            duckdb::params![id, collection_id],
+        ).map_err(db_err)?;
+        Ok(msg(format!("Game {} added to collection {:?}.", id, name)))
+    }).await
+}
+
+async fn remove_collection_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<u32>,
+    Json(body): Json<CollectionBody>,
+) -> ApiResult<serde_json::Value> {
+    let name = body.name.trim().to_string();
+    state.writer.run(move |conn| {
+        let collection_id: Option<i32> = conn.query_row(
+            "SELECT id FROM collections WHERE name = ?", duckdb::params![name], |r| r.get(0),
+        ).ok();
+        let Some(cid) = collection_id else {
+            return Ok(msg(format!("Collection {:?} does not exist.", name)));
+        };
+        let removed = conn.execute(
+            "DELETE FROM game_collections WHERE game_id = ? AND collection_id = ?",
+            duckdb::params![id, cid],
+        ).map_err(db_err)?;
+        if removed == 0 {
+            return Ok(msg(format!("Game {} was not in collection {:?}.", id, name)));
+        }
+        // Drop the collection if it is now empty (the filter list refetches on
+        // every mutation, so an empty collection would otherwise linger).
+        let remaining: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM game_collections WHERE collection_id = ?", duckdb::params![cid], |r| r.get(0),
+        ).unwrap_or(0);
+        if remaining == 0 {
+            conn.execute("DELETE FROM collections WHERE id = ?", duckdb::params![cid]).map_err(db_err)?;
+        }
+        Ok(msg(format!("Game {} removed from collection {:?}.", id, name)))
+    }).await
+}
+
+async fn set_moves_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<u32>,
+    Json(body): Json<MovesBody>,
+) -> ApiResult<serde_json::Value> {
+    state.writer.run(move |conn| {
+        crate::do_set_moves(conn, id, &body.moves, &crate::reporter::Reporter::silent())
+            .map_err(db_err)?;
+        Ok(msg(format!("Game {} moves updated.", id)))
+    }).await
+}
+
+async fn purge_handler(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
+    state.writer.run(move |conn| {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM games WHERE deleted_at IS NOT NULL", [], |r| r.get(0),
+        ).unwrap_or(0);
+        if count == 0 {
+            return Ok(msg("No soft-deleted games to purge.".into()));
+        }
+        conn.execute_batch(
+            "DELETE FROM positions
+                WHERE game_id IN (SELECT id FROM games WHERE deleted_at IS NOT NULL);
+             DELETE FROM game_collections
+                WHERE game_id IN (SELECT id FROM games WHERE deleted_at IS NOT NULL);
+             DELETE FROM games WHERE deleted_at IS NOT NULL;",
+        ).map_err(db_err)?;
+        Ok(msg(format!("Purged {} soft-deleted game(s).", count)))
     }).await
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub async fn run(conn: Connection, port: u16) -> Result<()> {
-    let state = AppState {
-        db: DbHandle::new(conn),
-    };
+    // The passed connection opened the database read-write. Clone it into a pool
+    // of read connections (concurrent SELECTs via DuckDB in-process MVCC); the
+    // original becomes the single writer that runs all mutations and jobs.
+    const READ_POOL_SIZE: usize = 4;
+    let mut readers = Vec::with_capacity(READ_POOL_SIZE);
+    for _ in 0..READ_POOL_SIZE {
+        readers.push(conn.try_clone()?);
+    }
+    let reads = ReadPool::new(readers);
+    let writer = ConnActor::new(conn);
+    let jobs = Arc::new(JobManager::new(writer.clone(), tokio::runtime::Handle::current()));
+    let state = AppState { reads, writer, jobs };
 
     let app = Router::new()
         .route("/status",                              get(status_handler))
         .route("/collections",                         get(collections_handler))
         .route("/players",                             get(players_handler))
         .route("/players/{id}/stats",                  get(player_stats_handler))
-        .route("/players/{keep_id}/merge/{drop_id}",   axum::routing::post(merge_players_handler))
+        .route("/players/{keep_id}/merge/{drop_id}",   post(merge_players_handler))
         .route("/games",                               get(games_handler))
         .route("/games/{id}",                          get(game_by_id_handler).delete(delete_game_handler))
+        .route("/games/{id}/soft-delete",              post(soft_delete_handler))
+        .route("/games/{id}/restore",                  post(restore_handler))
+        .route("/games/{id}/visibility",               post(set_visibility_handler))
+        .route("/games/{id}/collections",              post(add_collection_handler))
+        .route("/games/{id}/collections/remove",       post(remove_collection_handler))
+        .route("/games/{id}/moves",                    post(set_moves_handler))
+        .route("/purge",                               post(purge_handler))
         .route("/position",                            get(position_handler))
         .route("/position/moves",                      get(position_moves_handler))
+        // Long-running mutation jobs with streamed progress.
+        .route("/jobs",                                get(list_jobs_handler).post(create_job_handler))
+        .route("/jobs/{id}",                           get(get_job_handler))
+        .route("/jobs/{id}/events",                    get(job_events_handler))
+        .route("/jobs/{id}/cancel",                    post(cancel_job_handler))
         .with_state(state)
         // Allow the bundled webview (a cross-origin caller, e.g. tauri://localhost)
         // to reach this local server. In dev the Vite proxy makes calls same-origin;

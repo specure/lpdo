@@ -70,12 +70,3 @@ pub fn open(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
-/// Open a read-only connection. Allows concurrent read-write connections from
-/// other processes (e.g. chess-db subprocesses spawned by the Tauri shell).
-pub fn open_readonly(path: &Path) -> Result<Connection> {
-    let config = duckdb::Config::default()
-        .access_mode(duckdb::AccessMode::ReadOnly)?;
-    let conn = Connection::open_with_flags(path, config)?;
-    conn.execute_batch("SET threads=4;")?;
-    Ok(conn)
-}

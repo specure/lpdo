@@ -11,6 +11,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 mod db;
 mod dedup;
 mod importer;
+mod jobs;
 mod normalise;
 mod players;
 mod progress;
@@ -1314,12 +1315,11 @@ async fn main() -> Result<()> {
             db::queries::status(&conn, &cli.db)?;
         }
         Commands::Serve { port } => {
-            // Schema was already initialised with the read-write connection above.
-            // Reopen read-only so that Tauri-spawned chess-db subprocesses can
-            // acquire a read-write lock for import/download operations.
-            drop(conn);
-            let conn_ro = db::open_readonly(&cli.db)?;
-            serve::run(conn_ro, port).await?;
+            // The server owns the database read-write: it runs every mutation as
+            // an in-process job and serves queries from a pool of cloned read
+            // connections (DuckDB MVCC). No separate writer process exists, so
+            // there is no read-only reopen.
+            serve::run(conn, port).await?;
         }
     }
 
