@@ -1108,6 +1108,51 @@ fn read_stdin_to_string() -> Result<String> {
     Ok(s)
 }
 
+/// Proxy a read/query command to the daemon's existing GET endpoints, rendering
+/// the results CLI-side. `Some(result)` if handled, `None` if not a read we can
+/// proxy (e.g. `search games --moves-stats`, which has no plain `/games` form).
+async fn try_proxy_read(command: &Commands, port: u16) -> Option<Result<()>> {
+    match command {
+        Commands::Status => Some(proxy::run_status(port).await),
+        Commands::Games { subcommand: GameCommands::Show { ids } } => {
+            Some(proxy::run_show(port, ids).await)
+        }
+        Commands::Search { subcommand: SearchCommands::Players { name, fide_id, exact, id_only } } => {
+            Some(proxy::run_search_players(port, name, *fide_id, *exact, *id_only).await)
+        }
+        Commands::Search {
+            subcommand:
+                SearchCommands::Games {
+                    name, fide_id, white, black, white_fide_id, black_fide_id, event, eco,
+                    first_moves, from, to, fen, moves_stats, show_moves, limit, pgn, count,
+                },
+        } => {
+            // moves-stats aggregates a position; no plain /games equivalent.
+            if *moves_stats {
+                return None;
+            }
+            let mut q: Vec<(&str, String)> = Vec::new();
+            if let Some(v) = name { q.push(("name", v.clone())); }
+            if let Some(v) = fide_id { q.push(("fide_id", v.to_string())); }
+            if let Some(v) = white { q.push(("white", v.clone())); }
+            if let Some(v) = black { q.push(("black", v.clone())); }
+            if let Some(v) = white_fide_id { q.push(("white_fide_id", v.to_string())); }
+            if let Some(v) = black_fide_id { q.push(("black_fide_id", v.to_string())); }
+            if let Some(v) = event { q.push(("event", v.clone())); }
+            if let Some(v) = eco { q.push(("eco", v.clone())); }
+            if let Some(v) = first_moves { q.push(("first_moves", v.clone())); }
+            if let Some(v) = from { q.push(("from", v.clone())); }
+            if let Some(v) = to { q.push(("to", v.clone())); }
+            if let Some(v) = fen { q.push(("fen", v.clone())); }
+            q.push(("limit", limit.to_string()));
+            if *pgn { q.push(("pgn", "true".to_string())); }
+            if *count { q.push(("count", "true".to_string())); }
+            Some(proxy::run_search_games(port, q, *show_moves).await)
+        }
+        _ => None,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -1163,7 +1208,12 @@ async fn main() -> Result<()> {
                 if let Some(result) = try_proxy_mutation(&cli.command, port).await {
                     return result;
                 }
-                // Reads and a few admin-only commands aren't proxyable yet.
+                // Phase B: read/query commands (GET, rendered CLI-side).
+                if let Some(result) = try_proxy_read(&cli.command, port).await {
+                    return result;
+                }
+                // A few admin-only commands (players dedup / update-game-counts /
+                // apply-corrections) and `search games --moves-stats` aren't proxyable.
                 bail!(
                     "the lpdo-server daemon is running and holds the database lock, so \
                      this command can't run directly, and it isn't proxyable yet. Stop the \

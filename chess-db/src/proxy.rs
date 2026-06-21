@@ -521,8 +521,38 @@ struct GameSummaryDto {
     id: u32,
     white: String,
     black: String,
-    date: Option<String>,
+    #[serde(default)]
+    white_elo: Option<i16>,
+    #[serde(default)]
+    black_elo: Option<i16>,
+    #[serde(default)]
     event: Option<String>,
+    #[serde(default)]
+    date: Option<String>,
+    #[serde(default)]
+    result: Option<String>,
+    #[serde(default)]
+    eco: Option<String>,
+    #[serde(default)]
+    move_count: Option<i16>,
+    #[serde(default)]
+    opening_line: Option<String>,
+    #[serde(default)]
+    pgn: Option<String>,
+}
+
+impl GameSummaryDto {
+    /// The list row, matching `search::games` local output.
+    fn row(&self) -> String {
+        let dash = |s: &Option<String>| s.clone().unwrap_or_else(|| "-".into());
+        let elo = |e: &Option<i16>| e.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
+        format!(
+            "[{}] {} ({}) vs {} ({})  {}  {}  {}  {}  {} moves",
+            self.id, self.white, elo(&self.white_elo), self.black, elo(&self.black_elo),
+            dash(&self.result), dash(&self.date), dash(&self.event), dash(&self.eco),
+            self.move_count.unwrap_or(0),
+        )
+    }
 }
 
 #[derive(Deserialize)]
@@ -541,4 +571,154 @@ struct StatusDto {
 #[derive(Deserialize)]
 struct StatusDtoTotal {
     total: i64,
+}
+
+// ── Reads (GET, rendered CLI-side) ────────────────────────────────────────────
+
+/// `status` — render the daemon's view of the database.
+pub async fn run_status(port: u16) -> Result<()> {
+    let client = reqwest::Client::new();
+    let s: StatusInfoDto = client
+        .get(format!("{}/status", base_url(port)))
+        .send().await.context("querying status")?
+        .json().await.context("reading status")?;
+    let n = |v: i64| -> String {
+        // Thousands separators, e.g. 12,040,323.
+        let s = v.to_string();
+        let mut out = String::new();
+        for (i, c) in s.chars().rev().enumerate() {
+            if i > 0 && i % 3 == 0 { out.push(','); }
+            out.push(c);
+        }
+        out.chars().rev().collect()
+    };
+    println!("=== Chess DB Status (server v{}) ===", s.version);
+    println!("Games:           {}", n(s.games));
+    println!("Players:         {}", n(s.players));
+    println!("Positions:       {}", n(s.positions));
+    println!("TWIC issues:     {}", n(s.issues));
+    println!("Local imports:   {}", n(s.local_imports.unwrap_or(0)));
+    if let Some(issue) = s.last_twic_issue {
+        let date = s.last_twic_published.as_deref().map(|d| format!(" ({d})")).unwrap_or_default();
+        println!("Latest TWIC:     #{issue}{date}");
+    }
+    if s.deleted_games.unwrap_or(0) > 0 {
+        println!("Soft-deleted:    {}", n(s.deleted_games.unwrap_or(0)));
+    }
+    Ok(())
+}
+
+/// `search players` — GET /players, then apply the CLI's `exact`/`id_only`
+/// (which the endpoint doesn't model) client-side.
+pub async fn run_search_players(
+    port: u16,
+    name: &str,
+    fide_id: Option<u32>,
+    exact: bool,
+    id_only: bool,
+) -> Result<()> {
+    let client = reqwest::Client::new();
+    let mut q: Vec<(&str, String)> = Vec::new();
+    if let Some(f) = fide_id { q.push(("fide_id", f.to_string())); }
+    else if !name.is_empty() { q.push(("name", name.to_string())); }
+    let url = reqwest::Url::parse_with_params(&format!("{}/players", base_url(port)), &q)
+        .context("building players query")?;
+    let mut players: Vec<PlayerInfoDto> = client.get(url).send().await.context("searching players")?
+        .json().await.context("reading players")?;
+    if exact && !name.is_empty() {
+        let want = normalize_name(name);
+        players.retain(|p| normalize_name(&p.name) == want);
+    }
+    if id_only {
+        match players.as_slice() {
+            [p] => { println!("{}", p.id); Ok(()) }
+            [] => bail!("no player matched"),
+            _ => bail!("{} players matched — narrow the search for --id-only", players.len()),
+        }
+    } else if players.is_empty() {
+        println!("No players found.");
+        Ok(())
+    } else {
+        for p in &players {
+            println!(
+                "[{}] {}  FIDE: {}  games: {}",
+                p.id, p.name,
+                p.fide_id.map(|f| f.to_string()).unwrap_or_else(|| "-".into()),
+                p.game_count,
+            );
+        }
+        Ok(())
+    }
+}
+
+/// `search games` — GET /games with the CLI filters as query params, render rows
+/// / count / raw PGN. Returns the same footer as the local search.
+pub async fn run_search_games(port: u16, query: Vec<(&str, String)>, show_moves: bool) -> Result<()> {
+    let client = reqwest::Client::new();
+    let count_only = query.iter().any(|(k, _)| *k == "count");
+    let pgn_mode = query.iter().any(|(k, _)| *k == "pgn");
+    let limit: u32 = query.iter().find(|(k, _)| *k == "limit").and_then(|(_, v)| v.parse().ok()).unwrap_or(100);
+    let url = reqwest::Url::parse_with_params(&format!("{}/games", base_url(port)), &query)
+        .context("building games query")?;
+    let resp = client.get(url).send().await.context("searching games")?;
+    if !resp.status().is_success() {
+        bail!("daemon returned {}: {}", resp.status(), resp.text().await.unwrap_or_default().trim());
+    }
+    let val: serde_json::Value = resp.json().await.context("reading games response")?;
+    if count_only {
+        let c = val.get("count").and_then(|v| v.as_i64()).unwrap_or(0);
+        println!("{c}");
+        return Ok(());
+    }
+    let games: Vec<GameSummaryDto> = serde_json::from_value(val).context("parsing games")?;
+    for g in &games {
+        if pgn_mode {
+            if let Some(p) = &g.pgn { println!("{p}\n"); }
+        } else {
+            println!("{}", g.row());
+            if show_moves {
+                if let Some(line) = &g.opening_line {
+                    println!("  {line}");
+                }
+            }
+        }
+    }
+    if !pgn_mode {
+        println!("\n{} game(s) found (limit {limit})", games.len());
+    }
+    Ok(())
+}
+
+/// `games show <ids…>` — GET /games/{id} for each, print the summary line + PGN.
+pub async fn run_show(port: u16, ids: &[u32]) -> Result<()> {
+    let client = reqwest::Client::new();
+    for id in ids {
+        match get_json::<GameSummaryDto>(&client, port, &format!("/games/{id}")).await {
+            Some(g) => {
+                println!("{}", g.row());
+                if let Some(pgn) = &g.pgn {
+                    println!("\n{pgn}");
+                }
+            }
+            None => eprintln!("[{id}] not found"),
+        }
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct StatusInfoDto {
+    version: String,
+    games: i64,
+    players: i64,
+    positions: i64,
+    issues: i64,
+    #[serde(default)]
+    local_imports: Option<i64>,
+    #[serde(default)]
+    deleted_games: Option<i64>,
+    #[serde(default)]
+    last_twic_issue: Option<i64>,
+    #[serde(default)]
+    last_twic_published: Option<String>,
 }
