@@ -146,7 +146,7 @@ function DatabaseInfo({ status }: { status: StatusInfo | null }) {
 
 function PlayersSection() {
   const [path, setPath] = useState("");
-  const progress = useSidecarProgress();
+  const progress = useSidecarProgress("maint-players-import");
 
   function run() {
     void progress.run(["players", "import", path]);
@@ -178,7 +178,7 @@ function PlayersSection() {
 
 function DatabasesSection() {
   const [folder, setFolder] = useState("");
-  const progress = useSidecarProgress();
+  const progress = useSidecarProgress("maint-import-pgn");
 
   function run() {
     void progress.run(["import-pgn", folder]);
@@ -211,8 +211,8 @@ function DatabasesSection() {
 // ── TWIC section ──────────────────────────────────────────────────────────────
 
 function TwicSection() {
-  const download = useSidecarProgress();
-  const importProgress = useSidecarProgress();
+  const download = useSidecarProgress("maint-twic-download");
+  const importProgress = useSidecarProgress("maint-twic-import");
   const [twicAck, setTwicAck] = useTwicAck();
 
   function runDownload() {
@@ -265,7 +265,7 @@ function TwicSection() {
 // ── Deduplication section ─────────────────────────────────────────────────────
 
 function DeduplicationSection({ onMutated }: { onMutated?: () => void }) {
-  const progress = useSidecarProgress();
+  const progress = useSidecarProgress("maint-dedup");
 
   function run() {
     void progress.run(["games", "dedup"]);
@@ -295,7 +295,7 @@ function DeduplicationSection({ onMutated }: { onMutated?: () => void }) {
 // ── Position index section ────────────────────────────────────────────────────
 
 function IndexSection() {
-  const progress = useSidecarProgress();
+  const progress = useSidecarProgress("maint-index");
 
   function run(rebuild: boolean) {
     if (
@@ -335,7 +335,7 @@ const NORMALISE_LIMIT_DEFAULT = 500;
 
 function NormaliseSection({ onMutated }: { onMutated?: () => void }) {
   const [limit, setLimit] = useState(String(NORMALISE_LIMIT_DEFAULT));
-  const progress = useSidecarProgress();
+  const progress = useSidecarProgress("maint-normalise");
 
   // Player names change here, so refresh server status + any open game lists
   // once it finishes (so renamed players show their canonical form).
@@ -397,7 +397,7 @@ function BackupSection() {
   const [folder, setFolder] = useState(() => localStorage.getItem(BACKUP_DIR_KEY) || BACKUP_DIR);
   const [collections, setCollections] = useState<Collection[] | null>(null);
   const [collection, setCollection] = useState(DEFAULT_COLLECTION);
-  const progress = useSidecarProgress();
+  const progress = useSidecarProgress("maint-backup");
 
   // Remember the folder across sessions whenever the user edits it.
   useEffect(() => { localStorage.setItem(BACKUP_DIR_KEY, folder); }, [folder]);

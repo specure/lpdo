@@ -1,5 +1,19 @@
 import { useState, useEffect, useRef } from "react";
-import { submitJob, cancelJob, jobEventsUrl, postJson } from "../api";
+import { submitJob, cancelJob, jobEventsUrl, postJson, apiGet } from "../api";
+
+// Job ids of in-flight operations, keyed by the caller-supplied `key`. Lives at
+// module scope so it survives a component unmounting (e.g. navigating away from
+// the Maintenance panel) — on remount the hook reconnects to the job.
+const activeJobs = new Map<string, string>();
+
+interface JobSnapshot {
+  id: string;
+  status: "queued" | "running" | "done" | "error";
+  value: number;
+  total: number;
+  message: string;
+  path?: string;
+}
 
 // Progress events streamed by the server's job runner (same shape the CLI
 // emitted in --json mode).
@@ -124,7 +138,15 @@ function planFromArgs(args: string[]): Plan {
   throw new Error(`Unsupported operation: ${args.join(" ")}`);
 }
 
-export function useSidecarProgress(): SidecarProgress {
+/**
+ * Track a server operation's progress.
+ *
+ * Pass a stable `key` for long operations so progress survives the component
+ * unmounting and remounting (e.g. leaving and returning to the Maintenance
+ * panel): the running job id is remembered at module scope and the hook
+ * reconnects to it on mount. Without a key, progress is purely local.
+ */
+export function useSidecarProgress(key?: string): SidecarProgress {
   const [percent, setPercent] = useState(0);
   const [running, setRunning] = useState(false);
   const [done, setDone] = useState(false);
@@ -141,6 +163,7 @@ export function useSidecarProgress(): SidecarProgress {
 
   function reset() {
     closeStream();
+    if (key) activeJobs.delete(key);
     jobIdRef.current = null;
     setPercent(0);
     setRunning(false);
@@ -172,12 +195,33 @@ export function useSidecarProgress(): SidecarProgress {
         setLog((l) => [...l, data.message!]);
       }
       if (data.path) setDonePath(data.path);
+      if (key) activeJobs.delete(key);
       closeStream();
     } else if (data.type === "error") {
       if (data.message) setLog((l) => [...l, `⚠ ${data.message}`]);
       setRunning(false);
+      if (key) activeJobs.delete(key);
       closeStream();
     }
+  }
+
+  // Open (or re-open) the SSE stream for a job id and route its events.
+  function openStream(jobId: string) {
+    closeStream();
+    jobIdRef.current = jobId;
+    const es = new EventSource(jobEventsUrl(jobId));
+    esRef.current = es;
+    es.onmessage = (ev) => {
+      try {
+        handleEvent(JSON.parse(ev.data) as ChessDbEvent);
+      } catch {
+        /* ignore parse errors */
+      }
+    };
+    es.onerror = () => {
+      // The browser auto-reconnects; if the job already finished we have closed
+      // the stream, so this only fires on genuine transport drops.
+    };
   }
 
   function run(args: string[]) {
@@ -204,26 +248,50 @@ export function useSidecarProgress(): SidecarProgress {
     // Long job: submit, then stream progress over SSE.
     submitJob({ type: plan.type, params: plan.params })
       .then((jobId) => {
-        jobIdRef.current = jobId;
-        const es = new EventSource(jobEventsUrl(jobId));
-        esRef.current = es;
-        es.onmessage = (ev) => {
-          try {
-            handleEvent(JSON.parse(ev.data) as ChessDbEvent);
-          } catch {
-            /* ignore parse errors */
-          }
-        };
-        es.onerror = () => {
-          // The browser auto-reconnects; if the job already finished we have
-          // closed the stream, so this only fires on genuine transport drops.
-        };
+        if (key) activeJobs.set(key, jobId);
+        openStream(jobId);
       })
       .catch((e: unknown) => {
         setRunning(false);
         setLog((l) => [...l, `Error: ${String(e)}`]);
       });
   }
+
+  // On mount, reconnect to a job left running under this key (e.g. the user
+  // navigated away mid-operation and came back).
+  useEffect(() => {
+    if (!key) return;
+    const jobId = activeJobs.get(key);
+    if (!jobId) return;
+    let cancelled = false;
+    apiGet<JobSnapshot>(`/jobs/${jobId}`)
+      .then((snap) => {
+        if (cancelled) return;
+        if (snap.status === "queued" || snap.status === "running") {
+          setRunning(true);
+          if (snap.total > 0) setPercent(Math.min(99, (snap.value / snap.total) * 100));
+          // The SSE buffer replay (in openStream) repopulates the log, so don't
+          // also seed a line here — that would duplicate it.
+          openStream(jobId); // replays buffered events, then streams live
+        } else if (snap.status === "done") {
+          setDone(true);
+          setPercent(100);
+          setDoneMessage(snap.message || "Done");
+          if (snap.path) setDonePath(snap.path);
+          activeJobs.delete(key);
+        } else {
+          activeJobs.delete(key); // error — let the user start fresh
+        }
+      })
+      .catch(() => {
+        // Job unknown (e.g. server restarted) — drop the stale reference.
+        activeJobs.delete(key);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
 
   useEffect(() => () => closeStream(), []);
 
