@@ -1124,7 +1124,7 @@ async fn purge_handler(State(state): State<AppState>) -> ApiResult<serde_json::V
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub async fn run(conn: Connection, port: u16) -> Result<()> {
+pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Result<()> {
     // The passed connection opened the database read-write. Clone it into a pool
     // of read connections (concurrent SELECTs via DuckDB in-process MVCC); the
     // original becomes the single writer that runs all mutations and jobs.
@@ -1139,6 +1139,7 @@ pub async fn run(conn: Connection, port: u16) -> Result<()> {
         writer.clone(),
         reads.clone(),
         tokio::runtime::Handle::current(),
+        db_path,
     ));
     let state = AppState { reads, writer, jobs };
 

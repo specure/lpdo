@@ -192,6 +192,7 @@ pub struct JobManager {
     writer: ConnActor,
     reads: ReadPool,
     rt: Handle,
+    db_path: PathBuf,
     jobs: Mutex<HashMap<String, Arc<JobSlot>>>,
     order: Mutex<Vec<String>>,
     counter: AtomicU64,
@@ -205,11 +206,12 @@ fn is_read_only(job_type: &str) -> bool {
 }
 
 impl JobManager {
-    pub fn new(writer: ConnActor, reads: ReadPool, rt: Handle) -> Self {
+    pub fn new(writer: ConnActor, reads: ReadPool, rt: Handle, db_path: PathBuf) -> Self {
         JobManager {
             writer,
             reads,
             rt,
+            db_path,
             jobs: Mutex::new(HashMap::new()),
             order: Mutex::new(Vec::new()),
             counter: AtomicU64::new(1),
@@ -325,6 +327,7 @@ impl JobManager {
         let slot_run = slot.clone();
         let cancel = slot.cancel.clone();
         let rt = self.rt.clone();
+        let db_path = self.db_path.clone();
         let body = move |conn: &Connection| {
             {
                 slot_run.state.lock().unwrap().status = "running".into();
@@ -334,7 +337,7 @@ impl JobManager {
                 reporter.error("Cancelled before start");
                 return;
             }
-            match run_job(&slot_run.job_type, &params, conn, &reporter, &rt) {
+            match run_job(&slot_run.job_type, &params, conn, &reporter, &rt, &db_path) {
                 // Empty message keeps the operation's own final message; this
                 // just guarantees a terminal "done" even if the op didn't emit one.
                 Ok(()) => reporter.done(""),
@@ -359,6 +362,7 @@ fn run_job(
     conn: &Connection,
     reporter: &Reporter,
     rt: &Handle,
+    db: &Path,
 ) -> Result<()> {
     use crate::{dedup, importer, normalise, players, twic};
 
@@ -387,7 +391,23 @@ fn run_job(
             importer::import_pgn(conn, &path, Some(40), 10, fast, false, &spec, reporter)?;
         }
         "index_positions" => {
-            importer::index_positions(conn, Some(40), flag(p, "rebuild"), flag(p, "fast"), reporter)?;
+            let rebuild = flag(p, "rebuild");
+            // A from-scratch rebuild uses the appender (not crash-safe); take a
+            // safety snapshot first so a crash mid-rebuild can be rolled back.
+            let snapshotted = rebuild && make_safety_snapshot(conn, db, reporter);
+            let res = importer::index_positions(conn, Some(40), rebuild, flag(p, "fast"), reporter);
+            if snapshotted {
+                match &res {
+                    Ok(_) => {
+                        remove_snapshot(db);
+                        reporter.log("Safety snapshot removed.");
+                    }
+                    Err(_) => reporter.log(
+                        "Rebuild did not complete — the safety snapshot will be restored on next start.",
+                    ),
+                }
+            }
+            res?;
         }
         "dedup_games" => {
             dedup::dedup_games(conn, flag(p, "dry_run"), reporter)?;
@@ -454,4 +474,99 @@ fn path_param(p: &serde_json::Value, key: &str) -> Result<PathBuf> {
     let s = p.get(key).and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("'{}' required", key))?;
     Ok(crate::expand_home(Path::new(s)))
+}
+
+// ── Safety snapshot (for the from-scratch index rebuild) ──────────────────────
+//
+// A from-scratch rebuild uses the appender, which is not crash-safe. Before it
+// runs we copy the database to `<db>.snapshot`; on success we delete it, and if
+// it's left behind (crash / failure) the next server start restores it. The copy
+// uses a reflink where the filesystem supports it (instant, space-efficient),
+// and degrades to "warn and proceed without a snapshot" on any failure.
+
+fn with_suffix(p: &Path, suffix: &str) -> PathBuf {
+    let mut s = p.as_os_str().to_owned();
+    s.push(suffix);
+    PathBuf::from(s)
+}
+pub fn snapshot_path(db: &Path) -> PathBuf { with_suffix(db, ".snapshot") }
+fn snapshot_tmp_path(db: &Path) -> PathBuf { with_suffix(db, ".snapshot.tmp") }
+fn wal_path(db: &Path) -> PathBuf { with_suffix(db, ".wal") }
+fn snapshot_wal_path(db: &Path) -> PathBuf { with_suffix(db, ".snapshot.wal") }
+
+#[cfg(unix)]
+fn copy_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    // Prefer a reflink (instant + space-efficient on Btrfs/XFS/ZFS/APFS),
+    // falling back to a full byte copy on ext4 etc.
+    let reflinked = std::process::Command::new("cp")
+        .arg("--reflink=auto").arg("-f").arg("--").arg(src).arg(dst)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if reflinked {
+        return Ok(());
+    }
+    std::fs::copy(src, dst).map(|_| ())
+}
+#[cfg(not(unix))]
+fn copy_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::copy(src, dst).map(|_| ())
+}
+
+/// Best-effort consistent snapshot before a risky rebuild. Returns true if one
+/// was made; on any failure (e.g. low disk) it warns and returns false so the
+/// caller proceeds without a snapshot.
+fn make_safety_snapshot(conn: &Connection, db: &Path, reporter: &Reporter) -> bool {
+    reporter.log("Creating a safety snapshot of the database before rebuilding…");
+    // Flush the WAL into the main file when possible; we also copy the WAL if it
+    // remains, so the snapshot is consistent either way.
+    let _ = conn.execute_batch("CHECKPOINT;");
+
+    let tmp = snapshot_tmp_path(db);
+    let _ = std::fs::remove_file(&tmp);
+    if let Err(e) = copy_file(db, &tmp) {
+        reporter.log(format!("Could not create safety snapshot ({e}); proceeding without one."));
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    // Publish atomically — a crash mid-copy leaves only the .tmp.
+    if let Err(e) = std::fs::rename(&tmp, snapshot_path(db)) {
+        reporter.log(format!("Could not finalise safety snapshot ({e}); proceeding without one."));
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    let wal = wal_path(db);
+    if wal.exists() {
+        let _ = copy_file(&wal, &snapshot_wal_path(db));
+    }
+    reporter.log("Safety snapshot created.");
+    true
+}
+
+fn remove_snapshot(db: &Path) {
+    let _ = std::fs::remove_file(snapshot_path(db));
+    let _ = std::fs::remove_file(snapshot_wal_path(db));
+    let _ = std::fs::remove_file(snapshot_tmp_path(db));
+}
+
+/// At server startup: a leftover safety snapshot means the previous rebuild did
+/// not complete cleanly — restore it over the (possibly corrupt) database.
+pub fn restore_snapshot_if_present(db: &Path) -> Result<()> {
+    let _ = std::fs::remove_file(snapshot_tmp_path(db)); // stray partial copy
+    let snap = snapshot_path(db);
+    if !snap.exists() {
+        return Ok(());
+    }
+    eprintln!(
+        "A previous index rebuild did not finish cleanly — restoring the database from its safety snapshot…"
+    );
+    let _ = std::fs::remove_file(db);
+    let _ = std::fs::remove_file(wal_path(db));
+    std::fs::rename(&snap, db)?;
+    let snap_wal = snapshot_wal_path(db);
+    if snap_wal.exists() {
+        std::fs::rename(&snap_wal, wal_path(db))?;
+    }
+    eprintln!("Database restored from snapshot.");
+    Ok(())
 }
