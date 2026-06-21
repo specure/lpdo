@@ -3,6 +3,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { TwicCredit, useTwicAck } from "./TwicCredit";
 import { useSidecarProgress } from "../hooks/useSidecarProgress";
 import { getSchedule, updateSchedule, type ScheduleInfo } from "../api";
+import AddGameDialog from "./AddGameDialog";
 import { StatusInfo } from "../types";
 
 interface Props {
@@ -177,34 +178,24 @@ function PlayersSection() {
 
 // ── Additional databases section ──────────────────────────────────────────────
 
-function DatabasesSection() {
-  const [folder, setFolder] = useState("");
-  const progress = useSidecarProgress("maint-import-pgn");
-
-  function run() {
-    void progress.run(["import-pgn", folder]);
-  }
-
+function DatabasesSection({ onMutated }: { onMutated?: () => void }) {
+  // Reuse the same import UI as the setup wizard (AddGameDialog, embedded "file"
+  // mode): a file/folder picker and a collection chooser, instead of a bare path
+  // text field. No `bulk` here — unlike the wizard there's no follow-up index
+  // rebuild, so positions are indexed per import as before.
   return (
     <SectionCard title="Additional databases">
       <p className="text-body-sm text-on-surface-variant">
-        Scan a folder for new PGN files and import them. Already-imported files are skipped.
+        Import PGN files — pick a single file or a whole folder, and choose the collection they go
+        into. Already-imported files are skipped.
       </p>
-      {!progress.running && !progress.done && (
-        <div className="space-y-2">
-          <input
-            type="text"
-            value={folder}
-            onChange={(e) => setFolder(e.target.value)}
-            placeholder="/path/to/pgn/folder"
-            className="w-full h-9 px-3 rounded-sm bg-transparent text-on-surface placeholder:text-on-surface-variant text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
-          />
-          <ActionButton onClick={run} disabled={!folder.trim()}>Import new files</ActionButton>
-        </div>
-      )}
-      {(progress.running || progress.done) && (
-        <ProgressSection progress={progress} label="Importing…" />
-      )}
+      <AddGameDialog
+        embedded
+        initialMode="file"
+        allowedModes={["file"]}
+        onClose={() => { /* embedded: no close button */ }}
+        onImported={() => onMutated?.()}
+      />
     </SectionCard>
   );
 }
@@ -670,7 +661,7 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated }: Pro
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
           <AutoUpdateSection />
           <PlayersSection />
-          <DatabasesSection />
+          <DatabasesSection onMutated={onMutated} />
           <TwicSection />
           <DeduplicationSection onMutated={onMutated} />
           <IndexSection />

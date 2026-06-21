@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   issues. The old count also included local PGN imports; the new figure is the
   latest real TWIC issue. Publication dates are read from the TWIC index and
   backfilled on download.
+- **Maintenance "Additional databases" import matches the setup wizard** — the
+  bare path text field is replaced by the wizard's import UI: a file/folder
+  picker and a collection chooser. Both entry points now look and work the same.
 
 ## [0.3.0] - 2026-06-12
 
