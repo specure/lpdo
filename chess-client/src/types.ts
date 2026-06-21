@@ -199,6 +199,10 @@ export interface StatusInfo {
   positions: number;
   /** Soft-deleted games (newer servers only). */
   deleted_games?: number;
-  /** ISO timestamp of the most recently imported TWIC issue. */
+  /** Number of the most recently imported TWIC issue (e.g. 1649). */
+  last_twic_issue?: number | null;
+  /** TWIC's own publication date of `last_twic_issue` (e.g. "2026-06-15"). */
+  last_twic_published?: string | null;
+  /** ISO timestamp at which `last_twic_issue` was imported. */
   last_twic_imported?: string | null;
 }

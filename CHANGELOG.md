@@ -5,6 +5,16 @@ All notable changes to LPDO are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Home screen shows the latest TWIC issue instead of a count** — the Database
+  panel's TWIC tile now displays the most recently imported TWIC issue and its
+  publication date (e.g. `#1649 (2026-06-15)`) rather than a tally of imported
+  issues. The old count also included local PGN imports; the new figure is the
+  latest real TWIC issue. Publication dates are read from the TWIC index and
+  backfilled on download.
+
 ## [0.3.0] - 2026-06-12
 
 Annotated PGN import.

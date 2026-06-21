@@ -37,7 +37,7 @@ axum = "0.8"
 # Stream adapters for SSE job-progress streaming (BroadcastStream).
 tokio-stream = { version = "0.1", features = ["sync"] }
 # CORS so the bundled webview (origin tauri://localhost) can call the sidecar.
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors"] }
 
 # Error handling
 anyhow = "1"

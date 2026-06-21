@@ -54,7 +54,13 @@ pub struct StatusInfo {
     pub players: i64,
     pub positions: i64,
     pub deleted_games: i64,
-    /// ISO timestamp of the most recently imported TWIC issue, or null if none.
+    /// Number of the most recently imported TWIC issue (e.g. 1649), or null if
+    /// none have been imported. Excludes local PGN imports (issue ids ≥ 1e6).
+    pub last_twic_issue: Option<i64>,
+    /// Publication date of `last_twic_issue` (TWIC's own date, e.g. "2026-06-15"),
+    /// or null if not yet known. Null until a `download` backfills it.
+    pub last_twic_published: Option<String>,
+    /// ISO timestamp at which `last_twic_issue` was imported, or null if none.
     pub last_twic_imported: Option<String>,
 }
 
@@ -545,8 +551,28 @@ async fn status_handler(State(state): State<AppState>) -> ApiResult<StatusInfo> 
             players:    conn.query_row("SELECT COUNT(*) FROM players", [], |r| r.get(0)).unwrap_or(0),
             positions:  conn.query_row("SELECT COUNT(*) FROM positions", [], |r| r.get(0)).unwrap_or(0),
             deleted_games: conn.query_row("SELECT COUNT(*) FROM games WHERE deleted_at IS NOT NULL", [], |r| r.get(0)).unwrap_or(0),
+            // Latest imported TWIC issue number. TWIC issues keep their natural
+            // id (~1–1700) with a `twicNNNNg.zip` filename; local PGN imports get
+            // ids ≥ 1_000_000, so the LIKE filter keeps this to real TWIC issues.
+            last_twic_issue: conn.query_row(
+                "SELECT MAX(id) FROM issues WHERE imported = TRUE AND filename LIKE 'twic%'",
+                [],
+                |r| r.get(0),
+            ).unwrap_or(None),
+            // Publication date and import timestamp of that same latest issue.
+            // ORDER BY id DESC LIMIT 1 picks the row whose id == MAX(id) above,
+            // so the number and both dates always correspond.
+            last_twic_published: conn.query_row(
+                "SELECT CAST(published_at AS VARCHAR) FROM issues \
+                 WHERE imported = TRUE AND filename LIKE 'twic%' \
+                 ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            ).unwrap_or(None),
             last_twic_imported: conn.query_row(
-                "SELECT CAST(MAX(imported_at) AS VARCHAR) FROM issues WHERE imported = TRUE AND imported_at IS NOT NULL",
+                "SELECT CAST(imported_at AS VARCHAR) FROM issues \
+                 WHERE imported = TRUE AND filename LIKE 'twic%' AND imported_at IS NOT NULL \
+                 ORDER BY id DESC LIMIT 1",
                 [],
                 |r| r.get(0),
             ).unwrap_or(None),
