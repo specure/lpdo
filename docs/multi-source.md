@@ -22,7 +22,17 @@ scheduling/update model from the automatic-updates work is unchanged.
 
 The decision to keep database updates **pre-computed on disk and ready at app
 launch** (rather than an in-app scheduler that only runs while the app is open)
-stands. Concretely:
+stands.
+
+> **Update:** the scheduling mechanism has since been decided in
+> [`client-server-architecture.md`](client-server-architecture.md): updates are
+> driven by a **scheduler inside the always-on server** (which owns the database
+> read-write), not by an OS-level timer running a separate `chess-db update`
+> writer. That supersedes the OS-timer + lock-guard approach sketched below, but
+> the *property* — pre-computed and ready at launch — is unchanged, and the
+> multi-source design below is unaffected by which mechanism drives it.
+
+Concretely (pre-server-scheduler sketch, retained for context):
 
 - A single `chess-db update` command does the whole refresh internally
   (download → import → index → normalise) with a built-in guard that **skips when
@@ -31,9 +41,9 @@ stands. Concretely:
   Linux, Task Scheduler on Windows, launchd on macOS), set up via a documented
   one-command install.
 
-Multi-source does not alter this. `chess-db update` simply iterates **every
-enabled incremental source** instead of being hardwired to TWIC. The scheduler
-stays dumb; each provider knows its own cadence.
+Either way, multi-source does not alter the model: the update path simply iterates
+**every enabled incremental source** instead of being hardwired to TWIC, and each
+provider knows its own cadence.
 
 ## Source providers
 
