@@ -1,0 +1,27 @@
+# lpdo-server — the always-on server as a systemd SYSTEM service (no binary of
+# its own; it depends on lpdo-cli and ships only the unit + maintainer scripts).
+name: lpdo-server
+arch: amd64
+platform: linux
+version: ${LPDO_VERSION}
+section: misc
+priority: optional
+maintainer: "SPECURE GmbH <jozef.svrcek@specure.com>"
+homepage: "https://github.com/specure/lpdo"
+license: Apache-2.0
+description: |
+  LPDO chess database server (system daemon).
+  Runs `chess-db serve` as a systemd system service under the dedicated `lpdo`
+  user, owning the database under /var/lib/lpdo and running the in-process
+  TWIC update scheduler. Listens on 127.0.0.1:7777 for the GUI and CLI.
+depends:
+  - lpdo-cli (= ${LPDO_VERSION})
+contents:
+  - src: packaging/systemd/lpdo-server.service
+    dst: /lib/systemd/system/lpdo-server.service
+    file_info:
+      mode: 0644
+scripts:
+  postinstall: packaging/scripts/server.postinst
+  preremove: packaging/scripts/server.prerm
+  postremove: packaging/scripts/server.postrm

@@ -1,0 +1,23 @@
+# lpdo-cli — the chess-db binary on PATH (CLI + client + `serve`).
+# Built in CI with nfpm, reusing the release binary that has the normalise key baked in.
+name: lpdo-cli
+arch: amd64
+platform: linux
+version: ${LPDO_VERSION}
+section: utils
+priority: optional
+maintainer: "SPECURE GmbH <jozef.svrcek@specure.com>"
+homepage: "https://github.com/specure/lpdo"
+license: Apache-2.0
+description: |
+  LPDO chess database command-line tool and client.
+  The chess-db binary imports TWIC archives, searches games and players, edits
+  the database, and transparently proxies to a running lpdo-server over HTTP
+  (local or remote), falling back to direct access when no server is running.
+depends:
+  - libc6 (>= 2.34)
+contents:
+  - src: target/release/chess-db
+    dst: /usr/bin/chess-db
+    file_info:
+      mode: 0755

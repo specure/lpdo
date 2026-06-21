@@ -1,0 +1,51 @@
+#!/bin/sh
+# postinst for lpdo-server — create the system user and enable the service.
+set -e
+
+case "$1" in
+  configure)
+    # 1. Create the lpdo system user/group (idempotent). The home is
+    #    /var/lib/lpdo but systemd's StateDirectory creates/owns it at start, so
+    #    we don't create it here (--no-create-home).
+    if ! getent group lpdo >/dev/null; then
+      addgroup --system lpdo
+    fi
+    if ! getent passwd lpdo >/dev/null; then
+      adduser --system --ingroup lpdo \
+              --home /var/lib/lpdo --no-create-home \
+              --gecos "LPDO server" --disabled-password lpdo
+    fi
+
+    # 2. systemd integration (the Debian way — same helpers dh_installsystemd uses).
+    if [ -d /run/systemd/system ]; then
+      systemctl --system daemon-reload >/dev/null 2>&1 || true
+      if command -v deb-systemd-helper >/dev/null 2>&1; then
+        deb-systemd-helper unmask 'lpdo-server.service' >/dev/null 2>&1 || true
+        if deb-systemd-helper --quiet was-enabled 'lpdo-server.service'; then
+          deb-systemd-helper enable 'lpdo-server.service' >/dev/null 2>&1 || true
+        else
+          deb-systemd-helper update-state 'lpdo-server.service' >/dev/null 2>&1 || true
+        fi
+      else
+        systemctl --system enable 'lpdo-server.service' >/dev/null 2>&1 || true
+      fi
+      if command -v deb-systemd-invoke >/dev/null 2>&1; then
+        deb-systemd-invoke start 'lpdo-server.service' >/dev/null 2>&1 || true
+      else
+        systemctl --system start 'lpdo-server.service' >/dev/null 2>&1 || true
+      fi
+    fi
+
+    # 3. Only one server can hold the database lock + port 7777. If you previously
+    #    ran `chess-db service install` (a per-user lpdo-server), disable it so it
+    #    doesn't clash with this system service:
+    #        systemctl --user disable --now lpdo-server.service
+    echo "lpdo-server: system service installed. If you previously ran a per-user" >&2
+    echo "             server (chess-db service install), disable it to avoid a" >&2
+    echo "             conflict: systemctl --user disable --now lpdo-server.service" >&2
+    ;;
+  abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+esac
+
+exit 0

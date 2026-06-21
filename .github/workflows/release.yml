@@ -153,6 +153,53 @@ jobs:
           prerelease: false
           args: --bundles ${{ matrix.bundles }}
 
+      # ── Linux apt packages: lpdo-cli / lpdo-server / lpdo-desktop ─────────────
+      # tauri-action above produced the GUI .deb + .appimage; here we build the
+      # three companion .debs with nfpm and attach them to the same draft release.
+      # Reuses the chess-db binary built earlier (with the normalise key baked in)
+      # — do NOT rebuild it here without the key.
+      - name: Compute Debian version
+        if: matrix.os == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          RAW="${{ github.event.inputs.tag || github.ref_name }}"
+          VER="${RAW#v}"
+          echo "LPDO_VERSION=$VER" >> "$GITHUB_ENV"
+          # The GUI .deb's version comes from tauri.conf.json; lpdo-desktop pins
+          # `lpdo (= $VER)`, so they must match or the metapackage won't install.
+          TAURI_VER=$(jq -r .version chess-client/src-tauri/tauri.conf.json)
+          [ "$TAURI_VER" = "$VER" ] || { echo "version skew: tauri.conf $TAURI_VER != tag $VER"; exit 1; }
+
+      - name: Install nfpm + lintian
+        if: matrix.os == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          NFPM_VER=2.43.0
+          curl -sSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VER}/nfpm_${NFPM_VER}_Linux_x86_64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin nfpm
+          sudo apt-get install -y lintian
+
+      - name: Build lpdo-cli / lpdo-server / lpdo-desktop .debs
+        if: matrix.os == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x target/release/chess-db   # built earlier with the baked key
+          mkdir -p dist-deb
+          for pkg in cli server desktop; do
+            nfpm pkg -f "packaging/nfpm-$pkg.yaml" -p deb -t dist-deb/
+          done
+          ls -la dist-deb/
+          lintian dist-deb/*.deb || true   # advisory; don't fail the release
+
+      - name: Attach .debs to the draft release
+        if: matrix.os == 'ubuntu-22.04'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        shell: bash
+        run: gh release upload "$TAG" dist-deb/*.deb --clobber
+
   # Auto-fill the draft release body. Source of truth is the matching section of
   # CHANGELOG.md (so the file and the published notes never drift); if no section
   # exists for this version, fall back to a changelog built from the commit log

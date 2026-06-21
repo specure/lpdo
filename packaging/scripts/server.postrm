@@ -1,0 +1,31 @@
+#!/bin/sh
+# postrm for lpdo-server — clean up systemd state. Data under /var/lib/lpdo is
+# kept (Debian convention; the chess database is large and costly to rebuild).
+set -e
+
+case "$1" in
+  remove)
+    if command -v deb-systemd-helper >/dev/null 2>&1; then
+      deb-systemd-helper mask 'lpdo-server.service' >/dev/null 2>&1 || true
+    fi
+    if [ -d /run/systemd/system ]; then
+      systemctl --system daemon-reload >/dev/null 2>&1 || true
+    fi
+    ;;
+  purge)
+    if command -v deb-systemd-helper >/dev/null 2>&1; then
+      deb-systemd-helper purge 'lpdo-server.service' >/dev/null 2>&1 || true
+      deb-systemd-helper unmask 'lpdo-server.service' >/dev/null 2>&1 || true
+    fi
+    if [ -d /run/systemd/system ]; then
+      systemctl --system daemon-reload >/dev/null 2>&1 || true
+    fi
+    # Deliberately keep the data and the lpdo user.
+    echo "lpdo-server purged. Database kept at /var/lib/lpdo. To remove it:" >&2
+    echo "    sudo rm -rf /var/lib/lpdo && sudo deluser --system lpdo" >&2
+    ;;
+  upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+    ;;
+esac
+
+exit 0
