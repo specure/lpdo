@@ -45,7 +45,12 @@ jobs:
             sidecar_src: target/release/chess-db
             sidecar_dst: chess-client/src-tauri/binaries/chess-db-x86_64-unknown-linux-gnu
             bundles: deb,appimage
-          - os: windows-latest
+          # Pinned to windows-2022 (MSVC 14.4x): newer images ship a Visual
+          # Studio 18 MSVC that drops `stdext::checked_array_iterator`, which
+          # DuckDB's vendored `fmt` still uses — so libduckdb-sys fails to
+          # compile on `windows-latest`. Revisit when the duckdb crate vendors a
+          # fmt that builds on the newer MSVC.
+          - os: windows-2022
             sidecar_src: target/release/chess-db.exe
             sidecar_dst: chess-client/src-tauri/binaries/chess-db-x86_64-pc-windows-msvc.exe
             # NSIS .exe only — a single Windows download avoids the "which one
