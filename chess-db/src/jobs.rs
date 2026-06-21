@@ -428,13 +428,25 @@ fn run_job(
             players::import(conn, &path, reporter)?;
         }
         "players_export" => {
-            // Mirror `backup`: write a date-stamped file into the chosen folder
-            // and report its path so the GUI can offer "Reveal in file manager".
-            let dir = path_param(p, "dir")?;
-            std::fs::create_dir_all(&dir)
-                .with_context(|| format!("cannot create export directory {}", dir.display()))?;
-            let stamp = chrono::Local::now().format("%Y%m%d");
-            let path = dir.join(format!("{stamp}-players.csv"));
+            // Two shapes: an explicit `path` (the CLI `players export <path>`),
+            // or a `dir` into which we write a date-stamped file (the GUI, which
+            // then offers "Reveal in file manager").
+            let path = if let Ok(path) = path_param(p, "path") {
+                match path.parent() {
+                    Some(parent) if !parent.as_os_str().is_empty() => {
+                        std::fs::create_dir_all(parent)
+                            .with_context(|| format!("cannot create export directory {}", parent.display()))?;
+                    }
+                    _ => {}
+                }
+                path
+            } else {
+                let dir = path_param(p, "dir")?;
+                std::fs::create_dir_all(&dir)
+                    .with_context(|| format!("cannot create export directory {}", dir.display()))?;
+                let stamp = chrono::Local::now().format("%Y%m%d");
+                dir.join(format!("{stamp}-players.csv"))
+            };
             let n = players::export(conn, &path)?;
             if n == 0 {
                 anyhow::bail!("no normalised players to export");
