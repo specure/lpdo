@@ -142,12 +142,86 @@ of Phase 1 and can come once Phase 1 has proven out.
 
 ## Keep the single-machine experience "just works"
 
-Most users run everything on one laptop, and that must stay "install the app and
-it works." The default should be that the app manages a **local, always-on
-server** (the installer registers a user service; the GUI connects to it).
-Done right, Phase 1 *improves* even the single-laptop case — the server runs
+Most users run everything on one laptop, and that must stay "install and it
+works." The default install (the `lpdo-desktop` metapackage on Linux, or the
+"Both" option on the Windows/macOS installer — see Packaging) lays down the GUI
+plus a **local, always-on server** that the OS service manager keeps running;
+the GUI just connects to it on localhost. Done right, Phase 1 *improves* even
+the single-laptop case — the server runs
 scheduled updates in the background and there are no lock conflicts — and it is
 the same change that makes a dedicated server possible later.
+
+## Packaging (decided)
+
+The client and server are **always two separate binaries on every platform** —
+`lpdo` (the Tauri GUI) and `lpdod` (the server daemon, today's `chess-db`
+binary with `serve` plus the scheduler). "One package or two" is purely a
+*delivery* question, and the answer differs by platform while the model stays
+the same:
+
+> **Two components everywhere.** Linux expresses the choice as two packages
+> (`apt install lpdo` / `lpdod`); Windows and macOS express the same choice as
+> selectable components inside one installer. The installer's component page
+> *is* the desktop-OS analog of choosing packages on Linux.
+
+This is the conventional Unix split (`postgresql-client`/`-server`,
+`docker`/`dockerd`). Its main virtue: **daemon lifecycle lives with the OS, not
+the GUI.** The service manager starts `lpdod` at boot and restarts it on
+failure, whether or not the GUI is running — exactly the always-on property we
+want — and `lpdo` becomes a pure thin client that always speaks HTTP to a
+server (defaulting to localhost), with no bundled sidecar and no "should I start
+a server?" logic. `lpdod` then behaves identically on a laptop and on a
+dedicated box; only the host the client points at changes.
+
+### Per-platform delivery
+
+| Platform | Installer | Component selection | Server runs as |
+|----------|-----------|---------------------|----------------|
+| Linux    | two `.deb`s (`lpdo`, `lpdod`) + an `lpdo-desktop` metapackage | via package choice (`apt`) | systemd service |
+| Windows  | one NSIS `.exe` (or MSI) | **yes** — NSIS components page / MSI feature tree | Windows Service |
+| macOS    | one `.pkg` (not `.dmg`) | **yes** — Installer "Custom Install" pane | launchd daemon |
+
+- **Linux** — two single-purpose packages. Keep the laptop install one command
+  via a metapackage `lpdo-desktop` that depends on both (preferred), or
+  `lpdo` `Recommends: lpdod` (apt installs recommends by default; a pure thin
+  client is `--no-install-recommends`).
+- **Windows** — one installer with a components page offering **Client /
+  Server / Both** (default both). Selecting the server registers a Windows
+  Service; a client-only install lays down no service. Needs a **custom Tauri
+  NSIS template** (the auto-generated one doesn't do component sections), but
+  NSIS supports it cleanly.
+- **macOS** — a `.dmg` *cannot* offer choices (it is drag-to-Applications), so
+  install-time component selection specifically requires moving to (or also
+  shipping) a **`.pkg`** built with `productbuild`, whose "Custom Install" pane
+  gives the checkboxes, with a **launchd** daemon for the server component.
+  Notarization still applies.
+
+Realistic choices on the desktop installers: **Full desktop (GUI + local
+server)** as default, **Client only** (connect to a remote server, no local
+daemon), and **Server only** — niche on Windows/macOS since servers are usually
+Linux, but essentially free once the component mechanism exists.
+
+### Data location
+
+Going to a separate daemon forces one real decision: where `lpdod` keeps its
+data. A system daemon (postgres-style: runs as an `lpdo` user, data under
+`/var/lib/lpdo`) is the clean, consistent-local-and-remote choice — but today's
+DB lives per-user at `~/.chess-db/chess.db` (~18 GB). Recommended: **system
+daemon with a configurable data directory, whose migration adopts an existing
+`~/.chess-db` if present.**
+
+### Sequencing
+
+Packaging is the most custom part of the plan on the desktop OSes, so stage it:
+
+- **MVP** — desktop installers simply install **both** by default (GUI + a local
+  server service); "client-only-remote" is handled by pointing the app at a
+  remote URL with the local service left disabled. Minimal installer work.
+- **Later polish** — add the real component picker: cheap-ish on Windows (NSIS
+  sections), a bigger lift on macOS (the `.dmg → .pkg` switch).
+
+This keeps the desktop story aligned with the Linux two-package model without
+front-loading the trickiest installer work before Phase 2 (remote) needs it.
 
 ## Relationship to multi-source
 
@@ -160,8 +234,6 @@ process.
 ## Open questions / decisions deferred
 
 - **Auth scheme** for Phase 2 (bearer token vs mTLS).
-- **Packaging shape** — one dual-mode binary (server + client) vs a separate
-  server daemon package plus a client app.
 - **Local file access** — "Browse local PGN files" is a client-side feature
   today; in a remote-client world, decide whether file browsing/import is
   client-side or server-side.
