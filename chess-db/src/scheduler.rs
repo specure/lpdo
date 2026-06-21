@@ -79,8 +79,33 @@ async fn tick(jobs: &Arc<JobManager>, reads: &ReadPool, writer: &ConnActor) -> a
     // 4. Stamp BEFORE submitting — the update occupies the single writer thread
     //    for its whole duration, so any write after submit would queue behind it.
     stamp_running(writer).await;
-    jobs.submit("update".into(), serde_json::json!({}));
+    let id = jobs.submit("update".into(), serde_json::json!({}));
+    spawn_settle_watcher(jobs.clone(), writer.clone(), id);
     Ok(())
+}
+
+/// Record an update's terminal status to the schedule as soon as the job
+/// finishes, rather than waiting for the next periodic tick — so a manual "run
+/// now" flips from `running` to `ok`/`error` promptly. The periodic tick stays
+/// as the fallback (e.g. when a restart kills this task mid-run).
+pub fn spawn_settle_watcher(jobs: Arc<JobManager>, writer: ConnActor, job_id: String) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            match jobs.snapshot(&job_id) {
+                Some(s) if s.status == "done" => {
+                    mark_status(&writer, "ok".into()).await;
+                    break;
+                }
+                Some(s) if s.status == "error" => {
+                    mark_status(&writer, format!("error: {}", s.error.unwrap_or_default())).await;
+                    break;
+                }
+                Some(_) => continue, // still running/queued
+                None => break,       // job gone — leave it for the tick fallback
+            }
+        }
+    });
 }
 
 /// The most recently submitted `update` job, or None if none are tracked.

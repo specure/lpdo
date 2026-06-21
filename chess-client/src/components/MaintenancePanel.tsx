@@ -687,9 +687,24 @@ function AutoUpdateSection({ onMutated }: { onMutated?: () => void }) {
   useEffect(() => { void refresh(); }, []);
 
   // After a manual run finishes, the schedule's last-run/next-check change and
-  // the database grew — refresh both this card and the host's status/lists.
+  // the database grew — refresh this card and the host's status/lists. The
+  // server settles last_status from `running` → `ok` a moment after the job
+  // ends, so poll briefly until it's no longer `running`.
   useEffect(() => {
-    if (progress.done) { void refresh(); onMutated?.(); }
+    if (!progress.done) return;
+    onMutated?.();
+    let stop = false;
+    let tries = 0;
+    const poll = async () => {
+      const s = await getSchedule().catch(() => null);
+      if (stop) return;
+      if (s) setSched(s);
+      if ((!s || s.last_status === "running") && tries++ < 8) {
+        setTimeout(() => void poll(), 2000);
+      }
+    };
+    void poll();
+    return () => { stop = true; };
   }, [progress.done]);
 
   async function save(body: Partial<Pick<ScheduleInfo, "enabled" | "daily_minute">>) {

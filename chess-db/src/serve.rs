@@ -1026,6 +1026,7 @@ async fn run_schedule_now_handler(State(state): State<AppState>) -> ApiResult<se
     }
     crate::scheduler::stamp_running(&state.writer).await;
     let id = state.jobs.submit("update".into(), serde_json::json!({}));
+    crate::scheduler::spawn_settle_watcher(state.jobs.clone(), state.writer.clone(), id.clone());
     Ok(Json(serde_json::json!({ "job_id": id })))
 }
 
