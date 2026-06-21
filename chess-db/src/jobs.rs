@@ -452,20 +452,24 @@ fn run_job(
         }
         // The bridge for scheduled updates — mirrors ~/bin/chess-db-update.sh.
         "update" => {
+            // Each step's own `done` would otherwise terminate the job's event
+            // stream after step 1; the sub-step reporter downgrades those to log
+            // lines so only the final `done` below ends the job.
+            let step = reporter.sub_step();
             let dir = crate::default_dir();
             std::fs::create_dir_all(&dir)?;
             reporter.log("Step 1/4: download");
-            rt.block_on(twic::download(conn, 1, None, &dir, reporter))?;
+            rt.block_on(twic::download(conn, 1, None, &dir, &step))?;
             if reporter.is_cancelled() { return Ok(()); }
             reporter.log("Step 2/4: import (fast)");
-            importer::import(conn, &dir, None, 0, true, false, reporter)?;
+            importer::import(conn, &dir, None, 0, true, false, &step)?;
             if reporter.is_cancelled() { return Ok(()); }
             reporter.log("Step 3/4: index-positions (fast)");
-            importer::index_positions(conn, Some(40), false, true, reporter)?;
+            importer::index_positions(conn, Some(40), false, true, &step)?;
             if reporter.is_cancelled() { return Ok(()); }
             reporter.log("Step 4/4: players normalise");
             normalise::normalise_players(
-                conn, false, 1500, 100, 30_000, 3, 10, 7_200_000, false, None, None, None, false, reporter,
+                conn, false, 1500, 100, 30_000, 3, 10, 7_200_000, false, None, None, None, false, &step,
             )?;
             reporter.done("Database update complete");
         }
