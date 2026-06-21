@@ -126,12 +126,12 @@ function DatabaseInfo({ status }: { status: StatusInfo | null }) {
       {status ? (
         <div className="grid grid-cols-3 gap-2">
           {([
-            ["Games",       fmt(status.games)],
-            ["Players",     fmt(status.players)],
-            ["Positions",   fmt(status.positions)],
-            ["TWIC issues", fmt(status.issues)],
-            ["Downloaded",  fmt(status.downloaded)],
-            ["Imported",    fmt(status.imported)],
+            ["Games",         fmt(status.games)],
+            ["Players",       fmt(status.players)],
+            ["Positions",     fmt(status.positions)],
+            ["TWIC issues",   fmt(status.issues)],
+            ["Local imports", fmt(status.local_imports ?? 0)],
+            ["Latest TWIC",   status.last_twic_issue ? `#${status.last_twic_issue}` : "—"],
           ] as [string, string][]).map(([label, value]) => (
             <div key={label} className="bg-surface-container rounded-sm px-3 py-2">
               <div className="text-label-sm text-on-surface-variant uppercase tracking-wider">{label}</div>

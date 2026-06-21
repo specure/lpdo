@@ -197,9 +197,10 @@ export interface StatusInfo {
   api_version?: number;
   games: number;
   players: number;
+  /** TWIC issues actually imported (excludes local PGN imports and undownloaded ids). */
   issues: number;
-  downloaded: number;
-  imported: number;
+  /** Local PGN files imported (Megabase, Bundesliga, …); absent on old servers. */
+  local_imports?: number;
   positions: number;
   /** Soft-deleted games (newer servers only). */
   deleted_games?: number;

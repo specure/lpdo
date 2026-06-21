@@ -43,6 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   if the server is restarted mid-update, the scheduler now reconciles the
   orphaned `running` state on startup (marking it `interrupted`) instead of
   leaving it stuck until the next due run.
+- **Maintenance database tile no longer conflates local imports with TWIC** —
+  the *TWIC issues* figure now counts only real, imported TWIC issues; local PGN
+  imports (Megabase, Bundesliga, …) are shown as a separate **Local imports**
+  stat, and **Latest TWIC** replaces the old *Downloaded*/*Imported* pair. The
+  old counts mixed in local imports and TWIC ids that were registered but never
+  downloadable, making the tile look inconsistent (e.g. 904 vs 853).
 
 ## [0.3.0] - 2026-06-12
 
