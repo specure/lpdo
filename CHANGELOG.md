@@ -20,8 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   edit commands (`games soft-delete`/`restore`/`set-visibility`/`add-collection`/
   `remove-collection`/`set-moves`/`set-headers`/`delete`/`purge`, `players merge`/
   `merge-by-name`/`set-fide-id`) now proxy to the daemon's existing endpoints,
-  with the same confirmation prompts. (Read/query commands like `search`/`status`
-  are the remaining piece.)
+  with the same confirmation prompts.
+- **CLI reads work while the server is running too** — `status`, `search games`,
+  `search players` and `games show` now proxy to the daemon and render the same
+  output. With this, essentially the whole CLI works whether or not the daemon is
+  running (the only exceptions: `search games --moves-stats` and the admin-only
+  `players dedup`/`update-game-counts`/`apply-corrections`, which need `--local`).
 
 ## [0.4.0] - 2026-06-21
 
