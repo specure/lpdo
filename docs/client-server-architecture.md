@@ -220,6 +220,29 @@ sudo chown -R lpdo:lpdo /var/lib/lpdo
 sudo systemctl start lpdo-server
 ```
 
+### Installing on Windows (NSIS installer)
+
+The installer sets up `chess-db.exe` on `PATH` and an `LPDOServer` **Windows
+service** (WinSW supervising `chess-db serve`) whose database lives under
+**`C:\ProgramData\LPDO`**. The GUI connects to that service; a Client-only
+install (a later iteration) keeps the per-user model.
+
+**Upgrading from a prior release** — earlier versions kept the database per-user
+under `%USERPROFILE%\.chess-db`. The installer does **not** move it (it starts the
+service against an empty `C:\ProgramData\LPDO`), so migrate it manually once
+(your old data is left intact, just unused):
+
+```bat
+:: Close the LPDO app first, then in an elevated (Administrator) prompt:
+sc stop LPDOServer
+move "%USERPROFILE%\.chess-db\chess.db" "C:\ProgramData\LPDO\chess.db"
+:: optional: move the TWIC cache too
+robocopy "%USERPROFILE%\.chess-db\twic" "C:\ProgramData\LPDO\twic" /MOVE /E
+sc start LPDOServer
+```
+`%USERPROFILE%` and `C:\ProgramData` are normally on the same drive, so `move` is
+instant. Removing the Server uninstall keeps `C:\ProgramData\LPDO` (the database).
+
 - **Linux** — two single-purpose packages. Keep the laptop install one command
   via a metapackage `lpdo-desktop` that depends on both (preferred), or
   `lpdo` `Recommends: lpdod` (apt installs recommends by default; a pure thin
