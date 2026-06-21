@@ -118,6 +118,18 @@ jobs:
           mkdir -p "$(dirname "${{ matrix.sidecar_dst }}")"
           cp "${{ matrix.sidecar_src }}" "${{ matrix.sidecar_dst }}"
 
+      # Windows server component: WinSW supervises `chess-db serve` as a Windows
+      # service. Fetch the wrapper (renamed LPDOServer.exe) so Tauri bundles it as
+      # a resource (tauri.windows.conf.json) alongside its LPDOServer.xml.
+      - name: Fetch WinSW (Windows service wrapper)
+        if: matrix.os == 'windows-2022'
+        shell: bash
+        run: |
+          WINSW_VER=v2.12.0
+          curl -sSL -o chess-client/src-tauri/windows/service/LPDOServer.exe \
+            "https://github.com/winsw/winsw/releases/download/${WINSW_VER}/WinSW-x64.exe"
+          ls -la chess-client/src-tauri/windows/service/
+
       # macOS notarization authenticates with an App Store Connect API key. The
       # key's .p8 is a file on disk, but secrets are strings, so materialise it
       # into the runner's temp dir and hand tauri-action the path. macOS only —
