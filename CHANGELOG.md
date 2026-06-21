@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-21
+
+Player merge in the app, a reorganised Maintenance screen, and a smarter
+server-owned auto-updater.
+
 ### Added
 - **Merge duplicate players in the app** — combine a full-name record and a
   surname-only one (or any two duplicates of the same person) into a single
@@ -144,7 +149,8 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/specure/lpdo/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/specure/lpdo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/specure/lpdo/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/specure/lpdo/compare/v0.1.0...v0.1.1
