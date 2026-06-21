@@ -1028,6 +1028,86 @@ fn warn_dropped_flags(command: &Commands) {
     }
 }
 
+/// Proxy a quick "mutation" command to the daemon's existing endpoints (the same
+/// ones the GUI uses — no CLI-specific API). Returns `Some(result)` when the
+/// command is a proxyable mutation (handled here), or `None` when it isn't (the
+/// caller then reports it as not-yet-proxyable). Read/query commands and the few
+/// admin-only commands (players dedup / update-game-counts / apply-corrections)
+/// return `None`.
+async fn try_proxy_mutation(command: &Commands, port: u16) -> Option<Result<()>> {
+    use proxy::{run_mutation, MutationSpec};
+    use serde_json::json;
+
+    // POSTs whose body comes straight from the args.
+    let simple = match command {
+        Commands::Games { subcommand: GameCommands::SoftDelete { id } } => {
+            Some(MutationSpec::post(format!("/games/{id}/soft-delete")))
+        }
+        Commands::Games { subcommand: GameCommands::Restore { id } } => {
+            Some(MutationSpec::post(format!("/games/{id}/restore")))
+        }
+        Commands::Games { subcommand: GameCommands::SetVisibility { id, visibility } } => {
+            Some(MutationSpec::post(format!("/games/{id}/visibility")).body(json!({ "visibility": visibility })))
+        }
+        Commands::Games { subcommand: GameCommands::AddCollection { id, name } } => {
+            Some(MutationSpec::post(format!("/games/{id}/collections")).body(json!({ "name": name })))
+        }
+        Commands::Games { subcommand: GameCommands::RemoveCollection { id, name } } => {
+            Some(MutationSpec::post(format!("/games/{id}/collections/remove")).body(json!({ "name": name })))
+        }
+        Commands::Players { subcommand: PlayersCommands::SetFideId { player_id, fide_id } } => {
+            Some(MutationSpec::post(format!("/players/{player_id}/fide-id")).body(json!({ "fide_id": fide_id })))
+        }
+        _ => None,
+    };
+    if let Some(spec) = simple {
+        return Some(run_mutation(port, spec).await);
+    }
+
+    // Commands needing input processing or multi-step handling.
+    match command {
+        Commands::Games { subcommand: GameCommands::SetMoves { id, moves, moves_stdin } } => {
+            let movetext = if *moves_stdin {
+                match read_stdin_to_string() {
+                    Ok(s) => s,
+                    Err(e) => return Some(Err(e)),
+                }
+            } else {
+                moves.clone()
+            };
+            Some(run_mutation(port, MutationSpec::post(format!("/games/{id}/moves")).body(json!({ "moves": movetext }))).await)
+        }
+        Commands::Games { subcommand: GameCommands::SetHeaders { id, tags } } => {
+            match serde_json::from_str::<serde_json::Value>(tags) {
+                Ok(parsed) => Some(
+                    run_mutation(port, MutationSpec::post(format!("/games/{id}/headers")).body(json!({ "tags": parsed }))).await,
+                ),
+                Err(e) => Some(Err(anyhow::anyhow!("--tags must be a JSON array: {e}"))),
+            }
+        }
+        Commands::Games { subcommand: GameCommands::Delete { ids, yes_all } } => {
+            Some(proxy::run_delete(port, ids, *yes_all).await)
+        }
+        Commands::Games { subcommand: GameCommands::Purge { dry_run } } => {
+            Some(proxy::run_purge(port, *dry_run).await)
+        }
+        Commands::Players { subcommand: PlayersCommands::Merge { keep_id, drop_id, yes } } => {
+            Some(proxy::run_merge(port, *keep_id, *drop_id, *yes).await)
+        }
+        Commands::Players { subcommand: PlayersCommands::MergeByName { keep_name, drop_name, yes } } => {
+            Some(proxy::run_merge_by_name(port, keep_name, drop_name, *yes).await)
+        }
+        _ => None,
+    }
+}
+
+fn read_stdin_to_string() -> Result<String> {
+    use std::io::Read;
+    let mut s = String::new();
+    std::io::stdin().read_to_string(&mut s).context("reading movetext from stdin")?;
+    Ok(s)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -1074,18 +1154,21 @@ async fn main() -> Result<()> {
                         env!("CARGO_PKG_VERSION"), daemon.version, daemon.api_version,
                     );
                 }
-                match job_spec_for(&cli.command) {
-                    Some(spec) => {
-                        warn_dropped_flags(&cli.command);
-                        return proxy::run_job_proxied(port, spec, cli.json).await;
-                    }
-                    None => bail!(
-                        "the lpdo-server daemon is running and holds the database lock, so \
-                         this command can't run directly, and it isn't proxyable yet (only \
-                         long-running job commands are, for now). Stop the daemon \
-                         (systemctl --user stop lpdo-server) and retry, or pass --local."
-                    ),
+                // Phase A: long-running job commands (streamed).
+                if let Some(spec) = job_spec_for(&cli.command) {
+                    warn_dropped_flags(&cli.command);
+                    return proxy::run_job_proxied(port, spec, cli.json).await;
                 }
+                // Phase B: quick mutations (one-shot HTTP against existing endpoints).
+                if let Some(result) = try_proxy_mutation(&cli.command, port).await {
+                    return result;
+                }
+                // Reads and a few admin-only commands aren't proxyable yet.
+                bail!(
+                    "the lpdo-server daemon is running and holds the database lock, so \
+                     this command can't run directly, and it isn't proxyable yet. Stop the \
+                     daemon (systemctl --user stop lpdo-server) and retry, or pass --local."
+                );
             } else if cli.remote {
                 bail!("--remote: no lpdo-server daemon reachable on 127.0.0.1:{port}");
             }

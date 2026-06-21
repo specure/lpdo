@@ -15,7 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of failing on the database lock. Falls back to direct access when no
   daemon is running. New `--local` (force direct), `--remote` (force proxy), and
   `--port` / `$LPDO_PORT` flags; Ctrl-C cancels the remote job; `--json` output is
-  unchanged. (Phase A of the CLI proxy — read/query commands come next.)
+  unchanged.
+- **CLI edits work while the server is running too** — the quick game/player
+  edit commands (`games soft-delete`/`restore`/`set-visibility`/`add-collection`/
+  `remove-collection`/`set-moves`/`set-headers`/`delete`/`purge`, `players merge`/
+  `merge-by-name`/`set-fide-id`) now proxy to the daemon's existing endpoints,
+  with the same confirmation prompts. (Read/query commands like `search`/`status`
+  are the remaining piece.)
 
 ## [0.4.0] - 2026-06-21
 
