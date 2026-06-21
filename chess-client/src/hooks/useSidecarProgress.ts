@@ -34,6 +34,11 @@ export interface SidecarProgress {
   doneMessage: string;
   /** Result file path from the "done" event, when the command emitted one. */
   donePath: string | null;
+  /** The latest status line (updated in place by progress events). Use this for
+   *  a live "Indexed N / M games" readout instead of accumulating log lines. */
+  message: string;
+  /** Discrete log lines (milestones, warnings, errors) — NOT the rolling
+   *  progress counter, which would flood this. */
   log: string[];
   /** Run an operation. Accepts the legacy CLI-style argument array; it is
    *  translated to an HTTP job or a quick mutation against the server. */
@@ -152,6 +157,7 @@ export function useSidecarProgress(key?: string): SidecarProgress {
   const [done, setDone] = useState(false);
   const [doneMessage, setDoneMessage] = useState("");
   const [donePath, setDonePath] = useState<string | null>(null);
+  const [message, setMessage] = useState("");
   const [log, setLog] = useState<string[]>([]);
   const esRef = useRef<EventSource | null>(null);
   const jobIdRef = useRef<string | null>(null);
@@ -169,6 +175,7 @@ export function useSidecarProgress(key?: string): SidecarProgress {
     setRunning(false);
     setDone(false);
     setLog([]);
+    setMessage("");
     setDoneMessage("");
     setDonePath(null);
   }
@@ -180,25 +187,35 @@ export function useSidecarProgress(key?: string): SidecarProgress {
 
   function handleEvent(data: ChessDbEvent) {
     if (data.type === "log") {
-      if (data.message) setLog((l) => [...l, data.message!]);
+      // Discrete milestone — keep it in the log and as the current status.
+      if (data.message) {
+        setLog((l) => [...l, data.message!]);
+        setMessage(data.message);
+      }
     } else if (data.type === "progress") {
+      // Rolling counter — update percent + the single status line, do NOT
+      // append (that's what flooded the log box).
       if (data.total && data.total > 0) {
         setPercent(Math.min(99, ((data.value ?? 0) / data.total) * 100));
       }
-      if (data.message) setLog((l) => [...l, data.message!]);
+      if (data.message) setMessage(data.message);
     } else if (data.type === "done") {
       setPercent(100);
       setRunning(false);
       setDone(true);
       if (data.message) {
         setDoneMessage(data.message);
-        setLog((l) => [...l, data.message!]);
+        setMessage(data.message);
       }
       if (data.path) setDonePath(data.path);
       if (key) activeJobs.delete(key);
       closeStream();
     } else if (data.type === "error") {
-      if (data.message) setLog((l) => [...l, `⚠ ${data.message}`]);
+      // Errors are worth keeping in the log.
+      if (data.message) {
+        setLog((l) => [...l, `⚠ ${data.message}`]);
+        setMessage(data.message);
+      }
       setRunning(false);
       if (key) activeJobs.delete(key);
       closeStream();
@@ -270,8 +287,7 @@ export function useSidecarProgress(key?: string): SidecarProgress {
         if (snap.status === "queued" || snap.status === "running") {
           setRunning(true);
           if (snap.total > 0) setPercent(Math.min(99, (snap.value / snap.total) * 100));
-          // The SSE buffer replay (in openStream) repopulates the log, so don't
-          // also seed a line here — that would duplicate it.
+          if (snap.message) setMessage(snap.message);
           openStream(jobId); // replays buffered events, then streams live
         } else if (snap.status === "done") {
           setDone(true);
@@ -295,5 +311,5 @@ export function useSidecarProgress(key?: string): SidecarProgress {
 
   useEffect(() => () => closeStream(), []);
 
-  return { percent, running, done, doneMessage, donePath, log, run, reset, cancel };
+  return { percent, running, done, doneMessage, donePath, message, log, run, reset, cancel };
 }

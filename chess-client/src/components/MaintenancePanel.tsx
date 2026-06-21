@@ -74,9 +74,9 @@ function ProgressSection({ progress, label, extra }: {
 }) {
   return (
     <>
-      <div className="flex justify-between text-label-md text-on-surface-variant">
-        <span>{progress.done ? "Complete" : label}</span>
-        <span>{Math.round(progress.percent)}%</span>
+      <div className="flex justify-between gap-2 text-label-md text-on-surface-variant">
+        <span className="truncate">{progress.done ? "Complete" : progress.message || label}</span>
+        <span className="shrink-0">{Math.round(progress.percent)}%</span>
       </div>
       <ProgressBar value={progress.percent} />
       <LogBox lines={progress.log} />
