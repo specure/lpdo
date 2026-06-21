@@ -57,3 +57,29 @@ export async function submitJob(req: JobRequest): Promise<string> {
 export async function cancelJob(jobId: string): Promise<void> {
   await fetch(apiUrl(`/jobs/${encodeURIComponent(jobId)}/cancel`), { method: "POST" });
 }
+
+// ── Schedule (server-owned auto-update) ──────────────────────────────────────
+
+export interface ScheduleInfo {
+  enabled: boolean;
+  interval_hours: number;
+  last_run: string | null;
+  last_status: string | null;
+  next_due: string | null;
+}
+
+export function getSchedule(): Promise<ScheduleInfo> {
+  return apiGet<ScheduleInfo>("/schedule");
+}
+
+export async function updateSchedule(
+  body: Partial<Pick<ScheduleInfo, "enabled" | "interval_hours">>,
+): Promise<void> {
+  await ensureOk(
+    await fetch(apiUrl("/schedule"), {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}

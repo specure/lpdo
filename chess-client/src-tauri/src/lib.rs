@@ -5,7 +5,7 @@ mod shortlist;
 use fide_client::{ActivitySummary, FidePlayer, RatingPoint, RecentGame};
 use std::process::{Child, Command};
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Manager, State};
 
 /// On Linux, configure the spawned process to receive SIGTERM when its parent
 /// dies for any reason (clean exit, panic, SIGKILL, terminal close). Without
@@ -106,6 +106,15 @@ fn get_binary_path(_app: &tauri::AppHandle) -> std::path::PathBuf {
     }
 }
 
+/// Whether a server is already accepting connections on the well-known port —
+/// e.g. the installed `lpdo-server` daemon. If so the app connects to it instead
+/// of spawning (and killing) its own.
+fn server_running() -> bool {
+    use std::net::TcpStream;
+    let addr: std::net::SocketAddr = "127.0.0.1:7777".parse().unwrap();
+    TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(300)).is_ok()
+}
+
 fn spawn_serve(app: &tauri::AppHandle) {
     let binary_path = get_binary_path(app);
     let mut cmd = Command::new(&binary_path);
@@ -120,6 +129,14 @@ fn spawn_serve(app: &tauri::AppHandle) {
     }
 }
 
+/// True when this app spawned the server (and will kill it on exit); false when
+/// connected to an external daemon. The close-guard uses this to skip its
+/// "operation in progress" warning when closing won't stop the server.
+#[tauri::command]
+fn server_is_managed(state: State<'_, ServerState>) -> bool {
+    state.child.lock().unwrap().is_some()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -130,7 +147,14 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            spawn_serve(app.app_handle());
+            // Connect to an already-running server (e.g. the installed
+            // lpdo-server daemon) if present; otherwise spawn our own and manage
+            // its lifecycle (kept in ServerState, killed on exit).
+            if server_running() {
+                println!("lpdo: connecting to the existing server on 127.0.0.1:7777");
+            } else {
+                spawn_serve(app.app_handle());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -138,6 +162,7 @@ pub fn run() {
             fide_activity,
             fide_recent_games,
             fide_rating_history,
+            server_is_managed,
             prep::fetch_participant_list,
             prep::fetch_team_list,
             prep::fetch_tournament_meta,

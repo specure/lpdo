@@ -45,8 +45,19 @@ pub struct AppState {
 
 // ── Response types ────────────────────────────────────────────────────────────
 
+/// API contract version. Bump ONLY on a breaking change to the HTTP API, so a
+/// client can detect a server too old to talk to (separate from the human
+/// `version`, which a client compares against GitHub to notify about updates —
+/// including bugfix releases that don't change the API).
+pub const API_VERSION: u32 = 1;
+
 #[derive(Serialize)]
 pub struct StatusInfo {
+    /// Server build version (the chess-db crate version), for the client's
+    /// update-available notification.
+    pub version: String,
+    /// API contract version (see `API_VERSION`).
+    pub api_version: u32,
     pub issues: i64,
     pub downloaded: i64,
     pub imported: i64,
@@ -544,6 +555,8 @@ async fn collections_handler(State(state): State<AppState>) -> ApiResult<Vec<Col
 async fn status_handler(State(state): State<AppState>) -> ApiResult<StatusInfo> {
     state.reads.run(|conn| {
         Ok(Json(StatusInfo {
+            version:     env!("CARGO_PKG_VERSION").to_string(),
+            api_version: API_VERSION,
             issues:     conn.query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0)).unwrap_or(0),
             downloaded: conn.query_row("SELECT COUNT(*) FROM issues WHERE downloaded = TRUE", [], |r| r.get(0)).unwrap_or(0),
             imported:   conn.query_row("SELECT COUNT(*) FROM issues WHERE imported = TRUE", [], |r| r.get(0)).unwrap_or(0),
@@ -948,6 +961,49 @@ async fn job_events_handler(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
+// ── Schedule (server-owned auto-update config) ────────────────────────────────
+
+async fn get_schedule_handler(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
+    state.reads.run(|conn| {
+        let v = conn.query_row(
+            "SELECT enabled, interval_hours,
+                    CAST(last_run AS VARCHAR), last_status,
+                    CAST(last_run + to_hours(interval_hours) AS VARCHAR) AS next_due
+             FROM schedule WHERE id = 1",
+            [],
+            |r| Ok(serde_json::json!({
+                "enabled": r.get::<_, bool>(0)?,
+                "interval_hours": r.get::<_, i32>(1)?,
+                "last_run": r.get::<_, Option<String>>(2)?,
+                "last_status": r.get::<_, Option<String>>(3)?,
+                "next_due": r.get::<_, Option<String>>(4)?,
+            })),
+        ).map_err(db_err)?;
+        Ok(Json(v))
+    }).await
+}
+
+#[derive(Deserialize)]
+struct ScheduleUpdate {
+    enabled: Option<bool>,
+    interval_hours: Option<i32>,
+}
+
+async fn put_schedule_handler(
+    State(state): State<AppState>,
+    Json(body): Json<ScheduleUpdate>,
+) -> ApiResult<serde_json::Value> {
+    state.writer.run(move |conn| {
+        if let Some(e) = body.enabled {
+            conn.execute("UPDATE schedule SET enabled = ? WHERE id = 1", duckdb::params![e]).map_err(db_err)?;
+        }
+        if let Some(h) = body.interval_hours {
+            conn.execute("UPDATE schedule SET interval_hours = ? WHERE id = 1", duckdb::params![h]).map_err(db_err)?;
+        }
+        Ok(msg("Schedule updated.".into()))
+    }).await
+}
+
 // ── Quick mutations (synchronous, run on the writer) ──────────────────────────
 
 #[derive(Deserialize)]
@@ -1167,6 +1223,10 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         tokio::runtime::Handle::current(),
         db_path,
     ));
+
+    // Server-owned update scheduler: submits the `update` job when due.
+    crate::scheduler::spawn(jobs.clone(), reads.clone(), writer.clone());
+
     let state = AppState { reads, writer, jobs };
 
     let app = Router::new()
@@ -1186,6 +1246,7 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         .route("/games/{id}/headers",                  post(set_headers_handler))
         .route("/players/{id}/fide-id",                post(set_fide_id_handler))
         .route("/purge",                               post(purge_handler))
+        .route("/schedule",                            get(get_schedule_handler).put(put_schedule_handler))
         .route("/position",                            get(position_handler))
         .route("/position/moves",                      get(position_moves_handler))
         // Long-running mutation jobs with streamed progress.

@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { apiGet } from "../api";
@@ -28,14 +29,26 @@ export function useCloseGuard() {
         event.preventDefault();
         const win = getCurrentWindow();
 
-        let danger: JobSnapshot | undefined;
+        // If the server is an external daemon, closing the app can't interrupt
+        // it — so there's nothing to warn about. Only guard when this app
+        // manages (and will kill) the server.
+        let managed = true;
         try {
-          const jobs = await apiGet<JobSnapshot[]>("/jobs");
-          danger = jobs.find(
-            (j) => (j.status === "running" || j.status === "queued") && j.interruptible === false,
-          );
+          managed = await invoke<boolean>("server_is_managed");
         } catch {
-          // Server unreachable — nothing in flight to lose; allow the close.
+          /* assume managed (the conservative choice) */
+        }
+
+        let danger: JobSnapshot | undefined;
+        if (managed) {
+          try {
+            const jobs = await apiGet<JobSnapshot[]>("/jobs");
+            danger = jobs.find(
+              (j) => (j.status === "running" || j.status === "queued") && j.interruptible === false,
+            );
+          } catch {
+            // Server unreachable — nothing in flight to lose; allow the close.
+          }
         }
 
         if (danger) {

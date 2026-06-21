@@ -207,7 +207,7 @@ export default function App() {
   const { step, setStep, max } = useFontScale();
   const { hc, toggle: toggleHc } = useHighContrast();
   const { scheme, toggle: toggleScheme } = useColorScheme();
-  const { show: showUpdate, info: updateInfo, dismiss: dismissUpdate } = useUpdateCheck();
+  const { show: showUpdate, state: updateState, dismiss: dismissUpdate } = useUpdateCheck(info);
   const { recent: recentPlayers, add: addRecentPlayer, remove: removeRecentPlayer } = useRecentPlayers();
   const { recent: recentPgnFiles, add: addRecentPgnFile } = useRecentPgnFiles();
   const playerSearchRef = useRef<HTMLInputElement | null>(null);
@@ -429,8 +429,8 @@ export default function App() {
         </div>
       </header>
 
-      {showUpdate && updateInfo && (
-        <UpdateBanner info={updateInfo} onDismiss={dismissUpdate} />
+      {showUpdate && updateState && (
+        <UpdateBanner state={updateState} onDismiss={dismissUpdate} />
       )}
 
       {/* Body */}

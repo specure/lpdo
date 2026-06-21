@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { TwicCredit, useTwicAck } from "./TwicCredit";
 import { useSidecarProgress } from "../hooks/useSidecarProgress";
+import { getSchedule, updateSchedule, type ScheduleInfo } from "../api";
 import { StatusInfo } from "../types";
 
 interface Props {
@@ -563,6 +564,81 @@ function PurgeSection({ status, onMutated }: { status: StatusInfo | null; onMuta
 
 // ── Panel shell ───────────────────────────────────────────────────────────────
 
+// ── Automatic updates section ─────────────────────────────────────────────────
+
+function AutoUpdateSection() {
+  const [sched, setSched] = useState<ScheduleInfo | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function refresh() {
+    try {
+      setSched(await getSchedule());
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+  useEffect(() => { void refresh(); }, []);
+
+  async function toggle(enabled: boolean) {
+    setSaving(true);
+    try {
+      await updateSchedule({ enabled });
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const lastRun = sched?.last_run ? sched.last_run.slice(0, 16) : null;
+  const status = sched?.last_status;
+
+  return (
+    <SectionCard title="Automatic updates">
+      <p className="text-body-sm text-on-surface-variant">
+        Let the server check daily and pull new TWIC issues in the background, so the database is
+        current whenever you open the app. Runs even while the app is closed if the server is
+        installed as a background service.
+      </p>
+      {sched ? (
+        <>
+          <label className="flex items-center gap-2 text-body-md text-on-surface cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={sched.enabled}
+              disabled={saving}
+              onChange={(e) => void toggle(e.target.checked)}
+              className="cursor-pointer accent-primary w-4 h-4"
+            />
+            <span>Keep the database up to date</span>
+          </label>
+          <div className="text-label-md text-on-surface-variant space-y-0.5">
+            {lastRun ? (
+              <div>
+                Last run: {lastRun}{" "}
+                {status === "ok" && <span className="text-success">✓</span>}
+                {status === "running" && <span>(running…)</span>}
+                {status && status !== "ok" && status !== "running" && (
+                  <span className="text-error">⚠ {status}</span>
+                )}
+              </div>
+            ) : (
+              <div>No automatic update has run yet.</div>
+            )}
+            {sched.enabled && sched.next_due && <div>Next check: {sched.next_due.slice(0, 16)}</div>}
+          </div>
+        </>
+      ) : (
+        <p className="text-body-sm text-on-surface-variant">{error ?? "Loading…"}</p>
+      )}
+      {sched && error && <p className="text-error text-body-sm">{error}</p>}
+    </SectionCard>
+  );
+}
+
 export default function MaintenancePanel({ onRunWizard, status, onMutated }: Props) {
   // Full-screen, non-modal view (driven by App's `mode` state). Mirrors the home
   // screen's layout: a centred max-width column on the bg-surface base, with the
@@ -592,6 +668,7 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated }: Pro
 
         {/* Tools — each in its own box, two-up on wider screens */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+          <AutoUpdateSection />
           <PlayersSection />
           <DatabasesSection />
           <TwicSection />

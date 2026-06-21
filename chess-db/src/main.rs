@@ -16,8 +16,10 @@ mod normalise;
 mod players;
 mod progress;
 mod reporter;
+mod scheduler;
 mod search;
 mod serve;
+mod service;
 mod twic;
 
 use anyhow::{Context, Result};
@@ -193,6 +195,22 @@ enum Commands {
         #[arg(long, default_value_t = 7777)]
         port: u16,
     },
+    /// Manage the server as a background service (systemd user service, Linux)
+    Service {
+        #[command(subcommand)]
+        subcommand: ServiceCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ServiceCommands {
+    /// Install + start the LPDO server as a systemd user service (runs on login,
+    /// restarts on failure) and disable the old update timer.
+    Install,
+    /// Stop and remove the systemd user service.
+    Uninstall,
+    /// Show whether the server service is running.
+    Status,
 }
 
 // One subcommand variant carries many more inline args than the others; boxing
@@ -917,6 +935,12 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let reporter = reporter::Reporter::new(cli.json);
 
+    // `service` manages the systemd unit and must NOT open the database (the
+    // running daemon may hold it). Handle it before any DB access.
+    if let Commands::Service { subcommand } = &cli.command {
+        return service::run(subcommand);
+    }
+
     // Ensure DB directory exists
     if let Some(parent) = cli.db.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1329,6 +1353,8 @@ async fn main() -> Result<()> {
             // there is no read-only reopen.
             serve::run(conn, port, cli.db.clone()).await?;
         }
+        // Handled before the database is opened (see the early return above).
+        Commands::Service { .. } => unreachable!(),
     }
 
     Ok(())
