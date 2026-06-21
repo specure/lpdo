@@ -58,9 +58,13 @@ pub struct StatusInfo {
     pub version: String,
     /// API contract version (see `API_VERSION`).
     pub api_version: u32,
+    /// Number of TWIC issues actually imported (id < 1e6, imported = TRUE).
+    /// Excludes both local PGN imports and TWIC ids that were registered but
+    /// never downloaded, so it reads as "TWIC issues you have".
     pub issues: i64,
-    pub downloaded: i64,
-    pub imported: i64,
+    /// Number of local PGN files imported (id ≥ 1e6) — e.g. Megabase, Bundesliga.
+    /// These live in the same `issues` table but are not TWIC issues.
+    pub local_imports: i64,
     pub games: i64,
     pub players: i64,
     pub positions: i64,
@@ -557,9 +561,12 @@ async fn status_handler(State(state): State<AppState>) -> ApiResult<StatusInfo> 
         Ok(Json(StatusInfo {
             version:     env!("CARGO_PKG_VERSION").to_string(),
             api_version: API_VERSION,
-            issues:     conn.query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0)).unwrap_or(0),
-            downloaded: conn.query_row("SELECT COUNT(*) FROM issues WHERE downloaded = TRUE", [], |r| r.get(0)).unwrap_or(0),
-            imported:   conn.query_row("SELECT COUNT(*) FROM issues WHERE imported = TRUE", [], |r| r.get(0)).unwrap_or(0),
+            // TWIC issues = real TWIC issues we've imported. Local PGN imports
+            // get ids ≥ 1_000_000, so the id threshold scopes this to TWIC and
+            // `imported` drops the 51 ids that were registered but never
+            // downloaded (old issues no longer offered as zips).
+            issues:     conn.query_row("SELECT COUNT(*) FROM issues WHERE id < 1000000 AND imported = TRUE", [], |r| r.get(0)).unwrap_or(0),
+            local_imports: conn.query_row("SELECT COUNT(*) FROM issues WHERE id >= 1000000 AND imported = TRUE", [], |r| r.get(0)).unwrap_or(0),
             games:      conn.query_row("SELECT COUNT(*) FROM games WHERE deleted_at IS NULL", [], |r| r.get(0)).unwrap_or(0),
             players:    conn.query_row("SELECT COUNT(*) FROM players", [], |r| r.get(0)).unwrap_or(0),
             positions:  conn.query_row("SELECT COUNT(*) FROM positions", [], |r| r.get(0)).unwrap_or(0),
