@@ -102,6 +102,16 @@ npm run tauri build
 cargo run -p chess-db --release -- --help
 ```
 
+## Design notes
+
+Longer-form design documents for planned or in-progress work live in
+[`docs/`](docs/):
+
+- [Multiple reference-database sources](docs/multi-source.md) — how LPDO will
+  support several reference sources (TWIC, Lichess broadcasts, Lumbra's Gigabase,
+  Bundesliga, …) behind a common provider abstraction, using collections as
+  provenance and the existing deduplication for cross-source consistency.
+
 ## Name-normalisation cache (optional)
 
 Normalising player names is the slowest first-time task, because it scrapes FIDE
