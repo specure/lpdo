@@ -12,6 +12,8 @@ interface Props {
   recentPlayers?: PlayerInfo[];
   /** When provided, each Recent row shows a trailing × button to remove it. */
   onRemoveRecent?: (id: number) => void;
+  /** Bumped externally to force a re-fetch of search results (e.g. after a merge). */
+  reloadKey?: number;
 }
 
 // Single-line player row — used both for search results and Recent shortcuts.
@@ -57,7 +59,7 @@ function PlayerRow({
   );
 }
 
-export default function PlayerList({ selectedId, onSelect, inputRef, recentPlayers, onRemoveRecent }: Props) {
+export default function PlayerList({ selectedId, onSelect, inputRef, recentPlayers, onRemoveRecent, reloadKey }: Props) {
   const [query, setQuery] = useState("");
   const [players, setPlayers] = useState<PlayerInfo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -100,6 +102,12 @@ export default function PlayerList({ selectedId, onSelect, inputRef, recentPlaye
     debounceRef.current = setTimeout(() => search(query), 2000);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [query, search]);
+
+  // Force an immediate re-fetch when asked (e.g. after a player merge).
+  useEffect(() => {
+    if (reloadKey) search(query);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadKey]);
 
   return (
     <div className="flex flex-col h-full bg-surface">

@@ -248,6 +248,15 @@ export default function App() {
   // the GameList re-fetches and reflects the change.
   const [gameMutationKey, setGameMutationKey] = useState(0);
   const onGameMutated = () => setGameMutationKey((k) => k + 1);
+  // Bumped after a player merge so the player search list re-fetches.
+  const [playerReloadKey, setPlayerReloadKey] = useState(0);
+  const handlePlayersMerged = (_keepId: number, dropId: number) => {
+    refreshServerStatus();
+    onGameMutated();                       // kept player's games changed
+    setPlayerReloadKey((k) => k + 1);      // refresh player search results
+    removeRecentPlayer(dropId);            // the dropped player no longer exists
+    if (selectedPlayer?.id === dropId) setSelectedPlayer(null);
+  };
 
   useEffect(() => {
     localStorage.setItem("scopePublicOnly", scopePublicOnly ? "1" : "0");
@@ -597,6 +606,7 @@ export default function App() {
                   inputRef={playerSearchRef}
                   recentPlayers={recentPlayers}
                   onRemoveRecent={removeRecentPlayer}
+                  reloadKey={playerReloadKey}
                 />
               )}
             </div>
@@ -626,6 +636,7 @@ export default function App() {
                   setScopeIncludeDeleted={setScopeIncludeDeleted}
                   scopeCollections={collectionsList}
                   reloadKey={gameMutationKey}
+                  onPlayersMerged={handlePlayersMerged}
                 />
               </div>
             )}
