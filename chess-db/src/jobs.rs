@@ -119,10 +119,26 @@ pub struct JobSnapshot {
     pub value: u64,
     pub total: u64,
     pub message: String,
+    /// False for appender (fast) operations, which can corrupt the database if
+    /// the process is killed mid-write — the UI uses this to guard app-close.
+    pub interruptible: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// Whether a job uses DuckDB's appender path, which is not crash-safe: killing
+/// the process mid-write can corrupt the database. Transactional jobs roll back
+/// cleanly, so they are safe to interrupt.
+fn uses_appender(job_type: &str, params: &serde_json::Value) -> bool {
+    let fast = params.get("fast").and_then(|v| v.as_bool()).unwrap_or(false);
+    match job_type {
+        "import" | "import_pgn" | "index_positions" => fast,
+        // The update job runs `import --fast` and `index-positions --fast`.
+        "update" => true,
+        _ => false,
+    }
 }
 
 struct JobState {
@@ -137,6 +153,7 @@ struct JobState {
 pub struct JobSlot {
     id: String,
     job_type: String,
+    interruptible: bool,
     state: Mutex<JobState>,
     events: broadcast::Sender<JobEvent>,
     buffer: Mutex<Vec<JobEvent>>,
@@ -153,6 +170,7 @@ impl JobSlot {
             value: s.value,
             total: s.total,
             message: s.message.clone(),
+            interruptible: self.interruptible,
             path: s.path.clone(),
             error: s.error.clone(),
         }
@@ -236,6 +254,7 @@ impl JobManager {
         let slot = Arc::new(JobSlot {
             id: id.clone(),
             job_type: job_type.clone(),
+            interruptible: !uses_appender(&job_type, &params),
             state: Mutex::new(JobState {
                 status: "queued".into(),
                 value: 0,
