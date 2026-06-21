@@ -4,6 +4,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { TwicCredit, useTwicAck } from "./TwicCredit";
 import { useSidecarProgress } from "../hooks/useSidecarProgress";
 import { getSchedule, updateSchedule, runUpdateNow, type ScheduleInfo } from "../api";
+import { getTwicFrom, setTwicFrom } from "../twicPrefs";
 import AddGameDialog from "./AddGameDialog";
 import MergePlayersDialog from "./MergePlayersDialog";
 import { StatusInfo } from "../types";
@@ -290,9 +291,11 @@ function TwicSection() {
   const download = useSidecarProgress("maint-twic-download");
   const importProgress = useSidecarProgress("maint-twic-import");
   const [twicAck, setTwicAck] = useTwicAck();
+  // Shared with the setup wizard so the starting issue stays in sync.
+  const [fromIssue, setFromIssue] = useState(getTwicFrom());
 
   function runDownload() {
-    void download.run(["download", "--dir", TWIC_DIR]);
+    void download.run(["download", "--from", fromIssue, "--dir", TWIC_DIR]);
   }
 
   function runImport() {
@@ -314,9 +317,23 @@ function TwicSection() {
         <div className="space-y-1">
           <div className="text-label-md text-on-surface">Download</div>
           {!download.running && !download.done && (
-            twicAck
-              ? <ActionButton onClick={runDownload} disabled={false}>Download new issues</ActionButton>
-              : <p className="text-label-sm text-on-surface-variant">Tick “I've read this” above to enable downloading.</p>
+            twicAck ? (
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-body-sm text-on-surface-variant">
+                  <span>Download from issue</span>
+                  <input
+                    type="number"
+                    value={fromIssue}
+                    onChange={(e) => { setFromIssue(e.target.value); setTwicFrom(e.target.value); }}
+                    className="w-28 h-9 px-3 rounded-sm bg-transparent text-on-surface text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
+                  />
+                  <span className="text-label-sm text-on-surface-variant">from 920</span>
+                </label>
+                <ActionButton onClick={runDownload} disabled={false}>Download new issues</ActionButton>
+              </div>
+            ) : (
+              <p className="text-label-sm text-on-surface-variant">Tick “I've read this” above to enable downloading.</p>
+            )
           )}
           {(download.running || download.done) && (
             <ProgressSection progress={download} label="Downloading…" />

@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   date-stamped CSV (e.g. `20260621-players.csv`) in a chosen folder, with a
   *Reveal in file manager* shortcut. The import path now has a **File…** picker
   instead of only a plain text field.
+- **TWIC "Download from issue" is consistent across the wizard and Maintenance** —
+  the Maintenance TWIC card now has the same starting-issue field as the setup
+  wizard, and the value is shared between the two places (set it in one, it
+  carries over to the other).
 - **Automatic updates run at a time you choose, plus "Run update now"** — instead
   of firing at whatever time the last run happened to land, the daily update now
   runs at a clock time you set (e.g. 02:00) via a time picker in *Maintenance →
