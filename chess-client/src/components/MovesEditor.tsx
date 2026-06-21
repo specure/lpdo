@@ -12,8 +12,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Chess } from "chess.js";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { postJson } from "../api";
 import { AnnotatedGame, MoveNode } from "../lib/parsePgnTree";
 import type { CalArrow, CslCircle } from "../lib/parseAnnotations";
 import {
@@ -174,42 +173,11 @@ export async function saveMovetextViaSidecar(
   gameId: number,
   movetext: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const eventId = crypto.randomUUID();
-  const eventName = `chess-db:${eventId}`;
-  const errs: string[] = [];
-  type Terminal = { type: "done" | "error"; message?: string };
-  let resolveTerminal: ((t: Terminal | null) => void) | null = null;
-  const terminalPromise = new Promise<Terminal | null>((r) => { resolveTerminal = r; });
-
-  const unlisten = await listen<string>(eventName, (event) => {
-    try {
-      const data = JSON.parse(event.payload);
-      if (data.type === "error" && data.message) errs.push(data.message);
-      if (data.type === "done" || data.type === "error") {
-        resolveTerminal?.(data);
-        resolveTerminal = null;
-      }
-    } catch {/* ignore non-JSON */}
-  });
-
   try {
-    await invoke("run_chess_db", {
-      args: ["games", "set-moves", String(gameId), "--moves-stdin"],
-      eventId,
-      stdin: movetext,
-    });
-    const terminal = await Promise.race([
-      terminalPromise,
-      new Promise<Terminal | null>((r) => setTimeout(() => r(null), 1000)),
-    ]);
-    if (terminal && terminal.type === "done" && errs.length === 0) {
-      return { ok: true };
-    }
-    return { ok: false, error: errs.join("\n") || (terminal?.message ?? "Save failed (no terminal event)") };
+    await postJson(`/games/${gameId}/moves`, { moves: movetext });
+    return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e) };
-  } finally {
-    unlisten();
   }
 }
 

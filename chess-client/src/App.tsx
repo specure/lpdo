@@ -14,6 +14,7 @@ import HomeEmptyState from "./components/HomeEmptyState";
 import UpdateBanner from "./components/UpdateBanner";
 import { loadMyPlayer } from "./components/MyStatsWidget";
 import { useUpdateCheck } from "./hooks/useUpdateCheck";
+import { useCloseGuard } from "./hooks/useCloseGuard";
 import { GameSummary, LocalGame, MoveStats, PlayerInfo, PrepContext, StatusInfo } from "./types";
 
 type ServerStatus = "checking" | "connected" | "disconnected";
@@ -201,6 +202,7 @@ function basename(path: string): string {
 }
 
 export default function App() {
+  useCloseGuard();
   const { status, info, refresh: refreshServerStatus } = useServerStatus();
   const { step, setStep, max } = useFontScale();
   const { hc, toggle: toggleHc } = useHighContrast();

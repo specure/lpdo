@@ -6,8 +6,7 @@
 // sidecar — Tauri's parent handles the read-only-serve / writer-lock dance.
 
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { postJson } from "../api";
 import { STR_TAGS, Tag, parseBlockTags } from "../lib/pgnEditor";
 import PgnHeaderForm from "./local/PgnHeaderForm";
 
@@ -66,37 +65,15 @@ export default function EditDbHeadersModal({
     setSaving(true);
     setErrorLines([]);
 
-    const eventId = crypto.randomUUID();
-    const eventName = `chess-db:${eventId}`;
-    const errors: string[] = [];
-    let didSucceed = false;
-
-    const unlisten = await listen<string>(eventName, (event) => {
-      try {
-        const data = JSON.parse(event.payload);
-        if (data.type === "error" && data.message) errors.push(data.message);
-        else if (data.type === "done") didSucceed = true;
-      } catch {/* ignore non-JSON */}
-    });
-
     try {
-      const tagsJson = JSON.stringify(tags.map((t) => ({ name: t.name, value: t.value })));
-      await invoke("run_chess_db", {
-        args: ["games", "set-headers", String(gameId), "--tags", tagsJson],
-        eventId,
+      await postJson(`/games/${gameId}/headers`, {
+        tags: tags.map((t) => ({ name: t.name, value: t.value })),
       });
-      if (didSucceed && errors.length === 0) {
-        onSaved?.();
-        onClose();
-      } else {
-        setErrorLines(errors.length > 0 ? errors : ["Save failed"]);
-        setSaving(false);
-      }
+      onSaved?.();
+      onClose();
     } catch (e) {
       setErrorLines([String(e)]);
       setSaving(false);
-    } finally {
-      unlisten();
     }
   }
 

@@ -74,9 +74,9 @@ function ProgressSection({ progress, label, extra }: {
 }) {
   return (
     <>
-      <div className="flex justify-between text-label-md text-on-surface-variant">
-        <span>{progress.done ? "Complete" : label}</span>
-        <span>{Math.round(progress.percent)}%</span>
+      <div className="flex justify-between gap-2 text-label-md text-on-surface-variant">
+        <span className="truncate">{progress.done ? "Complete" : progress.message || label}</span>
+        <span className="shrink-0">{Math.round(progress.percent)}%</span>
       </div>
       <ProgressBar value={progress.percent} />
       <LogBox lines={progress.log} />
@@ -146,7 +146,7 @@ function DatabaseInfo({ status }: { status: StatusInfo | null }) {
 
 function PlayersSection() {
   const [path, setPath] = useState("");
-  const progress = useSidecarProgress();
+  const progress = useSidecarProgress("maint-players-import");
 
   function run() {
     void progress.run(["players", "import", path]);
@@ -178,7 +178,7 @@ function PlayersSection() {
 
 function DatabasesSection() {
   const [folder, setFolder] = useState("");
-  const progress = useSidecarProgress();
+  const progress = useSidecarProgress("maint-import-pgn");
 
   function run() {
     void progress.run(["import-pgn", folder]);
@@ -211,8 +211,8 @@ function DatabasesSection() {
 // ── TWIC section ──────────────────────────────────────────────────────────────
 
 function TwicSection() {
-  const download = useSidecarProgress();
-  const importProgress = useSidecarProgress();
+  const download = useSidecarProgress("maint-twic-download");
+  const importProgress = useSidecarProgress("maint-twic-import");
   const [twicAck, setTwicAck] = useTwicAck();
 
   function runDownload() {
@@ -265,7 +265,7 @@ function TwicSection() {
 // ── Deduplication section ─────────────────────────────────────────────────────
 
 function DeduplicationSection({ onMutated }: { onMutated?: () => void }) {
-  const progress = useSidecarProgress();
+  const progress = useSidecarProgress("maint-dedup");
 
   function run() {
     void progress.run(["games", "dedup"]);
@@ -295,10 +295,27 @@ function DeduplicationSection({ onMutated }: { onMutated?: () => void }) {
 // ── Position index section ────────────────────────────────────────────────────
 
 function IndexSection() {
-  const progress = useSidecarProgress();
+  const progress = useSidecarProgress("maint-index");
+  const [rebuild, setRebuild] = useState(false);
 
   function run() {
-    void progress.run(["index-positions"]);
+    if (
+      rebuild &&
+      !window.confirm(
+        "Rebuild the entire position index from scratch? This wipes the positions " +
+          "table and reprocesses every game. It uses the fast (appender) path and " +
+          "cannot be cancelled once started — let it run to completion.",
+      )
+    ) {
+      return;
+    }
+    // Full rebuild uses --fast (appender), the same path the setup wizard uses
+    // for the initial index — orders of magnitude faster than the transactional
+    // path on a multi-million-game database. The incremental update stays
+    // transactional (small, safe, cancellable).
+    void progress.run(
+      rebuild ? ["index-positions", "--rebuild", "--fast"] : ["index-positions"],
+    );
   }
 
   return (
@@ -307,7 +324,18 @@ function IndexSection() {
         Index positions for newly imported games. Required for the move explorer to include recent games.
       </p>
       {!progress.running && !progress.done && (
-        <ActionButton onClick={run}>Update index</ActionButton>
+        <div className="space-y-2">
+          <label className="flex items-center gap-2 text-body-sm text-on-surface-variant cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={rebuild}
+              onChange={(e) => setRebuild(e.target.checked)}
+              className="cursor-pointer accent-primary w-4 h-4"
+            />
+            <span>Rebuild from scratch — reprocess every game (can't be cancelled)</span>
+          </label>
+          <ActionButton onClick={run}>{rebuild ? "Rebuild index" : "Update index"}</ActionButton>
+        </div>
       )}
       {(progress.running || progress.done) && (
         <ProgressSection progress={progress} label="Indexing…" />
@@ -322,7 +350,7 @@ const NORMALISE_LIMIT_DEFAULT = 500;
 
 function NormaliseSection({ onMutated }: { onMutated?: () => void }) {
   const [limit, setLimit] = useState(String(NORMALISE_LIMIT_DEFAULT));
-  const progress = useSidecarProgress();
+  const progress = useSidecarProgress("maint-normalise");
 
   // Player names change here, so refresh server status + any open game lists
   // once it finishes (so renamed players show their canonical form).
@@ -384,7 +412,7 @@ function BackupSection() {
   const [folder, setFolder] = useState(() => localStorage.getItem(BACKUP_DIR_KEY) || BACKUP_DIR);
   const [collections, setCollections] = useState<Collection[] | null>(null);
   const [collection, setCollection] = useState(DEFAULT_COLLECTION);
-  const progress = useSidecarProgress();
+  const progress = useSidecarProgress("maint-backup");
 
   // Remember the folder across sessions whenever the user edits it.
   useEffect(() => { localStorage.setItem(BACKUP_DIR_KEY, folder); }, [folder]);

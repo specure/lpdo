@@ -11,6 +11,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 mod db;
 mod dedup;
 mod importer;
+mod jobs;
 mod normalise;
 mod players;
 mod progress;
@@ -921,6 +922,14 @@ async fn main() -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
+    // The server owns the database, so it is also the only safe place to restore
+    // a pre-rebuild safety snapshot if a previous rebuild crashed mid-write.
+    // Done before opening the DB; only for `serve` to avoid touching files a
+    // running server may hold open.
+    if matches!(cli.command, Commands::Serve { .. }) {
+        jobs::restore_snapshot_if_present(&cli.db)?;
+    }
+
     let spinner = reporter.spinner();
     spinner.set_message("Opening database...");
     if !cli.json { spinner.tick(); }
@@ -1314,12 +1323,11 @@ async fn main() -> Result<()> {
             db::queries::status(&conn, &cli.db)?;
         }
         Commands::Serve { port } => {
-            // Schema was already initialised with the read-write connection above.
-            // Reopen read-only so that Tauri-spawned chess-db subprocesses can
-            // acquire a read-write lock for import/download operations.
-            drop(conn);
-            let conn_ro = db::open_readonly(&cli.db)?;
-            serve::run(conn_ro, port).await?;
+            // The server owns the database read-write: it runs every mutation as
+            // an in-process job and serves queries from a pool of cloned read
+            // connections (DuckDB MVCC). No separate writer process exists, so
+            // there is no read-only reopen.
+            serve::run(conn, port, cli.db.clone()).await?;
         }
     }
 
