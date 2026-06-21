@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Maintenance "Additional databases" import matches the setup wizard** — the
   bare path text field is replaced by the wizard's import UI: a file/folder
   picker and a collection chooser. Both entry points now look and work the same.
+- **Maintenance screen grouped into tabs** — the tools are split across
+  **Databases**, **Players** and **Others** tabs (with the database overview
+  pinned above) so the screen is no longer one long crowded grid.
 
 ## [0.3.0] - 2026-06-12
 

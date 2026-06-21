@@ -630,10 +630,51 @@ function AutoUpdateSection() {
   );
 }
 
+// ── Tabs ──────────────────────────────────────────────────────────────────────
+
+const TABS = [
+  { id: "databases", label: "Databases" },
+  { id: "players", label: "Players" },
+  { id: "others", label: "Others" },
+] as const;
+type TabId = (typeof TABS)[number]["id"];
+
+function TabBar({ active, onChange }: { active: TabId; onChange: (id: TabId) => void }) {
+  // M3 primary tabs — a row of text labels with an active underline indicator.
+  return (
+    <div className="flex gap-1 border-b border-outline-variant">
+      {TABS.map((t) => {
+        const selected = t.id === active;
+        return (
+          <button
+            key={t.id}
+            onClick={() => onChange(t.id)}
+            className={`relative h-12 px-4 text-label-lg transition-colors duration-short3 ease-standard ${
+              selected ? "text-primary" : "text-on-surface-variant hover:text-on-surface"
+            }`}
+          >
+            {t.label}
+            {selected && (
+              <span className="absolute left-2 right-2 bottom-0 h-0.5 rounded-full bg-primary" />
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function MaintenancePanel({ onRunWizard, status, onMutated }: Props) {
   // Full-screen, non-modal view (driven by App's `mode` state). Mirrors the home
-  // screen's layout: a centred max-width column on the bg-surface base, with the
-  // tools laid out as independent tonal boxes in a responsive grid.
+  // screen's layout: a centred max-width column on the bg-surface base. The tools
+  // are grouped into tabs (Databases / Players / Others) to keep each view
+  // uncluttered; the database overview stays pinned above the tabs.
+  const [tab, setTab] = useState<TabId>("databases");
+
+  // Inactive tabs are hidden, not unmounted, so a long-running job (e.g. a TWIC
+  // import) keeps its live progress when you switch away and back.
+  const grid = "grid grid-cols-1 md:grid-cols-2 gap-4 items-start";
+
   return (
     <div className="flex-1 overflow-y-auto bg-surface">
       <div className="max-w-6xl mx-auto px-8 py-10 space-y-8">
@@ -654,20 +695,30 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated }: Pro
           </button>
         </div>
 
-        {/* Database overview — full-width box */}
+        {/* Database overview — full-width box, shared across tabs */}
         <DatabaseInfo status={status} />
 
-        {/* Tools — each in its own box, two-up on wider screens */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-          <AutoUpdateSection />
-          <PlayersSection />
-          <DatabasesSection onMutated={onMutated} />
-          <TwicSection />
-          <DeduplicationSection onMutated={onMutated} />
-          <IndexSection />
-          <NormaliseSection onMutated={onMutated} />
-          <BackupSection />
-          <PurgeSection status={status} onMutated={onMutated} />
+        {/* Tabbed tools */}
+        <div className="space-y-6">
+          <TabBar active={tab} onChange={setTab} />
+
+          <div className={`${grid} ${tab === "databases" ? "" : "hidden"}`}>
+            <AutoUpdateSection />
+            <TwicSection />
+            <DatabasesSection onMutated={onMutated} />
+            <DeduplicationSection onMutated={onMutated} />
+            <IndexSection />
+          </div>
+
+          <div className={`${grid} ${tab === "players" ? "" : "hidden"}`}>
+            <PlayersSection />
+            <NormaliseSection onMutated={onMutated} />
+          </div>
+
+          <div className={`${grid} ${tab === "others" ? "" : "hidden"}`}>
+            <BackupSection />
+            <PurgeSection status={status} onMutated={onMutated} />
+          </div>
         </div>
       </div>
     </div>
