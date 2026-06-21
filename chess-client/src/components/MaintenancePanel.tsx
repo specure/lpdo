@@ -296,8 +296,9 @@ function DeduplicationSection({ onMutated }: { onMutated?: () => void }) {
 
 function IndexSection() {
   const progress = useSidecarProgress("maint-index");
+  const [rebuild, setRebuild] = useState(false);
 
-  function run(rebuild: boolean) {
+  function run() {
     if (
       rebuild &&
       !window.confirm(
@@ -321,12 +322,19 @@ function IndexSection() {
     <SectionCard title="Position index">
       <p className="text-body-sm text-on-surface-variant">
         Index positions for newly imported games. Required for the move explorer to include recent games.
-        Rebuilding reprocesses every game from scratch (use after changing index depth, or to verify the index).
       </p>
       {!progress.running && !progress.done && (
-        <div className="flex gap-2 flex-wrap">
-          <ActionButton onClick={() => run(false)}>Update index</ActionButton>
-          <ActionButton onClick={() => run(true)}>Rebuild from scratch</ActionButton>
+        <div className="space-y-2">
+          <label className="flex items-center gap-2 text-body-sm text-on-surface-variant cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={rebuild}
+              onChange={(e) => setRebuild(e.target.checked)}
+              className="cursor-pointer accent-primary w-4 h-4"
+            />
+            <span>Rebuild from scratch — reprocess every game (can't be cancelled)</span>
+          </label>
+          <ActionButton onClick={run}>{rebuild ? "Rebuild index" : "Update index"}</ActionButton>
         </div>
       )}
       {(progress.running || progress.done) && (
