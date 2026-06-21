@@ -191,6 +191,10 @@ export interface LocalGame extends GameSummary {
 // ── Status ───────────────────────────────────────────────────────────────────
 
 export interface StatusInfo {
+  /** Server build version, for the update-available check. Absent on old servers. */
+  version?: string;
+  /** API contract version; absent on old servers. */
+  api_version?: number;
   games: number;
   players: number;
   issues: number;

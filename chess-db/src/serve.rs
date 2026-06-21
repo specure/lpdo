@@ -45,8 +45,19 @@ pub struct AppState {
 
 // ── Response types ────────────────────────────────────────────────────────────
 
+/// API contract version. Bump ONLY on a breaking change to the HTTP API, so a
+/// client can detect a server too old to talk to (separate from the human
+/// `version`, which a client compares against GitHub to notify about updates —
+/// including bugfix releases that don't change the API).
+pub const API_VERSION: u32 = 1;
+
 #[derive(Serialize)]
 pub struct StatusInfo {
+    /// Server build version (the chess-db crate version), for the client's
+    /// update-available notification.
+    pub version: String,
+    /// API contract version (see `API_VERSION`).
+    pub api_version: u32,
     pub issues: i64,
     pub downloaded: i64,
     pub imported: i64,
@@ -544,6 +555,8 @@ async fn collections_handler(State(state): State<AppState>) -> ApiResult<Vec<Col
 async fn status_handler(State(state): State<AppState>) -> ApiResult<StatusInfo> {
     state.reads.run(|conn| {
         Ok(Json(StatusInfo {
+            version:     env!("CARGO_PKG_VERSION").to_string(),
+            api_version: API_VERSION,
             issues:     conn.query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0)).unwrap_or(0),
             downloaded: conn.query_row("SELECT COUNT(*) FROM issues WHERE downloaded = TRUE", [], |r| r.get(0)).unwrap_or(0),
             imported:   conn.query_row("SELECT COUNT(*) FROM issues WHERE imported = TRUE", [], |r| r.get(0)).unwrap_or(0),
