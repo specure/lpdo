@@ -40,6 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the server next starts.
 
 ### Fixed
+- **TWIC download no longer re-fetches already-imported issues** — the download
+  step only checked whether the local zip file was present, so a pruned zip cache
+  made it re-download every past issue (hundreds of MB) even though they were
+  already imported. It now skips any issue already imported in the database.
 - A foreign key that a from-scratch position-index rebuild added to the index
   could make player merge (and game edits / soft-delete) fail on large databases
   with a "game_id … still referenced" error — DuckDB performs updates as
