@@ -972,28 +972,30 @@ async fn job_events_handler(
 
 async fn get_schedule_handler(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
     state.reads.run(|conn| {
-        let v = conn.query_row(
-            "SELECT enabled, interval_hours,
-                    CAST(last_run AS VARCHAR), last_status,
-                    CAST(last_run + to_hours(interval_hours) AS VARCHAR) AS next_due
-             FROM schedule WHERE id = 1",
-            [],
-            |r| Ok(serde_json::json!({
-                "enabled": r.get::<_, bool>(0)?,
-                "interval_hours": r.get::<_, i32>(1)?,
-                "last_run": r.get::<_, Option<String>>(2)?,
-                "last_status": r.get::<_, Option<String>>(3)?,
-                "next_due": r.get::<_, Option<String>>(4)?,
-            })),
-        ).map_err(db_err)?;
-        Ok(Json(v))
+        let (enabled, daily_minute, last_run, last_status): (bool, i32, Option<String>, Option<String>) =
+            conn.query_row(
+                "SELECT enabled, daily_minute, CAST(last_run AS VARCHAR), last_status
+                 FROM schedule WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            ).map_err(db_err)?;
+        // The next run is the next future occurrence of the chosen daily time.
+        let next_due = crate::scheduler::fmt_dt(crate::scheduler::next_due(daily_minute as i64));
+        Ok(Json(serde_json::json!({
+            "enabled": enabled,
+            "daily_minute": daily_minute,
+            "last_run": last_run,
+            "last_status": last_status,
+            "next_due": next_due,
+        })))
     }).await
 }
 
 #[derive(Deserialize)]
 struct ScheduleUpdate {
     enabled: Option<bool>,
-    interval_hours: Option<i32>,
+    /// Local clock time for the daily run, as minutes past midnight (0–1439).
+    daily_minute: Option<i32>,
 }
 
 async fn put_schedule_handler(
@@ -1004,11 +1006,27 @@ async fn put_schedule_handler(
         if let Some(e) = body.enabled {
             conn.execute("UPDATE schedule SET enabled = ? WHERE id = 1", duckdb::params![e]).map_err(db_err)?;
         }
-        if let Some(h) = body.interval_hours {
-            conn.execute("UPDATE schedule SET interval_hours = ? WHERE id = 1", duckdb::params![h]).map_err(db_err)?;
+        if let Some(dm) = body.daily_minute {
+            let dm = dm.rem_euclid(1440); // clamp to a valid minute-of-day
+            conn.execute("UPDATE schedule SET daily_minute = ? WHERE id = 1", duckdb::params![dm]).map_err(db_err)?;
         }
         Ok(msg("Schedule updated.".into()))
     }).await
+}
+
+/// Run the update now. Stamps the schedule as `running` (so the daily check
+/// treats today as done and the scheduler settles the terminal status), then
+/// submits the `update` job and returns its id for the client to stream. If an
+/// update is already in flight, returns that job's id instead of starting another.
+async fn run_schedule_now_handler(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
+    if let Some(j) = state.jobs.list().into_iter().find(|j| {
+        j.job_type == "update" && (j.status == "running" || j.status == "queued")
+    }) {
+        return Ok(Json(serde_json::json!({ "job_id": j.id })));
+    }
+    crate::scheduler::stamp_running(&state.writer).await;
+    let id = state.jobs.submit("update".into(), serde_json::json!({}));
+    Ok(Json(serde_json::json!({ "job_id": id })))
 }
 
 // ── Quick mutations (synchronous, run on the writer) ──────────────────────────
@@ -1254,6 +1272,7 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         .route("/players/{id}/fide-id",                post(set_fide_id_handler))
         .route("/purge",                               post(purge_handler))
         .route("/schedule",                            get(get_schedule_handler).put(put_schedule_handler))
+        .route("/schedule/run",                        post(run_schedule_now_handler))
         .route("/position",                            get(position_handler))
         .route("/position/moves",                      get(position_moves_handler))
         // Long-running mutation jobs with streamed progress.

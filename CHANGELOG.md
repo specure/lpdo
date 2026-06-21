@@ -32,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   date-stamped CSV (e.g. `20260621-players.csv`) in a chosen folder, with a
   *Reveal in file manager* shortcut. The import path now has a **File…** picker
   instead of only a plain text field.
+- **Automatic updates run at a time you choose, plus "Run update now"** — instead
+  of firing at whatever time the last run happened to land, the daily update now
+  runs at a clock time you set (e.g. 02:00) via a time picker in *Maintenance →
+  Automatic updates*, and a **Run update now** button triggers it on demand with
+  live progress. Catch-up after downtime still applies: a missed run fires when
+  the server next starts.
 
 ### Fixed
 - A foreign key that a from-scratch position-index rebuild added to the index
