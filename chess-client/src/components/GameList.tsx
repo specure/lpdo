@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { Chess } from "chess.js";
 import { GameSummary, MoveStats, PlayerInfo } from "../types";
 import PlayerProfileModal from "./PlayerProfileModal";
-import MergePlayersDialog from "./MergePlayersDialog";
 
 type Color = "any" | "white" | "black";
 
@@ -94,7 +93,6 @@ export default function GameList({
   onPlayersMerged,
 }: Props) {
   const [profileOpen, setProfileOpen] = useState(false);
-  const [mergeOpen, setMergeOpen] = useState(false);
   const [colorPickPromptOpen, setColorPickPromptOpen] = useState(false);
   const [color, setColor] = useState<Color>("any");
   const [opponentInput, setOpponentInput] = useState("");
@@ -418,13 +416,10 @@ export default function GameList({
     <div className="flex flex-col h-full bg-surface-container-low">
 
       {profileOpen && (
-        <PlayerProfileModal player={player} onClose={() => setProfileOpen(false)} />
-      )}
-      {mergeOpen && (
-        <MergePlayersDialog
-          initialKeep={player}
-          onClose={() => setMergeOpen(false)}
-          onMerged={(keepId, dropId) => onPlayersMerged?.(keepId, dropId)}
+        <PlayerProfileModal
+          player={player}
+          onClose={() => setProfileOpen(false)}
+          onPlayersMerged={onPlayersMerged}
         />
       )}
 
@@ -461,21 +456,12 @@ export default function GameList({
       <div className="px-3 pt-3 pb-3 shrink-0 space-y-2">
         <div className="text-title-md text-on-surface truncate">{player.name}</div>
         <div className="flex items-center justify-between gap-2 flex-wrap">
-          <div className="flex gap-1.5">
-            <button
-              onClick={() => setProfileOpen(true)}
-              className={chipClass(false, false)}
-            >
-              Profile
-            </button>
-            <button
-              onClick={() => setMergeOpen(true)}
-              className={chipClass(false, false)}
-              title="Merge a duplicate player record into this one"
-            >
-              Merge…
-            </button>
-          </div>
+          <button
+            onClick={() => setProfileOpen(true)}
+            className={chipClass(false, false)}
+          >
+            Profile
+          </button>
           <div className="flex gap-1.5">
             <button
               onClick={() => setFiltersOpen((o) => !o)}
