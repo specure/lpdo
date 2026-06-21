@@ -13,7 +13,7 @@ use tokio_stream::StreamExt;
 use tower_http::cors::CorsLayer;
 use shakmaty::fen::Fen;
 use shakmaty::san::San;
-use shakmaty::zobrist::{Zobrist64, ZobristHash};
+use shakmaty::zobrist::Zobrist64;
 use shakmaty::{Chess, EnPassantMode, Position};
 use anyhow::Result;
 

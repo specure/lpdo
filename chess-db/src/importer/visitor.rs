@@ -3,7 +3,7 @@ use std::ops::ControlFlow;
 use pgn_reader::{Nag, RawComment, RawTag, SanPlus, Skip, Visitor};
 use regex::Regex;
 use shakmaty::fen::Fen;
-use shakmaty::zobrist::{Zobrist64, ZobristHash};
+use shakmaty::zobrist::Zobrist64;
 use shakmaty::{Chess, EnPassantMode, Position};
 
 /// Accumulated tag data between begin_tags and begin_movetext.

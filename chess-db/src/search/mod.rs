@@ -2,7 +2,7 @@ use anyhow::Result;
 use duckdb::Connection;
 use shakmaty::fen::Fen;
 use shakmaty::san::San;
-use shakmaty::zobrist::{Zobrist64, ZobristHash};
+use shakmaty::zobrist::Zobrist64;
 use shakmaty::{Chess, EnPassantMode, Position};
 
 /// Strip move numbers from a human-readable move sequence.

@@ -518,8 +518,8 @@ fn do_set_moves(
     reporter: &reporter::Reporter,
 ) -> Result<()> {
     use shakmaty::san::San;
-    use shakmaty::zobrist::{Zobrist64, ZobristHash};
-    use shakmaty::{Chess, EnPassantMode};
+    use shakmaty::zobrist::Zobrist64;
+    use shakmaty::{Chess, EnPassantMode, Position};
 
     let old_pgn: String = conn.query_row(
         "SELECT pgn FROM games WHERE id = ?",
