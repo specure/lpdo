@@ -1135,7 +1135,11 @@ pub async fn run(conn: Connection, port: u16) -> Result<()> {
     }
     let reads = ReadPool::new(readers);
     let writer = ConnActor::new(conn);
-    let jobs = Arc::new(JobManager::new(writer.clone(), tokio::runtime::Handle::current()));
+    let jobs = Arc::new(JobManager::new(
+        writer.clone(),
+        reads.clone(),
+        tokio::runtime::Handle::current(),
+    ));
     let state = AppState { reads, writer, jobs };
 
     let app = Router::new()

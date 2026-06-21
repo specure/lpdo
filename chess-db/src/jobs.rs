@@ -96,6 +96,16 @@ impl ReadPool {
         let i = self.next.fetch_add(1, Ordering::Relaxed) % self.actors.len();
         self.actors[i].run(f).await
     }
+
+    /// Fire-and-forget a closure on one of the pooled connections — used to run
+    /// a long read-only job (e.g. backup) without occupying the writer.
+    pub fn spawn_fn<F>(&self, f: F)
+    where
+        F: FnOnce(&Connection) + Send + 'static,
+    {
+        let i = self.next.fetch_add(1, Ordering::Relaxed) % self.actors.len();
+        self.actors[i].spawn_fn(f);
+    }
 }
 
 // ── Jobs ────────────────────────────────────────────────────────────────────
@@ -162,16 +172,25 @@ const EVENT_BUFFER_CAP: usize = 512;
 
 pub struct JobManager {
     writer: ConnActor,
+    reads: ReadPool,
     rt: Handle,
     jobs: Mutex<HashMap<String, Arc<JobSlot>>>,
     order: Mutex<Vec<String>>,
     counter: AtomicU64,
 }
 
+/// Read-only jobs only read the database (e.g. backup reads games and writes a
+/// PGN file). They run on the read pool so they don't queue behind a long write
+/// like an index rebuild.
+fn is_read_only(job_type: &str) -> bool {
+    matches!(job_type, "backup")
+}
+
 impl JobManager {
-    pub fn new(writer: ConnActor, rt: Handle) -> Self {
+    pub fn new(writer: ConnActor, reads: ReadPool, rt: Handle) -> Self {
         JobManager {
             writer,
+            reads,
             rt,
             jobs: Mutex::new(HashMap::new()),
             order: Mutex::new(Vec::new()),
@@ -281,11 +300,13 @@ impl JobManager {
             }
         });
 
-        // Job body on the writer thread (serialized with all other writes).
+        // Job body: read-only jobs run on the read pool (concurrent with a
+        // write); everything else runs on the writer thread (serialized with all
+        // other writes).
         let slot_run = slot.clone();
         let cancel = slot.cancel.clone();
         let rt = self.rt.clone();
-        self.writer.spawn_fn(move |conn| {
+        let body = move |conn: &Connection| {
             {
                 slot_run.state.lock().unwrap().status = "running".into();
             }
@@ -300,7 +321,12 @@ impl JobManager {
                 Ok(()) => reporter.done(""),
                 Err(e) => reporter.error(format!("{:#}", e)),
             }
-        });
+        };
+        if is_read_only(&job_type) {
+            self.reads.spawn_fn(body);
+        } else {
+            self.writer.spawn_fn(body);
+        }
 
         id
     }
