@@ -359,7 +359,7 @@ fn parse_team_ranks(html: &str) -> std::collections::HashMap<u32, u32> {
         // First number = rank, second = sno
         if nums.len() >= 2 {
             let (rank, sno) = (nums[0], nums[1]);
-            if rank >= 1 && rank <= 99 && sno > 0 {
+            if (1..=99).contains(&rank) && sno > 0 {
                 ranks.entry(sno).or_insert(rank);
             }
         }
@@ -470,7 +470,7 @@ fn parse_team_boards(section: &str) -> Vec<TeamBoardPairing> {
             board: *board,
             home_snr: snrs[0],
             home_name: names[0].clone(),
-            home_rating: rtgs.get(0).copied().flatten(),
+            home_rating: rtgs.first().copied().flatten(),
             away_snr: snrs[1],
             away_name: names[1].clone(),
             away_rating: rtgs.get(1).copied().flatten(),
