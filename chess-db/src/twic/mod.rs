@@ -21,7 +21,7 @@ pub async fn download(
                  Falling back to defaults (920–1700). Use --from/--to to override.",
                 e
             );
-            index::IssueRange { first: 920, latest: 1700 }
+            index::IssueRange { first: 920, latest: 1700, published: Vec::new() }
         }
     };
 
@@ -50,6 +50,17 @@ pub async fn download(
         conn.execute(
             "INSERT INTO issues (id, filename) VALUES (?, ?) ON CONFLICT DO NOTHING",
             duckdb::params![issue_id as i32, filename],
+        )
+        .ok();
+    }
+
+    // Record publication dates for every issue the index lists (not just the
+    // requested range) — this also backfills `published_at` on rows imported
+    // before we tracked it. No-op for issues not present in the table.
+    for (issue_id, date) in &range.published {
+        conn.execute(
+            "UPDATE issues SET published_at = CAST(? AS DATE) WHERE id = ?",
+            duckdb::params![date, *issue_id as i32],
         )
         .ok();
     }
