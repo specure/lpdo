@@ -302,12 +302,19 @@ function IndexSection() {
       rebuild &&
       !window.confirm(
         "Rebuild the entire position index from scratch? This wipes the positions " +
-          "table and reprocesses every game — it can take several minutes on a large database.",
+          "table and reprocesses every game. It uses the fast (appender) path and " +
+          "cannot be cancelled once started — let it run to completion.",
       )
     ) {
       return;
     }
-    void progress.run(rebuild ? ["index-positions", "--rebuild"] : ["index-positions"]);
+    // Full rebuild uses --fast (appender), the same path the setup wizard uses
+    // for the initial index — orders of magnitude faster than the transactional
+    // path on a multi-million-game database. The incremental update stays
+    // transactional (small, safe, cancellable).
+    void progress.run(
+      rebuild ? ["index-positions", "--rebuild", "--fast"] : ["index-positions"],
+    );
   }
 
   return (
