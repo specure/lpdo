@@ -111,6 +111,12 @@ function planFromArgs(args: string[]): Plan {
     }
     case "players": {
       if (a1 === "import") return { kind: "job", type: "players_import", params: { path: args[2] } };
+      if (a1 === "export") {
+        const params: Record<string, unknown> = {};
+        const d = flagVal(args, "--dir");
+        if (d) params.dir = d;
+        return { kind: "job", type: "players_export", params };
+      }
       if (a1 === "normalise") {
         const params: Record<string, unknown> = {};
         const limit = flagVal(args, "--limit");

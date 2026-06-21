@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   issues. The old count also included local PGN imports; the new figure is the
   latest real TWIC issue. Publication dates are read from the TWIC index and
   backfilled on download.
+- **Maintenance "Additional databases" import matches the setup wizard** — the
+  bare path text field is replaced by the wizard's import UI: a file/folder
+  picker and a collection chooser. Both entry points now look and work the same.
+- **Maintenance screen grouped into tabs** — the tools are split across
+  **Databases**, **Players** and **Others** tabs (with the database overview
+  pinned above) so the screen is no longer one long crowded grid.
+- **Player reference file: export + a file picker for import** — the *Player
+  reference file* card can now **export** your normalised players to a
+  date-stamped CSV (e.g. `20260621-players.csv`) in a chosen folder, with a
+  *Reveal in file manager* shortcut. The import path now has a **File…** picker
+  instead of only a plain text field.
 
 ### Fixed
 - A foreign key that a from-scratch position-index rebuild added to the index

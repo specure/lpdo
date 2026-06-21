@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use duckdb::Connection;
 use serde::Serialize;
 use tokio::runtime::Handle;
@@ -202,7 +202,7 @@ pub struct JobManager {
 /// PGN file). They run on the read pool so they don't queue behind a long write
 /// like an index rebuild.
 fn is_read_only(job_type: &str) -> bool {
-    matches!(job_type, "backup")
+    matches!(job_type, "backup" | "players_export")
 }
 
 impl JobManager {
@@ -426,6 +426,23 @@ fn run_job(
         "players_import" => {
             let path = path_param(p, "path")?;
             players::import(conn, &path, reporter)?;
+        }
+        "players_export" => {
+            // Mirror `backup`: write a date-stamped file into the chosen folder
+            // and report its path so the GUI can offer "Reveal in file manager".
+            let dir = path_param(p, "dir")?;
+            std::fs::create_dir_all(&dir)
+                .with_context(|| format!("cannot create export directory {}", dir.display()))?;
+            let stamp = chrono::Local::now().format("%Y%m%d");
+            let path = dir.join(format!("{stamp}-players.csv"));
+            let n = players::export(conn, &path)?;
+            if n == 0 {
+                anyhow::bail!("no normalised players to export");
+            }
+            reporter.done_with_path(
+                format!("Exported {} player(s) to {}", n, path.display()),
+                path.display(),
+            );
         }
         "backup" => {
             let collection = p.get("collection").and_then(|v| v.as_str())

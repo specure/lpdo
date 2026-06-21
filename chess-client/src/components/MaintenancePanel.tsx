@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { TwicCredit, useTwicAck } from "./TwicCredit";
 import { useSidecarProgress } from "../hooks/useSidecarProgress";
 import { getSchedule, updateSchedule, type ScheduleInfo } from "../api";
+import AddGameDialog from "./AddGameDialog";
 import MergePlayersDialog from "./MergePlayersDialog";
 import { StatusInfo } from "../types";
 
@@ -146,66 +148,138 @@ function DatabaseInfo({ status }: { status: StatusInfo | null }) {
 
 // ── Players section ───────────────────────────────────────────────────────────
 
+// Small outline button for the file/folder pickers (matches AddGameDialog).
+const pickerBtn =
+  "h-9 px-3 inline-flex items-center rounded-sm border border-outline text-on-surface-variant text-label-md hover:bg-on-surface/8 transition-colors duration-short3 ease-standard shrink-0";
+
+// Where player-reference exports are written by default. Mirrors the backup
+// folder; the chosen path is remembered across sessions.
+const PLAYERS_EXPORT_DIR = "~/lpdo/backup";
+const PLAYERS_EXPORT_DIR_KEY = "playersExportDir";
+
 function PlayersSection() {
   const [path, setPath] = useState("");
-  const progress = useSidecarProgress("maint-players-import");
+  const [exportDir, setExportDir] = useState(
+    () => localStorage.getItem(PLAYERS_EXPORT_DIR_KEY) || PLAYERS_EXPORT_DIR,
+  );
+  const importProgress = useSidecarProgress("maint-players-import");
+  const exportProgress = useSidecarProgress("maint-players-export");
 
-  function run() {
-    void progress.run(["players", "import", path]);
+  // Remember the export folder whenever the user edits or picks a new one.
+  useEffect(() => { localStorage.setItem(PLAYERS_EXPORT_DIR_KEY, exportDir); }, [exportDir]);
+
+  function runImport() {
+    void importProgress.run(["players", "import", path]);
+  }
+
+  function runExport() {
+    void exportProgress.run(["players", "export", "--dir", exportDir.trim() || PLAYERS_EXPORT_DIR]);
+  }
+
+  async function pickFile() {
+    const picked = await openDialog({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "CSV", extensions: ["csv"] }],
+    });
+    if (typeof picked === "string") setPath(picked);
+  }
+
+  async function pickFolder() {
+    const picked = await openDialog({ multiple: false, directory: true });
+    if (typeof picked === "string") setExportDir(picked);
   }
 
   return (
     <SectionCard title="Player reference file">
-      <p className="text-body-sm text-on-surface-variant">Re-import or update the player reference file with a newer version.</p>
-      {!progress.running && !progress.done && (
-        <div className="space-y-2">
-          <input
-            type="text"
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-            placeholder="/path/to/players.csv"
-            className="w-full h-9 px-3 rounded-sm bg-transparent text-on-surface placeholder:text-on-surface-variant text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
-          />
-          <ActionButton onClick={run} disabled={!path.trim()}>Import file…</ActionButton>
+      <p className="text-body-sm text-on-surface-variant">
+        Import a player reference file (FIDE-canonical names), or export your normalised players to a
+        timestamped CSV — e.g.{" "}
+        <span className="font-mono text-on-surface-variant">20260621-players.csv</span>.
+      </p>
+
+      <div className="space-y-3">
+        {/* Import */}
+        <div className="space-y-1">
+          <div className="text-label-md text-on-surface">Import</div>
+          {!importProgress.running && !importProgress.done && (
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={path}
+                  onChange={(e) => setPath(e.target.value)}
+                  placeholder="/path/to/players.csv"
+                  className="flex-1 h-9 px-3 rounded-sm bg-transparent text-on-surface placeholder:text-on-surface-variant text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
+                />
+                <button onClick={pickFile} className={pickerBtn}>File…</button>
+              </div>
+              <ActionButton onClick={runImport} disabled={!path.trim()}>Import file…</ActionButton>
+            </div>
+          )}
+          {(importProgress.running || importProgress.done) && (
+            <ProgressSection progress={importProgress} label="Importing…" />
+          )}
         </div>
-      )}
-      {(progress.running || progress.done) && (
-        <ProgressSection progress={progress} label="Importing…" />
-      )}
+
+        {/* Export */}
+        <div className="space-y-1 pt-3">
+          <div className="text-label-md text-on-surface">Export</div>
+          {!exportProgress.running && !exportProgress.done && (
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={exportDir}
+                  onChange={(e) => setExportDir(e.target.value)}
+                  placeholder={PLAYERS_EXPORT_DIR}
+                  className="flex-1 h-9 px-3 rounded-sm bg-transparent text-on-surface placeholder:text-on-surface-variant text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
+                />
+                <button onClick={pickFolder} className={pickerBtn}>Folder…</button>
+              </div>
+              <ActionButton onClick={runExport}>Export to a file</ActionButton>
+            </div>
+          )}
+          {(exportProgress.running || exportProgress.done) && (
+            <ProgressSection
+              progress={exportProgress}
+              label="Exporting…"
+              extra={exportProgress.donePath && (
+                <button
+                  onClick={() => { void revealItemInDir(exportProgress.donePath!); }}
+                  className="h-7 px-3 inline-flex items-center rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 transition-all duration-short3 ease-standard"
+                >
+                  Reveal in file manager
+                </button>
+              )}
+            />
+          )}
+        </div>
+      </div>
     </SectionCard>
   );
 }
 
 // ── Additional databases section ──────────────────────────────────────────────
 
-function DatabasesSection() {
-  const [folder, setFolder] = useState("");
-  const progress = useSidecarProgress("maint-import-pgn");
-
-  function run() {
-    void progress.run(["import-pgn", folder]);
-  }
-
+function DatabasesSection({ onMutated }: { onMutated?: () => void }) {
+  // Reuse the same import UI as the setup wizard (AddGameDialog, embedded "file"
+  // mode): a file/folder picker and a collection chooser, instead of a bare path
+  // text field. No `bulk` here — unlike the wizard there's no follow-up index
+  // rebuild, so positions are indexed per import as before.
   return (
     <SectionCard title="Additional databases">
       <p className="text-body-sm text-on-surface-variant">
-        Scan a folder for new PGN files and import them. Already-imported files are skipped.
+        Import PGN files — pick a single file or a whole folder, and choose the collection they go
+        into. Already-imported files are skipped.
       </p>
-      {!progress.running && !progress.done && (
-        <div className="space-y-2">
-          <input
-            type="text"
-            value={folder}
-            onChange={(e) => setFolder(e.target.value)}
-            placeholder="/path/to/pgn/folder"
-            className="w-full h-9 px-3 rounded-sm bg-transparent text-on-surface placeholder:text-on-surface-variant text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
-          />
-          <ActionButton onClick={run} disabled={!folder.trim()}>Import new files</ActionButton>
-        </div>
-      )}
-      {(progress.running || progress.done) && (
-        <ProgressSection progress={progress} label="Importing…" />
-      )}
+      <AddGameDialog
+        embedded
+        initialMode="file"
+        allowedModes={["file"]}
+        onClose={() => { /* embedded: no close button */ }}
+        onImported={() => onMutated?.()}
+      />
     </SectionCard>
   );
 }
@@ -658,10 +732,51 @@ function AutoUpdateSection() {
   );
 }
 
+// ── Tabs ──────────────────────────────────────────────────────────────────────
+
+const TABS = [
+  { id: "databases", label: "Databases" },
+  { id: "players", label: "Players" },
+  { id: "others", label: "Others" },
+] as const;
+type TabId = (typeof TABS)[number]["id"];
+
+function TabBar({ active, onChange }: { active: TabId; onChange: (id: TabId) => void }) {
+  // M3 primary tabs — a row of text labels with an active underline indicator.
+  return (
+    <div className="flex gap-1 border-b border-outline-variant">
+      {TABS.map((t) => {
+        const selected = t.id === active;
+        return (
+          <button
+            key={t.id}
+            onClick={() => onChange(t.id)}
+            className={`relative h-12 px-4 text-label-lg transition-colors duration-short3 ease-standard ${
+              selected ? "text-primary" : "text-on-surface-variant hover:text-on-surface"
+            }`}
+          >
+            {t.label}
+            {selected && (
+              <span className="absolute left-2 right-2 bottom-0 h-0.5 rounded-full bg-primary" />
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function MaintenancePanel({ onRunWizard, status, onMutated }: Props) {
   // Full-screen, non-modal view (driven by App's `mode` state). Mirrors the home
-  // screen's layout: a centred max-width column on the bg-surface base, with the
-  // tools laid out as independent tonal boxes in a responsive grid.
+  // screen's layout: a centred max-width column on the bg-surface base. The tools
+  // are grouped into tabs (Databases / Players / Others) to keep each view
+  // uncluttered; the database overview stays pinned above the tabs.
+  const [tab, setTab] = useState<TabId>("databases");
+
+  // Inactive tabs are hidden, not unmounted, so a long-running job (e.g. a TWIC
+  // import) keeps its live progress when you switch away and back.
+  const grid = "grid grid-cols-1 md:grid-cols-2 gap-4 items-start";
+
   return (
     <div className="flex-1 overflow-y-auto bg-surface">
       <div className="max-w-6xl mx-auto px-8 py-10 space-y-8">
@@ -682,21 +797,31 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated }: Pro
           </button>
         </div>
 
-        {/* Database overview — full-width box */}
+        {/* Database overview — full-width box, shared across tabs */}
         <DatabaseInfo status={status} />
 
-        {/* Tools — each in its own box, two-up on wider screens */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-          <AutoUpdateSection />
-          <PlayersSection />
-          <DatabasesSection />
-          <TwicSection />
-          <DeduplicationSection onMutated={onMutated} />
-          <IndexSection />
-          <NormaliseSection onMutated={onMutated} />
-          <MergePlayersSection onMutated={onMutated} />
-          <BackupSection />
-          <PurgeSection status={status} onMutated={onMutated} />
+        {/* Tabbed tools */}
+        <div className="space-y-6">
+          <TabBar active={tab} onChange={setTab} />
+
+          <div className={`${grid} ${tab === "databases" ? "" : "hidden"}`}>
+            <AutoUpdateSection />
+            <TwicSection />
+            <DatabasesSection onMutated={onMutated} />
+            <DeduplicationSection onMutated={onMutated} />
+            <IndexSection />
+          </div>
+
+          <div className={`${grid} ${tab === "players" ? "" : "hidden"}`}>
+            <PlayersSection />
+            <NormaliseSection onMutated={onMutated} />
+            <MergePlayersSection onMutated={onMutated} />
+          </div>
+
+          <div className={`${grid} ${tab === "others" ? "" : "hidden"}`}>
+            <BackupSection />
+            <PurgeSection status={status} onMutated={onMutated} />
+          </div>
         </div>
       </div>
     </div>
