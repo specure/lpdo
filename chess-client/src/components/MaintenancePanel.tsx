@@ -297,17 +297,30 @@ function DeduplicationSection({ onMutated }: { onMutated?: () => void }) {
 function IndexSection() {
   const progress = useSidecarProgress();
 
-  function run() {
-    void progress.run(["index-positions"]);
+  function run(rebuild: boolean) {
+    if (
+      rebuild &&
+      !window.confirm(
+        "Rebuild the entire position index from scratch? This wipes the positions " +
+          "table and reprocesses every game — it can take several minutes on a large database.",
+      )
+    ) {
+      return;
+    }
+    void progress.run(rebuild ? ["index-positions", "--rebuild"] : ["index-positions"]);
   }
 
   return (
     <SectionCard title="Position index">
       <p className="text-body-sm text-on-surface-variant">
         Index positions for newly imported games. Required for the move explorer to include recent games.
+        Rebuilding reprocesses every game from scratch (use after changing index depth, or to verify the index).
       </p>
       {!progress.running && !progress.done && (
-        <ActionButton onClick={run}>Update index</ActionButton>
+        <div className="flex gap-2 flex-wrap">
+          <ActionButton onClick={() => run(false)}>Update index</ActionButton>
+          <ActionButton onClick={() => run(true)}>Rebuild from scratch</ActionButton>
+        </div>
       )}
       {(progress.running || progress.done) && (
         <ProgressSection progress={progress} label="Indexing…" />
