@@ -3,7 +3,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { TwicCredit, useTwicAck } from "./TwicCredit";
 import { useSidecarProgress } from "../hooks/useSidecarProgress";
-import { getSchedule, updateSchedule, type ScheduleInfo } from "../api";
+import { getSchedule, updateSchedule, runUpdateNow, type ScheduleInfo } from "../api";
 import AddGameDialog from "./AddGameDialog";
 import MergePlayersDialog from "./MergePlayersDialog";
 import { StatusInfo } from "../types";
@@ -659,10 +659,22 @@ function MergePlayersSection({ onMutated }: { onMutated?: () => void }) {
 
 // ── Automatic updates section ─────────────────────────────────────────────────
 
-function AutoUpdateSection() {
+// minutes-past-midnight ⇄ "HH:MM" for the <input type="time"> control.
+function minuteToHHMM(m: number): string {
+  const h = Math.floor(m / 60), mm = m % 60;
+  return `${String(h).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+function hhmmToMinute(s: string): number | null {
+  const m = /^(\d{2}):(\d{2})$/.exec(s);
+  if (!m) return null;
+  return Math.min(1439, Math.max(0, Number(m[1]) * 60 + Number(m[2])));
+}
+
+function AutoUpdateSection({ onMutated }: { onMutated?: () => void }) {
   const [sched, setSched] = useState<ScheduleInfo | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const progress = useSidecarProgress("maint-auto-update");
 
   async function refresh() {
     try {
@@ -674,10 +686,31 @@ function AutoUpdateSection() {
   }
   useEffect(() => { void refresh(); }, []);
 
-  async function toggle(enabled: boolean) {
+  // After a manual run finishes, the schedule's last-run/next-check change and
+  // the database grew — refresh this card and the host's status/lists. The
+  // server settles last_status from `running` → `ok` a moment after the job
+  // ends, so poll briefly until it's no longer `running`.
+  useEffect(() => {
+    if (!progress.done) return;
+    onMutated?.();
+    let stop = false;
+    let tries = 0;
+    const poll = async () => {
+      const s = await getSchedule().catch(() => null);
+      if (stop) return;
+      if (s) setSched(s);
+      if ((!s || s.last_status === "running") && tries++ < 8) {
+        setTimeout(() => void poll(), 2000);
+      }
+    };
+    void poll();
+    return () => { stop = true; };
+  }, [progress.done]);
+
+  async function save(body: Partial<Pick<ScheduleInfo, "enabled" | "daily_minute">>) {
     setSaving(true);
     try {
-      await updateSchedule({ enabled });
+      await updateSchedule(body);
       await refresh();
     } catch (e) {
       setError(String(e));
@@ -692,9 +725,9 @@ function AutoUpdateSection() {
   return (
     <SectionCard title="Automatic updates">
       <p className="text-body-sm text-on-surface-variant">
-        Let the server check daily and pull new TWIC issues in the background, so the database is
-        current whenever you open the app. Runs even while the app is closed if the server is
-        installed as a background service.
+        Let the server pull new TWIC issues in the background, so the database is current whenever you
+        open the app. Runs even while the app is closed if the server is installed as a background
+        service.
       </p>
       {sched ? (
         <>
@@ -703,11 +736,27 @@ function AutoUpdateSection() {
               type="checkbox"
               checked={sched.enabled}
               disabled={saving}
-              onChange={(e) => void toggle(e.target.checked)}
+              onChange={(e) => void save({ enabled: e.target.checked })}
               className="cursor-pointer accent-primary w-4 h-4"
             />
             <span>Keep the database up to date</span>
           </label>
+
+          {/* Daily run time — a clock-time picker the user controls. */}
+          <label className="flex items-center gap-2 text-body-md text-on-surface">
+            <span className="text-on-surface-variant">Check daily at</span>
+            <input
+              type="time"
+              value={minuteToHHMM(sched.daily_minute)}
+              disabled={saving || !sched.enabled}
+              onChange={(e) => {
+                const m = hhmmToMinute(e.target.value);
+                if (m !== null) void save({ daily_minute: m });
+              }}
+              className="h-9 px-3 rounded-sm bg-transparent text-on-surface text-body-sm font-mono border border-outline focus:outline-none focus:border-primary disabled:opacity-40 transition-colors duration-short3 ease-standard"
+            />
+          </label>
+
           <div className="text-label-md text-on-surface-variant space-y-0.5">
             {lastRun ? (
               <div>
@@ -723,6 +772,14 @@ function AutoUpdateSection() {
             )}
             {sched.enabled && sched.next_due && <div>Next check: {sched.next_due.slice(0, 16)}</div>}
           </div>
+
+          {/* Run now — reuses the update job + SSE progress. */}
+          {!progress.running && !progress.done && (
+            <ActionButton onClick={() => progress.runJob(runUpdateNow)}>Run update now</ActionButton>
+          )}
+          {(progress.running || progress.done) && (
+            <ProgressSection progress={progress} label="Updating…" />
+          )}
         </>
       ) : (
         <p className="text-body-sm text-on-surface-variant">{error ?? "Loading…"}</p>
@@ -805,7 +862,7 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated }: Pro
           <TabBar active={tab} onChange={setTab} />
 
           <div className={`${grid} ${tab === "databases" ? "" : "hidden"}`}>
-            <AutoUpdateSection />
+            <AutoUpdateSection onMutated={onMutated} />
             <TwicSection />
             <DatabasesSection onMutated={onMutated} />
             <DeduplicationSection onMutated={onMutated} />

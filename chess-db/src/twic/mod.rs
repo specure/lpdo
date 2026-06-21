@@ -65,6 +65,18 @@ pub async fn download(
         .ok();
     }
 
+    // Issues we've already imported never need their zip again — the importer
+    // only ever processes `downloaded = TRUE AND imported = FALSE`. Skipping them
+    // here means a pruned zip cache doesn't trigger a pointless re-download of
+    // every past issue (we keep the `downloaded` flag but not the files forever).
+    let already_imported: std::collections::HashSet<u32> = {
+        let mut stmt = conn.prepare("SELECT id FROM issues WHERE imported = TRUE")?;
+        stmt.query_map([], |r| r.get::<_, i32>(0))?
+            .filter_map(|r| r.ok())
+            .map(|i| i as u32)
+            .collect()
+    };
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .build()?;
@@ -76,6 +88,14 @@ pub async fn download(
             reporter.log("Download cancelled.");
             pb.finish_and_clear();
             return Ok(());
+        }
+
+        // Already imported → done; don't re-fetch even if the local zip is gone.
+        if already_imported.contains(&issue_id) {
+            pb.inc(1);
+            completed += 1;
+            reporter.progress(completed, total, format!("issue {} (already imported)", issue_id));
+            continue;
         }
 
         let filename = format!("twic{}g.zip", issue_id);

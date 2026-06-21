@@ -32,8 +32,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   date-stamped CSV (e.g. `20260621-players.csv`) in a chosen folder, with a
   *Reveal in file manager* shortcut. The import path now has a **File…** picker
   instead of only a plain text field.
+- **Automatic updates run at a time you choose, plus "Run update now"** — instead
+  of firing at whatever time the last run happened to land, the daily update now
+  runs at a clock time you set (e.g. 02:00) via a time picker in *Maintenance →
+  Automatic updates*, and a **Run update now** button triggers it on demand with
+  live progress. Catch-up after downtime still applies: a missed run fires when
+  the server next starts.
 
 ### Fixed
+- **TWIC download no longer re-fetches already-imported issues** — the download
+  step only checked whether the local zip file was present, so a pruned zip cache
+  made it re-download every past issue (hundreds of MB) even though they were
+  already imported. It now skips any issue already imported in the database.
 - A foreign key that a from-scratch position-index rebuild added to the index
   could make player merge (and game edits / soft-delete) fail on large databases
   with a "game_id … still referenced" error — DuckDB performs updates as

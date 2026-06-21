@@ -306,5 +306,14 @@ fn init_schedule(conn: &Connection) -> Result<()> {
         WHERE NOT EXISTS (SELECT 1 FROM schedule WHERE id = 1);
         ",
     )?;
+
+    // The scheduler now runs once a day at a chosen local clock time rather than
+    // every `interval_hours`. `daily_minute` is minutes past local midnight
+    // (default 240 = 04:00). interval_hours is kept for backwards compatibility
+    // but no longer drives scheduling.
+    conn.execute_batch(
+        "ALTER TABLE schedule ADD COLUMN IF NOT EXISTS daily_minute INTEGER DEFAULT 240;
+         UPDATE schedule SET daily_minute = 240 WHERE daily_minute IS NULL;",
+    )?;
     Ok(())
 }

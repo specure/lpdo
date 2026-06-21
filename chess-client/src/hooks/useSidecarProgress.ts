@@ -43,6 +43,9 @@ export interface SidecarProgress {
   /** Run an operation. Accepts the legacy CLI-style argument array; it is
    *  translated to an HTTP job or a quick mutation against the server. */
   run: (args: string[]) => void;
+  /** Stream progress from a job started elsewhere. `submit` performs the request
+   *  that creates the job (e.g. a dedicated endpoint) and resolves to its id. */
+  runJob: (submit: () => Promise<string>) => void;
   reset: () => void;
   /** Cancel the in-flight job. No-op when nothing is running. */
   cancel: () => void;
@@ -280,6 +283,22 @@ export function useSidecarProgress(key?: string): SidecarProgress {
       });
   }
 
+  // Stream a job created by an arbitrary request (e.g. POST /schedule/run),
+  // rather than the generic /jobs submit. Mirrors the long-job branch of run().
+  function runJob(submit: () => Promise<string>) {
+    reset();
+    setRunning(true);
+    submit()
+      .then((jobId) => {
+        if (key) activeJobs.set(key, jobId);
+        openStream(jobId);
+      })
+      .catch((e: unknown) => {
+        setRunning(false);
+        setLog((l) => [...l, `Error: ${String(e)}`]);
+      });
+  }
+
   // On mount, reconnect to a job left running under this key (e.g. the user
   // navigated away mid-operation and came back).
   useEffect(() => {
@@ -317,5 +336,5 @@ export function useSidecarProgress(key?: string): SidecarProgress {
 
   useEffect(() => () => closeStream(), []);
 
-  return { percent, running, done, doneMessage, donePath, message, log, run, reset, cancel };
+  return { percent, running, done, doneMessage, donePath, message, log, run, runJob, reset, cancel };
 }

@@ -21,6 +21,7 @@ pub struct JobEvent {
     pub path: Option<String>,
 }
 
+#[derive(Clone)]
 enum Sink {
     /// Interactive terminal: indicatif progress bars + plain println.
     Terminal,
@@ -39,6 +40,11 @@ pub struct Reporter {
     /// Cooperative cancellation. Long operations that loop can poll
     /// `is_cancelled()` to stop early; the job manager sets it on cancel.
     cancel: Arc<AtomicBool>,
+    /// When true, `done`/`done_with_path` emit a `log` event instead of a
+    /// terminal `done`. Used for the sub-steps of a composite job (e.g. the
+    /// `update` job's download/import/index/normalise), so a sub-step finishing
+    /// doesn't look like the whole job finished.
+    mute_done: bool,
 }
 
 impl Reporter {
@@ -46,20 +52,28 @@ impl Reporter {
         Self {
             sink: if json { Sink::Json } else { Sink::Terminal },
             cancel: Arc::new(AtomicBool::new(false)),
+            mute_done: false,
         }
     }
 
     /// Build a reporter that streams events into `tx` (the server's job runner),
     /// cancellable via the shared `cancel` flag.
     pub fn channel(tx: tokio::sync::mpsc::UnboundedSender<JobEvent>, cancel: Arc<AtomicBool>) -> Self {
-        Self { sink: Sink::Channel(tx), cancel }
+        Self { sink: Sink::Channel(tx), cancel, mute_done: false }
     }
 
     /// A reporter that discards all output — for synchronous server endpoints
     /// that call an operation but don't stream its progress anywhere.
     pub fn silent() -> Self {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        Self { sink: Sink::Channel(tx), cancel: Arc::new(AtomicBool::new(false)) }
+        Self { sink: Sink::Channel(tx), cancel: Arc::new(AtomicBool::new(false)), mute_done: false }
+    }
+
+    /// A reporter sharing this one's sink and cancel flag, but whose completion
+    /// events are downgraded to log lines. Pass this to the individual steps of a
+    /// composite job so only the job's own final `done` terminates the stream.
+    pub fn sub_step(&self) -> Self {
+        Self { sink: self.sink.clone(), cancel: self.cancel.clone(), mute_done: true }
     }
 
     /// True when output is machine-consumed (JSON stdout or in-process channel)
@@ -113,6 +127,10 @@ impl Reporter {
 
     /// Final completion message.
     pub fn done(&self, msg: impl std::fmt::Display) {
+        if self.mute_done {
+            self.log(msg);
+            return;
+        }
         match &self.sink {
             Sink::Terminal => println!("{}", msg),
             Sink::Json => self.emit_json(serde_json::json!({
@@ -128,6 +146,11 @@ impl Reporter {
     /// Completion event carrying a result file path, so the GUI can offer to
     /// reveal the produced file in the OS file manager.
     pub fn done_with_path(&self, msg: impl std::fmt::Display, path: impl std::fmt::Display) {
+        if self.mute_done {
+            self.log(msg);
+            let _ = &path;
+            return;
+        }
         match &self.sink {
             Sink::Terminal => println!("{}", msg),
             Sink::Json => self.emit_json(serde_json::json!({
