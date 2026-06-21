@@ -8,9 +8,11 @@
 //! only — the command → job mapping lives in `main.rs` (where `Commands` is in
 //! scope) and reaches us as a `JobSpec`.
 
+use std::io::Write;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use reqwest::Method;
 use serde::Deserialize;
 use tokio_stream::StreamExt;
 
@@ -296,4 +298,247 @@ impl Renderer {
             bar.finish_and_clear();
         }
     }
+}
+
+// ── Quick mutations (one-shot HTTP, no streaming) ─────────────────────────────
+
+/// A one-shot mutation against an existing daemon endpoint: send `method path
+/// [body]`, then print the daemon's `{message}` (or `success` for an empty 2xx
+/// like 204). An optional `confirm` prompt is shown first.
+pub struct MutationSpec {
+    method: Method,
+    path: String,
+    body: Option<serde_json::Value>,
+    confirm: Option<String>,
+    success: Option<String>,
+}
+
+impl MutationSpec {
+    pub fn post(path: impl Into<String>) -> Self {
+        Self { method: Method::POST, path: path.into(), body: None, confirm: None, success: None }
+    }
+    pub fn body(mut self, v: serde_json::Value) -> Self {
+        self.body = Some(v);
+        self
+    }
+}
+
+/// Run a one-shot mutation (with optional confirmation).
+pub async fn run_mutation(port: u16, m: MutationSpec) -> Result<()> {
+    if let Some(prompt) = &m.confirm {
+        if !prompt_yes_no(prompt)? {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+    let client = reqwest::Client::new();
+    send_mutation(&client, port, m.method, &m.path, m.body.as_ref(), m.success.as_deref()).await
+}
+
+/// Send one request and render the outcome (prints `{message}`/`success`, or
+/// bails on a non-2xx with the daemon's body).
+async fn send_mutation(
+    client: &reqwest::Client,
+    port: u16,
+    method: Method,
+    path: &str,
+    body: Option<&serde_json::Value>,
+    success: Option<&str>,
+) -> Result<()> {
+    let mut req = client.request(method, format!("{}{path}", base_url(port)));
+    if let Some(b) = body {
+        req = req.json(b);
+    }
+    let resp = req.send().await.context("sending request to the daemon")?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if status.is_success() {
+        let msg = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(String::from))
+            .or_else(|| success.map(String::from));
+        if let Some(msg) = msg {
+            println!("{msg}");
+        }
+        Ok(())
+    } else {
+        bail!("daemon returned {status}: {}", text.trim());
+    }
+}
+
+/// `games delete <ids…>` — show each game, confirm (unless `yes_all`), then
+/// hard-delete via `DELETE /games/{id}`.
+pub async fn run_delete(port: u16, ids: &[u32], yes_all: bool) -> Result<()> {
+    let client = reqwest::Client::new();
+    if !yes_all {
+        for id in ids {
+            match get_json::<GameSummaryDto>(&client, port, &format!("/games/{id}")).await {
+                Some(g) => println!(
+                    "[{}] {} vs {}  {}  {}",
+                    g.id, g.white, g.black,
+                    g.date.as_deref().unwrap_or("-"), g.event.as_deref().unwrap_or("-"),
+                ),
+                None => println!("[{id}] (not found)"),
+            }
+        }
+        if !prompt_yes_no(&format!("Delete {} game(s)?", ids.len()))? {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+    let mut deleted = 0u32;
+    for id in ids {
+        let resp = client.delete(format!("{}/games/{id}", base_url(port))).send().await
+            .context("sending delete to the daemon")?;
+        if resp.status().is_success() {
+            deleted += 1;
+        } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            eprintln!("[{id}] not found");
+        } else {
+            eprintln!("[{id}] error: {}", resp.status());
+        }
+    }
+    println!("{deleted} game(s) deleted.");
+    Ok(())
+}
+
+/// `games purge [--dry-run]` — count soft-deleted games (via `/status`) for a dry
+/// run, else `POST /purge`.
+pub async fn run_purge(port: u16, dry_run: bool) -> Result<()> {
+    let client = reqwest::Client::new();
+    if dry_run {
+        let n = get_json::<StatusDto>(&client, port, "/status").await.map(|s| s.deleted_games).unwrap_or(0);
+        println!("Would purge {n} soft-deleted game(s) (dry run).");
+        return Ok(());
+    }
+    send_mutation(&client, port, Method::POST, "/purge", None, None).await
+}
+
+/// `players merge <keep> <drop>` — confirm (unless `yes`) showing game counts,
+/// then `POST /players/{keep}/merge/{drop}`.
+pub async fn run_merge(port: u16, keep: u32, drop: u32, yes: bool) -> Result<()> {
+    let client = reqwest::Client::new();
+    if !yes {
+        let kc = player_game_count(&client, port, keep).await;
+        let dc = player_game_count(&client, port, drop).await;
+        let fmt = |n: Option<i64>| n.map(|c| format!("  games: {c}")).unwrap_or_default();
+        println!("Keep: [{keep}]{}", fmt(kc));
+        println!("Drop: [{drop}]{}", fmt(dc));
+        println!("All of [{drop}]'s games move to [{keep}], and player [{drop}] is deleted.");
+        if !prompt_yes_no("Proceed?")? {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+    let resp = client.post(format!("{}/players/{keep}/merge/{drop}", base_url(port))).send().await
+        .context("sending merge to the daemon")?;
+    let status = resp.status();
+    if status.is_success() {
+        println!("Done. Player [{drop}] merged into [{keep}].");
+        Ok(())
+    } else {
+        bail!("daemon returned {status}: {}", resp.text().await.unwrap_or_default().trim());
+    }
+}
+
+/// `players merge-by-name <keep> <drop>` — resolve each name to a single player
+/// via `GET /players?name=`, then merge by id.
+pub async fn run_merge_by_name(port: u16, keep_name: &str, drop_name: &str, yes: bool) -> Result<()> {
+    let client = reqwest::Client::new();
+    let keep = resolve_exact_player(&client, port, keep_name).await?;
+    let drop = resolve_exact_player(&client, port, drop_name).await?;
+    if keep.id == drop.id {
+        bail!("both names resolve to the same player [{}]", keep.id);
+    }
+    if !yes {
+        let line = |p: &PlayerInfoDto| format!(
+            "[{}] {}  FIDE: {}  games: {}",
+            p.id, p.name, p.fide_id.map(|f| f.to_string()).unwrap_or_else(|| "-".into()), p.game_count,
+        );
+        println!("Keep: {}", line(&keep));
+        println!("Drop: {}", line(&drop));
+        println!("All of [{}]'s games move to [{}], and player [{}] is deleted.", drop.id, keep.id, drop.id);
+        if !prompt_yes_no("Proceed?")? {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+    run_merge(port, keep.id, drop.id, true).await
+}
+
+// ── Small HTTP/render helpers ─────────────────────────────────────────────────
+
+async fn get_json<T: for<'de> Deserialize<'de>>(client: &reqwest::Client, port: u16, path: &str) -> Option<T> {
+    let resp = client.get(format!("{}{path}", base_url(port))).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.json::<T>().await.ok()
+}
+
+async fn player_game_count(client: &reqwest::Client, port: u16, id: u32) -> Option<i64> {
+    get_json::<StatusDtoTotal>(client, port, &format!("/players/{id}/stats")).await.map(|s| s.total)
+}
+
+/// Resolve a name to exactly one player (matching the CLI's exact-name merge).
+async fn resolve_exact_player(client: &reqwest::Client, port: u16, name: &str) -> Result<PlayerInfoDto> {
+    let params = [("name", name)];
+    let url = reqwest::Url::parse_with_params(&format!("{}/players", base_url(port)), params)
+        .context("building players query")?;
+    let matches: Vec<PlayerInfoDto> = client
+        .get(url)
+        .send()
+        .await
+        .context("querying players")?
+        .json()
+        .await
+        .context("reading players response")?;
+    let want = normalize_name(name);
+    let mut exact: Vec<PlayerInfoDto> = matches.into_iter().filter(|p| normalize_name(&p.name) == want).collect();
+    match exact.len() {
+        1 => Ok(exact.pop().unwrap()),
+        0 => bail!("no player exactly named {name:?}"),
+        n => bail!("{n} players exactly named {name:?} — merge by id instead"),
+    }
+}
+
+/// Mirror of the server's name normalisation (lowercase, comma→space, collapse
+/// whitespace) so exact-name resolution matches what the daemon stored.
+fn normalize_name(s: &str) -> String {
+    s.to_lowercase().replace(',', " ").split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn prompt_yes_no(prompt: &str) -> Result<bool> {
+    print!("{prompt} [y/N] ");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).context("reading confirmation")?;
+    Ok(matches!(line.trim(), "y" | "Y" | "yes" | "Yes"))
+}
+
+#[derive(Deserialize)]
+struct GameSummaryDto {
+    id: u32,
+    white: String,
+    black: String,
+    date: Option<String>,
+    event: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PlayerInfoDto {
+    id: u32,
+    name: String,
+    fide_id: Option<u32>,
+    game_count: i64,
+}
+
+#[derive(Deserialize)]
+struct StatusDto {
+    deleted_games: i64,
+}
+
+#[derive(Deserialize)]
+struct StatusDtoTotal {
+    total: i64,
 }
