@@ -59,6 +59,14 @@ pub async fn download(
         .build()?;
 
     for issue_id in start..=end {
+        // Cooperative cancellation: when run as a server job, the job manager
+        // sets this flag; stop cleanly between issues.
+        if reporter.is_cancelled() {
+            reporter.log("Download cancelled.");
+            pb.finish_and_clear();
+            return Ok(());
+        }
+
         let filename = format!("twic{}g.zip", issue_id);
         let dest = dir.join(&filename);
 

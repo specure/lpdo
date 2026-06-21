@@ -374,10 +374,13 @@ fn run_job(
             std::fs::create_dir_all(&dir)?;
             reporter.log("Step 1/4: download");
             rt.block_on(twic::download(conn, 1, None, &dir, reporter))?;
+            if reporter.is_cancelled() { return Ok(()); }
             reporter.log("Step 2/4: import (fast)");
             importer::import(conn, &dir, None, 0, true, false, reporter)?;
+            if reporter.is_cancelled() { return Ok(()); }
             reporter.log("Step 3/4: index-positions (fast)");
             importer::index_positions(conn, Some(40), false, true, reporter)?;
+            if reporter.is_cancelled() { return Ok(()); }
             reporter.log("Step 4/4: players normalise");
             normalise::normalise_players(
                 conn, false, 1500, 100, 30_000, 3, 10, 7_200_000, false, None, None, None, false, reporter,
