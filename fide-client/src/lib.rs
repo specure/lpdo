@@ -191,8 +191,7 @@ fn parse_period_games(html: &str, period: &str, rating_type: &str) -> Vec<Recent
         // Assign event = most recent event block that precedes this row
         let event = event_positions
             .iter()
-            .filter(|(pos, _)| *pos < row_start)
-            .last()
+            .rfind(|(pos, _)| *pos < row_start)
             .map(|(_, n)| n.clone());
 
         // Extract cells
