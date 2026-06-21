@@ -14,13 +14,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two players** in the list, or from **Maintenance → Merge players**; all games
   move to the player you keep.
 
-### Fixed
-- A foreign key that a from-scratch position-index rebuild added to the index
-  could make player merge (and game edits / soft-delete) fail on large databases
-  with a "game_id … still referenced" error — DuckDB performs updates as
-  delete+insert. The constraint is now removed automatically on startup (a
-  one-time migration), and rebuilds no longer add it.
-
 ### Changed
 - **Home screen shows the latest TWIC issue instead of a count** — the Database
   panel's TWIC tile now displays the most recently imported TWIC issue and its
@@ -30,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backfilled on download.
 
 ### Fixed
+- A foreign key that a from-scratch position-index rebuild added to the index
+  could make player merge (and game edits / soft-delete) fail on large databases
+  with a "game_id … still referenced" error — DuckDB performs updates as
+  delete+insert. The constraint is now removed automatically on startup (a
+  one-time migration), and rebuilds no longer add it.
 - **Automatic-updates status no longer sticks at "(running…)" after a restart** —
   if the server is restarted mid-update, the scheduler now reconciles the
   orphaned `running` state on startup (marking it `interrupted`) instead of
