@@ -7,16 +7,18 @@ import PlayerPicker from "./PlayerPicker";
  *  player, the duplicate is deleted. Wraps POST /players/{keep}/merge/{drop}. */
 export default function MergePlayersDialog({
   initialKeep = null,
+  initialDrop = null,
   onClose,
   onMerged,
 }: {
   initialKeep?: PlayerInfo | null;
+  initialDrop?: PlayerInfo | null;
   onClose: () => void;
   /** Called after a successful merge so the host can refresh. */
   onMerged: (keepId: number, dropId: number) => void;
 }) {
   const [keep, setKeep] = useState<PlayerInfo | null>(initialKeep);
-  const [drop, setDrop] = useState<PlayerInfo | null>(null);
+  const [drop, setDrop] = useState<PlayerInfo | null>(initialDrop);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

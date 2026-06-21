@@ -10,8 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Merge duplicate players in the app** — combine a full-name record and a
   surname-only one (or any two duplicates of the same person) into a single
-  player. Available from a player's view (**Merge…**) and from
-  **Maintenance → Merge players**; all games move to the player you keep.
+  player. Start it from a player's profile (**Merge…**), by **Ctrl/Cmd-clicking
+  two players** in the list, or from **Maintenance → Merge players**; all games
+  move to the player you keep.
 
 ### Changed
 - **Home screen shows the latest TWIC issue instead of a count** — the Database

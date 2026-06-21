@@ -212,6 +212,8 @@ export default function App() {
   const { recent: recentPgnFiles, add: addRecentPgnFile } = useRecentPgnFiles();
   const playerSearchRef = useRef<HTMLInputElement | null>(null);
   const [selectedPlayer, setSelectedPlayer] = useState<PlayerInfo | null>(null);
+  // Additional players Ctrl/Cmd-clicked alongside the anchor (for merging two).
+  const [selectedExtras, setSelectedExtras] = useState<PlayerInfo[]>([]);
   const [selectedGame, setSelectedGame] = useState<GameSummary | null>(null);
   const [lastSelectedGame, setLastSelectedGame] = useState<GameSummary | null>(null);
   const [topGame, setTopGame] = useState<GameSummary | null>(null);
@@ -256,6 +258,7 @@ export default function App() {
     setPlayerReloadKey((k) => k + 1);      // refresh player search results
     removeRecentPlayer(dropId);            // the dropped player no longer exists
     if (selectedPlayer?.id === dropId) setSelectedPlayer(null);
+    setSelectedExtras([]);
   };
 
   useEffect(() => {
@@ -274,8 +277,20 @@ export default function App() {
   }, [gameMutationKey]);
 
 
-  function handleSelectPlayer(player: PlayerInfo) {
+  function handleSelectPlayer(player: PlayerInfo, additive?: boolean) {
+    // Ctrl/Cmd-click toggles a second selection without changing the anchor view.
+    if (additive && selectedPlayer) {
+      if (player.id === selectedPlayer.id) return;
+      setSelectedExtras((prev) =>
+        prev.some((p) => p.id === player.id)
+          ? prev.filter((p) => p.id !== player.id)
+          : [...prev, player],
+      );
+      return;
+    }
+    // Plain click: this player becomes the anchor; clear any multi-selection.
     setSelectedPlayer(player);
+    setSelectedExtras([]);
     addRecentPlayer(player);
     setSelectedGame(null);
     setLastSelectedGame(null);
@@ -602,6 +617,7 @@ export default function App() {
               ) : (
                 <PlayerList
                   selectedId={selectedPlayer?.id ?? null}
+                  selectedIds={selectedPlayer ? [selectedPlayer.id, ...selectedExtras.map((p) => p.id)] : []}
                   onSelect={handleSelectPlayer}
                   inputRef={playerSearchRef}
                   recentPlayers={recentPlayers}
@@ -637,6 +653,7 @@ export default function App() {
                   scopeCollections={collectionsList}
                   reloadKey={gameMutationKey}
                   onPlayersMerged={handlePlayersMerged}
+                  coSelected={selectedExtras}
                 />
               </div>
             )}
