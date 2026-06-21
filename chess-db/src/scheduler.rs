@@ -25,6 +25,12 @@ struct Check {
 pub fn spawn(jobs: Arc<JobManager>, reads: ReadPool, writer: ConnActor) {
     tokio::spawn(async move {
         tokio::time::sleep(STARTUP_DELAY).await;
+        // Heal orphaned `running` state left by a restart mid-update. The
+        // in-memory job registry doesn't survive a restart, so a `running`
+        // status in the DB with no update job in flight means the previous run
+        // was interrupted — otherwise it would stay "(running…)" until the next
+        // due run, possibly a full interval away.
+        reconcile_orphan(&jobs, &writer).await;
         let mut tracked: Option<String> = None;
         let mut ticker = tokio::time::interval(TICK);
         loop {
@@ -83,6 +89,29 @@ async fn tick(
     let id = jobs.submit("update".into(), serde_json::json!({}));
     *tracked = Some(id);
     Ok(())
+}
+
+/// Clear a stale `running` left by a restart mid-update. Guarded on there being
+/// no update job actually in flight (a manual "run now" could have started
+/// during the startup grace period) and on the status still being `running`, so
+/// it never clobbers a genuine in-progress run or an already-recorded outcome.
+async fn reconcile_orphan(jobs: &Arc<JobManager>, writer: &ConnActor) {
+    let in_flight = jobs
+        .list()
+        .iter()
+        .any(|j| j.job_type == "update" && (j.status == "running" || j.status == "queued"));
+    if in_flight {
+        return;
+    }
+    let _ = writer
+        .run(|conn| {
+            conn.execute(
+                "UPDATE schedule SET last_status = 'interrupted'
+                 WHERE id = 1 AND last_status = 'running'",
+                [],
+            )
+        })
+        .await;
 }
 
 async fn read_check(reads: &ReadPool) -> anyhow::Result<Check> {
