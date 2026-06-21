@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { PlayerInfo, PlayerStats, OpeningLine, FidePlayer, FideActivity, FideRecentGame, GameSummary } from "../types";
 import { Tag, defaultNewGameTags } from "../lib/pgnEditor";
 import AddGameDialog from "./AddGameDialog";
+import MergePlayersDialog from "./MergePlayersDialog";
 
 // FIDE publishes a game in a later rating period than when it was played
 // (typically the next month, but late submissions can land up to ~2 months
@@ -72,6 +73,8 @@ function buildPrefillTags(
 interface Props {
   player: PlayerInfo;
   onClose: () => void;
+  /** Called after merging a duplicate into this player (keep id, dropped id). */
+  onPlayersMerged?: (keepId: number, dropId: number) => void;
 }
 
 function WDL({ w, d, l }: { w: number; d: number; l: number }) {
@@ -140,7 +143,8 @@ function resultColor(result: string) {
   return "text-on-surface-variant";
 }
 
-export default function PlayerProfileModal({ player, onClose }: Props) {
+export default function PlayerProfileModal({ player, onClose, onPlayersMerged }: Props) {
+  const [mergeOpen, setMergeOpen] = useState(false);
   const [stats, setStats] = useState<PlayerStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
   const [statsError, setStatsError] = useState<string | null>(null);
@@ -431,6 +435,11 @@ export default function PlayerProfileModal({ player, onClose }: Props) {
             )}
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setMergeOpen(true)}
+              title="Merge a duplicate player record into this one"
+              className="h-8 px-3 inline-flex items-center rounded-full text-primary text-label-md hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard"
+            >Merge…</button>
             {/* Filled tonal */}
             <button
               onClick={handlePrint}
@@ -617,6 +626,17 @@ export default function PlayerProfileModal({ player, onClose }: Props) {
           initialTags={addGamePrefill}
           onClose={() => setAddGamePrefill(null)}
           onImported={() => setMatchesReloadKey(k => k + 1)}
+        />
+      )}
+
+      {mergeOpen && (
+        <MergePlayersDialog
+          initialKeep={player}
+          onClose={() => setMergeOpen(false)}
+          onMerged={(keepId, dropId) => {
+            onPlayersMerged?.(keepId, dropId);
+            onClose(); // this player's stats are now stale; reopen fresh if needed
+          }}
         />
       )}
     </div>

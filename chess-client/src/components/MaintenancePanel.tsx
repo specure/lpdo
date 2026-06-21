@@ -5,6 +5,7 @@ import { TwicCredit, useTwicAck } from "./TwicCredit";
 import { useSidecarProgress } from "../hooks/useSidecarProgress";
 import { getSchedule, updateSchedule, type ScheduleInfo } from "../api";
 import AddGameDialog from "./AddGameDialog";
+import MergePlayersDialog from "./MergePlayersDialog";
 import { StatusInfo } from "../types";
 
 interface Props {
@@ -638,6 +639,24 @@ function PurgeSection({ status, onMutated }: { status: StatusInfo | null; onMuta
 
 // ── Panel shell ───────────────────────────────────────────────────────────────
 
+// ── Merge players section ─────────────────────────────────────────────────────
+
+function MergePlayersSection({ onMutated }: { onMutated?: () => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <SectionCard title="Merge players">
+      <p className="text-body-sm text-on-surface-variant">
+        Combine duplicate player records — e.g. a full name (“Krejcar, Walter”) and a surname-only
+        entry (“Krejcar”) for the same person — into one. All games move to the player you keep.
+      </p>
+      <ActionButton onClick={() => setOpen(true)}>Merge players…</ActionButton>
+      {open && (
+        <MergePlayersDialog onClose={() => setOpen(false)} onMerged={() => onMutated?.()} />
+      )}
+    </SectionCard>
+  );
+}
+
 // ── Automatic updates section ─────────────────────────────────────────────────
 
 function AutoUpdateSection() {
@@ -796,6 +815,7 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated }: Pro
           <div className={`${grid} ${tab === "players" ? "" : "hidden"}`}>
             <PlayersSection />
             <NormaliseSection onMutated={onMutated} />
+            <MergePlayersSection onMutated={onMutated} />
           </div>
 
           <div className={`${grid} ${tab === "others" ? "" : "hidden"}`}>
