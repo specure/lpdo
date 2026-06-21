@@ -16,6 +16,7 @@ mod normalise;
 mod players;
 mod progress;
 mod reporter;
+mod scheduler;
 mod search;
 mod serve;
 mod twic;

@@ -948,6 +948,49 @@ async fn job_events_handler(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
+// ── Schedule (server-owned auto-update config) ────────────────────────────────
+
+async fn get_schedule_handler(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
+    state.reads.run(|conn| {
+        let v = conn.query_row(
+            "SELECT enabled, interval_hours,
+                    CAST(last_run AS VARCHAR), last_status,
+                    CAST(last_run + to_hours(interval_hours) AS VARCHAR) AS next_due
+             FROM schedule WHERE id = 1",
+            [],
+            |r| Ok(serde_json::json!({
+                "enabled": r.get::<_, bool>(0)?,
+                "interval_hours": r.get::<_, i32>(1)?,
+                "last_run": r.get::<_, Option<String>>(2)?,
+                "last_status": r.get::<_, Option<String>>(3)?,
+                "next_due": r.get::<_, Option<String>>(4)?,
+            })),
+        ).map_err(db_err)?;
+        Ok(Json(v))
+    }).await
+}
+
+#[derive(Deserialize)]
+struct ScheduleUpdate {
+    enabled: Option<bool>,
+    interval_hours: Option<i32>,
+}
+
+async fn put_schedule_handler(
+    State(state): State<AppState>,
+    Json(body): Json<ScheduleUpdate>,
+) -> ApiResult<serde_json::Value> {
+    state.writer.run(move |conn| {
+        if let Some(e) = body.enabled {
+            conn.execute("UPDATE schedule SET enabled = ? WHERE id = 1", duckdb::params![e]).map_err(db_err)?;
+        }
+        if let Some(h) = body.interval_hours {
+            conn.execute("UPDATE schedule SET interval_hours = ? WHERE id = 1", duckdb::params![h]).map_err(db_err)?;
+        }
+        Ok(msg("Schedule updated.".into()))
+    }).await
+}
+
 // ── Quick mutations (synchronous, run on the writer) ──────────────────────────
 
 #[derive(Deserialize)]
@@ -1167,6 +1210,10 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         tokio::runtime::Handle::current(),
         db_path,
     ));
+
+    // Server-owned update scheduler: submits the `update` job when due.
+    crate::scheduler::spawn(jobs.clone(), reads.clone(), writer.clone());
+
     let state = AppState { reads, writer, jobs };
 
     let app = Router::new()
@@ -1186,6 +1233,7 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         .route("/games/{id}/headers",                  post(set_headers_handler))
         .route("/players/{id}/fide-id",                post(set_fide_id_handler))
         .route("/purge",                               post(purge_handler))
+        .route("/schedule",                            get(get_schedule_handler).put(put_schedule_handler))
         .route("/position",                            get(position_handler))
         .route("/position/moves",                      get(position_moves_handler))
         // Long-running mutation jobs with streamed progress.

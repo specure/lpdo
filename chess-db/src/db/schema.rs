@@ -155,6 +155,7 @@ pub fn init(conn: &Connection) -> Result<()> {
     }
 
     init_collections(conn)?;
+    init_schedule(conn)?;
 
     // Soft-delete column. NULL = alive. DuckDB ALTER ADD COLUMN is fast on
     // column-store: no row rewrite, just a new NULL column.
@@ -251,5 +252,28 @@ fn init_collections(conn: &Connection) -> Result<()> {
         ",
     )?;
 
+    Ok(())
+}
+
+/// Single-row config for the server's in-process update scheduler. The server
+/// reads it each tick to decide whether an automatic `update` job is due, and
+/// records the outcome here. Auto-update is on by default.
+fn init_schedule(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS schedule (
+            id             INTEGER PRIMARY KEY,
+            enabled        BOOLEAN NOT NULL DEFAULT TRUE,
+            interval_hours INTEGER NOT NULL DEFAULT 24,
+            last_run       TIMESTAMP,
+            last_status    VARCHAR,
+            last_job_id    VARCHAR
+        );
+
+        INSERT INTO schedule (id, enabled, interval_hours)
+        SELECT 1, TRUE, 24
+        WHERE NOT EXISTS (SELECT 1 FROM schedule WHERE id = 1);
+        ",
+    )?;
     Ok(())
 }
