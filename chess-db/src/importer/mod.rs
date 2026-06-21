@@ -181,11 +181,15 @@ pub fn index_positions(
 
     if rebuild {
         reporter.log("Rebuilding positions table from scratch...");
+        // No `REFERENCES games(id)`: DuckDB implements UPDATE as delete+insert,
+        // so an incoming FK breaks `UPDATE games` at scale (player merge,
+        // soft-delete). positions is derived data — referential integrity is
+        // kept by the import/delete code. Matches the initial schema (schema.rs).
         conn.execute_batch(
             "DROP INDEX IF EXISTS idx_positions_hash;
              DROP TABLE IF EXISTS positions;
              CREATE TABLE positions (
-                 game_id      UINTEGER REFERENCES games(id),
+                 game_id      UINTEGER,
                  move_number  SMALLINT,
                  zobrist_hash BIGINT,
                  next_move    VARCHAR

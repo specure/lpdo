@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Chess } from "chess.js";
 import { GameSummary, MoveStats, PlayerInfo } from "../types";
 import PlayerProfileModal from "./PlayerProfileModal";
+import MergePlayersDialog from "./MergePlayersDialog";
 
 type Color = "any" | "white" | "black";
 
@@ -53,6 +54,11 @@ interface Props {
   scopeCollections?: { id: number; name: string; game_count: number }[];
   /** Bumped externally to force a re-fetch (e.g. after a game is mutated). */
   reloadKey?: number;
+  /** Called after two players are merged (keep id, dropped id). */
+  onPlayersMerged?: (keepId: number, dropId: number) => void;
+  /** Players Ctrl-clicked alongside this one in the list. Exactly one extra
+   *  (two selected total) offers a Merge action in the header. */
+  coSelected?: PlayerInfo[];
 }
 
 function formatElo(elo: number | null) {
@@ -88,8 +94,15 @@ export default function GameList({
   setScopeIncludeDeleted,
   scopeCollections = [],
   reloadKey = 0,
+  onPlayersMerged,
+  coSelected = [],
 }: Props) {
   const [profileOpen, setProfileOpen] = useState(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
+  // When exactly one other player is co-selected, offer to merge the two.
+  // Prefer keeping the FIDE-linked record (the dialog's Swap can flip it).
+  const mergeOther = coSelected.length === 1 ? coSelected[0] : null;
+  const mergeSwap = !!mergeOther?.fide_id && !player.fide_id;
   const [colorPickPromptOpen, setColorPickPromptOpen] = useState(false);
   const [color, setColor] = useState<Color>("any");
   const [opponentInput, setOpponentInput] = useState("");
@@ -413,7 +426,19 @@ export default function GameList({
     <div className="flex flex-col h-full bg-surface-container-low">
 
       {profileOpen && (
-        <PlayerProfileModal player={player} onClose={() => setProfileOpen(false)} />
+        <PlayerProfileModal
+          player={player}
+          onClose={() => setProfileOpen(false)}
+          onPlayersMerged={onPlayersMerged}
+        />
+      )}
+      {mergeOpen && mergeOther && (
+        <MergePlayersDialog
+          initialKeep={mergeSwap ? mergeOther : player}
+          initialDrop={mergeSwap ? player : mergeOther}
+          onClose={() => setMergeOpen(false)}
+          onMerged={(keepId, dropId) => onPlayersMerged?.(keepId, dropId)}
+        />
       )}
 
       {colorPickPromptOpen && (
@@ -449,26 +474,39 @@ export default function GameList({
       <div className="px-3 pt-3 pb-3 shrink-0 space-y-2">
         <div className="text-title-md text-on-surface truncate">{player.name}</div>
         <div className="flex items-center justify-between gap-2 flex-wrap">
-          <button
-            onClick={() => setProfileOpen(true)}
-            className={chipClass(false, false)}
-          >
-            Profile
-          </button>
-          <div className="flex gap-1.5">
-            <button
-              onClick={() => setFiltersOpen((o) => !o)}
-              className={chipClass(filtersOpen, activeFilterCount > 0)}
-            >
-              {activeFilterCount > 0 ? `Filters · ${activeFilterCount}` : "Filters"}
+          {coSelected.length === 0 ? (
+            <>
+              <button
+                onClick={() => setProfileOpen(true)}
+                className={chipClass(false, false)}
+              >
+                Profile
+              </button>
+              <div className="flex gap-1.5">
+                <button
+                  onClick={() => setFiltersOpen((o) => !o)}
+                  className={chipClass(filtersOpen, activeFilterCount > 0)}
+                >
+                  {activeFilterCount > 0 ? `Filters · ${activeFilterCount}` : "Filters"}
+                </button>
+                <button
+                  onClick={toggleMoves}
+                  className={chipClass(movesOpen, activeMoveCount > 0)}
+                >
+                  {activeMoveCount > 0 ? `Moves · ${activeMoveCount}` : "Moves"}
+                </button>
+              </div>
+            </>
+          ) : mergeOther ? (
+            // Exactly two players selected — the per-player tools don't apply.
+            <button onClick={() => setMergeOpen(true)} className={chipClass(false, false)}>
+              Merge these 2 players…
             </button>
-            <button
-              onClick={toggleMoves}
-              className={chipClass(movesOpen, activeMoveCount > 0)}
-            >
-              {activeMoveCount > 0 ? `Moves · ${activeMoveCount}` : "Moves"}
-            </button>
-          </div>
+          ) : (
+            <span className="text-label-md text-on-surface-variant">
+              {coSelected.length + 1} players selected — merge works with exactly 2.
+            </span>
+          )}
         </div>
       </div>
 

@@ -3,7 +3,11 @@ import { PlayerInfo } from "../types";
 
 interface Props {
   selectedId: number | null;
-  onSelect: (player: PlayerInfo) => void;
+  /** All currently-selected player ids (for multi-select highlighting). Falls
+   *  back to `selectedId` when omitted. */
+  selectedIds?: number[];
+  /** `additive` is true on Ctrl/Cmd-click — toggle into a multi-selection. */
+  onSelect: (player: PlayerInfo, additive?: boolean) => void;
   /** Optional external ref for the search input (so HomeEmptyState's
    *  "Search a player" card can focus it from above). */
   inputRef?: React.RefObject<HTMLInputElement | null>;
@@ -12,6 +16,8 @@ interface Props {
   recentPlayers?: PlayerInfo[];
   /** When provided, each Recent row shows a trailing × button to remove it. */
   onRemoveRecent?: (id: number) => void;
+  /** Bumped externally to force a re-fetch of search results (e.g. after a merge). */
+  reloadKey?: number;
 }
 
 // Single-line player row — used both for search results and Recent shortcuts.
@@ -22,13 +28,14 @@ function PlayerRow({
 }: {
   player: PlayerInfo;
   selected: boolean;
-  onClick: () => void;
+  /** `additive` is true on Ctrl/Cmd-click (build a multi-selection for merge). */
+  onClick: (additive: boolean) => void;
   onRemove?: () => void;
 }) {
   return (
     <div className="relative group">
       <button
-        onClick={onClick}
+        onClick={(e) => onClick(e.ctrlKey || e.metaKey)}
         className={`w-full text-left px-4 py-3 ${onRemove ? "pr-10" : ""} transition-colors duration-short3 ease-standard ${
           selected
             ? "bg-secondary-container text-on-secondary-container"
@@ -57,7 +64,9 @@ function PlayerRow({
   );
 }
 
-export default function PlayerList({ selectedId, onSelect, inputRef, recentPlayers, onRemoveRecent }: Props) {
+export default function PlayerList({ selectedId, selectedIds, onSelect, inputRef, recentPlayers, onRemoveRecent, reloadKey }: Props) {
+  const selSet = selectedIds ?? (selectedId != null ? [selectedId] : []);
+  const isSelected = (id: number) => selSet.includes(id);
   const [query, setQuery] = useState("");
   const [players, setPlayers] = useState<PlayerInfo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -101,6 +110,12 @@ export default function PlayerList({ selectedId, onSelect, inputRef, recentPlaye
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [query, search]);
 
+  // Force an immediate re-fetch when asked (e.g. after a player merge).
+  useEffect(() => {
+    if (reloadKey) search(query);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadKey]);
+
   return (
     <div className="flex flex-col h-full bg-surface">
       {/* M3 search field — filled, full-pill */}
@@ -129,8 +144,8 @@ export default function PlayerList({ selectedId, onSelect, inputRef, recentPlaye
               <PlayerRow
                 key={`r-${p.id}`}
                 player={p}
-                selected={selectedId === p.id}
-                onClick={() => onSelect(p)}
+                selected={isSelected(p.id)}
+                onClick={(additive) => onSelect(p, additive)}
                 onRemove={onRemoveRecent ? () => onRemoveRecent(p.id) : undefined}
               />
             ))}
@@ -155,8 +170,8 @@ export default function PlayerList({ selectedId, onSelect, inputRef, recentPlaye
           <PlayerRow
             key={player.id}
             player={player}
-            selected={selectedId === player.id}
-            onClick={() => onSelect(player)}
+            selected={isSelected(player.id)}
+            onClick={(additive) => onSelect(player, additive)}
           />
         ))}
       </div>
