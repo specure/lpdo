@@ -110,7 +110,7 @@ pub fn spawn_settle_watcher(jobs: Arc<JobManager>, writer: ConnActor, job_id: St
 
 /// The most recently submitted `update` job, or None if none are tracked.
 fn latest_update(jobs: &Arc<JobManager>) -> Option<JobSnapshot> {
-    jobs.list().into_iter().filter(|j| j.job_type == "update").last()
+    jobs.list().into_iter().rfind(|j| j.job_type == "update")
 }
 
 fn update_in_flight(jobs: &Arc<JobManager>) -> bool {
