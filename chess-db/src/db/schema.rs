@@ -72,6 +72,37 @@ pub fn init(conn: &Connection) -> Result<()> {
         "ALTER TABLE positions ADD COLUMN IF NOT EXISTS next_move VARCHAR;",
     )?;
 
+    // One-time migration: a "rebuild from scratch" used to recreate the
+    // positions table WITH a `REFERENCES games(id)` foreign key (the initial
+    // schema has none). DuckDB implements UPDATE as delete+insert, so that
+    // incoming FK makes `UPDATE games` fail at scale — breaking player merge and
+    // soft-delete with a "game_id … still referenced" error — and DuckDB can't
+    // drop a constraint via ALTER. positions is derived data, so the FK isn't
+    // needed: recreate the table without it (rows preserved). Runs before any
+    // migration that does `UPDATE games` below.
+    let positions_has_fk: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM duckdb_constraints()
+         WHERE table_name = 'positions' AND constraint_type = 'FOREIGN KEY'",
+        [],
+        |r| r.get(0),
+    ).unwrap_or(false);
+    if positions_has_fk {
+        println!("Removing a foreign key on the positions table (one-time migration; may take a moment on a large index)…");
+        conn.execute_batch(
+            "CREATE TABLE positions_new (
+                 game_id      UINTEGER,
+                 move_number  SMALLINT,
+                 zobrist_hash BIGINT,
+                 next_move    VARCHAR
+             );
+             INSERT INTO positions_new
+                 SELECT game_id, move_number, zobrist_hash, next_move FROM positions;
+             DROP TABLE positions;
+             ALTER TABLE positions_new RENAME TO positions;",
+        )?;
+        println!("Done.");
+    }
+
     // Add imported_at column to existing databases (no-op for new ones).
     conn.execute_batch(
         "ALTER TABLE issues ADD COLUMN IF NOT EXISTS imported_at TIMESTAMP;",
