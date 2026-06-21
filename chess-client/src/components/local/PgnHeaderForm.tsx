@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { postJson } from "../../api";
 import { STR_TAGS, Tag, isValidTagName } from "../../lib/pgnEditor";
 import { PlayerInfo, FidePlayer, RatingPoint, ShortlistEntry } from "../../types";
 
@@ -576,41 +576,12 @@ function PlayerFideIdInput({
     setSaveState("saving");
     setSaveError(null);
 
-    // The HTTP serve runs read-only; writes go through the chess-db CLI as a
-    // sidecar. Tauri's parent will kill the read-only serve, take the write
-    // lock, run the subcommand, and respawn serve afterwards.
-    const eventId = crypto.randomUUID();
-    const eventName = `chess-db:${eventId}`;
-    // Collect every error event the sidecar emits — the synthesised "exited
-    // with status N" arrives last, so we want the earlier lines (clap parse
-    // errors, anyhow messages) for a useful diagnostic.
-    const errorMessages: string[] = [];
-    let didSucceed = false;
-
-    const unlisten = await listen<string>(eventName, (event) => {
-      try {
-        const data = JSON.parse(event.payload);
-        if (data.type === "error" && data.message) errorMessages.push(data.message);
-        else if (data.type === "done") didSucceed = true;
-      } catch {/* ignore non-JSON lines */}
-    });
-
     try {
-      await invoke("run_chess_db", {
-        args: ["players", "set-fide-id", String(namedPlayer.id), String(numericFideId)],
-        eventId,
-      });
-      if (didSucceed && errorMessages.length === 0) {
-        setSaveState("saved");
-      } else {
-        setSaveState("error");
-        setSaveError(errorMessages.join("\n") || "Save failed");
-      }
+      await postJson(`/players/${namedPlayer.id}/fide-id`, { fide_id: numericFideId });
+      setSaveState("saved");
     } catch (e) {
       setSaveState("error");
       setSaveError(String(e));
-    } finally {
-      unlisten();
     }
   }
 

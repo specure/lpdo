@@ -1072,6 +1072,37 @@ async fn set_moves_handler(
     }).await
 }
 
+#[derive(Deserialize)]
+struct HeadersBody { tags: serde_json::Value }
+
+async fn set_headers_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<u32>,
+    Json(body): Json<HeadersBody>,
+) -> ApiResult<serde_json::Value> {
+    // do_set_headers parses a JSON array of {name,value} from a string.
+    let tags_json = serde_json::to_string(&body.tags).map_err(db_err)?;
+    state.writer.run(move |conn| {
+        crate::do_set_headers(conn, id, &tags_json, &crate::reporter::Reporter::silent())
+            .map_err(db_err)?;
+        Ok(msg(format!("Game {} headers updated.", id)))
+    }).await
+}
+
+#[derive(Deserialize)]
+struct FideIdBody { fide_id: u32 }
+
+async fn set_fide_id_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<u32>,
+    Json(body): Json<FideIdBody>,
+) -> ApiResult<serde_json::Value> {
+    state.writer.run(move |conn| {
+        crate::do_set_fide_id(conn, id, body.fide_id).map_err(db_err)?;
+        Ok(msg(format!("Player {} FIDE ID set to {}.", id, body.fide_id)))
+    }).await
+}
+
 async fn purge_handler(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
     state.writer.run(move |conn| {
         let count: i64 = conn.query_row(
@@ -1121,6 +1152,8 @@ pub async fn run(conn: Connection, port: u16) -> Result<()> {
         .route("/games/{id}/collections",              post(add_collection_handler))
         .route("/games/{id}/collections/remove",       post(remove_collection_handler))
         .route("/games/{id}/moves",                    post(set_moves_handler))
+        .route("/games/{id}/headers",                  post(set_headers_handler))
+        .route("/players/{id}/fide-id",                post(set_fide_id_handler))
         .route("/purge",                               post(purge_handler))
         .route("/position",                            get(position_handler))
         .route("/position/moves",                      get(position_moves_handler))
