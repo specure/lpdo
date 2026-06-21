@@ -1,5 +1,5 @@
 // Compact database summary used on the Home screen and inside the Maintenance
-// dialog. Games, Players, TWIC issues imported (with date in parentheses).
+// dialog. Games, Players, latest TWIC issue (number + import date).
 //
 // Pass `prominent` on the Home screen for bigger headline-scale numbers.
 // The Maintenance dialog has its own full version with path + all 6 counters.
@@ -21,10 +21,10 @@ export default function DatabaseStats({
     return <p className="text-body-sm text-on-surface-variant">Server offline — statistics unavailable.</p>;
   }
 
-  // Format "2024-11-15T08:23:01.123" → "2024-11-15"
-  const lastImported = status.last_twic_imported
-    ? status.last_twic_imported.slice(0, 10)
-    : null;
+  // Prefer TWIC's own publication date; fall back to our import timestamp until a
+  // `download` has backfilled published_at. Format "2026-06-15T…" → "2026-06-15".
+  const lastDate = status.last_twic_published ?? status.last_twic_imported ?? null;
+  const lastImported = lastDate ? lastDate.slice(0, 10) : null;
 
   // Two presentations: dense (Maintenance dialog) vs prominent (Home banner).
   const numberClass = prominent
@@ -52,11 +52,19 @@ export default function DatabaseStats({
         <div className={numberClass}><CountUp value={status.players} startDelayMs={countStartDelayMs} /></div>
       </div>
       <div className={twicTile}>
-        <div className="text-label-sm text-on-surface-variant uppercase tracking-wider">TWIC issues imported</div>
+        <div className="text-label-sm text-on-surface-variant uppercase tracking-wider">Latest TWIC issue</div>
         <div className={numberClass}>
-          <CountUp value={status.imported} startDelayMs={countStartDelayMs} />
-          {lastImported && (
-            <span className="text-label-sm text-on-surface-variant font-sans ml-2">({lastImported})</span>
+          {status.last_twic_issue != null ? (
+            <>
+              {/* An issue number is an identifier, not a tally — fade it in
+                  plainly (no thousands separator, no count-up from zero). */}
+              #<CountUp value={status.last_twic_issue} plain mode="fade" startDelayMs={countStartDelayMs} />
+              {lastImported && (
+                <span className="text-label-sm text-on-surface-variant font-sans ml-2">({lastImported})</span>
+              )}
+            </>
+          ) : (
+            <span className="text-on-surface-variant">—</span>
           )}
         </div>
       </div>

@@ -77,6 +77,12 @@ pub fn init(conn: &Connection) -> Result<()> {
         "ALTER TABLE issues ADD COLUMN IF NOT EXISTS imported_at TIMESTAMP;",
     )?;
 
+    // TWIC publication date (from the index table on theweekinchess.com), as
+    // distinct from imported_at (when we ingested it). Backfilled on `download`.
+    conn.execute_batch(
+        "ALTER TABLE issues ADD COLUMN IF NOT EXISTS published_at DATE;",
+    )?;
+
     // Add game_count column to existing databases (no-op for new ones).
     conn.execute_batch(
         "ALTER TABLE players ADD COLUMN IF NOT EXISTS game_count INTEGER DEFAULT 0;",
