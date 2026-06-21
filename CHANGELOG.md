@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   latest real TWIC issue. Publication dates are read from the TWIC index and
   backfilled on download.
 
+### Fixed
+- **Automatic-updates status no longer sticks at "(running…)" after a restart** —
+  if the server is restarted mid-update, the scheduler now reconciles the
+  orphaned `running` state on startup (marking it `interrupted`) instead of
+  leaving it stuck until the next due run.
+
 ## [0.3.0] - 2026-06-12
 
 Annotated PGN import.
