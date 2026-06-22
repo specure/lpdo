@@ -14,9 +14,6 @@ interface Props {
   onFinish?: () => void;
 }
 
-const DB_PATH = "~/.chess-db/chess.db";
-const TWIC_DIR = "~/.chess-db/twic";
-
 type Step = "welcome" | "players" | "databases" | "twic" | "dedup" | "normalise" | "index" | "profile" | "done";
 
 const STEPS: Step[] = ["welcome", "players", "databases", "twic", "dedup", "normalise", "index", "profile", "done"];
@@ -321,13 +318,15 @@ function TwicStep({ completed, onComplete, onRunningChange }: { completed: boole
   useEffect(() => { if (importProgress.done) onComplete(); }, [importProgress.done]);
   useEffect(() => { onRunningChange(download.running || importProgress.running); }, [download.running, importProgress.running]);
 
+  // No --dir: the server downloads/imports into its own data dir
+  // (data_root()/twic) — passing a client path is wrong for the system daemon.
   function runDownload() {
-    void download.run(["download", "--from", fromIssue, "--dir", TWIC_DIR]);
+    void download.run(["download", "--from", fromIssue]);
   }
   function runImport() {
     // --fast = appender-based bulk inserts (much quicker). It must not be
     // interrupted, so the import progress below is rendered non-cancelable.
-    void importProgress.run(["import", "--fast", "--dir", TWIC_DIR]);
+    void importProgress.run(["import", "--fast"]);
   }
 
   if (completed && !rerunning) {
@@ -342,11 +341,6 @@ function TwicStep({ completed, onComplete, onRunningChange }: { completed: boole
         Download TWIC (The Week in Chess) issues and import them into your database, in one place. Issues already present or imported are skipped automatically.
       </p>
       <TwicCredit acknowledged={twicAck} onAcknowledgeChange={setTwicAck} />
-
-      <div className="flex items-center gap-2">
-        <span className="text-label-md text-on-surface-variant shrink-0">Folder</span>
-        <span className="font-mono text-body-sm text-on-surface-variant truncate">{TWIC_DIR}</span>
-      </div>
 
       {/* Download */}
       <div className="space-y-2">
@@ -615,12 +609,6 @@ function DoneStep() {
         <div className="text-4xl mb-3">♟</div>
         <h3 className="text-headline-sm text-on-surface">Setup complete</h3>
         <p className="text-on-surface-variant text-body-md mt-1">Your chess database is ready to use.</p>
-      </div>
-      <div className="bg-surface-container-highest rounded-md p-3 text-body-sm">
-        <div className="flex justify-between items-center">
-          <span className="text-on-surface-variant">Database</span>
-          <span className="font-mono text-on-surface text-label-md">{DB_PATH}</span>
-        </div>
       </div>
       <p className="text-on-surface-variant text-label-md">
         Download newer TWIC issues and run maintenance operations at any time from the Setup panel in the header.

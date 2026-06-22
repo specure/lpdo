@@ -195,6 +195,11 @@ export interface StatusInfo {
   version?: string;
   /** API contract version; absent on old servers. */
   api_version?: number;
+  /** Absolute path of the DB file the connected server has open (its real path,
+   *  not a client guess) — e.g. /var/lib/lpdo/.chess-db/chess.db. Newer servers only. */
+  db_path?: string;
+  /** Directory containing the database (and the `twic/` cache). Newer servers only. */
+  data_dir?: string;
   games: number;
   players: number;
   /** TWIC issues actually imported (excludes local PGN imports and undownloaded ids). */

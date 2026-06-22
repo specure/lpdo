@@ -17,8 +17,6 @@ interface Props {
   onMutated?: () => void;
 }
 
-const TWIC_DIR = "~/.chess-db/twic";
-
 // ── Shared UI ─────────────────────────────────────────────────────────────────
 
 function ProgressBar({ value }: { value: number }) {
@@ -100,13 +98,15 @@ function ProgressSection({ progress, label, extra }: {
 
 // ── Database info ─────────────────────────────────────────────────────────────
 
-const DB_PATH = "~/.chess-db/chess.db";
-
 function DatabaseInfo({ status }: { status: StatusInfo | null }) {
   const [copied, setCopied] = useState(false);
+  // The connected server reports its real DB path (e.g. /var/lib/lpdo/.chess-db/
+  // chess.db for the system daemon). Older servers omit it.
+  const dbPath = status?.db_path ?? "";
 
   function copy() {
-    void navigator.clipboard.writeText(DB_PATH);
+    if (!dbPath) return;
+    void navigator.clipboard.writeText(dbPath);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   }
@@ -116,13 +116,15 @@ function DatabaseInfo({ status }: { status: StatusInfo | null }) {
   return (
     <SectionCard title="Database">
       <div className="flex items-center gap-2 mb-3">
-        <span className="font-mono text-body-sm text-on-surface-variant flex-1 truncate">{DB_PATH}</span>
-        <button
-          onClick={copy}
-          className="h-7 px-3 inline-flex items-center rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 transition-all duration-short3 ease-standard shrink-0"
-        >
-          {copied ? "Copied" : "Copy"}
-        </button>
+        <span className="font-mono text-body-sm text-on-surface-variant flex-1 truncate">{dbPath || "—"}</span>
+        {dbPath && (
+          <button
+            onClick={copy}
+            className="h-7 px-3 inline-flex items-center rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 transition-all duration-short3 ease-standard shrink-0"
+          >
+            {copied ? "Copied" : "Copy"}
+          </button>
+        )}
       </div>
       {status ? (
         <div className="grid grid-cols-3 gap-2">
@@ -287,20 +289,25 @@ function DatabasesSection({ onMutated }: { onMutated?: () => void }) {
 
 // ── TWIC section ──────────────────────────────────────────────────────────────
 
-function TwicSection() {
+function TwicSection({ status }: { status: StatusInfo | null }) {
   const download = useSidecarProgress("maint-twic-download");
   const importProgress = useSidecarProgress("maint-twic-import");
   const [twicAck, setTwicAck] = useTwicAck();
   // Shared with the setup wizard so the starting issue stays in sync.
   const [fromIssue, setFromIssue] = useState(getTwicFrom());
+  // The server owns the TWIC cache under its own data dir; show that, not a guess.
+  const twicDir = status?.data_dir ? `${status.data_dir}/twic` : "";
 
+  // No --dir: the server downloads/imports into ITS OWN twic dir
+  // (data_root()/twic). Passing a client path would be wrong for the system
+  // daemon (it can't expand `~` and owns a different data root).
   function runDownload() {
-    void download.run(["download", "--from", fromIssue, "--dir", TWIC_DIR]);
+    void download.run(["download", "--from", fromIssue]);
   }
 
   function runImport() {
     // --fast = appender-based bulk inserts (much quicker; not interruptible).
-    void importProgress.run(["import", "--fast", "--dir", TWIC_DIR]);
+    void importProgress.run(["import", "--fast"]);
   }
 
   return (
@@ -309,7 +316,7 @@ function TwicSection() {
 
       <div className="flex items-center gap-2 mb-1">
         <span className="text-label-md text-on-surface-variant shrink-0">Folder</span>
-        <span className="font-mono text-body-sm text-on-surface-variant truncate">{TWIC_DIR}</span>
+        <span className="font-mono text-body-sm text-on-surface-variant truncate">{twicDir || "—"}</span>
       </div>
 
       <div className="space-y-3">
@@ -880,7 +887,7 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated }: Pro
 
           <div className={`${grid} ${tab === "databases" ? "" : "hidden"}`}>
             <AutoUpdateSection onMutated={onMutated} />
-            <TwicSection />
+            <TwicSection status={status} />
             <DatabasesSection onMutated={onMutated} />
             <DeduplicationSection onMutated={onMutated} />
             <IndexSection />

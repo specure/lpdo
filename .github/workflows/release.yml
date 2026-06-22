@@ -46,10 +46,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The GUI deb is a pure thin client (no bundled chess-db — the binary
+          # is lpdo-cli, the daemon is lpdo-server). No AppImage: it had no daemon
+          # to connect to once the embedded server was removed (#79).
           - os: ubuntu-22.04
             sidecar_src: target/release/chess-db
             sidecar_dst: chess-client/src-tauri/binaries/chess-db-x86_64-unknown-linux-gnu
-            bundles: deb,appimage
+            bundles: deb
           # Pinned to windows-2022 (MSVC 14.4x): newer images ship a Visual
           # Studio 18 MSVC that drops `stdext::checked_array_iterator`, which
           # DuckDB's vendored `fmt` still uses — so libduckdb-sys fails to
