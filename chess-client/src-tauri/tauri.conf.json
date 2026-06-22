@@ -37,7 +37,10 @@
     ],
     "linux": {
       "deb": {
-        "recommends": ["lpdo-server"]
+        "recommends": ["lpdo-server"],
+        "provides": ["lpdo-cli"],
+        "conflicts": ["lpdo-cli"],
+        "replaces": ["lpdo-cli"]
       }
     }
   }

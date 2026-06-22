@@ -190,15 +190,22 @@ The release attaches four `.deb`s:
 
 - **`lpdo-cli`** — the `chess-db` binary at `/usr/bin/chess-db` (CLI + client).
 - **`lpdo-server`** — the daemon as a **systemd system service** running as the
-  `lpdo` user, with the database under **`/var/lib/lpdo`** (`Depends: lpdo-cli`).
-- **`lpdo`** — the GUI (Tauri); `Recommends: lpdo-server`.
+  `lpdo` user, with the database under **`/var/lib/lpdo`** (needs `chess-db`,
+  satisfied by `lpdo-cli` **or** `lpdo`).
+- **`lpdo`** — the GUI (Tauri). It **bundles `chess-db`** itself, so it
+  `Provides`/`Conflicts`/`Replaces: lpdo-cli` (the GUI deb *is* the CLI — you
+  don't install `lpdo-cli` alongside it); `Recommends: lpdo-server`.
 - **`lpdo-desktop`** — metapackage pulling in `lpdo` + `lpdo-server`.
 
 ```bash
-sudo apt install ./lpdo-desktop_*.deb ./lpdo_*.deb ./lpdo-server_*.deb ./lpdo-cli_*.deb   # full desktop
-sudo apt install ./lpdo-cli_*.deb                                                          # CLI only (thin client)
-sudo apt install ./lpdo-server_*.deb ./lpdo-cli_*.deb                                       # headless server box
+sudo apt install ./lpdo-desktop_*.deb ./lpdo_*.deb ./lpdo-server_*.deb   # full desktop (lpdo provides the CLI)
+sudo apt install ./lpdo-cli_*.deb                                        # CLI only (thin client)
+sudo apt install ./lpdo-server_*.deb ./lpdo-cli_*.deb                    # headless server box (no GUI)
 ```
+
+> The GUI deb carries its own `chess-db`, so a desktop install does **not** add
+> the separate `lpdo-cli` package (they'd both own `/usr/bin/chess-db`); `lpdo`
+> declares `Provides`/`Conflicts`/`Replaces: lpdo-cli` so apt installs exactly one.
 
 Installing `lpdo-server` creates the `lpdo` user + `/var/lib/lpdo` and starts the
 service (listening on `127.0.0.1:7777`). Removing it keeps the data; `purge`
