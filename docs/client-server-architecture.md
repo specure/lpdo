@@ -179,7 +179,7 @@ dedicated box; only the host the client points at changes.
 |----------|-----------|---------------------|----------------|
 | Linux    | `.deb`s (`lpdo`, `lpdo-server`, `lpdo-cli`) **(implemented)** | via package choice (`apt`); `lpdo` Recommends the server | systemd **system** service |
 | Windows  | one NSIS `.exe` (or MSI) | **yes** — NSIS components page / MSI feature tree | Windows Service |
-| macOS    | one `.pkg` (not `.dmg`) | **yes** — Installer "Custom Install" pane | launchd daemon |
+| macOS    | one `.pkg` (not `.dmg`) **(in progress, #68)** | no — forced daemon (no picker); sandboxed MAS build tracked in #74 | launchd **system** daemon |
 
 > **Linux is shipped (Phase 1).** Windows/macOS component selection is tracked
 > separately. The Linux family below is what the release builds today.
@@ -255,34 +255,42 @@ sc start LPDOServer
 `%USERPROFILE%` and `C:\ProgramData` are normally on the same drive, so `move` is
 instant. Removing the Server uninstall keeps `C:\ProgramData\LPDO` (the database).
 
-### Installing on macOS (.dmg + per-user launchd service)
+### Installing on macOS (.pkg installer)
 
-The release attaches a notarized `.dmg` (Apple Silicon). Drag **LPDO** to
-`/Applications`; the GUI spawns its own per-user server on demand — that's all
-most users need. To keep the server running in the background (so it updates the
-database even when the app is closed), install the per-user launchd service with
-the bundled CLI:
-
-```sh
-/Applications/LPDO.app/Contents/MacOS/chess-db service install   # start now + on every login
-/Applications/LPDO.app/Contents/MacOS/chess-db service status    # check it
-/Applications/LPDO.app/Contents/MacOS/chess-db service uninstall # stop + remove
-```
-
-`install` writes a LaunchAgent (`~/Library/LaunchAgents/com.specure.lpdo.server.plist`,
-logs in `~/Library/Logs/LPDO/`), data in `~/.chess-db` — no `sudo`, no system
-daemon. As on Linux, only one server can hold the DB lock + port 7777, so don't
-also run the apt/system service on the same machine.
-
-**`chess-db` on `PATH`** (optional, so you can type `chess-db …` directly):
+The release attaches a signed, notarized **`.pkg`** (Apple Silicon). Double-click
+it; it installs **LPDO.app** to `/Applications`, puts `chess-db` on `PATH`
+(`/usr/local/bin/chess-db`), and — like the Windows installer — registers a
+**system launchd daemon** (`com.specure.lpdo.server`, runs `chess-db serve` at boot
+as root) with the database under **`/Library/Application Support/LPDO`**. No manual
+step: the GUI connects to that daemon, which keeps the database updated even when
+the app is closed.
 
 ```sh
-sudo ln -sf /Applications/LPDO.app/Contents/MacOS/chess-db /usr/local/bin/chess-db
+sudo launchctl print system/com.specure.lpdo.server   # inspect the daemon
+sudo lpdo-uninstall                                    # remove app + daemon (keeps the DB)
 ```
 
-> Install-time component selection (a `.pkg` with a Client/Server/Both pane + a
-> system launchd daemon) is deferred — see #68. The per-user `service` command
-> above is the shipped server-on-macOS path for now.
+`lpdo-uninstall` (installed to `/usr/local/bin`) stops the daemon and removes the
+app, but **keeps `/Library/Application Support/LPDO`** (the DB is large/expensive to
+rebuild); it prints how to delete it.
+
+**Upgrading from a prior `.dmg` release** — earlier versions kept the database
+per-user under `~/.chess-db`; the system daemon starts against an empty
+`/Library/Application Support/LPDO`, so migrate it manually once:
+
+```sh
+sudo launchctl bootout system/com.specure.lpdo.server
+sudo cp -a ~/.chess-db/. "/Library/Application Support/LPDO/"
+sudo chown -R root:wheel "/Library/Application Support/LPDO"
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.specure.lpdo.server.plist
+```
+
+> **Without the system daemon (dev / non-pkg installs).** The bundled CLI also
+> offers a *per-user* service (`chess-db service install/uninstall/status`) that
+> writes a LaunchAgent under `~/Library/LaunchAgents/` with data in `~/.chess-db` —
+> no `sudo`. Only one server can hold the DB lock + port 7777, so don't run both it
+> and the system daemon on the same machine. A sandboxed **Mac App Store** build is
+> tracked separately (#74); the `.pkg` here is the Developer ID direct download (#68).
 
 - **Linux** — single-purpose packages (`lpdo-cli`, `lpdo-server`, `lpdo`). The
   laptop install stays one command because **`lpdo` `Recommends: lpdo-server`**
