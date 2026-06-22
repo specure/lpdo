@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  System LaunchDaemon for the LPDO server (installed by the .pkg postinstall to
+  /Library/LaunchDaemons/). The SYSTEM analog of the per-user LaunchAgent that
+  `chess-db service install` writes — this one runs at boot as root with data
+  under /Library/Application Support/LPDO, the macOS equivalent of the Linux
+  /var/lib/lpdo system service and the Windows C:\ProgramData\LPDO WinSW service.
+
+  `chess-db` honours $LPDO_DATA_DIR (see data_root()), so no Rust change is needed.
+  v1 runs as root; a dedicated `_lpdo` user is a hardening follow-up.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.specure.lpdo.server</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Applications/LPDO.app/Contents/MacOS/chess-db</string>
+    <string>serve</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>LPDO_DATA_DIR</key>
+    <string>/Library/Application Support/LPDO</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/Library/Application Support/LPDO</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Restart on failure: the launchd equivalent of systemd Restart=on-failure
+       and the per-user agent's KeepAlive{SuccessfulExit=false}. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Library/Logs/LPDO/lpdo-server.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Library/Logs/LPDO/lpdo-server.log</string>
+</dict>
+</plist>

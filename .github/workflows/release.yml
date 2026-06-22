@@ -12,14 +12,19 @@ name: Release
 #     so the released app can use the name-normalisation cache service. Without it
 #     the app still works (FIDE-only normalisation).
 #
-#   macOS code-signing + notarization (optional — if unset, the .dmg builds
-#   unsigned and Gatekeeper warns on first open):
-#     APPLE_CERTIFICATE          — base64 of the Developer ID Application .p12
-#     APPLE_CERTIFICATE_PASSWORD — the .p12 export password
-#     APPLE_SIGNING_IDENTITY     — e.g. "Developer ID Application: SPECURE GmbH (4XZ94A6MUA)"
-#     APPLE_API_ISSUER           — App Store Connect API Issuer ID (UUID)
-#     APPLE_API_KEY              — App Store Connect API Key ID
-#     APPLE_API_KEY_P8           — contents of the App Store Connect API .p8 file
+#   macOS code-signing + notarization. The macOS leg ships a .pkg that installs the
+#   GUI + a system launchd daemon (see the pkg steps below). The .app is signed with
+#   the Developer ID *Application* cert; the .pkg with the Developer ID *Installer*
+#   cert (a separate cert). If the Installer secrets are unset the .pkg still builds,
+#   just unsigned (right-click→Open for local testing, not shippable):
+#     APPLE_CERTIFICATE                     — base64 of the Developer ID Application .p12
+#     APPLE_CERTIFICATE_PASSWORD            — the .p12 export password
+#     APPLE_SIGNING_IDENTITY                — e.g. "Developer ID Application: SPECURE GmbH (4XZ94A6MUA)"
+#     APPLE_INSTALLER_CERTIFICATE           — base64 of the Developer ID Installer .p12 (signs the .pkg)
+#     APPLE_INSTALLER_CERTIFICATE_PASSWORD  — that .p12's export password
+#     APPLE_API_ISSUER                      — App Store Connect API Issuer ID (UUID)
+#     APPLE_API_KEY                         — App Store Connect API Key ID
+#     APPLE_API_KEY_P8                      — contents of the App Store Connect API .p8 file
 
 on:
   push:
@@ -59,13 +64,15 @@ jobs:
             bundles: nsis
           # macOS on Apple Silicon (M1+). The macos-14 runner is arm64, so the
           # default host target is aarch64-apple-darwin — no extra rustup target
-          # needed. The .dmg is signed with the SPECURE GmbH Developer ID cert
-          # and notarized (see the APPLE_* env on the build step), so Gatekeeper
-          # opens it cleanly with no right-click workaround.
+          # needed. We build the `.app` (signed with the Developer ID Application
+          # cert) and then wrap it in a `.pkg` (steps below) that installs the GUI
+          # + a system launchd daemon, signed with the Developer ID Installer cert
+          # + notarized. We ship the `.pkg` only (no `.dmg`): one installer that
+          # always sets up the server, no "which one?" choice.
           - os: macos-14
             sidecar_src: target/release/chess-db
             sidecar_dst: chess-client/src-tauri/binaries/chess-db-aarch64-apple-darwin
-            bundles: dmg
+            bundles: app
 
     runs-on: ${{ matrix.os }}
 
@@ -164,6 +171,103 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: --bundles ${{ matrix.bundles }}
+
+      # ── macOS .pkg: GUI + system launchd daemon ───────────────────────────────
+      # tauri-action above produced the signed LPDO.app; here we wrap it in a
+      # product .pkg whose postinstall registers the system daemon (mirrors the
+      # Linux .deb block below). The .pkg is signed with the Developer ID Installer
+      # cert + notarized; if that secret is absent it builds UNSIGNED for local
+      # testing (right-click→Open), so dry-runs work before the cert exists.
+      - name: Import Developer ID Installer certificate
+        if: matrix.os == 'macos-14'
+        shell: bash
+        env:
+          APPLE_INSTALLER_CERTIFICATE: ${{ secrets.APPLE_INSTALLER_CERTIFICATE }}
+          APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APPLE_INSTALLER_CERTIFICATE:-}" ]; then
+            echo "No APPLE_INSTALLER_CERTIFICATE — building an UNSIGNED .pkg (local testing only)."
+            echo "LPDO_PKG_SIGN=0" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/lpdo-installer.keychain-db"
+          KEYCHAIN_PW="$(openssl rand -hex 20)"
+          P12="$RUNNER_TEMP/installer.p12"
+          printf '%s' "$APPLE_INSTALLER_CERTIFICATE" | base64 --decode > "$P12"
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security import "$P12" -k "$KEYCHAIN" -P "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/productbuild -T /usr/bin/productsign -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PW" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed s/\"//g)
+          echo "LPDO_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          echo "LPDO_PKG_SIGN=1" >> "$GITHUB_ENV"
+
+      - name: Build the product .pkg
+        if: matrix.os == 'macos-14'
+        shell: bash
+        env:
+          INSTALLER_IDENTITY: "Developer ID Installer: SPECURE GmbH (4XZ94A6MUA)"
+        run: |
+          set -euo pipefail
+          VER="$(jq -r .version chess-client/src-tauri/tauri.conf.json)"
+          # Cargo workspace → the bundle lands in the repo-root target dir, not
+          # under chess-client/src-tauri (matches sidecar_src: target/release/...).
+          APP="target/release/bundle/macos/LPDO.app"
+          test -d "$APP"
+          echo "App bundle contents (confirm the chess-db sidecar path):"
+          ls "$APP/Contents/MacOS/"
+          test -x "$APP/Contents/MacOS/chess-db"
+
+          SCRIPTS="$RUNNER_TEMP/pkg-scripts"
+          mkdir -p "$SCRIPTS"
+          cp chess-client/src-tauri/macos/scripts/postinstall "$SCRIPTS/postinstall"
+          cp chess-client/src-tauri/macos/com.specure.lpdo.server.plist "$SCRIPTS/"
+          cp chess-client/src-tauri/macos/uninstall-lpdo.sh "$SCRIPTS/"
+          chmod +x "$SCRIPTS/postinstall"
+
+          pkgbuild --component "$APP" --install-location /Applications \
+            --scripts "$SCRIPTS" --identifier com.specure.lpdo --version "$VER" \
+            "$RUNNER_TEMP/LPDO-component.pkg"
+
+          mkdir -p dist-pkg
+          OUT="dist-pkg/LPDO_${VER}_aarch64.pkg"
+          if [ "${LPDO_PKG_SIGN:-0}" = "1" ]; then
+            productbuild --package "$RUNNER_TEMP/LPDO-component.pkg" \
+              --sign "$INSTALLER_IDENTITY" --keychain "$LPDO_KEYCHAIN" "$OUT"
+          else
+            productbuild --package "$RUNNER_TEMP/LPDO-component.pkg" "$OUT"
+          fi
+          ls -la dist-pkg/
+
+      - name: Notarize and staple the .pkg
+        if: matrix.os == 'macos-14'
+        shell: bash
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ "${LPDO_PKG_SIGN:-0}" != "1" ]; then
+            echo "Unsigned .pkg — skipping notarization."
+            exit 0
+          fi
+          VER="$(jq -r .version chess-client/src-tauri/tauri.conf.json)"
+          PKG="dist-pkg/LPDO_${VER}_aarch64.pkg"
+          xcrun notarytool submit "$PKG" --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait
+          xcrun stapler staple "$PKG"
+          spctl --assess --type install -vv "$PKG" || true
+
+      - name: Attach .pkg to the draft release
+        if: matrix.os == 'macos-14'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        shell: bash
+        run: gh release upload "$TAG" dist-pkg/*.pkg --clobber
 
       # ── Linux apt packages: lpdo-cli / lpdo-server ────────────────────────────
       # tauri-action above produced the GUI .deb (lpdo) + .appimage; here we build

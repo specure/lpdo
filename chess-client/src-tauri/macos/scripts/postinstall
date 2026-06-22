@@ -1,0 +1,47 @@
+#!/bin/bash
+# postinstall for the LPDO .pkg — register + start the system LaunchDaemon so the
+# server is set up during installation (no manual step), mirroring the Windows
+# WinSW service. Runs as root; the payload (LPDO.app) is already at /Applications.
+#
+# macOS pkg scripts must be named exactly `postinstall` and be executable. A
+# nonzero exit fails the whole install, so every step is guarded.
+set -euo pipefail
+
+LABEL="com.specure.lpdo.server"
+HERE="$(cd "$(dirname "$0")" && pwd)"        # the pkg scripts dir (plist + uninstaller ship here)
+PLIST_SRC="$HERE/${LABEL}.plist"
+UNINSTALL_SRC="$HERE/uninstall-lpdo.sh"
+PLIST_DST="/Library/LaunchDaemons/${LABEL}.plist"
+APP_BIN="/Applications/LPDO.app/Contents/MacOS/chess-db"
+DATA_DIR="/Library/Application Support/LPDO"
+LOG_DIR="/Library/Logs/LPDO"
+
+# 1. Data + log dirs (system analog of ~/.chess-db).
+mkdir -p "$DATA_DIR" "$LOG_DIR"
+chown root:wheel "$DATA_DIR" "$LOG_DIR"
+chmod 0755 "$DATA_DIR" "$LOG_DIR"
+
+# 2. Install the daemon plist (launchd refuses group/other-writable daemon plists).
+cp "$PLIST_SRC" "$PLIST_DST"
+chown root:wheel "$PLIST_DST"
+chmod 0644 "$PLIST_DST"
+
+# 3. Upgrade case: stop + unload any previous daemon so the new plist/binary
+#    replace it cleanly. No-op on a fresh install (hence `|| true` under `set -e`).
+launchctl bootout "system/${LABEL}" 2>/dev/null || true
+
+# 4. Load + start (RunAtLoad starts it now and on every boot).
+launchctl bootstrap system "$PLIST_DST"
+launchctl enable "system/${LABEL}" || true
+
+# 5. Put chess-db on PATH (mirrors the Linux /usr/bin/chess-db).
+mkdir -p /usr/local/bin
+ln -sf "$APP_BIN" /usr/local/bin/chess-db
+
+# 6. Drop the documented uninstaller on disk.
+if [ -f "$UNINSTALL_SRC" ]; then
+  cp "$UNINSTALL_SRC" /usr/local/bin/lpdo-uninstall
+  chmod 0755 /usr/local/bin/lpdo-uninstall
+fi
+
+exit 0
