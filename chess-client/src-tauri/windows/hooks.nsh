@@ -42,11 +42,23 @@
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
-  ; Stop + remove the service if present. Keep the data (%ProgramData%\LPDO).
+  ; Stop + remove the service if present.
   nsExec::Exec 'sc query LPDOServer'
   Pop $1
   ${If} $1 == 0
     nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" stop'
     nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" uninstall'
+  ${EndIf}
+!macroend
+
+!macro NSIS_HOOK_POSTUNINSTALL
+  ; Make Tauri's "delete application data" checkbox honest: it only clears the
+  ; GUI's per-user data, so when it's ticked, also remove the system database at
+  ; %ProgramData%\LPDO. Unticked (default) keeps it (large / costly to rebuild).
+  ; NOTE (verify on Windows): $DeleteAppDataCheckboxState is Tauri's uninstaller
+  ; variable for that checkbox.
+  ${If} $DeleteAppDataCheckboxState == ${BST_CHECKED}
+    ExpandEnvStrings $0 "%ProgramData%"
+    RMDir /r "$0\LPDO"
   ${EndIf}
 !macroend
