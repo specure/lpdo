@@ -13,12 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to a chosen directory. Used by the packaged servers to keep data under a system
   path (Linux `/var/lib/lpdo`, Windows `C:\ProgramData\LPDO`); unset behaviour is
   unchanged.
-- **Linux apt packages** — the release now also builds four `.deb`s so the GUI,
-  server, and CLI can be installed separately: **`lpdo-cli`** (the `chess-db`
-  binary on `$PATH`), **`lpdo-server`** (the daemon as a systemd *system* service
-  running as the `lpdo` user, data under `/var/lib/lpdo`), **`lpdo`** (the GUI),
-  and **`lpdo-desktop`** (metapackage → GUI + server). The AppImage is unchanged
-  (portable, per-user `~/.chess-db`). Windows/macOS installers are unchanged.
+- **Linux apt packages** — the release now also builds three `.deb`s so the GUI,
+  server, and CLI can be installed separately: **`lpdo`** (the GUI; it bundles
+  `chess-db`, so it `Provides`/`Conflicts`/`Replaces: lpdo-cli` and
+  `Recommends: lpdo-server`, meaning `apt install lpdo` pulls the full desktop
+  set), **`lpdo-server`** (the daemon as a systemd *system* service running as
+  the `lpdo` user, data under `/var/lib/lpdo`), and **`lpdo-cli`** (the `chess-db`
+  binary on `$PATH`). The AppImage is unchanged (portable, per-user
+  `~/.chess-db`). Windows/macOS installers are unchanged.
 - **CLI works while the server is running** — when the `lpdo-server` daemon is up
   (and holds the database), long-running `chess-db` commands (download, import,
   import-pgn, index-positions, games dedup/cleanup, players normalise/import/export,

@@ -143,8 +143,8 @@ of Phase 1 and can come once Phase 1 has proven out.
 ## Keep the single-machine experience "just works"
 
 Most users run everything on one laptop, and that must stay "install and it
-works." The default install (the `lpdo-desktop` metapackage on Linux, or the
-"Both" option on the Windows/macOS installer — see Packaging) lays down the GUI
+works." The default install (`apt install lpdo` on Linux — which Recommends the
+server — or the "Both" option on the Windows installer — see Packaging) lays down the GUI
 plus a **local, always-on server** that the OS service manager keeps running;
 the GUI just connects to it on localhost. Done right, Phase 1 *improves* even
 the single-laptop case — the server runs
@@ -177,7 +177,7 @@ dedicated box; only the host the client points at changes.
 
 | Platform | Installer | Component selection | Server runs as |
 |----------|-----------|---------------------|----------------|
-| Linux    | `.deb`s (`lpdo-cli`, `lpdo-server`, `lpdo`) + an `lpdo-desktop` metapackage **(implemented)** | via package choice (`apt`) | systemd **system** service |
+| Linux    | `.deb`s (`lpdo`, `lpdo-server`, `lpdo-cli`) **(implemented)** | via package choice (`apt`); `lpdo` Recommends the server | systemd **system** service |
 | Windows  | one NSIS `.exe` (or MSI) | **yes** — NSIS components page / MSI feature tree | Windows Service |
 | macOS    | one `.pkg` (not `.dmg`) | **yes** — Installer "Custom Install" pane | launchd daemon |
 
@@ -186,21 +186,26 @@ dedicated box; only the host the client points at changes.
 
 ### Installing on Linux (apt packages)
 
-The release attaches four `.deb`s:
+The release attaches three `.deb`s:
 
-- **`lpdo-cli`** — the `chess-db` binary at `/usr/bin/chess-db` (CLI + client).
+- **`lpdo`** — the GUI (Tauri). It **bundles `chess-db`** itself, so it
+  `Provides`/`Conflicts`/`Replaces: lpdo-cli` (the GUI deb *is* the CLI — you
+  don't install `lpdo-cli` alongside it); **`Recommends: lpdo-server`** so
+  `apt install lpdo` pulls the full desktop set by default.
 - **`lpdo-server`** — the daemon as a **systemd system service** running as the
   `lpdo` user, with the database under **`/var/lib/lpdo`** (needs `chess-db`,
   satisfied by `lpdo-cli` **or** `lpdo`).
-- **`lpdo`** — the GUI (Tauri). It **bundles `chess-db`** itself, so it
-  `Provides`/`Conflicts`/`Replaces: lpdo-cli` (the GUI deb *is* the CLI — you
-  don't install `lpdo-cli` alongside it); `Recommends: lpdo-server`.
-- **`lpdo-desktop`** — metapackage pulling in `lpdo` + `lpdo-server`.
+- **`lpdo-cli`** — the `chess-db` binary at `/usr/bin/chess-db` (CLI + client).
+
+From a configured apt repo it's just `apt install lpdo` (GUI + server, via the
+Recommends) / `apt install lpdo-cli` (thin client) / `apt install lpdo-server`
+(headless). From the release's local `.deb` files you pass them explicitly:
 
 ```bash
-sudo apt install ./lpdo-desktop_*.deb ./lpdo_*.deb ./lpdo-server_*.deb   # full desktop (lpdo provides the CLI)
-sudo apt install ./lpdo-cli_*.deb                                        # CLI only (thin client)
-sudo apt install ./lpdo-server_*.deb ./lpdo-cli_*.deb                    # headless server box (no GUI)
+sudo apt install ./lpdo_*.deb ./lpdo-server_*.deb   # full desktop (lpdo provides the CLI)
+sudo apt install --no-install-recommends ./lpdo_*.deb   # GUI only (self-spawns its own per-user server)
+sudo apt install ./lpdo-cli_*.deb                   # CLI only (thin client)
+sudo apt install ./lpdo-server_*.deb ./lpdo-cli_*.deb   # headless server box (no GUI)
 ```
 
 > The GUI deb carries its own `chess-db`, so a desktop install does **not** add
@@ -279,10 +284,10 @@ sudo ln -sf /Applications/LPDO.app/Contents/MacOS/chess-db /usr/local/bin/chess-
 > system launchd daemon) is deferred — see #68. The per-user `service` command
 > above is the shipped server-on-macOS path for now.
 
-- **Linux** — two single-purpose packages. Keep the laptop install one command
-  via a metapackage `lpdo-desktop` that depends on both (preferred), or
-  `lpdo` `Recommends: lpdod` (apt installs recommends by default; a pure thin
-  client is `--no-install-recommends`).
+- **Linux** — single-purpose packages (`lpdo-cli`, `lpdo-server`, `lpdo`). The
+  laptop install stays one command because **`lpdo` `Recommends: lpdo-server`**
+  (apt installs recommends by default; a pure thin client uses
+  `--no-install-recommends`). No metapackage needed.
 - **Windows** — one installer with a components page offering **Client /
   Server / Both** (default both). Selecting the server registers a Windows
   Service; a client-only install lays down no service. Needs a **custom Tauri

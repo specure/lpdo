@@ -165,9 +165,11 @@ jobs:
           prerelease: false
           args: --bundles ${{ matrix.bundles }}
 
-      # ── Linux apt packages: lpdo-cli / lpdo-server / lpdo-desktop ─────────────
-      # tauri-action above produced the GUI .deb + .appimage; here we build the
-      # three companion .debs with nfpm and attach them to the same draft release.
+      # ── Linux apt packages: lpdo-cli / lpdo-server ────────────────────────────
+      # tauri-action above produced the GUI .deb (lpdo) + .appimage; here we build
+      # the two companion .debs with nfpm and attach them to the same draft release.
+      # `lpdo` Recommends lpdo-server, so `apt install lpdo` already pulls the full
+      # desktop set — no metapackage needed.
       # Reuses the chess-db binary built earlier (with the normalise key baked in)
       # — do NOT rebuild it here without the key.
       - name: Compute Debian version
@@ -177,8 +179,8 @@ jobs:
           RAW="${{ github.event.inputs.tag || github.ref_name }}"
           VER="${RAW#v}"
           echo "LPDO_VERSION=$VER" >> "$GITHUB_ENV"
-          # The GUI .deb's version comes from tauri.conf.json; lpdo-desktop pins
-          # `lpdo (= $VER)`, so they must match or the metapackage won't install.
+          # The GUI .deb's version comes from tauri.conf.json; lpdo-server pins
+          # `lpdo (= $VER)` in its dependency, so they must match or it won't install.
           TAURI_VER=$(jq -r .version chess-client/src-tauri/tauri.conf.json)
           [ "$TAURI_VER" = "$VER" ] || { echo "version skew: tauri.conf $TAURI_VER != tag $VER"; exit 1; }
 
@@ -191,14 +193,14 @@ jobs:
             | sudo tar -xz -C /usr/local/bin nfpm
           sudo apt-get install -y lintian
 
-      - name: Build lpdo-cli / lpdo-server / lpdo-desktop .debs
+      - name: Build lpdo-cli / lpdo-server .debs
         if: matrix.os == 'ubuntu-22.04'
         shell: bash
         run: |
           set -euo pipefail
           test -x target/release/chess-db   # built earlier with the baked key
           mkdir -p dist-deb
-          for pkg in cli server desktop; do
+          for pkg in cli server; do
             nfpm pkg -f "packaging/nfpm-$pkg.yaml" -p deb -t dist-deb/
           done
           ls -la dist-deb/
