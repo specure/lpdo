@@ -224,7 +224,8 @@ enum Commands {
         #[arg(long, default_value_t = 7777)]
         port: u16,
     },
-    /// Manage the server as a background service (systemd user service, Linux)
+    /// Manage the server as a background service (Linux systemd user service /
+    /// macOS launchd LaunchAgent)
     Service {
         #[command(subcommand)]
         subcommand: ServiceCommands,
@@ -233,10 +234,10 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum ServiceCommands {
-    /// Install + start the LPDO server as a systemd user service (runs on login,
-    /// restarts on failure) and disable the old update timer.
+    /// Install + start the LPDO server as a per-user background service (runs on
+    /// login, restarts on failure); on Linux also disables the old update timer.
     Install,
-    /// Stop and remove the systemd user service.
+    /// Stop and remove the background service.
     Uninstall,
     /// Show whether the server service is running.
     Status,
