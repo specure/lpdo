@@ -72,7 +72,7 @@ fn default_backup_dir() -> PathBuf {
 }
 
 #[derive(Parser)]
-#[command(name = "chess-db", about = "Chess reference database from TWIC archives")]
+#[command(name = "chess-db", version, about = "Chess reference database from TWIC archives")]
 struct Cli {
     /// Path to DuckDB database file
     #[arg(long, global = true, default_value_os_t = default_db_path())]
