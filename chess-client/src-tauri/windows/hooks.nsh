@@ -13,8 +13,12 @@
 ; NOTE (verify on Windows): the WinSW files land at $INSTDIR\windows\service\
 ; (Tauri resource staging) — adjust paths if the installed layout differs.
 
+!include "LogicLib.nsh"
+
 !macro NSIS_HOOK_PREINSTALL
-  ; Stop the service before Tauri replaces files — a running exe is locked.
+  ; On an upgrade, stop the running service before Tauri replaces the locked exe.
+  ; On a fresh install LPDOServer.exe isn't extracted yet, so this is a silent
+  ; no-op (nothing to stop).
   nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" stop'
 !macroend
 
@@ -24,16 +28,25 @@
   CreateDirectory "$0\LPDO"
   CreateDirectory "$0\LPDO\logs"
 
-  ; 2. (Re)register and start the LPDOServer system service via WinSW.
-  ;    stop+uninstall first so upgrades re-register cleanly.
-  nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" stop'
-  nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" uninstall'
+  ; 2. (Re)register and start the LPDOServer system service via WinSW. Only
+  ;    stop+uninstall a *pre-existing* service (clean upgrade); skip on a fresh
+  ;    install so WinSW doesn't log a FATAL for a service that isn't there yet.
+  nsExec::Exec 'sc query LPDOServer'
+  Pop $1
+  ${If} $1 == 0
+    nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" stop'
+    nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" uninstall'
+  ${EndIf}
   nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" install'
   nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" start'
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
-  ; Stop + remove the service. Keep the data (%ProgramData%\LPDO).
-  nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" stop'
-  nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" uninstall'
+  ; Stop + remove the service if present. Keep the data (%ProgramData%\LPDO).
+  nsExec::Exec 'sc query LPDOServer'
+  Pop $1
+  ${If} $1 == 0
+    nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" stop'
+    nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" uninstall'
+  ${EndIf}
 !macroend
