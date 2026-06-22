@@ -243,6 +243,35 @@ sc start LPDOServer
 `%USERPROFILE%` and `C:\ProgramData` are normally on the same drive, so `move` is
 instant. Removing the Server uninstall keeps `C:\ProgramData\LPDO` (the database).
 
+### Installing on macOS (.dmg + per-user launchd service)
+
+The release attaches a notarized `.dmg` (Apple Silicon). Drag **LPDO** to
+`/Applications`; the GUI spawns its own per-user server on demand — that's all
+most users need. To keep the server running in the background (so it updates the
+database even when the app is closed), install the per-user launchd service with
+the bundled CLI:
+
+```sh
+/Applications/LPDO.app/Contents/MacOS/chess-db service install   # start now + on every login
+/Applications/LPDO.app/Contents/MacOS/chess-db service status    # check it
+/Applications/LPDO.app/Contents/MacOS/chess-db service uninstall # stop + remove
+```
+
+`install` writes a LaunchAgent (`~/Library/LaunchAgents/com.specure.lpdo.server.plist`,
+logs in `~/Library/Logs/LPDO/`), data in `~/.chess-db` — no `sudo`, no system
+daemon. As on Linux, only one server can hold the DB lock + port 7777, so don't
+also run the apt/system service on the same machine.
+
+**`chess-db` on `PATH`** (optional, so you can type `chess-db …` directly):
+
+```sh
+sudo ln -sf /Applications/LPDO.app/Contents/MacOS/chess-db /usr/local/bin/chess-db
+```
+
+> Install-time component selection (a `.pkg` with a Client/Server/Both pane + a
+> system launchd daemon) is deferred — see #68. The per-user `service` command
+> above is the shipped server-on-macOS path for now.
+
 - **Linux** — two single-purpose packages. Keep the laptop install one command
   via a metapackage `lpdo-desktop` that depends on both (preferred), or
   `lpdo` `Recommends: lpdod` (apt installs recommends by default; a pure thin
