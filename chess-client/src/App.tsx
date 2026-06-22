@@ -14,7 +14,6 @@ import HomeEmptyState from "./components/HomeEmptyState";
 import UpdateBanner from "./components/UpdateBanner";
 import { loadMyPlayer } from "./components/MyStatsWidget";
 import { useUpdateCheck } from "./hooks/useUpdateCheck";
-import { useCloseGuard } from "./hooks/useCloseGuard";
 import { GameSummary, LocalGame, MoveStats, PlayerInfo, PrepContext, StatusInfo } from "./types";
 
 type ServerStatus = "checking" | "connected" | "disconnected";
@@ -202,7 +201,6 @@ function basename(path: string): string {
 }
 
 export default function App() {
-  useCloseGuard();
   const { status, info, refresh: refreshServerStatus } = useServerStatus();
   const { step, setStep, max } = useFontScale();
   const { hc, toggle: toggleHc } = useHighContrast();
@@ -583,10 +581,12 @@ export default function App() {
         <div className="flex-1 flex items-center justify-center bg-surface-dim">
           {/* M3 outlined card — Expressive uses xl (28px) corners */}
           <div className="max-w-md p-8 rounded-xl bg-surface-container-high text-center space-y-3">
-            <div className="text-headline-sm text-on-surface">Chess-db server not running</div>
+            <div className="text-headline-sm text-on-surface">LPDO server not reachable</div>
             <div className="text-body-md text-on-surface-variant">
-              Start it with{" "}
-              <code className="bg-surface-container-highest text-on-surface px-2 py-0.5 rounded-sm">chess-db serve</code>
+              The app connects to the LPDO server, which runs as a background
+              service. Make sure it's running — on Linux:{" "}
+              <code className="bg-surface-container-highest text-on-surface px-2 py-0.5 rounded-sm">sudo systemctl start lpdo-server</code>
+              {" "}— or install the LPDO server if it isn't installed.
             </div>
           </div>
         </div>

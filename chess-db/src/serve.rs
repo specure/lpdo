@@ -41,6 +41,10 @@ pub struct AppState {
     pub writer: ConnActor,
     /// Long-running mutation jobs (import, download, normalise, …).
     pub jobs: Arc<JobManager>,
+    /// Absolute path of the open database file — reported via `/status` so the
+    /// GUI shows the server's real path (e.g. `/var/lib/lpdo/.chess-db/chess.db`)
+    /// instead of guessing `~/.chess-db`.
+    pub db_path: std::path::PathBuf,
 }
 
 // ── Response types ────────────────────────────────────────────────────────────
@@ -58,6 +62,11 @@ pub struct StatusInfo {
     pub version: String,
     /// API contract version (see `API_VERSION`).
     pub api_version: u32,
+    /// Absolute path of the database file the server has open, so the GUI shows
+    /// the real path rather than guessing `~/.chess-db`.
+    pub db_path: String,
+    /// Directory containing the database (and the `twic/` cache).
+    pub data_dir: String,
     /// Number of TWIC issues actually imported (id < 1e6, imported = TRUE).
     /// Excludes both local PGN imports and TWIC ids that were registered but
     /// never downloaded, so it reads as "TWIC issues you have".
@@ -557,10 +566,18 @@ async fn collections_handler(State(state): State<AppState>) -> ApiResult<Vec<Col
 }
 
 async fn status_handler(State(state): State<AppState>) -> ApiResult<StatusInfo> {
-    state.reads.run(|conn| {
+    let db_path = state.db_path.display().to_string();
+    let data_dir = state
+        .db_path
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    state.reads.run(move |conn| {
         Ok(Json(StatusInfo {
             version:     env!("CARGO_PKG_VERSION").to_string(),
             api_version: API_VERSION,
+            db_path,
+            data_dir,
             // TWIC issues = real TWIC issues we've imported. Local PGN imports
             // get ids ≥ 1_000_000, so the id threshold scopes this to TWIC and
             // `imported` drops the 51 ids that were registered but never
@@ -1247,13 +1264,13 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         writer.clone(),
         reads.clone(),
         tokio::runtime::Handle::current(),
-        db_path,
+        db_path.clone(),
     ));
 
     // Server-owned update scheduler: submits the `update` job when due.
     crate::scheduler::spawn(jobs.clone(), reads.clone(), writer.clone());
 
-    let state = AppState { reads, writer, jobs };
+    let state = AppState { reads, writer, jobs, db_path };
 
     let app = Router::new()
         .route("/status",                              get(status_handler))

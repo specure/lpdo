@@ -1,8 +1,6 @@
 # lpdo-server — the always-on server as a systemd SYSTEM service (no binary of
-# its own; it needs the chess-db binary at /usr/bin/chess-db and ships only the
-# unit + maintainer scripts). That binary comes from lpdo-cli, OR from the lpdo
-# GUI deb (which bundles chess-db and Provides/Conflicts/Replaces lpdo-cli) — so
-# the dependency below accepts either, and lpdo never collides with lpdo-cli.
+# its own; it depends on lpdo-cli for /usr/bin/chess-db and ships only the unit +
+# maintainer scripts). The lpdo GUI is a pure client and ships no binary (#79).
 name: lpdo-server
 arch: amd64
 platform: linux
@@ -18,7 +16,7 @@ description: |
   user, owning the database under /var/lib/lpdo and running the in-process
   TWIC update scheduler. Listens on 127.0.0.1:7777 for the GUI and CLI.
 depends:
-  - lpdo-cli (= ${LPDO_VERSION}) | lpdo (= ${LPDO_VERSION})
+  - lpdo-cli (= ${LPDO_VERSION})
 contents:
   - src: packaging/systemd/lpdo-server.service
     dst: /lib/systemd/system/lpdo-server.service
