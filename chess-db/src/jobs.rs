@@ -24,22 +24,38 @@ use crate::reporter::{JobEvent, Reporter};
 
 type WorkFn = Box<dyn FnOnce(&Connection) + Send + 'static>;
 
+/// A message to a connection actor: either a unit of work, or a request to
+/// recover from a DuckDB whole-instance invalidation by swapping in a fresh
+/// connection (see [`ReopenGate`]).
+enum ActorMsg {
+    Work(WorkFn),
+    Reopen(Arc<ReopenGate>),
+}
+
 /// Owns one DuckDB connection on a dedicated OS thread for its whole lifetime
 /// (DuckDB connections have thread affinity). Work is submitted as closures and
 /// runs serially on that thread.
 #[derive(Clone)]
 pub struct ConnActor {
-    tx: std::sync::mpsc::SyncSender<WorkFn>,
+    tx: std::sync::mpsc::SyncSender<ActorMsg>,
 }
 
 impl ConnActor {
     pub fn new(conn: Connection) -> Self {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<WorkFn>(128);
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ActorMsg>(128);
         std::thread::Builder::new()
             .name("duckdb".into())
             .spawn(move || {
-                for work in rx {
-                    work(&conn);
+                let mut conn = conn;
+                for msg in rx {
+                    match msg {
+                        ActorMsg::Work(work) => work(&conn),
+                        // Hand our (dead) connection to the gate and block until a
+                        // fresh one is handed back. The gate drops every actor's
+                        // old connection before reopening, so the invalidated
+                        // DuckDB instance is fully released first.
+                        ActorMsg::Reopen(gate) => conn = gate.swap(conn),
+                    }
                 }
             })
             .expect("failed to spawn db thread");
@@ -54,9 +70,9 @@ impl ConnActor {
     {
         let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
         self.tx
-            .send(Box::new(move |conn| {
+            .send(ActorMsg::Work(Box::new(move |conn| {
                 let _ = resp_tx.send(f(conn));
-            }))
+            })))
             .expect("db thread gone");
         resp_rx.await.expect("db thread dropped sender")
     }
@@ -66,7 +82,12 @@ impl ConnActor {
     where
         F: FnOnce(&Connection) + Send + 'static,
     {
-        let _ = self.tx.send(Box::new(f));
+        let _ = self.tx.send(ActorMsg::Work(Box::new(f)));
+    }
+
+    /// Enqueue a reopen request on this actor.
+    fn send_reopen(&self, gate: Arc<ReopenGate>) {
+        let _ = self.tx.send(ActorMsg::Reopen(gate));
     }
 }
 
@@ -106,6 +127,132 @@ impl ReadPool {
         let i = self.next.fetch_add(1, Ordering::Relaxed) % self.actors.len();
         self.actors[i].spawn_fn(f);
     }
+
+    fn len(&self) -> usize {
+        self.actors.len()
+    }
+
+    fn send_reopen_all(&self, gate: Arc<ReopenGate>) {
+        for actor in self.actors.iter() {
+            actor.send_reopen(gate.clone());
+        }
+    }
+}
+
+// ── Connection recovery ───────────────────────────────────────────────────────
+
+/// Coordinates an in-process recovery from a DuckDB **whole-instance**
+/// invalidation. The writer and every read connection are `try_clone()`s of one
+/// instance, so a fatal "database has been invalidated" error kills them all at
+/// once and they stay dead until the connection is reopened.
+///
+/// Every actor sends its (dead) connection into [`swap`](ReopenGate::swap). Once
+/// all `parties` have arrived, the last one drops the collected connections —
+/// releasing the invalidated instance — restores any safety snapshot, opens a
+/// fresh instance, and clones it back out so each actor resumes on a live
+/// connection. This is exactly what a process restart does, minus the restart.
+struct ReopenGate {
+    db_path: PathBuf,
+    parties: usize,
+    inner: Mutex<GateInner>,
+    cv: std::sync::Condvar,
+}
+
+struct GateInner {
+    arrived: Vec<Connection>,
+    fresh: Vec<Connection>,
+    ready: bool,
+    taken: usize,
+}
+
+impl ReopenGate {
+    fn new(db_path: PathBuf, parties: usize) -> Self {
+        ReopenGate {
+            db_path,
+            parties,
+            inner: Mutex::new(GateInner {
+                arrived: Vec::with_capacity(parties),
+                fresh: Vec::new(),
+                ready: false,
+                taken: 0,
+            }),
+            cv: std::sync::Condvar::new(),
+        }
+    }
+
+    /// Surrender `old` and block until a fresh connection is available, then
+    /// return it. The final arriver performs the reopen while holding the lock.
+    fn swap(&self, old: Connection) -> Connection {
+        let mut g = self.inner.lock().unwrap();
+        g.arrived.push(old);
+        if g.arrived.len() == self.parties {
+            // Last arriver: drop every dead connection to release the invalidated
+            // instance, then reopen a fresh one and clone it per party.
+            g.arrived.clear();
+            if let Err(e) = restore_snapshot_if_present(&self.db_path) {
+                eprintln!("reopen: safety-snapshot restore failed: {e:#}");
+            }
+            match open_set(&self.db_path, self.parties) {
+                Ok(conns) => {
+                    g.fresh = conns;
+                    g.ready = true;
+                    self.cv.notify_all();
+                }
+                Err(e) => {
+                    eprintln!(
+                        "FATAL: could not reopen the database after invalidation ({e:#}). \
+                         Exiting so the service manager restarts the daemon."
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+        while !g.ready {
+            g = self.cv.wait(g).unwrap();
+        }
+        let conn = g.fresh.pop().expect("reopen gate ran out of fresh connections");
+        g.taken += 1;
+        if g.taken == self.parties {
+            self.cv.notify_all();
+        }
+        conn
+    }
+
+    /// Block until every party has swapped in its fresh connection.
+    fn wait_done(&self) {
+        let mut g = self.inner.lock().unwrap();
+        while g.taken < self.parties {
+            g = self.cv.wait(g).unwrap();
+        }
+    }
+}
+
+/// Open one fresh instance and clone it into `n` connections (mirrors the
+/// writer + read-pool layout established in `serve::run`).
+fn open_set(db_path: &Path, n: usize) -> Result<Vec<Connection>> {
+    let primary = crate::db::open(db_path)?;
+    let mut conns = Vec::with_capacity(n);
+    for _ in 0..n.saturating_sub(1) {
+        conns.push(primary.try_clone()?);
+    }
+    conns.push(primary);
+    Ok(conns)
+}
+
+/// Whether a job error message indicates DuckDB's whole-instance invalidation —
+/// the fatal state that a connection reopen recovers from.
+fn is_invalidation_error(msg: &str) -> bool {
+    msg.to_lowercase().contains("invalidated")
+}
+
+/// Drive a full connection reopen across the writer and read pool, blocking
+/// until every actor is live again.
+fn reopen_connections(writer: &ConnActor, reads: &ReadPool, db_path: PathBuf) {
+    let parties = 1 + reads.len();
+    let gate = Arc::new(ReopenGate::new(db_path, parties));
+    writer.send_reopen(gate.clone());
+    reads.send_reopen_all(gate.clone());
+    gate.wait_done();
 }
 
 // ── Jobs ────────────────────────────────────────────────────────────────────
@@ -196,6 +343,9 @@ pub struct JobManager {
     jobs: Mutex<HashMap<String, Arc<JobSlot>>>,
     order: Mutex<Vec<String>>,
     counter: AtomicU64,
+    /// Set while a connection reopen is in flight, so a second failure during
+    /// recovery does not start an overlapping reopen cycle.
+    reopening: Arc<AtomicBool>,
 }
 
 /// Read-only jobs only read the database (e.g. backup reads games and writes a
@@ -215,6 +365,7 @@ impl JobManager {
             jobs: Mutex::new(HashMap::new()),
             order: Mutex::new(Vec::new()),
             counter: AtomicU64::new(1),
+            reopening: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -328,6 +479,9 @@ impl JobManager {
         let cancel = slot.cancel.clone();
         let rt = self.rt.clone();
         let db_path = self.db_path.clone();
+        let writer = self.writer.clone();
+        let reads = self.reads.clone();
+        let reopening = self.reopening.clone();
         let body = move |conn: &Connection| {
             {
                 slot_run.state.lock().unwrap().status = "running".into();
@@ -341,7 +495,34 @@ impl JobManager {
                 // Empty message keeps the operation's own final message; this
                 // just guarantees a terminal "done" even if the op didn't emit one.
                 Ok(()) => reporter.done(""),
-                Err(e) => reporter.error(format!("{:#}", e)),
+                Err(e) => {
+                    let msg = format!("{:#}", e);
+                    // A whole-instance DuckDB invalidation poisons every shared
+                    // connection (writer + read pool). Reopen them in-process so
+                    // the server recovers without a manual restart (#82). Done off
+                    // this actor thread so it can return and process its own
+                    // Reopen message; guarded so overlapping failures don't start
+                    // a second cycle.
+                    if is_invalidation_error(&msg)
+                        && reopening
+                            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                            .is_ok()
+                    {
+                        let writer = writer.clone();
+                        let reads = reads.clone();
+                        let db_path = db_path.clone();
+                        let reopening = reopening.clone();
+                        std::thread::spawn(move || {
+                            eprintln!(
+                                "Database invalidated by a failed job — reopening the connection in-process…"
+                            );
+                            reopen_connections(&writer, &reads, db_path);
+                            reopening.store(false, Ordering::SeqCst);
+                            eprintln!("Database connection reopened; the server has recovered.");
+                        });
+                    }
+                    reporter.error(msg);
+                }
             }
         };
         if is_read_only(&job_type) {
@@ -365,6 +546,27 @@ fn run_job(
     db: &Path,
 ) -> Result<()> {
     use crate::{dedup, importer, normalise, players, twic};
+
+    // Fault injection for testing the auto-recovery path on a live daemon
+    // (#82). Inert unless LPDO_FAULT_INJECTION is set in the server's
+    // environment. Returns an error carrying DuckDB's invalidation signature so
+    // the job machinery treats it like a real whole-instance invalidation and
+    // exercises the in-process connection reopen. The connection isn't actually
+    // poisoned (that can't be forced cleanly from SQL) — this verifies the live
+    // detect → reopen → keep-serving wiring; the reopen-revives-a-dead-instance
+    // half is covered by the unit tests and an empirical process restart.
+    if job_type == "__fault_invalidate" {
+        if std::env::var_os("LPDO_FAULT_INJECTION").is_none() {
+            return Err(anyhow!(
+                "__fault_invalidate is disabled; set LPDO_FAULT_INJECTION=1 on the server to enable it"
+            ));
+        }
+        reporter.log("Fault injection: simulating a database invalidation…");
+        return Err(anyhow!(
+            "FATAL Error: database has been invalidated (injected fault). \
+             The connection has been invalidated by a previous fatal error."
+        ));
+    }
 
     match job_type {
         "download" => {
@@ -603,3 +805,86 @@ pub fn restore_snapshot_if_present(db: &Path) -> Result<()> {
     eprintln!("Database restored from snapshot.");
     Ok(())
 }
+
+#[cfg(test)]
+mod reopen_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    /// Mirror `serve::run`'s layout: one writer + a read pool, all clones of one
+    /// instance. After a reopen every actor must run on a live connection and see
+    /// the committed data — proving the gate drops the old instance, reopens, and
+    /// redistributes without deadlocking.
+    #[test]
+    fn reopen_yields_live_consistent_connections() {
+        let dir = std::env::temp_dir().join(format!("lpdo-reopen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("t.db");
+
+        let conn = crate::db::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE t(x INT); INSERT INTO t VALUES (1), (2), (3);")
+            .unwrap();
+
+        let mut readers = Vec::new();
+        for _ in 0..4 {
+            readers.push(conn.try_clone().unwrap());
+        }
+        let reads = ReadPool::new(readers);
+        let writer = ConnActor::new(conn);
+
+        // Recover the whole instance in-process (the real trigger drops dead
+        // connections; here they are simply valid clones being swapped out).
+        reopen_connections(&writer, &reads, db.clone());
+
+        // The writer is live: it can both read existing rows and commit a new one.
+        let (tx, rx) = mpsc::channel();
+        writer.spawn_fn(move |c| {
+            let n: i64 = c.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0)).unwrap();
+            c.execute("INSERT INTO t VALUES (4)", []).unwrap();
+            tx.send(n).unwrap();
+        });
+        assert_eq!(rx.recv().unwrap(), 3, "writer lost data across reopen");
+
+        // Every read actor is live and sees the writer's post-reopen commit.
+        for _ in 0..4 {
+            let (tx, rx) = mpsc::channel();
+            reads.spawn_fn(move |c| {
+                let n: i64 = c.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0)).unwrap();
+                tx.send(n).unwrap();
+            });
+            assert_eq!(rx.recv().unwrap(), 4, "read connection dead or stale after reopen");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A reopen can run repeatedly (the recovery path is re-entrant across cycles).
+    #[test]
+    fn reopen_is_repeatable() {
+        let dir = std::env::temp_dir().join(format!("lpdo-reopen2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("t.db");
+
+        let conn = crate::db::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE t(x INT); INSERT INTO t VALUES (42);")
+            .unwrap();
+        let reads = ReadPool::new(vec![conn.try_clone().unwrap(), conn.try_clone().unwrap()]);
+        let writer = ConnActor::new(conn);
+
+        for _ in 0..3 {
+            reopen_connections(&writer, &reads, db.clone());
+        }
+
+        let (tx, rx) = mpsc::channel();
+        writer.spawn_fn(move |c| {
+            let v: i64 = c.query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap();
+            tx.send(v).unwrap();
+        });
+        assert_eq!(rx.recv().unwrap(), 42);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
