@@ -547,6 +547,27 @@ fn run_job(
 ) -> Result<()> {
     use crate::{dedup, importer, normalise, players, twic};
 
+    // Fault injection for testing the auto-recovery path on a live daemon
+    // (#82). Inert unless LPDO_FAULT_INJECTION is set in the server's
+    // environment. Returns an error carrying DuckDB's invalidation signature so
+    // the job machinery treats it like a real whole-instance invalidation and
+    // exercises the in-process connection reopen. The connection isn't actually
+    // poisoned (that can't be forced cleanly from SQL) — this verifies the live
+    // detect → reopen → keep-serving wiring; the reopen-revives-a-dead-instance
+    // half is covered by the unit tests and an empirical process restart.
+    if job_type == "__fault_invalidate" {
+        if std::env::var_os("LPDO_FAULT_INJECTION").is_none() {
+            return Err(anyhow!(
+                "__fault_invalidate is disabled; set LPDO_FAULT_INJECTION=1 on the server to enable it"
+            ));
+        }
+        reporter.log("Fault injection: simulating a database invalidation…");
+        return Err(anyhow!(
+            "FATAL Error: database has been invalidated (injected fault). \
+             The connection has been invalidated by a previous fatal error."
+        ));
+    }
+
     match job_type {
         "download" => {
             let from = p.get("from").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
@@ -866,3 +887,4 @@ mod reopen_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
