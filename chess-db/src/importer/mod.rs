@@ -313,6 +313,8 @@ fn fill_positions(
 pub fn import(
     conn: &Connection,
     dir: &Path,
+    source_key: &str,
+    collection: &str,
     max_position_depth: Option<i16>,
     reindex_threshold: usize,
     fast: bool,
@@ -320,11 +322,12 @@ pub fn import(
     reporter: &Reporter,
 ) -> Result<()> {
     let mut stmt = conn.prepare(
-        "SELECT id, filename FROM issues WHERE downloaded = TRUE AND imported = FALSE ORDER BY id",
+        "SELECT id, filename FROM source_items
+         WHERE source_key = ? AND downloaded = TRUE AND imported = FALSE ORDER BY id",
     )?;
 
     let issues: Vec<(i32, String)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .query_map(duckdb::params![source_key], |row| Ok((row.get(0)?, row.get(1)?)))?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -348,7 +351,7 @@ pub fn import(
     let mut completed = 0u64;
 
     let mut ctx = ImportContext::new(conn, skip_dedup)?;
-    let twic_collection_id = upsert_collection(conn, "TWIC")?;
+    let collection_id = upsert_collection(conn, collection)?;
 
     let import_result = (|| -> Result<()> {
         for (issue_id, filename) in &issues {
@@ -365,13 +368,13 @@ pub fn import(
             }
 
             let effective_depth = if bulk_mode { None } else { max_position_depth };
-            match import_issue(conn, *issue_id, twic_collection_id, "public", &zip_path, effective_depth, &mut ctx, fast) {
+            match import_issue(conn, *issue_id, collection_id, "public", &zip_path, effective_depth, &mut ctx, fast) {
                 Ok((imported, skipped_dups, skipped_ns)) => {
                     conn.execute(
-                        "UPDATE issues SET imported = TRUE, imported_at = NOW(), game_count = ? WHERE id = ?",
+                        "UPDATE source_items SET imported = TRUE, imported_at = NOW(), game_count = ? WHERE id = ?",
                         duckdb::params![imported as i32, issue_id],
                     )?;
-                    add_issue_to_collection(conn, *issue_id, twic_collection_id)?;
+                    add_issue_to_collection(conn, *issue_id, collection_id)?;
                     let msg = format!("  Issue {}: {}", issue_id, import_summary(imported, skipped_dups, skipped_ns));
                     pb.println(&msg);
                     reporter.log(&msg);
@@ -448,7 +451,7 @@ pub fn import_pgn(
     // Load already-imported filenames
     let imported_filenames: std::collections::HashSet<String> = {
         let mut stmt = conn.prepare(
-            "SELECT filename FROM issues WHERE imported = TRUE AND filename IS NOT NULL",
+            "SELECT filename FROM source_items WHERE imported = TRUE AND filename IS NOT NULL",
         )?;
         stmt.query_map([], |r| r.get(0))?
             .filter_map(|r| r.ok())
@@ -492,7 +495,7 @@ pub fn import_pgn(
     // Allocate issue IDs above the TWIC range (TWIC issues are ~1–1500)
     let mut next_issue_id: i32 = {
         let max_id: Option<i64> = conn
-            .query_row("SELECT MAX(id) FROM issues", [], |r| r.get(0))
+            .query_row("SELECT MAX(id) FROM source_items", [], |r| r.get(0))
             .unwrap_or(None);
         (max_id.unwrap_or(0) as i32).max(1_000_000) + 1
     };
@@ -509,7 +512,7 @@ pub fn import_pgn(
             let issue_id: i32 = {
                 let existing: Option<i32> = conn
                     .query_row(
-                        "SELECT id FROM issues WHERE filename = ? AND imported = FALSE LIMIT 1",
+                        "SELECT id FROM source_items WHERE filename = ? AND imported = FALSE LIMIT 1",
                         duckdb::params![filename],
                         |r| r.get(0),
                     )
@@ -520,9 +523,9 @@ pub fn import_pgn(
                     let id = next_issue_id;
                     next_issue_id += 1;
                     conn.execute(
-                        "INSERT INTO issues (id, filename, downloaded, imported, game_count)
-                         VALUES (?, ?, TRUE, FALSE, NULL)",
-                        duckdb::params![id, filename],
+                        "INSERT INTO source_items (id, source_key, external_id, filename, downloaded, imported, game_count)
+                         VALUES (?, 'manual', ?, ?, TRUE, FALSE, NULL)",
+                        duckdb::params![id, filename, filename],
                     )?;
                     id
                 }
@@ -559,7 +562,7 @@ pub fn import_pgn(
             match process_pgn_bytes(conn, issue_id, collection_id, visibility, &pgn_bytes, effective_depth, &mut ctx, file_pb.as_ref(), fast) {
                 Ok((imported, skipped_dups, skipped_ns)) => {
                     conn.execute(
-                        "UPDATE issues SET imported = TRUE, imported_at = NOW(), game_count = ? WHERE id = ?",
+                        "UPDATE source_items SET imported = TRUE, imported_at = NOW(), game_count = ? WHERE id = ?",
                         duckdb::params![imported as i32, issue_id],
                     )?;
                     add_issue_to_collection(conn, issue_id, collection_id)?;
@@ -670,10 +673,10 @@ impl ImportContext {
                 let mut pstmt = conn.prepare(
                     "SELECT id, white_id, black_id, date, result, opening_line, move_count FROM games
                      WHERE issue_id NOT IN (
-                         SELECT id FROM issues WHERE downloaded = TRUE AND imported = FALSE
+                         SELECT id FROM source_items WHERE downloaded = TRUE AND imported = FALSE
                      )
                      AND issue_id IN (
-                         SELECT id FROM issues
+                         SELECT id FROM source_items
                          WHERE imported = TRUE
                          AND imported_at > CAST(NOW() AS TIMESTAMP) - INTERVAL '1 year'
                      )
@@ -709,7 +712,7 @@ impl ImportContext {
                     "SELECT id, chessbase_id FROM games
                      WHERE chessbase_id IS NOT NULL
                      AND issue_id IN (
-                         SELECT id FROM issues
+                         SELECT id FROM source_items
                          WHERE imported = TRUE
                          AND imported_at > CAST(NOW() AS TIMESTAMP) - INTERVAL '1 year'
                      )

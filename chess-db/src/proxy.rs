@@ -707,6 +707,38 @@ pub async fn run_show(port: u16, ids: &[u32]) -> Result<()> {
 }
 
 #[derive(Deserialize)]
+struct SourceStatusDto {
+    key: String,
+    name: String,
+    kind: String,
+    enabled: bool,
+    items: i64,
+    #[serde(default)]
+    last_status: Option<String>,
+}
+
+/// Render `sources list` against a running daemon (GET /sources).
+pub async fn run_sources(port: u16) -> Result<()> {
+    let client = reqwest::Client::new();
+    let rows: Vec<SourceStatusDto> = client
+        .get(format!("{}/sources", base_url(port)))
+        .send().await.context("querying sources")?
+        .json().await.context("reading sources")?;
+    for s in rows {
+        println!(
+            "{:<10} {:<22} {:<5} {:<8} items={:<7} {}",
+            s.key,
+            s.name,
+            s.kind,
+            if s.enabled { "on" } else { "off" },
+            s.items,
+            s.last_status.as_deref().unwrap_or(""),
+        );
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
 struct StatusInfoDto {
     version: String,
     games: i64,

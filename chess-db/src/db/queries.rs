@@ -351,18 +351,18 @@ pub fn recalculate_game_count_for(conn: &Connection, player_id: u32) -> Result<(
 
 pub fn status(conn: &Connection, db_path: &Path) -> Result<()> {
     let issue_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM issues", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM source_items", [], |r| r.get(0))
         .unwrap_or(0);
     let downloaded: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM issues WHERE downloaded = TRUE",
+            "SELECT COUNT(*) FROM source_items WHERE downloaded = TRUE",
             [],
             |r| r.get(0),
         )
         .unwrap_or(0);
     let imported: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM issues WHERE imported = TRUE",
+            "SELECT COUNT(*) FROM source_items WHERE imported = TRUE",
             [],
             |r| r.get(0),
         )

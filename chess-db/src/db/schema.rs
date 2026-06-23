@@ -2,16 +2,31 @@ use anyhow::Result;
 use duckdb::Connection;
 
 pub fn init(conn: &Connection) -> Result<()> {
+    // Multi-source migration (#40): the TWIC-era `issues` ledger becomes the
+    // source-agnostic `source_items`. No foreign key references it (games.issue_id
+    // is a plain column), so a rename is safe; rows are tagged by the historical
+    // id convention below (TWIC used natural issue numbers <1e6; local PGN imports
+    // were allocated ids >=1e6).
+    let has_issues = table_exists(conn, "issues")?;
+    let has_source_items = table_exists(conn, "source_items")?;
+    if has_issues && !has_source_items {
+        println!("Migrating the import ledger (issues → source_items) for multi-source support…");
+        conn.execute_batch("ALTER TABLE issues RENAME TO source_items;")?;
+    }
+
     conn.execute_batch(
         "
-        CREATE TABLE IF NOT EXISTS issues (
-            id          INTEGER PRIMARY KEY,
-            filename    VARCHAR,
-            downloaded  BOOLEAN DEFAULT FALSE,
-            imported    BOOLEAN DEFAULT FALSE,
-            game_count  INTEGER,
-            fetched_at  TIMESTAMP,
-            imported_at TIMESTAMP
+        CREATE TABLE IF NOT EXISTS source_items (
+            id           INTEGER PRIMARY KEY,
+            source_key   VARCHAR,
+            external_id  VARCHAR,
+            filename     VARCHAR,
+            downloaded   BOOLEAN DEFAULT FALSE,
+            imported     BOOLEAN DEFAULT FALSE,
+            game_count   INTEGER,
+            fetched_at   TIMESTAMP,
+            imported_at  TIMESTAMP,
+            published_at DATE
         );
 
         CREATE TABLE IF NOT EXISTS players (
@@ -103,15 +118,26 @@ pub fn init(conn: &Connection) -> Result<()> {
         println!("Done.");
     }
 
-    // Add imported_at column to existing databases (no-op for new ones).
+    // Ledger column adds for databases that predate them (no-op for new ones).
+    // These target source_items (renamed from issues above).
     conn.execute_batch(
-        "ALTER TABLE issues ADD COLUMN IF NOT EXISTS imported_at TIMESTAMP;",
+        "ALTER TABLE source_items ADD COLUMN IF NOT EXISTS imported_at TIMESTAMP;
+         -- TWIC publication date (from theweekinchess.com), distinct from
+         -- imported_at (when we ingested it). Backfilled on download.
+         ALTER TABLE source_items ADD COLUMN IF NOT EXISTS published_at DATE;
+         -- Multi-source columns (#40).
+         ALTER TABLE source_items ADD COLUMN IF NOT EXISTS source_key VARCHAR;
+         ALTER TABLE source_items ADD COLUMN IF NOT EXISTS external_id VARCHAR;",
     )?;
-
-    // TWIC publication date (from the index table on theweekinchess.com), as
-    // distinct from imported_at (when we ingested it). Backfilled on `download`.
+    // Backfill provenance on migrated/legacy rows: TWIC used natural issue
+    // numbers (<1e6); local PGN imports were allocated ids >=1e6 → 'manual'.
     conn.execute_batch(
-        "ALTER TABLE issues ADD COLUMN IF NOT EXISTS published_at DATE;",
+        "UPDATE source_items
+            SET source_key = CASE WHEN id < 1000000 THEN 'twic' ELSE 'manual' END
+          WHERE source_key IS NULL;
+         UPDATE source_items
+            SET external_id = CAST(id AS VARCHAR)
+          WHERE external_id IS NULL;",
     )?;
 
     // Add game_count column to existing databases (no-op for new ones).
@@ -248,6 +274,42 @@ pub fn init(conn: &Connection) -> Result<()> {
         println!("Done.");
     }
 
+    // Must run AFTER the Phase 2 block above: that drops the legacy `sources`
+    // table (the old games.source_id FK target), and the multi-source state
+    // table (#40) reuses the name. Creating it last avoids the drop clobbering it.
+    init_sources(conn)?;
+
+    Ok(())
+}
+
+fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) > 0 FROM information_schema.tables WHERE table_name = ?",
+        duckdb::params![name],
+        |r| r.get(0),
+    )?)
+}
+
+/// Per-database state for each import source (#40). The catalog of *available*
+/// sources lives in code (`crate::sources`); this table records which ones this
+/// database has enabled, whether their attribution was acknowledged, and the
+/// outcome of the last sync. Seeded with TWIC enabled (the historical default).
+fn init_sources(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS sources (
+            key          VARCHAR PRIMARY KEY,
+            enabled      BOOLEAN NOT NULL DEFAULT FALSE,
+            credit_acked BOOLEAN NOT NULL DEFAULT FALSE,
+            last_run     TIMESTAMP,
+            last_status  VARCHAR
+        );
+
+        INSERT INTO sources (key, enabled, credit_acked)
+        SELECT 'twic', TRUE, FALSE
+        WHERE NOT EXISTS (SELECT 1 FROM sources WHERE key = 'twic');
+        ",
+    )?;
     Ok(())
 }
 
@@ -316,4 +378,61 @@ fn init_schedule(conn: &Connection) -> Result<()> {
          UPDATE schedule SET daily_minute = 240 WHERE daily_minute IS NULL;",
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn fresh_db_creates_source_items_and_seeds_twic() {
+        let conn = Connection::open_in_memory().unwrap();
+        init(&conn).unwrap();
+        assert!(table_exists(&conn, "source_items").unwrap());
+        assert!(!table_exists(&conn, "issues").unwrap());
+        let enabled: bool = conn
+            .query_row("SELECT enabled FROM sources WHERE key = 'twic'", [], |r| r.get(0))
+            .unwrap();
+        assert!(enabled, "twic should be seeded enabled");
+    }
+
+    #[test]
+    fn migrates_legacy_issues_ledger_tagging_by_id_convention() {
+        let conn = Connection::open_in_memory().unwrap();
+        // A legacy DB: the old TWIC-era `issues` table with a TWIC row (id<1e6)
+        // and a local-import row (id>=1e6).
+        conn.execute_batch(
+            "CREATE TABLE issues (
+                 id INTEGER PRIMARY KEY, filename VARCHAR, downloaded BOOLEAN,
+                 imported BOOLEAN, game_count INTEGER, fetched_at TIMESTAMP, imported_at TIMESTAMP
+             );
+             INSERT INTO issues (id, filename, downloaded, imported) VALUES (1649, 'twic1649g.zip', TRUE, TRUE);
+             INSERT INTO issues (id, filename, downloaded, imported) VALUES (1000001, 'megabase.pgn', TRUE, TRUE);",
+        ).unwrap();
+
+        init(&conn).unwrap();
+
+        assert!(!table_exists(&conn, "issues").unwrap(), "issues should be renamed away");
+        assert!(table_exists(&conn, "source_items").unwrap());
+
+        let twic_key: String = conn
+            .query_row("SELECT source_key FROM source_items WHERE id = 1649", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(twic_key, "twic");
+        let twic_ext: String = conn
+            .query_row("SELECT external_id FROM source_items WHERE id = 1649", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(twic_ext, "1649");
+
+        let manual_key: String = conn
+            .query_row("SELECT source_key FROM source_items WHERE id = 1000001", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(manual_key, "manual");
+
+        // The new sources state table survives the Phase-2 `DROP TABLE sources`.
+        let enabled: bool = conn
+            .query_row("SELECT enabled FROM sources WHERE key = 'twic'", [], |r| r.get(0))
+            .unwrap();
+        assert!(enabled);
+    }
 }
