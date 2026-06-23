@@ -545,7 +545,7 @@ fn run_job(
     rt: &Handle,
     db: &Path,
 ) -> Result<()> {
-    use crate::{dedup, importer, normalise, players, twic};
+    use crate::{dedup, importer, normalise, players};
 
     // Fault injection for testing the auto-recovery path on a live daemon
     // (#82). Inert unless LPDO_FAULT_INJECTION is set in the server's
@@ -570,18 +570,49 @@ fn run_job(
 
     match job_type {
         "download" => {
-            let from = p.get("from").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+            let source_key = p.get("source").and_then(|v| v.as_str()).unwrap_or("twic");
+            let src = crate::sources::get(source_key)
+                .ok_or_else(|| anyhow!("unknown source '{}'", source_key))?;
+            let from = p.get("from").and_then(|v| v.as_u64()).map(|v| v as u32);
             let to = p.get("to").and_then(|v| v.as_u64()).map(|v| v as u32);
-            let dir = dir_param(p);
+            let dir = source_dir_param(p, source_key);
             std::fs::create_dir_all(&dir)?;
-            // download() is async; drive it to completion on this writer thread.
-            rt.block_on(twic::download(conn, from, to, &dir, reporter))?;
+            // download_feed() is async; drive it to completion on this writer thread.
+            rt.block_on(crate::sources::download_feed(conn, src, from, to, &dir, reporter))?;
         }
         "import" => {
-            let dir = dir_param(p);
+            let source_key = p.get("source").and_then(|v| v.as_str()).unwrap_or("twic");
+            let src = crate::sources::get(source_key)
+                .ok_or_else(|| anyhow!("unknown source '{}'", source_key))?;
+            let dir = source_dir_param(p, source_key);
             let fast = flag(p, "fast");
             let skip_dedup = flag(p, "skip_dedup");
-            importer::import(conn, &dir, Some(40), 10, fast, skip_dedup, reporter)?;
+            importer::import(conn, &dir, src.key, src.collection, Some(40), 10, fast, skip_dedup, reporter)?;
+        }
+        "sources_set_enabled" => {
+            let key = p.get("source").and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("sources_set_enabled: 'source' required"))?;
+            let enabled = flag(p, "enabled");
+            crate::sources::set_enabled(conn, key, enabled)?;
+            reporter.done(format!("Source '{}' {}.", key, if enabled { "enabled" } else { "disabled" }));
+        }
+        // Download + import one source in a single job (CLI `sources sync`, GUI).
+        "sources_sync" => {
+            let source_key = p.get("source").and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("sources_sync: 'source' required"))?;
+            let src = crate::sources::get(source_key)
+                .ok_or_else(|| anyhow!("unknown source '{}'", source_key))?;
+            let fast = flag(p, "fast");
+            let dir = crate::source_dir(source_key);
+            std::fs::create_dir_all(&dir)?;
+            let step = reporter.sub_step();
+            reporter.log(format!("{}: download", src.name));
+            rt.block_on(crate::sources::download_feed(conn, src, None, None, &dir, &step))?;
+            if reporter.is_cancelled() { return Ok(()); }
+            reporter.log(format!("{}: import", src.name));
+            importer::import(conn, &dir, src.key, src.collection, Some(40), 10, fast, false, &step)?;
+            crate::sources::record_run(conn, src.key, "ok")?;
+            reporter.done(format!("{} synced.", src.name));
         }
         "import_pgn" => {
             let path = path_param(p, "path")?;
@@ -664,24 +695,37 @@ fn run_job(
             let dir = path_param(p, "dir")?;
             crate::do_backup(conn, collection, &dir, reporter)?;
         }
-        // The bridge for scheduled updates — mirrors ~/bin/chess-db-update.sh.
+        // Scheduled/manual update: refresh every enabled feed source, then run a
+        // single global index + normalise pass. Generalized from the old TWIC-only
+        // pipeline (#40).
         "update" => {
             // Each step's own `done` would otherwise terminate the job's event
             // stream after step 1; the sub-step reporter downgrades those to log
             // lines so only the final `done` below ends the job.
             let step = reporter.sub_step();
-            let dir = crate::default_dir();
-            std::fs::create_dir_all(&dir)?;
-            reporter.log("Step 1/4: download");
-            rt.block_on(twic::download(conn, 1, None, &dir, &step))?;
+            let feeds = crate::sources::enabled_feeds(conn)?;
+            if feeds.is_empty() {
+                reporter.done("No feed sources enabled — nothing to update.");
+                return Ok(());
+            }
+            for (i, src) in feeds.iter().enumerate() {
+                if reporter.is_cancelled() { return Ok(()); }
+                let dir = crate::source_dir(src.key);
+                std::fs::create_dir_all(&dir)?;
+                reporter.log(format!("[{}/{}] {}: download", i + 1, feeds.len(), src.name));
+                // Errors propagate (via ?) so a fatal DuckDB invalidation reaches
+                // the job's error handler and triggers in-process recovery (#82/#87).
+                rt.block_on(crate::sources::download_feed(conn, src, None, None, &dir, &step))?;
+                if reporter.is_cancelled() { return Ok(()); }
+                reporter.log(format!("{}: import (fast)", src.name));
+                importer::import(conn, &dir, src.key, src.collection, None, 0, true, false, &step)?;
+                crate::sources::record_run(conn, src.key, "ok")?;
+            }
             if reporter.is_cancelled() { return Ok(()); }
-            reporter.log("Step 2/4: import (fast)");
-            importer::import(conn, &dir, None, 0, true, false, &step)?;
-            if reporter.is_cancelled() { return Ok(()); }
-            reporter.log("Step 3/4: index-positions (fast)");
+            reporter.log("Indexing positions (fast)");
             importer::index_positions(conn, Some(40), false, true, &step)?;
             if reporter.is_cancelled() { return Ok(()); }
-            reporter.log("Step 4/4: players normalise");
+            reporter.log("Normalising players");
             normalise::normalise_players(
                 conn, false, 1500, 100, 30_000, 3, 10, 7_200_000, false, None, None, None, false, &step,
             )?;
@@ -697,11 +741,11 @@ fn flag(p: &serde_json::Value, key: &str) -> bool {
 }
 
 /// Resolve a directory param, expanding a leading `~` and falling back to the
-/// default TWIC directory.
-fn dir_param(p: &serde_json::Value) -> PathBuf {
+/// per-source download directory (`data_root/<source_key>`) (#40).
+fn source_dir_param(p: &serde_json::Value, source_key: &str) -> PathBuf {
     match p.get("dir").and_then(|v| v.as_str()) {
         Some(d) => crate::expand_home(Path::new(d)),
-        None => crate::default_dir(),
+        None => crate::source_dir(source_key),
     }
 }
 

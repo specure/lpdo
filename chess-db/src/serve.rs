@@ -565,6 +565,12 @@ async fn collections_handler(State(state): State<AppState>) -> ApiResult<Vec<Col
     }).await
 }
 
+async fn sources_handler(State(state): State<AppState>) -> ApiResult<Vec<crate::sources::SourceStatus>> {
+    state.reads.run(|conn| {
+        crate::sources::list_status(conn).map(Json).map_err(db_err)
+    }).await
+}
+
 async fn status_handler(State(state): State<AppState>) -> ApiResult<StatusInfo> {
     let db_path = state.db_path.display().to_string();
     let data_dir = state
@@ -578,21 +584,20 @@ async fn status_handler(State(state): State<AppState>) -> ApiResult<StatusInfo> 
             api_version: API_VERSION,
             db_path,
             data_dir,
-            // TWIC issues = real TWIC issues we've imported. Local PGN imports
-            // get ids ≥ 1_000_000, so the id threshold scopes this to TWIC and
-            // `imported` drops the 51 ids that were registered but never
+            // TWIC issues imported. Keyed by source_key now (#40) rather than the
+            // legacy id<1e6 convention, so a future feed source can't be
+            // miscounted here. `imported` drops ids registered but never
             // downloaded (old issues no longer offered as zips).
-            issues:     conn.query_row("SELECT COUNT(*) FROM issues WHERE id < 1000000 AND imported = TRUE", [], |r| r.get(0)).unwrap_or(0),
-            local_imports: conn.query_row("SELECT COUNT(*) FROM issues WHERE id >= 1000000 AND imported = TRUE", [], |r| r.get(0)).unwrap_or(0),
+            issues:     conn.query_row("SELECT COUNT(*) FROM source_items WHERE source_key = 'twic' AND imported = TRUE", [], |r| r.get(0)).unwrap_or(0),
+            local_imports: conn.query_row("SELECT COUNT(*) FROM source_items WHERE source_key = 'manual' AND imported = TRUE", [], |r| r.get(0)).unwrap_or(0),
             games:      conn.query_row("SELECT COUNT(*) FROM games WHERE deleted_at IS NULL", [], |r| r.get(0)).unwrap_or(0),
             players:    conn.query_row("SELECT COUNT(*) FROM players", [], |r| r.get(0)).unwrap_or(0),
             positions:  conn.query_row("SELECT COUNT(*) FROM positions", [], |r| r.get(0)).unwrap_or(0),
             deleted_games: conn.query_row("SELECT COUNT(*) FROM games WHERE deleted_at IS NOT NULL", [], |r| r.get(0)).unwrap_or(0),
-            // Latest imported TWIC issue number. TWIC issues keep their natural
-            // id (~1–1700) with a `twicNNNNg.zip` filename; local PGN imports get
-            // ids ≥ 1_000_000, so the LIKE filter keeps this to real TWIC issues.
+            // Latest imported TWIC issue number (TWIC reuses the issue number as
+            // its ledger id, so MAX(id) within the twic source is the latest).
             last_twic_issue: conn.query_row(
-                "SELECT MAX(id) FROM issues WHERE imported = TRUE AND filename LIKE 'twic%'",
+                "SELECT MAX(id) FROM source_items WHERE source_key = 'twic' AND imported = TRUE",
                 [],
                 |r| r.get(0),
             ).unwrap_or(None),
@@ -600,15 +605,15 @@ async fn status_handler(State(state): State<AppState>) -> ApiResult<StatusInfo> 
             // ORDER BY id DESC LIMIT 1 picks the row whose id == MAX(id) above,
             // so the number and both dates always correspond.
             last_twic_published: conn.query_row(
-                "SELECT CAST(published_at AS VARCHAR) FROM issues \
-                 WHERE imported = TRUE AND filename LIKE 'twic%' \
+                "SELECT CAST(published_at AS VARCHAR) FROM source_items \
+                 WHERE source_key = 'twic' AND imported = TRUE \
                  ORDER BY id DESC LIMIT 1",
                 [],
                 |r| r.get(0),
             ).unwrap_or(None),
             last_twic_imported: conn.query_row(
-                "SELECT CAST(imported_at AS VARCHAR) FROM issues \
-                 WHERE imported = TRUE AND filename LIKE 'twic%' AND imported_at IS NOT NULL \
+                "SELECT CAST(imported_at AS VARCHAR) FROM source_items \
+                 WHERE source_key = 'twic' AND imported = TRUE AND imported_at IS NOT NULL \
                  ORDER BY id DESC LIMIT 1",
                 [],
                 |r| r.get(0),
@@ -1275,6 +1280,7 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
     let app = Router::new()
         .route("/status",                              get(status_handler))
         .route("/collections",                         get(collections_handler))
+        .route("/sources",                             get(sources_handler))
         .route("/players",                             get(players_handler))
         .route("/players/{id}/stats",                  get(player_stats_handler))
         .route("/players/{keep_id}/merge/{drop_id}",   post(merge_players_handler))

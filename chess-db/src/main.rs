@@ -19,6 +19,7 @@ mod proxy;
 mod reporter;
 mod scheduler;
 mod search;
+mod sources;
 mod serve;
 mod service;
 mod twic;
@@ -52,6 +53,12 @@ fn data_root() -> PathBuf {
 /// (and vice versa).
 fn default_dir() -> PathBuf {
     data_root().join("twic")
+}
+
+/// Per-source download directory: `data_root/<source_key>`. For `twic` this is
+/// exactly `default_dir()`, so existing TWIC caches are found unchanged (#40).
+fn source_dir(source_key: &str) -> PathBuf {
+    data_root().join(source_key)
 }
 
 fn default_db_path() -> PathBuf {
@@ -229,6 +236,35 @@ enum Commands {
     Service {
         #[command(subcommand)]
         subcommand: ServiceCommands,
+    },
+    /// Manage import sources (the curated catalog of reference databases)
+    Sources {
+        #[command(subcommand)]
+        subcommand: SourcesCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum SourcesCommands {
+    /// List the catalog and each source's status in this database
+    List,
+    /// Enable a source so it is included in updates
+    Enable {
+        /// Source key (e.g. "twic")
+        key: String,
+    },
+    /// Disable a source
+    Disable {
+        /// Source key (e.g. "twic")
+        key: String,
+    },
+    /// Download and import one source now (a feed's new items)
+    Sync {
+        /// Source key (e.g. "twic")
+        key: String,
+        /// Use faster appender-based inserts (not crash-safe; see `import --fast`)
+        #[arg(long)]
+        fast: bool,
     },
 }
 
@@ -1013,6 +1049,18 @@ fn job_spec_for(command: &Commands) -> Option<proxy::JobSpec> {
             "backup",
             json!({ "collection": collection, "dir": dir.to_string_lossy() }),
         ),
+        Commands::Sources { subcommand: SourcesCommands::Sync { key, fast } } => (
+            "sources_sync",
+            json!({ "source": key, "fast": fast }),
+        ),
+        Commands::Sources { subcommand: SourcesCommands::Enable { key } } => (
+            "sources_set_enabled",
+            json!({ "source": key, "enabled": true }),
+        ),
+        Commands::Sources { subcommand: SourcesCommands::Disable { key } } => (
+            "sources_set_enabled",
+            json!({ "source": key, "enabled": false }),
+        ),
         _ => return None,
     };
     Some(proxy::JobSpec { job_type: job_type.to_string(), params })
@@ -1128,6 +1176,9 @@ fn read_stdin_to_string() -> Result<String> {
 async fn try_proxy_read(command: &Commands, port: u16) -> Option<Result<()>> {
     match command {
         Commands::Status => Some(proxy::run_status(port).await),
+        Commands::Sources { subcommand: SourcesCommands::List } => {
+            Some(proxy::run_sources(port).await)
+        }
         Commands::Games { subcommand: GameCommands::Show { ids } } => {
             Some(proxy::run_show(port, ids).await)
         }
@@ -1257,12 +1308,14 @@ async fn main() -> Result<()> {
             // live under the real home dir, would never be recognised).
             let dir = expand_home(&dir);
             std::fs::create_dir_all(&dir)?;
-            twic::download(&conn, from, to, &dir, &reporter).await?;
+            let src = sources::get("twic").expect("twic is in the catalog");
+            sources::download_feed(&conn, src, Some(from), to, &dir, &reporter).await?;
         }
         Commands::Import { max_position_depth, dir, reindex_threshold, fast, skip_dedup } => {
             let dir = expand_home(&dir);
             let depth = if max_position_depth == 0 { None } else { Some(max_position_depth as i16) };
-            importer::import(&conn, &dir, depth, reindex_threshold, fast, skip_dedup, &reporter)?;
+            let src = sources::get("twic").expect("twic is in the catalog");
+            importer::import(&conn, &dir, src.key, src.collection, depth, reindex_threshold, fast, skip_dedup, &reporter)?;
         }
         Commands::ImportPgn {
             path, collection, private, on_duplicate,
@@ -1632,6 +1685,43 @@ async fn main() -> Result<()> {
         Commands::Status => {
             db::queries::status(&conn, &cli.db)?;
         }
+        Commands::Sources { subcommand } => match subcommand {
+            SourcesCommands::List => {
+                for s in sources::list_status(&conn)? {
+                    let kind = match s.kind {
+                        sources::SourceKind::Feed => "feed",
+                        sources::SourceKind::Bulk => "bulk",
+                    };
+                    println!(
+                        "{:<10} {:<22} {:<5} {:<8} items={:<7} {}",
+                        s.key,
+                        s.name,
+                        kind,
+                        if s.enabled { "on" } else { "off" },
+                        s.items,
+                        s.last_status.as_deref().unwrap_or(""),
+                    );
+                }
+            }
+            SourcesCommands::Enable { key } => {
+                sources::set_enabled(&conn, &key, true)?;
+                println!("Enabled source '{key}'.");
+            }
+            SourcesCommands::Disable { key } => {
+                sources::set_enabled(&conn, &key, false)?;
+                println!("Disabled source '{key}'.");
+            }
+            SourcesCommands::Sync { key, fast } => {
+                let src = sources::get(&key)
+                    .ok_or_else(|| anyhow::anyhow!("unknown source '{key}'"))?;
+                let dir = source_dir(&key);
+                std::fs::create_dir_all(&dir)?;
+                sources::download_feed(&conn, src, None, None, &dir, &reporter).await?;
+                importer::import(&conn, &dir, src.key, src.collection, Some(40), 10, fast, false, &reporter)?;
+                sources::record_run(&conn, src.key, "ok")?;
+                println!("{} synced.", src.name);
+            }
+        },
         Commands::Serve { port } => {
             // The server owns the database read-write: it runs every mutation as
             // an in-process job and serves queries from a pool of cloned read
