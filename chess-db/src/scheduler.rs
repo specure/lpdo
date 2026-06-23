@@ -35,6 +35,12 @@ struct Schedule {
 
 /// Spawn the scheduler loop onto the current Tokio runtime.
 pub fn spawn(jobs: Arc<JobManager>, reads: ReadPool, writer: ConnActor) {
+    // Test/debug escape hatch: skip the daily update entirely so the writer
+    // thread stays free (e.g. when exercising the #82 fault injector).
+    if std::env::var_os("LPDO_DISABLE_SCHEDULER").is_some() {
+        eprintln!("Scheduler disabled (LPDO_DISABLE_SCHEDULER set).");
+        return;
+    }
     tokio::spawn(async move {
         tokio::time::sleep(STARTUP_DELAY).await;
         let mut ticker = tokio::time::interval(TICK);
