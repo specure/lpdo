@@ -216,7 +216,7 @@ enum Commands {
         #[command(subcommand)]
         subcommand: PlayersCommands,
     },
-    /// Back up a collection's games to a timestamped PGN file
+    /// Back up a collection's games to a timestamped, zip-compressed PGN file
     Backup {
         /// Collection to export (default: the private "My games" collection)
         #[arg(long, default_value = "My games")]
@@ -986,25 +986,41 @@ fn do_backup(
         .with_context(|| format!("cannot create backup directory {}", dir.display()))?;
 
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let filename = format!("{}-{}.pgn", stamp, sanitize_for_filename(collection));
+    let base = format!("{}-{}", stamp, sanitize_for_filename(collection));
+    // A single deflated `.pgn` entry inside a `.pgn.zip`. PGN is text (~3-5×
+    // smaller zipped), zip opens natively on every OS, and the entry round-trips
+    // back through the importer's existing zip reader. The `zip` crate is already
+    // a dependency (used on the import side).
+    let entry_name = format!("{base}.pgn");
+    let filename = format!("{base}.pgn.zip");
     let path = dir.join(&filename);
 
-    // Concatenate games separated by a blank line (standard PGN). Emit periodic
-    // progress (≈100 ticks) with no message so the bar advances without
-    // flooding the GUI log.
+    let file = std::fs::File::create(&path)
+        .with_context(|| format!("cannot create {}", path.display()))?;
+    let mut zip = zip::write::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .compression_level(Some(9));
+    zip.start_file(entry_name.as_str(), options)
+        .with_context(|| format!("cannot start zip entry in {}", path.display()))?;
+
+    // Stream each game straight into the zip entry (games separated by a blank
+    // line, standard PGN) rather than building the whole file in memory first.
+    // Emit periodic progress (≈100 ticks) with no message so the bar advances
+    // without flooding the GUI log.
+    use std::io::Write;
     let total = pgns.len() as u64;
     let step = (total / 100).max(1);
-    let mut out = String::new();
     for (i, pgn) in pgns.iter().enumerate() {
-        out.push_str(pgn.trim_end());
-        out.push_str("\n\n");
+        zip.write_all(pgn.trim_end().as_bytes())
+            .and_then(|()| zip.write_all(b"\n\n"))
+            .with_context(|| format!("cannot write {}", path.display()))?;
         let done = i as u64 + 1;
         if done.is_multiple_of(step) || done == total {
             reporter.progress(done, total, "");
         }
     }
-
-    std::fs::write(&path, out).with_context(|| format!("cannot write {}", path.display()))?;
+    zip.finish().with_context(|| format!("cannot finalize {}", path.display()))?;
 
     reporter.done_with_path(
         format!("Backed up {} game(s) from {:?} to {}", total, collection, path.display()),
@@ -1785,5 +1801,46 @@ mod tests {
 
         std::env::remove_var("LPDO_DATA_DIR");
         assert!(default_db_path().ends_with(".chess-db/chess.db"));
+    }
+
+    #[test]
+    fn backup_writes_a_pgn_zip_that_round_trips() {
+        use std::io::Read;
+
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO collections (id, name, created_at) VALUES (9001, 'Test', NOW());
+             INSERT INTO games (id, date, pgn) VALUES
+                 (9001, '2020.01.01', '[Event \"A\"]\n\n1. e4 e5 1-0'),
+                 (9002, '2021.06.02', '[Event \"B\"]\n\n1. d4 d5 0-1');
+             INSERT INTO game_collections (game_id, collection_id) VALUES (9001, 9001), (9002, 9001);",
+        )
+        .unwrap();
+
+        let dir = std::env::temp_dir().join(format!("lpdo-backup-test-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        do_backup(&conn, "Test", &dir, &reporter::Reporter::silent()).unwrap();
+
+        // Exactly one `.pgn.zip` is produced (not a plain `.pgn`).
+        let zip = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| p.to_string_lossy().ends_with(".pgn.zip"))
+            .expect("a .pgn.zip backup file");
+
+        // It holds a single `.pgn` entry containing both games — i.e. it
+        // round-trips through the same zip reader the importer uses.
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip).unwrap()).unwrap();
+        assert_eq!(archive.len(), 1, "one entry");
+        let mut entry = archive.by_index(0).unwrap();
+        assert!(entry.name().ends_with(".pgn"), "entry is a .pgn");
+        let mut text = String::new();
+        entry.read_to_string(&mut text).unwrap();
+        assert!(text.contains("1. e4 e5"), "first game present");
+        assert!(text.contains("1. d4 d5"), "second game present");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
