@@ -79,6 +79,21 @@ pub static CATALOG: &[CatalogSource] = &[
         default_to: None,
         default_exclude_undated: false,
     },
+    CatalogSource {
+        key: "ajedrez-otb",
+        name: "Ajedrez Data — OTB",
+        kind: SourceKind::Bulk,
+        description: "Free public-domain archive of over-the-board games — the deep historical base (one large download + occasional increments).",
+        homepage: "https://ajedrezdata.com/",
+        credit: "Ajedrez Data (ajedrezdata.com) — public-domain game scores, distributed without annotations.",
+        collection: "Ajedrez OTB",
+        // Off by default, unbounded (it IS the history; the partition cap is
+        // applied via the wizard/UI, not forced here).
+        default_enabled: false,
+        default_from: None,
+        default_to: None,
+        default_exclude_undated: false,
+    },
 ];
 
 pub fn get(key: &str) -> Option<&'static CatalogSource> {
@@ -109,6 +124,7 @@ pub struct FeedItem {
 pub enum Feed {
     Twic,
     Lichess,
+    Ajedrez,
 }
 
 impl Feed {
@@ -116,17 +132,19 @@ impl Feed {
         match key {
             "twic" => Some(Feed::Twic),
             "lichess-broadcasts" => Some(Feed::Lichess),
+            "ajedrez-otb" => Some(Feed::Ajedrez),
             _ => None,
         }
     }
 
     /// Enumerate the items the feed currently offers within an optional range
     /// (range semantics are the feed's own; TWIC treats them as issue numbers,
-    /// Lichess ignores them and lets the date window select months).
+    /// the others ignore them and let the date window select).
     pub async fn list_items(&self, from: Option<u32>, to: Option<u32>) -> Result<Vec<FeedItem>> {
         match self {
             Feed::Twic => crate::twic::list_items(from, to).await,
             Feed::Lichess => crate::lichess::list_items(from, to).await,
+            Feed::Ajedrez => crate::ajedrez::list_items(from, to).await,
         }
     }
 
@@ -135,6 +153,7 @@ impl Feed {
         match self {
             Feed::Twic => crate::twic::fetch_item(item, dest).await,
             Feed::Lichess => crate::lichess::fetch_item(item, dest).await,
+            Feed::Ajedrez => crate::ajedrez::fetch_item(item, dest).await,
         }
     }
 }
@@ -302,7 +321,9 @@ pub struct SourceStatus {
     pub items: i64,
 }
 
-/// Keys of enabled **feed** sources, in catalog order.
+/// Enabled catalog sources that have a download driver, in catalog order — the
+/// sources the update job syncs. (Includes Bulk-kind sources like Ajedrez: the
+/// kind is only a UI label for cadence; both kinds use the same machinery.)
 pub fn enabled_feeds(conn: &Connection) -> Result<Vec<&'static CatalogSource>> {
     let enabled: HashSet<String> = {
         let mut stmt = conn.prepare("SELECT key FROM sources WHERE enabled = TRUE")?;
@@ -312,7 +333,7 @@ pub fn enabled_feeds(conn: &Connection) -> Result<Vec<&'static CatalogSource>> {
     };
     Ok(CATALOG
         .iter()
-        .filter(|s| s.kind == SourceKind::Feed && enabled.contains(s.key))
+        .filter(|s| enabled.contains(s.key) && Feed::for_key(s.key).is_some())
         .collect())
 }
 

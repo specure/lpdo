@@ -1304,9 +1304,46 @@ fn extract_pgn(path: &Path) -> Result<Vec<u8>> {
             zstd::stream::decode_all(std::io::BufReader::new(f))
                 .map_err(|e| anyhow::anyhow!("zstd decode {}: {}", path.display(), e))
         }
+        "7z" => extract_pgn_from_7z(path),
         "pgn" | "" => Ok(std::fs::read(path)?),
         other => anyhow::bail!("unsupported file type '.{}': {}", other, path.display()),
     }
+}
+
+/// Extract the PGN from a `.7z` archive (Ajedrez Data historical files, #40 B3).
+/// The archive streams to a temp dir beside it (the PGN can be multi-GB, so we
+/// avoid holding the compressed and decompressed copies in memory at once), then
+/// the `.pgn` is read and the temp dir removed.
+fn extract_pgn_from_7z(path: &Path) -> Result<Vec<u8>> {
+    let dir = path.with_extension("7z-extract");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let result = (|| -> Result<Vec<u8>> {
+        sevenz_rust2::decompress_file(path, &dir)
+            .map_err(|e| anyhow::anyhow!("7z extract {}: {}", path.display(), e))?;
+        let pgn = first_pgn_in_dir(&dir)
+            .ok_or_else(|| anyhow::anyhow!("no .pgn file inside {}", path.display()))?;
+        Ok(std::fs::read(pgn)?)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+/// First `.pgn` file anywhere under `dir` (the Ajedrez archives hold one at the
+/// root, but tolerate nesting).
+fn first_pgn_in_dir(dir: &Path) -> Option<std::path::PathBuf> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d).ok()?.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().and_then(|e| e.to_str()) == Some("pgn") {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
 
 fn extract_pgn_from_zip(zip_path: &Path) -> Result<Vec<u8>> {
@@ -1324,4 +1361,42 @@ fn extract_pgn_from_zip(zip_path: &Path) -> Result<Vec<u8>> {
     }
 
     anyhow::bail!("No PGN file found in zip: {}", zip_path.display())
+}
+
+#[cfg(test)]
+mod sevenz_tests {
+    use super::*;
+
+    /// Our `.7z` extraction path works on an archive sevenz-rust2 itself made.
+    #[test]
+    fn extract_pgn_reads_a_7z() {
+        let dir = std::env::temp_dir().join(format!("lpdo-7z-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pgn = "[Event \"Test\"]\n[White \"A\"]\n[Black \"B\"]\n\n1. e4 e5 *\n";
+        let src = dir.join("games.pgn");
+        std::fs::write(&src, pgn).unwrap();
+        let archive = dir.join("games.7z");
+        sevenz_rust2::compress_to_path(&src, &archive).unwrap();
+
+        let out = extract_pgn(&archive).unwrap();
+        assert_eq!(out, pgn.as_bytes());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Decode a *real* Ajedrez `.7z` to prove sevenz-rust2 handles their LZMA
+    /// settings. Manual: `LPDO_7Z_FIXTURE=/path/AJ-OTB-PGN-001.7z cargo test
+    /// extract_real_ajedrez_7z -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn extract_real_ajedrez_7z() {
+        let path = std::env::var("LPDO_7Z_FIXTURE").expect("set LPDO_7Z_FIXTURE");
+        let out = extract_pgn(std::path::Path::new(&path)).unwrap();
+        assert!(out.len() > 1_000_000, "expected a large PGN, got {} bytes", out.len());
+        assert!(
+            String::from_utf8_lossy(&out[..200]).contains("[Event"),
+            "decompressed output is not PGN"
+        );
+        eprintln!("decoded {} bytes of PGN", out.len());
+    }
 }

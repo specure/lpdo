@@ -447,6 +447,12 @@ mod migration_tests {
             .unwrap();
         assert!(!lenabled, "lichess should be seeded disabled");
         assert_eq!(lfrom.as_deref(), Some("2026-01-01"));
+
+        // Ajedrez OTB seeded from the catalog: disabled, unbounded (B3).
+        let aenabled: bool = conn
+            .query_row("SELECT enabled FROM sources WHERE key = 'ajedrez-otb'", [], |r| r.get(0))
+            .unwrap();
+        assert!(!aenabled, "ajedrez-otb should be seeded disabled");
     }
 
     #[test]
