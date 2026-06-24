@@ -238,6 +238,10 @@ pub struct SourceStatus {
     pub collection: String,
     pub enabled: bool,
     pub credit_acked: bool,
+    /// Configured game-date window (inclusive ISO bounds; null = unbounded) (B1).
+    pub from_date: Option<String>,
+    pub to_date: Option<String>,
+    pub exclude_undated: bool,
     pub last_run: Option<String>,
     pub last_status: Option<String>,
     /// Items imported for this source.
@@ -285,6 +289,7 @@ pub fn record_run(conn: &Connection, key: &str, status: &str) -> Result<()> {
 pub fn list_status(conn: &Connection) -> Result<Vec<SourceStatus>> {
     let mut out = Vec::with_capacity(CATALOG.len());
     for s in CATALOG {
+        let win = window(conn, s.key)?;
         let row: Option<(bool, bool, Option<String>, Option<String>)> = conn
             .query_row(
                 "SELECT enabled, credit_acked, CAST(last_run AS VARCHAR), last_status
@@ -312,10 +317,161 @@ pub fn list_status(conn: &Connection) -> Result<Vec<SourceStatus>> {
             collection: s.collection.to_string(),
             enabled,
             credit_acked,
+            from_date: win.from,
+            to_date: win.to,
+            exclude_undated: win.exclude_undated,
             last_run,
             last_status,
             items,
         });
     }
     Ok(out)
+}
+
+// ── Per-source date window (B1) ───────────────────────────────────────────────
+
+/// Inclusive game-date bounds for a source, plus whether undated games are
+/// dropped. Bounds are ISO `YYYY-MM-DD` strings; `None` = unbounded.
+#[derive(Clone, Default)]
+pub struct DateWindow {
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub exclude_undated: bool,
+}
+
+impl DateWindow {
+    /// True if this window filters nothing — the importer can skip per-game checks.
+    pub fn is_unbounded(&self) -> bool {
+        self.from.is_none() && self.to.is_none() && !self.exclude_undated
+    }
+
+    /// Whether a game with the given PGN date passes the window.
+    pub fn admits(&self, date: Option<&str>) -> bool {
+        match date_key(date) {
+            None => !self.exclude_undated,
+            Some(key) => {
+                if let Some(f) = &self.from {
+                    if key < *f {
+                        return false;
+                    }
+                }
+                if let Some(t) = &self.to {
+                    if key > *t {
+                        return false;
+                    }
+                }
+                true
+            }
+        }
+    }
+}
+
+/// Reduce a PGN date to a comparable `YYYY-MM-DD` key, or `None` if no 4-digit
+/// year is present (treated as undated). Unknown month/day default to `01` so a
+/// partial date sorts to the start of its known period. Tolerates `.` or `-`.
+pub fn date_key(date: Option<&str>) -> Option<String> {
+    let s = date?.trim().replace('.', "-");
+    let b = s.as_bytes();
+    if b.len() < 4 || !b[0..4].iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let part = |range: std::ops::Range<usize>| -> String {
+        match s.get(range) {
+            Some(p) if p.len() == 2 && p.bytes().all(|c| c.is_ascii_digit()) && p != "00" => {
+                p.to_string()
+            }
+            _ => "01".to_string(),
+        }
+    };
+    Some(format!("{}-{}-{}", &s[0..4], part(5..7), part(8..10)))
+}
+
+/// Read a source's configured date window (unbounded if the row is absent).
+pub fn window(conn: &Connection, key: &str) -> Result<DateWindow> {
+    Ok(conn
+        .query_row(
+            "SELECT CAST(from_date AS VARCHAR), CAST(to_date AS VARCHAR), exclude_undated
+             FROM sources WHERE key = ?",
+            duckdb::params![key],
+            |r| {
+                Ok(DateWindow {
+                    from: r.get::<_, Option<String>>(0)?,
+                    to: r.get::<_, Option<String>>(1)?,
+                    exclude_undated: r.get::<_, Option<bool>>(2)?.unwrap_or(false),
+                })
+            },
+        )
+        .unwrap_or_default())
+}
+
+/// Set a source's date window. `from`/`to` of `None` clear that bound.
+pub fn set_window(
+    conn: &Connection,
+    key: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+    exclude_undated: bool,
+) -> Result<()> {
+    if get(key).is_none() {
+        return Err(anyhow!("unknown source '{}'", key));
+    }
+    conn.execute(
+        "INSERT INTO sources (key, from_date, to_date, exclude_undated)
+         VALUES (?, CAST(? AS DATE), CAST(? AS DATE), ?)
+         ON CONFLICT (key) DO UPDATE SET
+           from_date = CAST(excluded.from_date AS DATE),
+           to_date = CAST(excluded.to_date AS DATE),
+           exclude_undated = excluded.exclude_undated",
+        duckdb::params![key, from, to, exclude_undated],
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+
+    #[test]
+    fn date_key_handles_full_partial_and_undated() {
+        assert_eq!(date_key(Some("2025-07-12")).as_deref(), Some("2025-07-12"));
+        assert_eq!(date_key(Some("2025.07.12")).as_deref(), Some("2025-07-12")); // dotted
+        assert_eq!(date_key(Some("2025-??-??")).as_deref(), Some("2025-01-01")); // year only
+        assert_eq!(date_key(Some("2025-07-??")).as_deref(), Some("2025-07-01")); // year+month
+        assert_eq!(date_key(Some("2025-00-00")).as_deref(), Some("2025-01-01")); // zero parts
+        assert_eq!(date_key(Some("????-??-??")), None);                          // undated
+        assert_eq!(date_key(Some("")), None);
+        assert_eq!(date_key(None), None);
+    }
+
+    #[test]
+    fn admits_respects_bounds() {
+        let w = DateWindow { from: Some("2026-01-01".into()), to: None, exclude_undated: false };
+        assert!(!w.admits(Some("2025-12-31")));
+        assert!(w.admits(Some("2026-01-01"))); // inclusive
+        assert!(w.admits(Some("2030-05-05")));
+
+        let w = DateWindow { from: None, to: Some("2025-12-31".into()), exclude_undated: false };
+        assert!(w.admits(Some("2025-12-31"))); // inclusive
+        assert!(!w.admits(Some("2026-01-01")));
+        assert!(w.admits(Some("1850-01-01")));
+
+        // Partial 2025 date passes a 2025 cap (treated as 2025-01-01).
+        assert!(w.admits(Some("2025-??-??")));
+    }
+
+    #[test]
+    fn admits_handles_undated_per_flag() {
+        let keep = DateWindow { from: Some("2026-01-01".into()), to: None, exclude_undated: false };
+        assert!(keep.admits(Some("????-??-??")), "undated kept when not excluded");
+        let drop = DateWindow { from: Some("2026-01-01".into()), to: None, exclude_undated: true };
+        assert!(!drop.admits(None), "undated dropped when excluded");
+    }
+
+    #[test]
+    fn unbounded_admits_everything() {
+        let w = DateWindow::default();
+        assert!(w.is_unbounded());
+        assert!(w.admits(Some("1500-01-01")));
+        assert!(w.admits(None));
+    }
 }

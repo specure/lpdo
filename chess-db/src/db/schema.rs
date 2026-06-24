@@ -292,18 +292,33 @@ fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
 
 /// Per-database state for each import source (#40). The catalog of *available*
 /// sources lives in code (`crate::sources`); this table records which ones this
-/// database has enabled, whether their attribution was acknowledged, and the
-/// outcome of the last sync. Seeded with TWIC enabled (the historical default).
+/// database has enabled, whether their attribution was acknowledged, the
+/// per-source date window (B1), and the outcome of the last sync. Seeded with
+/// TWIC enabled (the historical default).
+///
+/// `from_date`/`to_date` are inclusive game-date bounds (NULL = unbounded);
+/// `exclude_undated` drops games with no usable date. All default to
+/// unbounded/false, so an existing TWIC source keeps importing everything.
 fn init_sources(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS sources (
-            key          VARCHAR PRIMARY KEY,
-            enabled      BOOLEAN NOT NULL DEFAULT FALSE,
-            credit_acked BOOLEAN NOT NULL DEFAULT FALSE,
-            last_run     TIMESTAMP,
-            last_status  VARCHAR
+            key             VARCHAR PRIMARY KEY,
+            enabled         BOOLEAN NOT NULL DEFAULT FALSE,
+            credit_acked    BOOLEAN NOT NULL DEFAULT FALSE,
+            from_date       DATE,
+            to_date         DATE,
+            exclude_undated BOOLEAN NOT NULL DEFAULT FALSE,
+            last_run        TIMESTAMP,
+            last_status     VARCHAR
         );
+
+        -- Add the date-window columns to databases whose `sources` table predates
+        -- them (Phase A created the table without them).
+        ALTER TABLE sources ADD COLUMN IF NOT EXISTS from_date DATE;
+        ALTER TABLE sources ADD COLUMN IF NOT EXISTS to_date DATE;
+        ALTER TABLE sources ADD COLUMN IF NOT EXISTS exclude_undated BOOLEAN DEFAULT FALSE;
+        UPDATE sources SET exclude_undated = FALSE WHERE exclude_undated IS NULL;
 
         INSERT INTO sources (key, enabled, credit_acked)
         SELECT 'twic', TRUE, FALSE
@@ -394,6 +409,18 @@ mod migration_tests {
             .query_row("SELECT enabled FROM sources WHERE key = 'twic'", [], |r| r.get(0))
             .unwrap();
         assert!(enabled, "twic should be seeded enabled");
+
+        // Date window (B1) defaults to unbounded so existing TWIC keeps importing
+        // every date.
+        let (from, to, excl): (Option<String>, Option<String>, bool) = conn
+            .query_row(
+                "SELECT CAST(from_date AS VARCHAR), CAST(to_date AS VARCHAR), exclude_undated
+                 FROM sources WHERE key = 'twic'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((from, to, excl), (None, None, false), "window defaults unbounded");
     }
 
     #[test]
