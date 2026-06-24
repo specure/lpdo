@@ -792,7 +792,7 @@ fn import_issue(
 ) -> Result<(usize, usize, usize, usize)> {
     // Delete any games written during a previous interrupted run of this issue.
     conn.execute("DELETE FROM games WHERE issue_id = ?", duckdb::params![issue_id])?;
-    let pgn_bytes = extract_pgn_from_zip(zip_path)?;
+    let pgn_bytes = extract_pgn(zip_path)?;
     process_pgn_bytes(conn, issue_id, collection_id, visibility, &pgn_bytes, max_position_depth, ctx, None, fast, window)
 }
 
@@ -1287,6 +1287,26 @@ fn flush_positions(conn: &Connection, positions: &[PositionRow], fast: bool) -> 
         conn.execute_batch("COMMIT")?;
     }
     Ok(())
+}
+
+/// Read a downloaded source file into raw PGN bytes, decompressing by extension:
+/// `.zip` (TWIC), `.zst` (Lichess broadcasts, #40 B2), or a plain `.pgn`.
+fn extract_pgn(path: &Path) -> Result<Vec<u8>> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    match ext.as_str() {
+        "zip" => extract_pgn_from_zip(path),
+        "zst" | "zstd" => {
+            let f = std::fs::File::open(path)?;
+            zstd::stream::decode_all(std::io::BufReader::new(f))
+                .map_err(|e| anyhow::anyhow!("zstd decode {}: {}", path.display(), e))
+        }
+        "pgn" | "" => Ok(std::fs::read(path)?),
+        other => anyhow::bail!("unsupported file type '.{}': {}", other, path.display()),
+    }
 }
 
 fn extract_pgn_from_zip(zip_path: &Path) -> Result<Vec<u8>> {

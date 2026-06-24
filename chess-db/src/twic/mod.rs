@@ -46,6 +46,9 @@ pub async fn list_items(from: Option<u32>, to: Option<u32>) -> Result<Vec<FeedIt
             url: format!("https://theweekinchess.com/zips/twic{issue}g.zip"),
             filename: format!("twic{issue}g.zip"),
             db_id: Some(issue as i32),
+            // A TWIC issue can carry correction games from older dates, so its
+            // coverage isn't a clean range — always download, filter per game.
+            covers: None,
         })
         .collect();
     Ok(items)

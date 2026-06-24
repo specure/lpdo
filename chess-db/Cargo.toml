@@ -27,6 +27,8 @@ indicatif = "0.18"
 
 # Zip extraction
 zip = "8"
+# Zstandard decompression (Lichess .pgn.zst broadcast files, #40 Phase B2)
+zstd = "0.13"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

@@ -319,12 +319,26 @@ fn init_sources(conn: &Connection) -> Result<()> {
         ALTER TABLE sources ADD COLUMN IF NOT EXISTS to_date DATE;
         ALTER TABLE sources ADD COLUMN IF NOT EXISTS exclude_undated BOOLEAN DEFAULT FALSE;
         UPDATE sources SET exclude_undated = FALSE WHERE exclude_undated IS NULL;
-
-        INSERT INTO sources (key, enabled, credit_acked)
-        SELECT 'twic', TRUE, FALSE
-        WHERE NOT EXISTS (SELECT 1 FROM sources WHERE key = 'twic');
         ",
     )?;
+
+    // Seed a state row for every catalog source with its default enabled flag and
+    // date window. ON CONFLICT DO NOTHING leaves existing rows (and the user's
+    // choices) untouched — defaults only apply to sources new to this database.
+    for s in crate::sources::CATALOG {
+        conn.execute(
+            "INSERT INTO sources (key, enabled, from_date, to_date, exclude_undated)
+             VALUES (?, ?, CAST(? AS DATE), CAST(? AS DATE), ?)
+             ON CONFLICT (key) DO NOTHING",
+            duckdb::params![
+                s.key,
+                s.default_enabled,
+                s.default_from,
+                s.default_to,
+                s.default_exclude_undated
+            ],
+        )?;
+    }
     Ok(())
 }
 
@@ -421,6 +435,18 @@ mod migration_tests {
             )
             .unwrap();
         assert_eq!((from, to, excl), (None, None, false), "window defaults unbounded");
+
+        // Lichess Broadcasts is seeded from the catalog: disabled, live-tail
+        // window (from 2026-01-01).
+        let (lenabled, lfrom): (bool, Option<String>) = conn
+            .query_row(
+                "SELECT enabled, CAST(from_date AS VARCHAR) FROM sources WHERE key = 'lichess-broadcasts'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(!lenabled, "lichess should be seeded disabled");
+        assert_eq!(lfrom.as_deref(), Some("2026-01-01"));
     }
 
     #[test]
