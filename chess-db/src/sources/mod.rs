@@ -350,6 +350,20 @@ pub fn set_enabled(conn: &Connection, key: &str, enabled: bool) -> Result<()> {
     Ok(())
 }
 
+/// Record that the user acknowledged a source's attribution/license (the
+/// one-time gate before enabling it in the GUI, #40 C1).
+pub fn acknowledge(conn: &Connection, key: &str) -> Result<()> {
+    if get(key).is_none() {
+        return Err(anyhow!("unknown source '{}'", key));
+    }
+    conn.execute(
+        "INSERT INTO sources (key, credit_acked) VALUES (?, TRUE)
+         ON CONFLICT (key) DO UPDATE SET credit_acked = TRUE",
+        duckdb::params![key],
+    )?;
+    Ok(())
+}
+
 /// Record the outcome of a source's sync.
 pub fn record_run(conn: &Connection, key: &str, status: &str) -> Result<()> {
     conn.execute(

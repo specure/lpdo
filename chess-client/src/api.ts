@@ -90,3 +90,38 @@ export async function runUpdateNow(): Promise<string> {
   const res = await postJson<{ job_id: string }>("/schedule/run", {});
   return res.job_id;
 }
+
+// ── Sources (multi-source import catalog, #40) ────────────────────────────────
+
+import type { SourceStatus } from "./types";
+
+/** The curated source catalog + this database's state for each. */
+export function getSources(): Promise<SourceStatus[]> {
+  return apiGet<SourceStatus[]>("/sources");
+}
+
+/** Enable/disable a source. When enabling for the first time, pass
+ *  `creditAcked` to record the attribution acknowledgment in the same step. */
+export async function setSourceEnabled(
+  key: string,
+  enabled: boolean,
+  creditAcked = false,
+): Promise<void> {
+  await submitJob({
+    type: "sources_set_enabled",
+    params: { source: key, enabled, credit_acked: creditAcked },
+  });
+}
+
+/** Set a source's game-date window. `from`/`to` of null clear that bound. */
+export async function setSourceWindow(
+  key: string,
+  from: string | null,
+  to: string | null,
+  excludeUndated: boolean,
+): Promise<void> {
+  await submitJob({
+    type: "sources_set_window",
+    params: { source: key, from, to, exclude_undated: excludeUndated },
+  });
+}

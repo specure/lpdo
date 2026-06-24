@@ -216,3 +216,31 @@ export interface StatusInfo {
   /** ISO timestamp at which `last_twic_issue` was imported. */
   last_twic_imported?: string | null;
 }
+
+// ── Sources (multi-source import catalog, #40) ────────────────────────────────
+
+/** One curated import source's catalog metadata + this database's state for it.
+ *  Mirrors the server's `/sources` payload. */
+export interface SourceStatus {
+  key: string;
+  name: string;
+  kind: "feed" | "bulk";
+  description: string;
+  homepage: string;
+  /** Attribution line shown in the acknowledgment gate. */
+  credit: string;
+  /** Collection games from this source are grouped into (1:1). */
+  collection: string;
+  enabled: boolean;
+  /** Whether the attribution/license was acknowledged (gates enabling). */
+  credit_acked: boolean;
+  /** Inclusive game-date window (ISO YYYY-MM-DD); null = unbounded. */
+  from_date: string | null;
+  to_date: string | null;
+  exclude_undated: boolean;
+  /** ISO timestamp of the last sync, and its outcome ("ok" / error text). */
+  last_run: string | null;
+  last_status: string | null;
+  /** Items (issues/files) imported for this source. */
+  items: number;
+}

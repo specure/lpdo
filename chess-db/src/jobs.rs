@@ -593,6 +593,10 @@ fn run_job(
             let key = p.get("source").and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow!("sources_set_enabled: 'source' required"))?;
             let enabled = flag(p, "enabled");
+            // The GUI's acknowledge→enable gate sets credit_acked alongside enabling.
+            if flag(p, "credit_acked") {
+                crate::sources::acknowledge(conn, key)?;
+            }
             crate::sources::set_enabled(conn, key, enabled)?;
             reporter.done(format!("Source '{}' {}.", key, if enabled { "enabled" } else { "disabled" }));
         }
