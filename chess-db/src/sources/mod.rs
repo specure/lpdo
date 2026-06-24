@@ -39,19 +39,47 @@ pub struct CatalogSource {
     pub credit: &'static str,
     /// Collection that games from this source are grouped into (1:1).
     pub collection: &'static str,
+    /// Seeded into the `sources` table for a *new* row (existing rows are left
+    /// as-is). `default_from`/`default_to` are the initial date window (B1).
+    pub default_enabled: bool,
+    pub default_from: Option<&'static str>,
+    pub default_to: Option<&'static str>,
+    pub default_exclude_undated: bool,
 }
 
-/// The curated, compiled-in catalog. Phase A ships TWIC only; bulk sources land
-/// in Phase B (#40).
-pub static CATALOG: &[CatalogSource] = &[CatalogSource {
-    key: "twic",
-    name: "The Week in Chess",
-    kind: SourceKind::Feed,
-    description: "Weekly archive of recent tournament games, published since 1994.",
-    homepage: "https://theweekinchess.com/",
-    credit: "Games courtesy of Mark Crowther — The Week in Chess (theweekinchess.com).",
-    collection: "TWIC",
-}];
+/// The curated, compiled-in catalog. TWIC (weekly) + Lichess Broadcasts (monthly)
+/// are feeds; bulk sources land in Phase B3 (#40).
+pub static CATALOG: &[CatalogSource] = &[
+    CatalogSource {
+        key: "twic",
+        name: "The Week in Chess",
+        kind: SourceKind::Feed,
+        description: "Weekly archive of recent tournament games, published since 1994.",
+        homepage: "https://theweekinchess.com/",
+        credit: "Games courtesy of Mark Crowther — The Week in Chess (theweekinchess.com).",
+        collection: "TWIC",
+        // TWIC is the historical default: enabled, unbounded. The partition cap
+        // (from 2026) is applied via the wizard/UI, not forced on every install.
+        default_enabled: true,
+        default_from: None,
+        default_to: None,
+        default_exclude_undated: false,
+    },
+    CatalogSource {
+        key: "lichess-broadcasts",
+        name: "Lichess Broadcasts",
+        kind: SourceKind::Feed,
+        description: "Over-the-board tournament games relayed live on Lichess, packaged monthly.",
+        homepage: "https://database.lichess.org/",
+        credit: "Lichess Broadcasts — lichess.org, CC BY-SA 4.0.",
+        collection: "Lichess Broadcasts",
+        // Off by default; live-tail role → from 2026-01-01 (its games only).
+        default_enabled: false,
+        default_from: Some("2026-01-01"),
+        default_to: None,
+        default_exclude_undated: false,
+    },
+];
 
 pub fn get(key: &str) -> Option<&'static CatalogSource> {
     CATALOG.iter().find(|s| s.key == key)
@@ -70,27 +98,35 @@ pub struct FeedItem {
     /// Preferred ledger id. TWIC reuses the issue number for back-compat; `None`
     /// makes the runner allocate a synthetic id (>=1e6).
     pub db_id: Option<i32>,
+    /// Inclusive ISO date range this item covers, if known (e.g. a Lichess month).
+    /// Lets the runner skip downloading a whole file that lies outside the
+    /// source's date window. `None` = unknown → always download (TWIC).
+    pub covers: Option<(String, String)>,
 }
 
 /// Acquisition strategy for a feed source. Enum dispatch keeps it object-safe
 /// and dependency-free; add a variant per new feed.
 pub enum Feed {
     Twic,
+    Lichess,
 }
 
 impl Feed {
     pub fn for_key(key: &str) -> Option<Feed> {
         match key {
             "twic" => Some(Feed::Twic),
+            "lichess-broadcasts" => Some(Feed::Lichess),
             _ => None,
         }
     }
 
     /// Enumerate the items the feed currently offers within an optional range
-    /// (range semantics are the feed's own; TWIC treats them as issue numbers).
+    /// (range semantics are the feed's own; TWIC treats them as issue numbers,
+    /// Lichess ignores them and lets the date window select months).
     pub async fn list_items(&self, from: Option<u32>, to: Option<u32>) -> Result<Vec<FeedItem>> {
         match self {
             Feed::Twic => crate::twic::list_items(from, to).await,
+            Feed::Lichess => crate::lichess::list_items(from, to).await,
         }
     }
 
@@ -98,6 +134,7 @@ impl Feed {
     pub async fn fetch_item(&self, item: &FeedItem, dest: &Path) -> Result<()> {
         match self {
             Feed::Twic => crate::twic::fetch_item(item, dest).await,
+            Feed::Lichess => crate::lichess::fetch_item(item, dest).await,
         }
     }
 }
@@ -152,7 +189,24 @@ pub async fn download_feed(
     let feed = Feed::for_key(src.key).ok_or_else(|| anyhow!("'{}' is not a feed source", src.key))?;
 
     reporter.log(format!("Fetching {} item list…", src.name));
-    let items = feed.list_items(from, to).await?;
+    let mut items = feed.list_items(from, to).await?;
+
+    // Skip downloading whole files that lie entirely outside the source's date
+    // window (e.g. Lichess months before `from_date`). Items with no known
+    // coverage (TWIC issues) are always kept and filtered per-game at import.
+    let win = window(conn, src.key)?;
+    if !win.is_unbounded() {
+        let before = items.len();
+        items.retain(|it| match &it.covers {
+            Some((s, e)) => win.overlaps_range(s, e),
+            None => true,
+        });
+        let dropped = before - items.len();
+        if dropped > 0 {
+            reporter.log(format!("Skipping {dropped} file(s) outside the date window."));
+        }
+    }
+
     if items.is_empty() {
         reporter.done("Nothing to download.");
         return Ok(());
@@ -343,6 +397,22 @@ impl DateWindow {
     /// True if this window filters nothing — the importer can skip per-game checks.
     pub fn is_unbounded(&self) -> bool {
         self.from.is_none() && self.to.is_none() && !self.exclude_undated
+    }
+
+    /// Whether the inclusive ISO date range `[start, end]` overlaps this window
+    /// at all — used to decide if a whole file is worth downloading.
+    pub fn overlaps_range(&self, start: &str, end: &str) -> bool {
+        if let Some(f) = &self.from {
+            if end < f.as_str() {
+                return false;
+            }
+        }
+        if let Some(t) = &self.to {
+            if start > t.as_str() {
+                return false;
+            }
+        }
+        true
     }
 
     /// Whether a game with the given PGN date passes the window.

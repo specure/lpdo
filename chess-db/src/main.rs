@@ -12,6 +12,7 @@ mod db;
 mod dedup;
 mod importer;
 mod jobs;
+mod lichess;
 mod normalise;
 mod players;
 mod progress;
