@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { TwicCredit, useTwicAck } from "./TwicCredit";
 import { useSidecarProgress } from "../hooks/useSidecarProgress";
 import { getSchedule, updateSchedule, runUpdateNow, type ScheduleInfo } from "../api";
-import { getTwicFrom, setTwicFrom } from "../twicPrefs";
+import SourcesPanel from "./SourcesPanel";
 import AddGameDialog from "./AddGameDialog";
 import MergePlayersDialog from "./MergePlayersDialog";
 import { StatusInfo } from "../types";
@@ -283,81 +282,6 @@ function DatabasesSection({ onMutated }: { onMutated?: () => void }) {
         onClose={() => { /* embedded: no close button */ }}
         onImported={() => onMutated?.()}
       />
-    </SectionCard>
-  );
-}
-
-// ── TWIC section ──────────────────────────────────────────────────────────────
-
-function TwicSection({ status }: { status: StatusInfo | null }) {
-  const download = useSidecarProgress("maint-twic-download");
-  const importProgress = useSidecarProgress("maint-twic-import");
-  const [twicAck, setTwicAck] = useTwicAck();
-  // Shared with the setup wizard so the starting issue stays in sync.
-  const [fromIssue, setFromIssue] = useState(getTwicFrom());
-  // The server owns the TWIC cache under its own data dir; show that, not a guess.
-  const twicDir = status?.data_dir ? `${status.data_dir}/twic` : "";
-
-  // No --dir: the server downloads/imports into ITS OWN twic dir
-  // (data_root()/twic). Passing a client path would be wrong for the system
-  // daemon (it can't expand `~` and owns a different data root).
-  function runDownload() {
-    void download.run(["download", "--from", fromIssue]);
-  }
-
-  function runImport() {
-    // --fast = appender-based bulk inserts (much quicker; not interruptible).
-    void importProgress.run(["import", "--fast"]);
-  }
-
-  return (
-    <SectionCard title="TWIC — The Week in Chess">
-      <TwicCredit acknowledged={twicAck} onAcknowledgeChange={setTwicAck} />
-
-      <div className="flex items-center gap-2 mb-1">
-        <span className="text-label-md text-on-surface-variant shrink-0">Folder</span>
-        <span className="font-mono text-body-sm text-on-surface-variant truncate">{twicDir || "—"}</span>
-      </div>
-
-      <div className="space-y-3">
-        {/* Download */}
-        <div className="space-y-1">
-          <div className="text-label-md text-on-surface">Download</div>
-          {!download.running && !download.done && (
-            twicAck ? (
-              <div className="space-y-2">
-                <label className="flex items-center gap-2 text-body-sm text-on-surface-variant">
-                  <span>Download from issue</span>
-                  <input
-                    type="number"
-                    value={fromIssue}
-                    onChange={(e) => { setFromIssue(e.target.value); setTwicFrom(e.target.value); }}
-                    className="w-28 h-9 px-3 rounded-sm bg-transparent text-on-surface text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
-                  />
-                  <span className="text-label-sm text-on-surface-variant">from 920</span>
-                </label>
-                <ActionButton onClick={runDownload} disabled={false}>Download new issues</ActionButton>
-              </div>
-            ) : (
-              <p className="text-label-sm text-on-surface-variant">Tick “I've read this” above to enable downloading.</p>
-            )
-          )}
-          {(download.running || download.done) && (
-            <ProgressSection progress={download} label="Downloading…" />
-          )}
-        </div>
-
-        {/* Import — tonal step substitutes for the divider */}
-        <div className="space-y-1 pt-3">
-          <div className="text-label-md text-on-surface">Import into database</div>
-          {!importProgress.running && !importProgress.done && (
-            <ActionButton onClick={runImport} disabled={false}>Import new issues</ActionButton>
-          )}
-          {(importProgress.running || importProgress.done) && (
-            <ProgressSection progress={importProgress} label="Importing…" />
-          )}
-        </div>
-      </div>
     </SectionCard>
   );
 }
@@ -816,6 +740,7 @@ function AutoUpdateSection({ onMutated }: { onMutated?: () => void }) {
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 
 const TABS = [
+  { id: "sources", label: "Sources" },
   { id: "databases", label: "Databases" },
   { id: "players", label: "Players" },
   { id: "others", label: "Others" },
@@ -852,7 +777,7 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated }: Pro
   // screen's layout: a centred max-width column on the bg-surface base. The tools
   // are grouped into tabs (Databases / Players / Others) to keep each view
   // uncluttered; the database overview stays pinned above the tabs.
-  const [tab, setTab] = useState<TabId>("databases");
+  const [tab, setTab] = useState<TabId>("sources");
 
   // Inactive tabs are hidden, not unmounted, so a long-running job (e.g. a TWIC
   // import) keeps its live progress when you switch away and back.
@@ -885,9 +810,12 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated }: Pro
         <div className="space-y-6">
           <TabBar active={tab} onChange={setTab} />
 
+          <div className={tab === "sources" ? "" : "hidden"}>
+            <SourcesPanel onMutated={onMutated} />
+          </div>
+
           <div className={`${grid} ${tab === "databases" ? "" : "hidden"}`}>
             <AutoUpdateSection onMutated={onMutated} />
-            <TwicSection status={status} />
             <DatabasesSection onMutated={onMutated} />
             <DeduplicationSection onMutated={onMutated} />
             <IndexSection />
