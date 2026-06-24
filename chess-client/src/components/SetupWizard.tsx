@@ -3,9 +3,8 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useSidecarProgress } from "../hooks/useSidecarProgress";
 import AddGameDialog from "./AddGameDialog";
 import { ProfileSetupForm, loadMyPlayer, saveMyPlayer } from "./MyStatsWidget";
-import { TwicCredit, useTwicAck } from "./TwicCredit";
-import { getTwicFrom, setTwicFrom } from "../twicPrefs";
-import { PlayerInfo } from "../types";
+import { getSources, setSourceEnabled, submitJob } from "../api";
+import { PlayerInfo, SourceStatus } from "../types";
 
 interface Props {
   onClose: () => void;
@@ -14,14 +13,14 @@ interface Props {
   onFinish?: () => void;
 }
 
-type Step = "welcome" | "players" | "databases" | "twic" | "dedup" | "normalise" | "index" | "profile" | "done";
+type Step = "welcome" | "players" | "databases" | "sources" | "dedup" | "normalise" | "index" | "profile" | "done";
 
-const STEPS: Step[] = ["welcome", "players", "databases", "twic", "dedup", "normalise", "index", "profile", "done"];
+const STEPS: Step[] = ["welcome", "players", "databases", "sources", "dedup", "normalise", "index", "profile", "done"];
 const STEP_LABELS: Record<Step, string> = {
   welcome:   "Welcome",
   players:   "Players",
   databases: "Databases",
-  twic:      "TWIC",
+  sources:   "Sources",
   dedup:     "Dedup",
   normalise: "Names",
   index:     "Index",
@@ -29,7 +28,7 @@ const STEP_LABELS: Record<Step, string> = {
   done:      "Summary",
 };
 
-const OPTIONAL_STEPS: Step[] = ["players", "databases", "twic", "dedup", "normalise", "index", "profile"];
+const OPTIONAL_STEPS: Step[] = ["players", "databases", "sources", "dedup", "normalise", "index", "profile"];
 const STORAGE_KEY = "chess-setup-state";
 
 interface PersistedState {
@@ -147,7 +146,7 @@ function WelcomeStep({ onExpress, onAdvanced }: {
         >
           <span className="text-title-md">Express setup</span>
           <span className="text-body-sm opacity-90">
-            Just the essentials: download and import TWIC, deduplicate, and build the
+            Just the essentials: populate the reference database, deduplicate, and build the
             position index. Skips the optional player-reference and existing-database
             steps.
           </span>
@@ -172,7 +171,7 @@ function WelcomeStep({ onExpress, onAdvanced }: {
         {[
           "Import a player reference file",
           "Import your existing game collections",
-          "Download and import TWIC issues",
+          "Populate from curated reference sources",
           "Deduplicate the database",
           "Build the position index",
         ].map((text, i) => (
@@ -277,106 +276,221 @@ function DatabasesStep({ completed, onComplete, onRunningChange }: { completed: 
   );
 }
 
-// ── Step: TWIC (download + import) ────────────────────────────────────────────
+// ── Step: Sources (populate the reference database) ───────────────────────────
+//
+// Phase C2 (#98): onboarding is a simple binary — populate the reference
+// database vs start empty — with all per-source detail deferred to
+// Maintenance → Sources (C1). The "populate" path enables the chosen catalog
+// sources (recording the attribution acknowledgment via the C1 `credit_acked`
+// gate) and fires their sync jobs, which run on the daemon in the background;
+// onboarding finishes immediately rather than blocking on a progress bar.
 
-/** Download/import progress block, shared by the two TWIC operations.
- *  `cancellable` is false for the fast (appender) import, which must not be
- *  interrupted — doing so can corrupt the database. */
-function StepProgress({ progress, label, cancellable = true }: { progress: ReturnType<typeof useSidecarProgress>; label: string; cancellable?: boolean }) {
+type History = "free" | "commercial" | "none";
+
+/** A non-commercial / restrictive licence we should visibly flag in the
+ *  acknowledgment (e.g. CC BY-NC-SA sources like Lumbra's). Derived from the
+ *  catalog credit line so new sources are flagged without extra metadata. */
+function isNonCommercial(credit: string): boolean {
+  return /non-?commercial|CC[\s-]?BY-NC|\bNC[\s-]?SA\b/i.test(credit);
+}
+
+/** One acknowledgment row: tick to accept a source's attribution/licence. */
+function AckRow({ source, checked, onChange }: { source: SourceStatus; checked: boolean; onChange: (v: boolean) => void }) {
+  const nc = isNonCommercial(source.credit);
   return (
-    <div className="space-y-2">
-      <div className="flex justify-between text-label-md text-on-surface-variant">
-        <span>{progress.done ? "Complete" : label}</span>
-        <span>{Math.round(progress.percent)}%</span>
-      </div>
-      <ProgressBar value={progress.percent} />
-      {progress.done && <p className="text-success text-body-sm">✓ {progress.doneMessage}</p>}
-      {progress.running && !progress.done && cancellable && (
-        <div className="flex justify-end">
-          <button
-            onClick={progress.cancel}
-            className="h-8 px-4 inline-flex items-center rounded-full text-error border border-outline text-label-md hover:bg-error/8 transition-colors duration-short3 ease-standard"
-          >
-            Cancel
-          </button>
-        </div>
-      )}
-    </div>
+    <label className="flex items-start gap-3 bg-surface-container-low rounded-lg px-3 py-2.5 cursor-pointer">
+      <input type="checkbox" className="mt-1 shrink-0" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <span className="space-y-0.5">
+        <span className="flex items-center gap-2 text-body-sm text-on-surface">
+          {source.name}
+          {nc && <span className="text-label-sm text-warning">⚠ non-commercial</span>}
+        </span>
+        <span className="block text-label-sm text-on-surface-variant">{source.credit}</span>
+      </span>
+    </label>
   );
 }
 
-// Download and import TWIC in a single step (mirrors the Maintenance TWIC box).
-// The step counts as complete once issues are imported into the database.
-function TwicStep({ completed, onComplete, onRunningChange }: { completed: boolean; onComplete: () => void; onRunningChange: (r: boolean) => void }) {
-  // Shared with the Maintenance panel so the starting issue stays in sync.
-  const [fromIssue, setFromIssue] = useState(getTwicFrom());
+// Replaces the old inline "download + import TWIC with a progress bar" step.
+// The step completes as soon as the chosen sources are enabled and their
+// background sync jobs are submitted — the daemon does the work afterwards.
+function SourcesStep({ completed, onComplete, onRunningChange }: { completed: boolean; onComplete: () => void; onRunningChange: (r: boolean) => void }) {
   const [rerunning, setRerunning] = useState(false);
-  const [twicAck, setTwicAck] = useTwicAck();
-  const download = useSidecarProgress();
-  const importProgress = useSidecarProgress();
+  const [sources, setSources] = useState<SourceStatus[] | null>(null);
+  const [mode, setMode] = useState<"choice" | "configure">("choice");
+  const [history, setHistory] = useState<History>("free");
+  const [acked, setAcked] = useState<Set<string>>(new Set());
+  const [enabling, setEnabling] = useState(false);
 
-  useEffect(() => { if (importProgress.done) onComplete(); }, [importProgress.done]);
-  useEffect(() => { onRunningChange(download.running || importProgress.running); }, [download.running, importProgress.running]);
-
-  // No --dir: the server downloads/imports into its own data dir
-  // (data_root()/twic) — passing a client path is wrong for the system daemon.
-  function runDownload() {
-    void download.run(["download", "--from", fromIssue]);
-  }
-  function runImport() {
-    // --fast = appender-based bulk inserts (much quicker). It must not be
-    // interrupted, so the import progress below is rendered non-cancelable.
-    void importProgress.run(["import", "--fast"]);
-  }
+  useEffect(() => {
+    getSources()
+      .then((s) => { setSources(s); setAcked(new Set(s.filter((x) => x.credit_acked).map((x) => x.key))); })
+      .catch(() => setSources([]));
+  }, []);
 
   if (completed && !rerunning) {
-    return <CompletedBanner summary="TWIC issues downloaded and imported" onRerun={() => setRerunning(true)} />;
+    return <CompletedBanner summary="Reference sources configured" onRerun={() => { setRerunning(true); setMode("choice"); }} />;
   }
 
-  const filledBtn = "w-full h-10 rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard";
+  // Currency = the auto-updating feeds; deep history = the bulk archives.
+  const feeds = sources?.filter((s) => s.kind === "feed") ?? [];
+  const bulk = sources?.filter((s) => s.kind === "bulk") ?? [];
+  // Sources enabled by the primary button: the feeds always, plus the free
+  // historical base when chosen. (Commercial = the user's own local PGN import;
+  // None = feeds only.)
+  const selected = [...feeds, ...(history === "free" ? bulk : [])];
+  const allAcked = selected.every((s) => acked.has(s.key));
+
+  function toggleAck(key: string, on: boolean) {
+    setAcked((prev) => { const next = new Set(prev); if (on) next.add(key); else next.delete(key); return next; });
+  }
+
+  function chooseEmpty() {
+    // Empty database: nothing to enable (sources default to off). Just finish.
+    onComplete();
+  }
+
+  async function enableAndImport() {
+    setEnabling(true);
+    onRunningChange(true);
+    try {
+      // Enable each chosen source (recording the acknowledgment in the same
+      // step, per the C1 credit_acked gate) and kick a background sync. The
+      // daemon runs these serially; we don't block onboarding on them.
+      for (const s of selected) {
+        await setSourceEnabled(s.key, true, true);
+        await submitJob({ type: "sources_sync", params: { source: s.key } });
+      }
+      onComplete();
+    } finally {
+      setEnabling(false);
+      onRunningChange(false);
+    }
+  }
+
+  if (sources === null) {
+    return <p className="text-body-sm text-on-surface-variant">Loading sources…</p>;
+  }
+
+  // ── View 1: the binary choice ──
+  if (mode === "choice") {
+    return (
+      <div className="space-y-5">
+        <p className="text-on-surface text-body-md leading-relaxed">
+          Populate your database with curated reference collections, or start empty and import only
+          your own games. You can change any of this later under Maintenance → Sources.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <button
+            onClick={() => setMode("configure")}
+            className="text-left flex flex-col gap-2 p-5 rounded-2xl bg-primary-container text-on-primary-container hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard"
+          >
+            <span className="text-title-md">Populate the reference database</span>
+            <span className="text-body-sm opacity-90">
+              Import curated tournament archives and keep recent games current automatically.
+              The import runs in the background.
+            </span>
+            <span className="text-label-lg mt-1">Recommended →</span>
+          </button>
+          <button
+            onClick={chooseEmpty}
+            className="text-left flex flex-col gap-2 p-5 rounded-2xl bg-surface-container-highest text-on-surface hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard"
+          >
+            <span className="text-title-md">Start with an empty database</span>
+            <span className="text-body-sm text-on-surface-variant">
+              Skip the reference sources — import your own games only. You can add sources any time later.
+            </span>
+            <span className="text-label-lg text-primary mt-1">Empty →</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── View 2: configure the populate path ──
+  const filledBtn = "w-full h-10 rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 disabled:opacity-40 transition-all duration-short3 ease-standard";
+  const historyOptions: { value: History; label: string; hint: string }[] = [
+    { value: "free", label: "Free historical base", hint: bulk.map((s) => s.name).join(", ") || "A free public archive of older games." },
+    { value: "commercial", label: "I own a commercial database", hint: "e.g. ChessBase Megabase — export to PGN and import it below." },
+    { value: "none", label: "None", hint: "Just the live feeds for now." },
+  ];
 
   return (
-    <div className="space-y-4">
-      <p className="text-on-surface-variant text-body-md">
-        Download TWIC (The Week in Chess) issues and import them into your database, in one place. Issues already present or imported are skipped automatically.
-      </p>
-      <TwicCredit acknowledged={twicAck} onAcknowledgeChange={setTwicAck} />
+    <div className="space-y-5">
+      <button onClick={() => setMode("choice")} className="text-label-md text-primary">← Back to choice</button>
 
-      {/* Download */}
-      <div className="space-y-2">
-        <div className="text-label-md text-on-surface">Download</div>
-        <div>
-          <div className="text-label-sm text-on-surface-variant uppercase tracking-wider mb-2">Download from issue</div>
-          <input
-            type="number"
-            value={fromIssue}
-            onChange={(e) => { setFromIssue(e.target.value); setTwicFrom(e.target.value); }}
-            disabled={download.running || download.done}
-            className="w-32 h-10 px-3 rounded-sm bg-transparent text-on-surface text-body-md font-mono border border-outline focus:outline-none focus:border-primary disabled:opacity-50 transition-colors duration-short3 ease-standard"
-          />
-          <p className="text-label-sm text-on-surface-variant mt-1">Issues are available from 920 onwards.</p>
+      {/* Currency — the auto-updating feeds, always part of populate. */}
+      <section className="space-y-2">
+        <div className="text-label-sm text-on-surface-variant uppercase tracking-wider">Keep current automatically</div>
+        <p className="text-body-sm text-on-surface-variant">
+          Recent tournament games, refreshed in the background. Acknowledge each source to enable it.
+        </p>
+        <div className="space-y-2">
+          {feeds.map((s) => (
+            <AckRow key={s.key} source={s} checked={acked.has(s.key)} onChange={(v) => toggleAck(s.key, v)} />
+          ))}
         </div>
-        {!download.running && !download.done && (
-          twicAck ? (
-            <button onClick={runDownload} className={filledBtn}>Download TWIC Issues</button>
-          ) : (
-            <p className="text-label-sm text-on-surface-variant">Tick “I've read this” above to enable the download.</p>
-          )
-        )}
-        {(download.running || download.done) && <StepProgress progress={download} label="Downloading…" />}
-      </div>
+      </section>
 
-      {/* Import */}
-      <div className="space-y-2 pt-2">
-        <div className="text-label-md text-on-surface">Import into database</div>
-        {!importProgress.running && !importProgress.done && (
-          download.done ? (
-            <button onClick={runImport} className={filledBtn}>Import Downloaded Issues</button>
-          ) : (
-            <p className="text-body-sm text-on-surface-variant">Download issues first to enable the import.</p>
-          )
+      {/* Deep history — Free / Commercial / None. */}
+      <section className="space-y-2">
+        <div className="text-label-sm text-on-surface-variant uppercase tracking-wider">Deep history</div>
+        <p className="text-body-sm text-on-surface-variant">
+          An optional historical base beneath the live feeds. Overlap is deduplicated automatically.
+        </p>
+        <div className="space-y-1.5">
+          {historyOptions.map((opt) => (
+            <label key={opt.value} className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="radio"
+                name="deep-history"
+                className="mt-1 shrink-0"
+                checked={history === opt.value}
+                onChange={() => setHistory(opt.value)}
+              />
+              <span>
+                <span className="block text-body-md text-on-surface">{opt.label}</span>
+                <span className="block text-label-sm text-on-surface-variant">{opt.hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        {history === "free" && bulk.length > 0 && (
+          <div className="space-y-2 pt-1">
+            {bulk.map((s) => (
+              <AckRow key={s.key} source={s} checked={acked.has(s.key)} onChange={(v) => toggleAck(s.key, v)} />
+            ))}
+          </div>
         )}
-        {(importProgress.running || importProgress.done) && <StepProgress progress={importProgress} label="Importing…" cancellable={false} />}
+        {history === "commercial" && (
+          <div className="pt-1 space-y-2">
+            <p className="text-body-sm text-on-surface-variant">
+              Export your database to PGN, then import it here. You can also do this later, and cap the
+              live feeds to start after its cutoff under Maintenance → Sources.
+            </p>
+            <AddGameDialog
+              embedded
+              initialMode="file"
+              allowedModes={["file"]}
+              bulk
+              onClose={() => { /* wizard handles navigation */ }}
+              onImported={() => { /* optional — the button below still finishes the step */ }}
+              onRunningChange={onRunningChange}
+            />
+          </div>
+        )}
+      </section>
+
+      <div className="space-y-2">
+        <button onClick={() => { void enableAndImport(); }} disabled={!allAcked || enabling} className={filledBtn}>
+          {enabling ? "Enabling…" : "Enable & import in the background"}
+        </button>
+        {!allAcked && (
+          <p className="text-label-sm text-on-surface-variant">Acknowledge each selected source above to continue.</p>
+        )}
+        <p className="text-label-sm text-on-surface-variant">
+          ⓘ Importing runs on the daemon — you can finish setup and even close LPDO; it keeps going.
+        </p>
       </div>
     </div>
   );
@@ -611,7 +725,8 @@ function DoneStep() {
         <p className="text-on-surface-variant text-body-md mt-1">Your chess database is ready to use.</p>
       </div>
       <p className="text-on-surface-variant text-label-md">
-        Download newer TWIC issues and run maintenance operations at any time from the Setup panel in the header.
+        Manage your reference sources and run maintenance operations at any time from
+        Maintenance → Sources, or re-open this wizard from the header.
       </p>
     </div>
   );
@@ -658,7 +773,7 @@ export default function SetupWizard({ onClose, onFinish }: Props) {
   function back() { if (stepIndex > 0) setStepIndex((i) => i - 1); }
 
   // Welcome choices. Advanced walks every step; Express marks the two optional
-  // import steps (players, databases) as skipped and jumps straight to TWIC.
+  // import steps (players, databases) as skipped and jumps straight to Sources.
   function startAdvanced() {
     markComplete("welcome");
     next();
@@ -666,7 +781,7 @@ export default function SetupWizard({ onClose, onFinish }: Props) {
   function startExpress() {
     markComplete("welcome");
     setSkippedSteps((prev) => new Set([...prev, "players", "databases"]));
-    setStepIndex(STEPS.indexOf("twic"));
+    setStepIndex(STEPS.indexOf("sources"));
   }
 
   const stepProps = (s: Step) => ({
@@ -719,7 +834,7 @@ export default function SetupWizard({ onClose, onFinish }: Props) {
           {step === "welcome"   && <WelcomeStep onExpress={startExpress} onAdvanced={startAdvanced} />}
           {step === "players"   && <PlayersStep   {...stepProps("players")} />}
           {step === "databases" && <DatabasesStep {...stepProps("databases")} />}
-          {step === "twic"      && <TwicStep      {...stepProps("twic")} />}
+          {step === "sources"   && <SourcesStep   {...stepProps("sources")} />}
           {step === "dedup"     && <DedupStep     {...stepProps("dedup")} />}
           {step === "normalise" && <NormaliseStep {...stepProps("normalise")} />}
           {step === "index"     && <IndexStep     {...stepProps("index")} />}
