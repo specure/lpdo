@@ -352,6 +352,16 @@ pub fn import(
 
     let mut ctx = ImportContext::new(conn, skip_dedup)?;
     let collection_id = upsert_collection(conn, collection)?;
+    let window = crate::sources::window(conn, source_key)?;
+    if !window.is_unbounded() {
+        reporter.log(format!(
+            "Date window for '{}': {}..{}{}",
+            source_key,
+            window.from.as_deref().unwrap_or("…"),
+            window.to.as_deref().unwrap_or("now"),
+            if window.exclude_undated { " (undated excluded)" } else { "" },
+        ));
+    }
 
     let import_result = (|| -> Result<()> {
         for (issue_id, filename) in &issues {
@@ -368,14 +378,14 @@ pub fn import(
             }
 
             let effective_depth = if bulk_mode { None } else { max_position_depth };
-            match import_issue(conn, *issue_id, collection_id, "public", &zip_path, effective_depth, &mut ctx, fast) {
-                Ok((imported, skipped_dups, skipped_ns)) => {
+            match import_issue(conn, *issue_id, collection_id, "public", &zip_path, effective_depth, &mut ctx, fast, &window) {
+                Ok((imported, skipped_dups, skipped_ns, skipped_window)) => {
                     conn.execute(
                         "UPDATE source_items SET imported = TRUE, imported_at = NOW(), game_count = ? WHERE id = ?",
                         duckdb::params![imported as i32, issue_id],
                     )?;
                     add_issue_to_collection(conn, *issue_id, collection_id)?;
-                    let msg = format!("  Issue {}: {}", issue_id, import_summary(imported, skipped_dups, skipped_ns));
+                    let msg = format!("  Issue {}: {}", issue_id, import_summary(imported, skipped_dups, skipped_ns, skipped_window));
                     pb.println(&msg);
                     reporter.log(&msg);
                 }
@@ -559,14 +569,16 @@ pub fn import_pgn(
             };
 
             let effective_depth = if bulk_mode { None } else { max_position_depth };
-            match process_pgn_bytes(conn, issue_id, collection_id, visibility, &pgn_bytes, effective_depth, &mut ctx, file_pb.as_ref(), fast) {
-                Ok((imported, skipped_dups, skipped_ns)) => {
+            // Manual PGN imports are not date-filtered (unbounded window).
+            let manual_window = crate::sources::DateWindow::default();
+            match process_pgn_bytes(conn, issue_id, collection_id, visibility, &pgn_bytes, effective_depth, &mut ctx, file_pb.as_ref(), fast, &manual_window) {
+                Ok((imported, skipped_dups, skipped_ns, skipped_window)) => {
                     conn.execute(
                         "UPDATE source_items SET imported = TRUE, imported_at = NOW(), game_count = ? WHERE id = ?",
                         duckdb::params![imported as i32, issue_id],
                     )?;
                     add_issue_to_collection(conn, issue_id, collection_id)?;
-                    let msg = format!("  {}: {}", filename, import_summary(imported, skipped_dups, skipped_ns));
+                    let msg = format!("  {}: {}", filename, import_summary(imported, skipped_dups, skipped_ns, skipped_window));
                     pb.println(&msg);
                     reporter.log(&msg);
                 }
@@ -766,6 +778,7 @@ fn game_fingerprint(
     h.finish()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn import_issue(
     conn: &Connection,
     issue_id: i32,
@@ -775,11 +788,12 @@ fn import_issue(
     max_position_depth: Option<i16>,
     ctx: &mut ImportContext,
     fast: bool,
-) -> Result<(usize, usize, usize)> {
+    window: &crate::sources::DateWindow,
+) -> Result<(usize, usize, usize, usize)> {
     // Delete any games written during a previous interrupted run of this issue.
     conn.execute("DELETE FROM games WHERE issue_id = ?", duckdb::params![issue_id])?;
     let pgn_bytes = extract_pgn_from_zip(zip_path)?;
-    process_pgn_bytes(conn, issue_id, collection_id, visibility, &pgn_bytes, max_position_depth, ctx, None, fast)
+    process_pgn_bytes(conn, issue_id, collection_id, visibility, &pgn_bytes, max_position_depth, ctx, None, fast, window)
 }
 
 /// Repair PGN header lines that contain unescaped double-quotes in tag values.
@@ -872,6 +886,7 @@ fn escape_tag_value(value: &str) -> String {
 /// `visibility`: 'public' or 'private'. New rows get this; on dedup-skip into
 /// a public import, the existing row's visibility is ratcheted up (private →
 /// public). No auto-downgrade.
+#[allow(clippy::too_many_arguments)]
 fn process_pgn_bytes(
     conn: &Connection,
     issue_id: i32,
@@ -882,7 +897,8 @@ fn process_pgn_bytes(
     ctx: &mut ImportContext,
     file_pb: Option<&ProgressBar>,
     fast: bool,
-) -> Result<(usize, usize, usize)> {
+    window: &crate::sources::DateWindow,
+) -> Result<(usize, usize, usize, usize)> {
     // Comments, NAGs and variations are preserved by the visitor (see
     // GameVisitor) and stored in the game's movetext, so the PGN is parsed
     // as-is — no pre-stripping.
@@ -898,6 +914,8 @@ fn process_pgn_bytes(
     let mut total_games = 0usize;
     let mut skipped_games = 0usize;
     let mut skipped_nonstandard = 0usize;
+    let mut skipped_window = 0usize;
+    let window_unbounded = window.is_unbounded();
     let mut new_players: Vec<(u32, String, String, Option<u32>)> = Vec::new();
     let mut player_fide_backfill: Vec<(u32, u32)> = Vec::new();
 
@@ -919,6 +937,13 @@ fn process_pgn_bytes(
         // Skip Chess960 and mid-game fragment games.
         if game.non_standard {
             skipped_nonstandard += 1;
+            continue;
+        }
+
+        // Skip games outside this source's configured date window (B1). Cheap
+        // no-op when the window is unbounded (the default).
+        if !window_unbounded && !window.admits(game.date.as_deref()) {
+            skipped_window += 1;
             continue;
         }
 
@@ -1048,7 +1073,7 @@ fn process_pgn_bytes(
         flush_positions(conn, &position_batch, fast)?;
     }
 
-    Ok((total_games, skipped_games, skipped_nonstandard))
+    Ok((total_games, skipped_games, skipped_nonstandard, skipped_window))
 }
 
 fn get_or_create_player(
@@ -1101,7 +1126,7 @@ fn get_or_create_player(
 }
 
 /// Format a human-readable import result line.
-fn import_summary(imported: usize, skipped_dups: usize, skipped_ns: usize) -> String {
+fn import_summary(imported: usize, skipped_dups: usize, skipped_ns: usize, skipped_window: usize) -> String {
     let mut parts = Vec::new();
     if skipped_dups > 0 {
         parts.push(format!("{} duplicates", skipped_dups));
@@ -1109,10 +1134,18 @@ fn import_summary(imported: usize, skipped_dups: usize, skipped_ns: usize) -> St
     if skipped_ns > 0 {
         parts.push(format!("{} non-standard (Chess960/fragments)", skipped_ns));
     }
+    if skipped_window > 0 {
+        parts.push(format!("{} outside date window", skipped_window));
+    }
     if parts.is_empty() {
         format!("{} games imported", imported)
     } else {
-        format!("{} games imported, {} skipped ({})", imported, skipped_dups + skipped_ns, parts.join(", "))
+        format!(
+            "{} games imported, {} skipped ({})",
+            imported,
+            skipped_dups + skipped_ns + skipped_window,
+            parts.join(", ")
+        )
     }
 }
 

@@ -266,6 +266,21 @@ enum SourcesCommands {
         #[arg(long)]
         fast: bool,
     },
+    /// Set a source's game-date window (which games to keep). Unspecified bounds
+    /// are unbounded; re-run to change.
+    Window {
+        /// Source key (e.g. "twic")
+        key: String,
+        /// Keep games on or after this date (YYYY-MM-DD)
+        #[arg(long)]
+        from: Option<String>,
+        /// Keep games on or before this date (YYYY-MM-DD)
+        #[arg(long)]
+        to: Option<String>,
+        /// Drop games with no usable date
+        #[arg(long)]
+        exclude_undated: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1061,6 +1076,10 @@ fn job_spec_for(command: &Commands) -> Option<proxy::JobSpec> {
             "sources_set_enabled",
             json!({ "source": key, "enabled": false }),
         ),
+        Commands::Sources { subcommand: SourcesCommands::Window { key, from, to, exclude_undated } } => (
+            "sources_set_window",
+            json!({ "source": key, "from": from, "to": to, "exclude_undated": exclude_undated }),
+        ),
         _ => return None,
     };
     Some(proxy::JobSpec { job_type: job_type.to_string(), params })
@@ -1692,13 +1711,18 @@ async fn main() -> Result<()> {
                         sources::SourceKind::Feed => "feed",
                         sources::SourceKind::Bulk => "bulk",
                     };
+                    let window = match (s.from_date.as_deref(), s.to_date.as_deref()) {
+                        (None, None) => "all dates".to_string(),
+                        (f, t) => format!("{}..{}", f.unwrap_or("…"), t.unwrap_or("now")),
+                    };
                     println!(
-                        "{:<10} {:<22} {:<5} {:<8} items={:<7} {}",
+                        "{:<10} {:<22} {:<5} {:<8} items={:<7} window={:<22} {}",
                         s.key,
                         s.name,
                         kind,
                         if s.enabled { "on" } else { "off" },
                         s.items,
+                        window,
                         s.last_status.as_deref().unwrap_or(""),
                     );
                 }
@@ -1720,6 +1744,10 @@ async fn main() -> Result<()> {
                 importer::import(&conn, &dir, src.key, src.collection, Some(40), 10, fast, false, &reporter)?;
                 sources::record_run(&conn, src.key, "ok")?;
                 println!("{} synced.", src.name);
+            }
+            SourcesCommands::Window { key, from, to, exclude_undated } => {
+                sources::set_window(&conn, &key, from.as_deref(), to.as_deref(), exclude_undated)?;
+                println!("Updated date window for '{key}'.");
             }
         },
         Commands::Serve { port } => {

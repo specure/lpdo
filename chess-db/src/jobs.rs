@@ -596,6 +596,15 @@ fn run_job(
             crate::sources::set_enabled(conn, key, enabled)?;
             reporter.done(format!("Source '{}' {}.", key, if enabled { "enabled" } else { "disabled" }));
         }
+        "sources_set_window" => {
+            let key = p.get("source").and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("sources_set_window: 'source' required"))?;
+            let from = p.get("from").and_then(|v| v.as_str());
+            let to = p.get("to").and_then(|v| v.as_str());
+            let exclude_undated = flag(p, "exclude_undated");
+            crate::sources::set_window(conn, key, from, to, exclude_undated)?;
+            reporter.done(format!("Updated date window for '{}'.", key));
+        }
         // Download + import one source in a single job (CLI `sources sync`, GUI).
         "sources_sync" => {
             let source_key = p.get("source").and_then(|v| v.as_str())
