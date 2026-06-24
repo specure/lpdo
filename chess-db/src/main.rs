@@ -8,6 +8,7 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+mod ajedrez;
 mod db;
 mod dedup;
 mod importer;
