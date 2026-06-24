@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useSidecarProgress } from "../hooks/useSidecarProgress";
 import AddGameDialog from "./AddGameDialog";
@@ -317,16 +317,29 @@ function AckRow({ source, checked, onChange }: { source: SourceStatus; checked: 
 function SourcesStep({ completed, onComplete, onRunningChange }: { completed: boolean; onComplete: () => void; onRunningChange: (r: boolean) => void }) {
   const [rerunning, setRerunning] = useState(false);
   const [sources, setSources] = useState<SourceStatus[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [mode, setMode] = useState<"choice" | "configure">("choice");
   const [history, setHistory] = useState<History>("free");
   const [acked, setAcked] = useState<Set<string>>(new Set());
   const [enabling, setEnabling] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadSources = useCallback(() => {
+    setLoadError(null);
+    setSources(null);
     getSources()
       .then((s) => { setSources(s); setAcked(new Set(s.filter((x) => x.credit_acked).map((x) => x.key))); })
-      .catch(() => setSources([]));
+      .catch((e: unknown) => setLoadError(String(e)));
   }, []);
+  useEffect(() => { loadSources(); }, [loadSources]);
+
+  // Report this step's combined busy state to the wizard: the brief enable
+  // loop OR an in-progress commercial PGN import. Reporting the OR (rather than
+  // letting each writer set the shared flag directly) stops the enable loop's
+  // completion from clearing the "operation in progress" close guard while a
+  // commercial import is still running.
+  useEffect(() => { onRunningChange(enabling || importing); }, [enabling, importing, onRunningChange]);
 
   if (completed && !rerunning) {
     return <CompletedBanner summary="Reference sources configured" onRerun={() => { setRerunning(true); setMode("choice"); }} />;
@@ -351,8 +364,8 @@ function SourcesStep({ completed, onComplete, onRunningChange }: { completed: bo
   }
 
   async function enableAndImport() {
+    setSubmitError(null);
     setEnabling(true);
-    onRunningChange(true);
     try {
       // Enable each chosen source (recording the acknowledgment in the same
       // step, per the C1 credit_acked gate) and kick a background sync. The
@@ -362,12 +375,29 @@ function SourcesStep({ completed, onComplete, onRunningChange }: { completed: bo
         await submitJob({ type: "sources_sync", params: { source: s.key } });
       }
       onComplete();
+    } catch (e: unknown) {
+      // Surface the failure and stay on the step rather than silently dropping
+      // it. Earlier sources in the loop may already be enabled + sync-submitted;
+      // re-clicking is safe (enabling is idempotent and overlap is deduplicated).
+      setSubmitError(`Couldn’t enable the selected sources: ${String(e)} — some may already be enabled; you can retry.`);
     } finally {
       setEnabling(false);
-      onRunningChange(false);
     }
   }
 
+  if (loadError !== null) {
+    return (
+      <div className="space-y-3">
+        <p className="text-body-sm text-error">Couldn’t load the source catalog: {loadError}</p>
+        <button
+          onClick={loadSources}
+          className="h-9 px-4 inline-flex items-center rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 transition-all duration-short3 ease-standard"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
   if (sources === null) {
     return <p className="text-body-sm text-on-surface-variant">Loading sources…</p>;
   }
@@ -474,19 +504,37 @@ function SourcesStep({ completed, onComplete, onRunningChange }: { completed: bo
               allowedModes={["file"]}
               bulk
               onClose={() => { /* wizard handles navigation */ }}
-              onImported={() => { /* optional — the button below still finishes the step */ }}
-              onRunningChange={onRunningChange}
+              onImported={onComplete}
+              onRunningChange={setImporting}
             />
           </div>
         )}
       </section>
 
       <div className="space-y-2">
-        <button onClick={() => { void enableAndImport(); }} disabled={!allAcked || enabling} className={filledBtn}>
-          {enabling ? "Enabling…" : "Enable & import in the background"}
+        <button
+          onClick={() => { void enableAndImport(); }}
+          disabled={!allAcked || selected.length === 0 || enabling}
+          className={filledBtn}
+        >
+          {enabling
+            ? "Enabling…"
+            : history === "commercial"
+              ? "Enable live feeds & finish"
+              : "Enable & import in the background"}
         </button>
-        {!allAcked && (
+        {selected.length === 0 ? (
+          <p className="text-label-sm text-on-surface-variant">
+            No reference sources to enable.{history === "commercial" ? " Import your database above to populate it." : ""}
+          </p>
+        ) : !allAcked ? (
           <p className="text-label-sm text-on-surface-variant">Acknowledge each selected source above to continue.</p>
+        ) : null}
+        {submitError && <p className="text-label-sm text-error">{submitError}</p>}
+        {history === "commercial" && (
+          <p className="text-label-sm text-on-surface-variant">
+            This enables the live feeds only — import your commercial database separately above (now or later).
+          </p>
         )}
         <p className="text-label-sm text-on-surface-variant">
           ⓘ Importing runs on the daemon — you can finish setup and even close LPDO; it keeps going.
