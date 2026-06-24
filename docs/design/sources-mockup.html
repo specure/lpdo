@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sources — mockup v2</title>
+<style>
+  :root{
+    --primary:#adc6ff; --on-primary:#002e69; --primary-container:#00468b; --on-primary-container:#d7e2ff;
+    --secondary-container:#3f4759; --on-secondary-container:#dbe2f9;
+    --tertiary-container:#583e5b; --on-tertiary-container:#fad8fc;
+    --success:#87d99a; --success-container:#005227; --on-success-container:#a3f5b3;
+    --warning:#f8c062; --warning-container:#5f4100; --on-warning-container:#ffdfaa;
+    --surface:#111318; --surface-dim:#0c0e13; --surface-container-low:#191c20;
+    --surface-container:#1d2024; --surface-container-high:#282a2f; --surface-container-highest:#33353a;
+    --on-surface:#e2e2e9; --on-surface-variant:#c4c6d0; --outline:#8e9099; --outline-variant:#43474e;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:var(--surface-dim);color:var(--on-surface);
+    font-family:Inter,Roboto,-apple-system,"Segoe UI",Cantarell,sans-serif;
+    -webkit-font-smoothing:antialiased;font-synthesis:none}
+  .wrap{max-width:1040px;margin:0 auto;padding:32px 28px 56px}
+  .topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+  h1{font-size:2rem;line-height:2.5rem;font-weight:600;letter-spacing:-.01em}
+  .sub{color:var(--on-surface-variant);font-size:.875rem;margin-bottom:22px;max-width:64ch}
+  .btn{border:none;cursor:pointer;font:inherit;font-weight:500;font-size:.875rem;
+    border-radius:9999px;padding:10px 20px;display:inline-flex;align-items:center;gap:8px;transition:filter .15s}
+  .btn:hover{filter:brightness(1.08)}
+  .btn-filled{background:var(--primary);color:var(--on-primary)}
+  .btn-tonal{background:var(--secondary-container);color:var(--on-secondary-container)}
+  .btn-outline{background:transparent;color:var(--primary);border:1px solid var(--outline-variant)}
+
+  .coverage{background:var(--surface-container-low);border:1px solid var(--outline-variant);
+    border-radius:1.25rem;padding:16px 20px 18px;margin-bottom:26px}
+  .coverage h2,.panel h2.k{font-size:.6875rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--on-surface-variant);margin-bottom:12px}
+  .bar{display:flex;height:34px;border-radius:9px;overflow:hidden;gap:2px}
+  .seg{display:flex;align-items:center;justify-content:center;font-size:.75rem;font-weight:500;position:relative}
+  .seg small{position:absolute;bottom:-19px;font-size:.6875rem;color:var(--on-surface-variant);font-weight:400}
+  .seg.lumbra{background:var(--tertiary-container);color:var(--on-tertiary-container);flex:5}
+  .seg.live{background:var(--primary-container);color:var(--on-primary-container);flex:2}
+  .legend{display:flex;gap:18px;margin-top:26px;font-size:.75rem;color:var(--on-surface-variant)}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:middle}
+  .spacer{flex:1}
+
+  .timeline{display:flex;flex-direction:column;gap:9px;margin-top:4px}
+  .track{position:relative;height:34px;background:var(--surface-container-high);border-radius:8px}
+  .range{position:absolute;top:0;height:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:0 14px;font-size:.8125rem;font-weight:600;border-radius:8px;white-space:nowrap;overflow:hidden}
+  .range.hist{background:var(--tertiary-container);color:var(--on-tertiary-container)}
+  .range.live{background:var(--primary-container);color:var(--on-primary-container)}
+  .range.disabled{background:var(--surface-container-highest);color:var(--on-surface-variant);opacity:.55}
+  .range .rng{font-weight:400;opacity:.8}
+  .baroff{font-size:.5625rem;font-weight:700;letter-spacing:.06em;opacity:.85}
+  .divider{position:absolute;top:-5px;bottom:-5px;width:2px;background:var(--outline);opacity:.45}
+  .donate{font-size:.75rem;color:var(--on-surface-variant);margin-top:8px}
+  .ack{background:var(--surface-container-low);border:1px solid var(--primary-container);border-radius:13px;padding:11px 14px;display:flex;flex-direction:column;gap:7px}
+  .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:18px}
+  .card{background:var(--surface-container);border:1px solid var(--outline-variant);
+    border-radius:1.75rem;padding:22px 22px 18px;display:flex;flex-direction:column;gap:11px}
+  .ctitle{font-size:1.375rem;line-height:1.6rem;font-weight:600}
+  .desc{color:var(--on-surface-variant);font-size:.875rem;line-height:1.3rem;min-height:2.6rem}
+  .rowf{display:flex;align-items:center;gap:10px;font-size:.8125rem}
+  .switch{width:42px;height:24px;border-radius:9999px;position:relative;flex:none;cursor:pointer}
+  .switch.on{background:var(--primary)} .switch.off{background:var(--surface-container-highest);border:1px solid var(--outline)}
+  .knob{position:absolute;top:50%;transform:translateY(-50%);width:16px;height:16px;border-radius:9999px;transition:left .15s}
+  .switch.on .knob{left:22px;background:var(--on-primary)} .switch.off .knob{left:4px;width:12px;height:12px;background:var(--outline)}
+  .cadence{font-size:.75rem;color:var(--on-surface-variant);display:flex;align-items:center;gap:7px}
+  .cadence .g{color:var(--on-surface);font-weight:500}
+  .metrics{font-size:.75rem;color:var(--on-surface-variant);display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .metrics .num{color:var(--on-surface);font-weight:600}
+  .metrics .sec{font-size:.6875rem;opacity:.8}
+  .hint{font-size:.6875rem;color:var(--on-surface-variant);opacity:.85;display:flex;align-items:center;gap:6px}
+  .progress{height:7px;border-radius:9999px;background:var(--surface-container-highest);overflow:hidden}
+  .pbar{height:100%;background:var(--primary);width:38%;border-radius:9999px}
+  .window{display:flex;align-items:center;gap:8px;background:var(--surface-container-high);
+    border-radius:10px;padding:8px 13px;font-size:.8125rem;color:var(--on-surface-variant);align-self:stretch}
+  .window b{color:var(--on-surface);font-weight:600}
+  .edit{color:var(--primary);font-size:.6875rem;font-weight:600;cursor:pointer}
+  .note{font-size:.6875rem;color:var(--on-surface-variant)}
+  .actions{display:flex;align-items:center;gap:10px;margin-top:auto;padding-top:8px}
+  .lic{font-size:.6875rem;color:var(--warning);display:inline-flex;align-items:center;gap:5px}
+  .lic.soft{color:var(--on-surface-variant)}
+  .link{color:var(--primary);text-decoration:none}
+  .ok{color:var(--success)}
+
+  /* configure panel */
+  .panel{margin-top:34px;background:var(--surface-container);border:1px solid var(--primary-container);
+    border-radius:1.5rem;padding:22px 24px;max-width:560px}
+  .panel .ph{display:flex;align-items:center;gap:10px;margin-bottom:4px}
+  .panel .ph .t{font-size:1.125rem;font-weight:600}
+  .panel .ph .tag{font-size:.625rem;color:var(--on-surface-variant);background:var(--surface-container-high);
+    padding:3px 9px;border-radius:9999px}
+  .panel .blurb{color:var(--on-surface-variant);font-size:.8125rem;margin-bottom:18px}
+  .field{margin-bottom:16px}
+  .field label{display:block;font-size:.75rem;color:var(--on-surface-variant);margin-bottom:7px;font-weight:500}
+  .dates{display:flex;align-items:center;gap:10px}
+  .inp{background:var(--surface-container-high);border:1px solid var(--outline-variant);color:var(--on-surface);
+    border-radius:9px;padding:9px 13px;font:inherit;font-size:.8125rem;min-width:140px}
+  .arrow{color:var(--on-surface-variant)}
+  .check{display:flex;align-items:center;gap:10px;font-size:.8125rem;margin-bottom:10px}
+  .box{width:20px;height:20px;border-radius:6px;background:var(--primary);color:var(--on-primary);
+    display:grid;place-items:center;font-size:.75rem;font-weight:700;flex:none}
+  .box.off{background:var(--surface-container-high);border:1px solid var(--outline)}
+  .resolve{background:var(--surface-container-low);border:1px solid var(--outline-variant);border-radius:11px;
+    padding:12px 15px;font-size:.8125rem;color:var(--on-surface-variant);margin:6px 0 18px}
+  .resolve b{color:var(--on-surface);font-weight:600}
+  .pact{display:flex;gap:10px;align-items:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <h1>Sources</h1>
+    <button class="btn btn-outline">+ Add custom source</button>
+  </div>
+  <div class="sub">Curated reference databases. Each fills a slice of history; enable the ones you want and LPDO keeps them current. Overlap between sources is deduplicated automatically.</div>
+
+  <div class="coverage">
+    <h2>Coverage timeline</h2>
+    <div class="timeline">
+      <div class="track"><div class="divider" style="left:64%"></div>
+        <div class="range hist" style="left:1%;width:62%">Lumbra's Gigabase <span class="rng">history → 2025</span><span class="baroff">IMPORTING…</span></div></div>
+      <div class="track"><div class="divider" style="left:64%"></div>
+        <div class="range live" style="left:66%;width:33%">The Week in Chess <span class="rng">2026 → now</span></div></div>
+      <div class="track"><div class="divider" style="left:64%"></div>
+        <div class="range live disabled" style="left:66%;width:33%">Lichess Broadcasts <span class="rng">2026 → now</span><span class="baroff">OFF</span></div></div>
+    </div>
+    <div class="legend">
+      <span><span class="dot" style="background:var(--tertiary-container)"></span>Historical base</span>
+      <span><span class="dot" style="background:var(--primary-container)"></span>Live tail</span>
+      <span><span class="dot" style="background:var(--surface-container-highest)"></span>Disabled</span>
+      <span class="spacer"></span>
+      <span>Not to scale. Overlapping sources stack as separate rows; overlap is deduplicated.</span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="ctitle">The Week in Chess</div>
+      <div class="desc">Weekly archive of recent over-the-board tournament games, published since 1994. <a class="link">theweekinchess.com&nbsp;↗</a></div>
+      <div class="rowf"><span class="switch on"><span class="knob"></span></span><b>Enabled</b></div>
+      <div class="cadence">↻ <span class="g">Auto-updates weekly</span> · <span class="ok">synced 2h ago</span></div>
+      <div class="metrics">◷ <span class="num">1.24M</span> games · <span class="num">~310 MB</span> on disk <span class="sec">· next sync seconds</span></div>
+      <div class="window">games from <b>2026-01-01</b><span class="spacer"></span><span class="edit">edit ⚙</span></div>
+      <div class="hint">ⓘ Disabling keeps these games — remove them via the “TWIC” collection.</div>
+      <div class="actions"><button class="btn btn-filled">⟳ Sync now</button><span class="spacer"></span><span class="lic soft">free · attribution</span></div>
+    </div>
+
+    <div class="card">
+      <div class="ctitle">Lichess Broadcasts</div>
+      <div class="desc">Over-the-board tournament games relayed live on Lichess, packaged monthly. <a class="link">database.lichess.org&nbsp;↗</a></div>
+      <div class="ack">
+        <div style="font-size:.625rem;color:var(--on-surface-variant);text-transform:uppercase;letter-spacing:.06em;font-weight:700">Before enabling</div>
+        <div class="check"><span class="box">✓</span> I’ll credit “Lichess Broadcasts · CC BY-SA 4.0”</div>
+        <div class="donate">♥ <a class="link">Support Lichess ↗</a> <span class="note">(optional)</span></div>
+      </div>
+      <div class="cadence">↻ <span class="g">Auto-updates monthly</span></div>
+      <div class="metrics">◷ est. <span class="num">~1.1M</span> games · first import <span class="num">~5 min</span> <span class="sec">· 30 MB ↓</span></div>
+      <div class="window">games from <b>2026-01-01</b><span class="spacer"></span><span class="edit">edit ⚙</span></div>
+      <div class="actions"><button class="btn btn-filled">Acknowledge &amp; enable</button><span class="hint" style="margin-left:4px">→ imports automatically in the background</span></div>
+    </div>
+
+    <div class="card">
+      <div class="ctitle">Lumbra's Gigabase</div>
+      <div class="desc">Deep historical OTB archive (complete years through 2025) — the base beneath the live feeds. <a class="link">lumbrasgigabase.com&nbsp;↗</a></div>
+      <div class="rowf"><span class="switch on"><span class="knob"></span></span><b>Enabled</b></div>
+      <div class="cadence">⬇ <span class="g">Importing…</span> 1990–1999 · on the server</div>
+      <div class="progress"><div class="pbar"></div></div>
+      <div class="metrics"><span class="num">38%</span> · ~16 min left <span class="sec">· 4.1M / ~10M games · 1.4 GB ↓</span></div>
+      <div class="window">games up to <b>2025-12-31</b> <span class="note">· undated excluded</span><span class="spacer"></span><span class="edit">edit ⚙</span></div>
+      <div class="hint">ⓘ Runs on the server — you can close LPDO and it keeps going.</div>
+      <div class="actions"><button class="btn btn-tonal">Cancel import</button><span class="spacer"></span><span class="lic">⚠ CC BY-NC-SA · non-commercial</span></div>
+    </div>
+
+    <div class="card" style="border-style:dashed;justify-content:center;align-items:center;color:var(--on-surface-variant)">
+      <div style="text-align:center"><div style="font-size:1.6rem">＋</div><div style="font-size:.8125rem">Add a custom source<br>(PGN URL or local file)</div></div>
+    </div>
+  </div>
+
+  <div class="note" style="margin-top:14px">◷ Time estimates are rough — they depend on your connection and machine; the importer refines them as it runs.</div>
+
+  <!-- what the ⚙ opens, for Lumbra's -->
+  <div class="panel">
+    <div class="ph"><span class="t">Configure — Lumbra's Gigabase</span><span class="tag">⚙ what “edit” opens</span></div>
+    <div class="blurb">Pick the date range you want. Overlap with TWIC &amp; Lichess is deduplicated automatically.</div>
+
+    <div class="field">
+      <label>Coverage window (by game date)</label>
+      <div class="dates">
+        <input class="inp" value="earliest" placeholder="from"><span class="arrow">→</span><input class="inp" value="2025-12-31">
+        <span class="note">leave “from” empty for all history</span>
+      </div>
+    </div>
+
+    <div class="check"><span class="box">✓</span> Exclude games without a date</div>
+
+    <div class="resolve"><b>≈ 1.4 GB</b> to download · ~<b>7 GB</b> uncompressed while importing (temporary scratch space, freed afterward). New games are deduplicated against TWIC &amp; Lichess.</div>
+
+    <div class="field" style="margin-bottom:18px">
+      <label>Attribution &amp; support <span class="note">· acknowledged when you enabled this source</span></label>
+      <div class="check"><span class="box">✓</span> Credited: “Lumbra’s Gigabase © Michael Jansen · CC BY-NC-SA 4.0”, non-commercial use</div>
+      <div class="donate">♥ Lumbra’s is maintained for free — <a class="link">consider supporting Michael Jansen ↗</a> <span class="note">(optional)</span></div>
+    </div>
+
+    <div class="pact"><button class="btn btn-filled">Save</button><span class="note">changes apply on the next background sync</span><span class="edit" style="margin-left:auto">Cancel</span></div>
+  </div>
+</div>
+</body>
+</html>
