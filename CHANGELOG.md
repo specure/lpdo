@@ -40,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   running (the only exceptions: `search games --moves-stats` and the admin-only
   `players dedup`/`update-game-counts`/`apply-corrections`, which need `--local`).
 
+### Changed
+- **Backups are now zip-compressed** — `chess-db backup` (and the GUI's Backup
+  action) write a timestamped `.pgn.zip` (a single deflated `.pgn` entry) instead
+  of a plain `.pgn`. PGN is text, so this typically shrinks backups several-fold;
+  `.zip` opens natively on every OS, and the file re-imports through the existing
+  zip reader. Games are streamed straight into the archive rather than assembled
+  in memory first.
+
 ## [0.4.0] - 2026-06-21
 
 Player merge in the app, a reorganised Maintenance screen, and a smarter

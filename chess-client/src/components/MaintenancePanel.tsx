@@ -471,8 +471,8 @@ function BackupSection() {
   return (
     <SectionCard title="Backup">
       <p className="text-body-sm text-on-surface-variant">
-        Save a collection to a timestamped PGN file — e.g.{" "}
-        <span className="font-mono text-on-surface-variant">20260603-084231-My_games.pgn</span>.
+        Save a collection to a timestamped, zip-compressed PGN file — e.g.{" "}
+        <span className="font-mono text-on-surface-variant">20260603-084231-My_games.pgn.zip</span>.
         The folder is created if it doesn’t exist.
       </p>
       {!progress.running && !progress.done && (
