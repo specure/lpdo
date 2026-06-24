@@ -3,7 +3,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useSidecarProgress } from "../hooks/useSidecarProgress";
 import AddGameDialog from "./AddGameDialog";
 import { ProfileSetupForm, loadMyPlayer, saveMyPlayer } from "./MyStatsWidget";
-import { getSources, setSourceEnabled, submitJob } from "../api";
+import { getSources, setSourceEnabled } from "../api";
 import { PlayerInfo, SourceStatus } from "../types";
 
 interface Props {
@@ -367,18 +367,18 @@ function SourcesStep({ completed, onComplete, onRunningChange }: { completed: bo
     setSubmitError(null);
     setEnabling(true);
     try {
-      // Enable each chosen source (recording the acknowledgment in the same
-      // step, per the C1 credit_acked gate) and kick a background sync. The
-      // daemon runs these serially; we don't block onboarding on them.
+      // Just enable each chosen source (recording the acknowledgment in the same
+      // step, per the C1 credit_acked gate). The daemon's scheduler picks up
+      // enabled-but-not-yet-synced sources and imports them in the background
+      // (#40 C3), so onboarding doesn't submit or wait on any sync itself.
       for (const s of selected) {
         await setSourceEnabled(s.key, true, true);
-        await submitJob({ type: "sources_sync", params: { source: s.key } });
       }
       onComplete();
     } catch (e: unknown) {
       // Surface the failure and stay on the step rather than silently dropping
-      // it. Earlier sources in the loop may already be enabled + sync-submitted;
-      // re-clicking is safe (enabling is idempotent and overlap is deduplicated).
+      // it. Earlier sources in the loop may already be enabled; re-clicking is
+      // safe (enabling is idempotent).
       setSubmitError(`Couldn’t enable the selected sources: ${String(e)} — some may already be enabled; you can retry.`);
     } finally {
       setEnabling(false);
