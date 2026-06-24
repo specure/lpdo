@@ -244,3 +244,22 @@ export interface SourceStatus {
   /** Items (issues/files) imported for this source. */
   items: number;
 }
+
+// ── Background jobs (the daemon's job pipeline, #40 C3) ────────────────────────
+
+/** One job tracked by the daemon's JobManager. Mirrors `GET /jobs`. */
+export interface Job {
+  id: string;
+  /** Job kind, e.g. "sources_sync" | "update" | "index_positions" | "backup". */
+  type: string;
+  status: "queued" | "running" | "done" | "error";
+  value: number;
+  total: number;
+  message: string;
+  /** False for appender (fast) writes that must not be interrupted. */
+  interruptible: boolean;
+  path?: string;
+  error?: string;
+  /** Submission params, used to label a job by what it operates on. */
+  params?: Record<string, unknown>;
+}

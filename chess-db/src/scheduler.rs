@@ -54,6 +54,17 @@ pub fn spawn(jobs: Arc<JobManager>, reads: ReadPool, writer: ConnActor) {
 }
 
 async fn tick(jobs: &Arc<JobManager>, reads: &ReadPool, writer: &ConnActor) -> anyhow::Result<()> {
+    // Enable→auto-sync (#40 C3): independent of the daily update. Enabling a
+    // source in the Sources screen just sets its flag; the scheduler imports it
+    // here in the background — so it works even with the GUI closed. Skipped
+    // while a full update is in flight, since that update syncs every enabled
+    // feed itself and would otherwise double-import the same source.
+    if !update_in_flight(jobs) {
+        if let Err(e) = auto_sync_pending(jobs, reads).await {
+            eprintln!("scheduler: auto-sync: {e:#}");
+        }
+    }
+
     let s = read_schedule(reads).await?;
 
     // 1. If a run is recorded as in progress, settle it once the job finishes.
@@ -123,6 +134,36 @@ fn update_in_flight(jobs: &Arc<JobManager>) -> bool {
     jobs.list()
         .iter()
         .any(|j| j.job_type == "update" && (j.status == "running" || j.status == "queued"))
+}
+
+/// Submit a background `sources_sync` for every enabled-but-never-synced source,
+/// skipping any that already has a sync queued or running (matched by its
+/// `source` param). De-duping this way keeps repeated ticks from piling up
+/// duplicate jobs while a long first import is still running.
+async fn auto_sync_pending(jobs: &Arc<JobManager>, reads: &ReadPool) -> anyhow::Result<()> {
+    let candidates = reads.run(crate::sources::auto_sync_candidates).await?;
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let in_flight = sources_sync_in_flight(jobs);
+    for src in candidates {
+        if in_flight.contains(src.key) {
+            continue;
+        }
+        // The same job the Sources screen's "Sync now" submits (transactional
+        // import — crash-safe, since this runs unattended).
+        jobs.submit("sources_sync".into(), serde_json::json!({ "source": src.key }));
+    }
+    Ok(())
+}
+
+/// Source keys with a `sources_sync` job currently queued or running.
+fn sources_sync_in_flight(jobs: &Arc<JobManager>) -> std::collections::HashSet<String> {
+    jobs.list()
+        .into_iter()
+        .filter(|j| j.job_type == "sources_sync" && (j.status == "queued" || j.status == "running"))
+        .filter_map(|j| j.params.get("source").and_then(|v| v.as_str()).map(str::to_owned))
+        .collect()
 }
 
 // ── Clock math (all in local wall-clock time) ─────────────────────────────────
