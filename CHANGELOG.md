@@ -39,6 +39,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output. With this, essentially the whole CLI works whether or not the daemon is
   running (the only exceptions: `search games --moves-stats` and the admin-only
   `players dedup`/`update-game-counts`/`apply-corrections`, which need `--local`).
+- **Background activity view** — a new indicator in the header expands into a
+  panel showing the daemon's whole job pipeline: the active job, the queue
+  behind it, and recent finishes, across every job type (source syncs, the
+  scheduled update, and manual maintenance like dedup/index/backup). Background
+  work runs on the daemon even with the app closed, so this is its always-visible
+  home; running, interruptible jobs can be cancelled from here.
+- **Enabling a source imports it automatically** — turning a source on in
+  Maintenance → Sources no longer requires pressing "Sync now". The daemon's
+  scheduler picks up enabled-but-not-yet-synced sources on its next tick (~1 min)
+  and runs the import in the background, even with the GUI closed. "Sync now"
+  remains as an optional manual trigger; a sync that fails or is cancelled is not
+  auto-retried, while one interrupted by a restart resumes.
 
 ### Changed
 - **Backups are now zip-compressed** — `chess-db backup` (and the GUI's Backup

@@ -58,6 +58,12 @@ export async function cancelJob(jobId: string): Promise<void> {
   await fetch(apiUrl(`/jobs/${encodeURIComponent(jobId)}/cancel`), { method: "POST" });
 }
 
+/** The daemon's whole job pipeline (active + queued + finished), newest last —
+ *  what the global Activity view reads. */
+export function getJobs(): Promise<Job[]> {
+  return apiGet<Job[]>("/jobs");
+}
+
 // ── Schedule (server-owned auto-update) ──────────────────────────────────────
 
 export interface ScheduleInfo {
@@ -93,7 +99,7 @@ export async function runUpdateNow(): Promise<string> {
 
 // ── Sources (multi-source import catalog, #40) ────────────────────────────────
 
-import type { SourceStatus } from "./types";
+import type { SourceStatus, Job } from "./types";
 
 /** The curated source catalog + this database's state for each. */
 export function getSources(): Promise<SourceStatus[]> {

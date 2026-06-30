@@ -12,6 +12,7 @@ import DirectoryBrowser from "./components/local/DirectoryBrowser";
 import LocalGameList from "./components/local/LocalGameList";
 import HomeEmptyState from "./components/HomeEmptyState";
 import UpdateBanner from "./components/UpdateBanner";
+import ActivityIndicator from "./components/ActivityIndicator";
 import { loadMyPlayer } from "./components/MyStatsWidget";
 import { useUpdateCheck } from "./hooks/useUpdateCheck";
 import { GameSummary, LocalGame, MoveStats, PlayerInfo, PrepContext, StatusInfo } from "./types";
@@ -447,6 +448,7 @@ export default function App() {
             title="Database maintenance"
           >Maintenance</button>
 
+          <ActivityIndicator />
           <StatusBadge status={status} />
         </div>
       </header>

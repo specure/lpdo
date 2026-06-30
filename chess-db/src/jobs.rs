@@ -273,6 +273,9 @@ pub struct JobSnapshot {
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The submission params, so the UI can label a job by what it touches (e.g.
+    /// which source/collection) and the scheduler can de-dupe by it.
+    pub params: serde_json::Value,
 }
 
 /// Whether a job uses DuckDB's appender path, which is not crash-safe: killing
@@ -300,6 +303,10 @@ struct JobState {
 pub struct JobSlot {
     id: String,
     job_type: String,
+    /// The job's submission params (e.g. `{ "source": "ajedrez-otb" }`), kept so
+    /// the scheduler can de-dupe an auto-sync against an in-flight one and the
+    /// Activity view can label a job by what it operates on.
+    params: serde_json::Value,
     interruptible: bool,
     state: Mutex<JobState>,
     events: broadcast::Sender<JobEvent>,
@@ -320,6 +327,7 @@ impl JobSlot {
             interruptible: self.interruptible,
             path: s.path.clone(),
             error: s.error.clone(),
+            params: self.params.clone(),
         }
     }
 
@@ -407,6 +415,7 @@ impl JobManager {
         let slot = Arc::new(JobSlot {
             id: id.clone(),
             job_type: job_type.clone(),
+            params: params.clone(),
             interruptible: !uses_appender(&job_type, &params),
             state: Mutex::new(JobState {
                 status: "queued".into(),
@@ -619,13 +628,34 @@ fn run_job(
             let dir = crate::source_dir(source_key);
             std::fs::create_dir_all(&dir)?;
             let step = reporter.sub_step();
-            reporter.log(format!("{}: download", src.name));
-            rt.block_on(crate::sources::download_feed(conn, src, None, None, &dir, &step))?;
-            if reporter.is_cancelled() { return Ok(()); }
-            reporter.log(format!("{}: import", src.name));
-            importer::import(conn, &dir, src.key, src.collection, Some(40), 10, fast, false, &step)?;
-            crate::sources::record_run(conn, src.key, "ok")?;
-            reporter.done(format!("{} synced.", src.name));
+            let sync = (|| -> Result<()> {
+                reporter.log(format!("{}: download", src.name));
+                rt.block_on(crate::sources::download_feed(conn, src, None, None, &dir, &step))?;
+                if reporter.is_cancelled() { return Ok(()); }
+                reporter.log(format!("{}: import", src.name));
+                importer::import(conn, &dir, src.key, src.collection, Some(40), 10, fast, false, &step)?;
+                Ok(())
+            })();
+            // Record the run's outcome so the enable→auto-sync scheduler doesn't
+            // re-fire a source that finished or failed (a still-NULL last_run is
+            // what marks a source as "never synced"). A user cancellation also
+            // records, so it isn't auto-restarted; only a crash/restart mid-sync
+            // leaves last_run NULL, so an interrupted sync resumes. Errors still
+            // propagate (via `?`) so a DuckDB invalidation triggers recovery (#82).
+            if reporter.is_cancelled() {
+                let _ = crate::sources::record_run(conn, src.key, "cancelled");
+                return Ok(());
+            }
+            match sync {
+                Ok(()) => {
+                    crate::sources::record_run(conn, src.key, "ok")?;
+                    reporter.done(format!("{} synced.", src.name));
+                }
+                Err(e) => {
+                    let _ = crate::sources::record_run(conn, src.key, &format!("error: {e}"));
+                    return Err(e);
+                }
+            }
         }
         "import_pgn" => {
             let path = path_param(p, "path")?;

@@ -337,6 +337,25 @@ pub fn enabled_feeds(conn: &Connection) -> Result<Vec<&'static CatalogSource>> {
         .collect())
 }
 
+/// Enabled sources that have never recorded a sync run (`last_run IS NULL`) — the
+/// ones the scheduler auto-imports in the background once they're enabled (#40
+/// C3). A source that synced ok, failed, or was cancelled has `last_run` set, so
+/// it is *not* auto-retried (manual "Sync now" stays available); a sync
+/// interrupted by a crash/restart never recorded a run, so it resumes.
+pub fn auto_sync_candidates(conn: &Connection) -> Result<Vec<&'static CatalogSource>> {
+    let pending: HashSet<String> = {
+        let mut stmt =
+            conn.prepare("SELECT key FROM sources WHERE enabled = TRUE AND last_run IS NULL")?;
+        stmt.query_map([], |r| r.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect()
+    };
+    Ok(CATALOG
+        .iter()
+        .filter(|s| pending.contains(s.key) && Feed::for_key(s.key).is_some())
+        .collect())
+}
+
 /// Enable or disable a source, creating its state row on first use.
 pub fn set_enabled(conn: &Connection, key: &str, enabled: bool) -> Result<()> {
     if get(key).is_none() {
@@ -578,5 +597,38 @@ mod window_tests {
         assert!(w.is_unbounded());
         assert!(w.admits(Some("1500-01-01")));
         assert!(w.admits(None));
+    }
+}
+
+#[cfg(test)]
+mod auto_sync_tests {
+    use super::*;
+    use duckdb::Connection;
+
+    fn keys(conn: &Connection) -> Vec<&'static str> {
+        auto_sync_candidates(conn).unwrap().iter().map(|s| s.key).collect()
+    }
+
+    #[test]
+    fn candidates_are_enabled_and_never_run() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+
+        // Seeded state: only TWIC is enabled, and nothing has synced yet.
+        assert_eq!(keys(&conn), vec!["twic"], "the enabled, never-synced source");
+
+        // Enabling another joins the set; recording TWIC's run drops it out.
+        set_enabled(&conn, "ajedrez-otb", true).unwrap();
+        record_run(&conn, "twic", "ok").unwrap();
+        assert_eq!(keys(&conn), vec!["ajedrez-otb"], "synced excluded, newly enabled included");
+
+        // A failed (or cancelled) run also sets last_run, so it is NOT
+        // auto-retried — manual "Sync now" remains the way to try again.
+        record_run(&conn, "ajedrez-otb", "error: boom").unwrap();
+        assert!(keys(&conn).is_empty(), "errored source is not auto-retried");
+
+        // Disabled sources are never candidates, even with a NULL last_run.
+        set_enabled(&conn, "lichess-broadcasts", false).unwrap();
+        assert!(!keys(&conn).contains(&"lichess-broadcasts"));
     }
 }
