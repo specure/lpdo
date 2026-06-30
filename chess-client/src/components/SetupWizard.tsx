@@ -1,6 +1,4 @@
 import { useState, useEffect, useCallback } from "react";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { useSidecarProgress } from "../hooks/useSidecarProgress";
 import AddGameDialog from "./AddGameDialog";
 import { ProfileSetupForm, loadMyPlayer, saveMyPlayer } from "./MyStatsWidget";
 import { getSources, setSourceEnabled } from "../api";
@@ -13,23 +11,25 @@ interface Props {
   onFinish?: () => void;
 }
 
-type Step = "welcome" | "players" | "databases" | "sources" | "dedup" | "normalise" | "index" | "profile" | "done";
+type Step = "welcome" | "history" | "feeds" | "profile" | "done";
 
-const STEPS: Step[] = ["welcome", "players", "databases", "sources", "dedup", "normalise", "index", "profile", "done"];
+const STEPS: Step[] = ["welcome", "history", "feeds", "profile", "done"];
 const STEP_LABELS: Record<Step, string> = {
   welcome:   "Welcome",
-  players:   "Players",
-  databases: "Databases",
-  sources:   "Sources",
-  dedup:     "Dedup",
-  normalise: "Names",
-  index:     "Index",
+  history:   "History",
+  feeds:     "Feeds",
   profile:   "Profile",
   done:      "Summary",
 };
 
-const OPTIONAL_STEPS: Step[] = ["players", "databases", "sources", "dedup", "normalise", "index", "profile"];
-const STORAGE_KEY = "chess-setup-state";
+const OPTIONAL_STEPS: Step[] = ["history", "feeds", "profile"];
+// Bumped to -v3 with the Phase-C2 step restructure: welcome fork + players/
+// databases steps removed, Sources split into History+Feeds, and the manual
+// Dedup/Names/Index steps dropped (the daemon now does that maintenance
+// automatically after import — surfaced on the Summary screen). Bumping the key
+// discards stale persisted state from any earlier step set rather than
+// mis-mapping it.
+const STORAGE_KEY = "chess-setup-state-v3";
 
 interface PersistedState {
   stepIndex: number;
@@ -50,58 +50,6 @@ function saveState(state: PersistedState) {
 }
 
 // ── Shared UI ─────────────────────────────────────────────────────────────────
-
-function ProgressBar({ value }: { value: number }) {
-  return (
-    <div className="w-full bg-surface-container-highest rounded-full h-2 overflow-hidden">
-      <div className="bg-primary h-2 rounded-full transition-all duration-medium2 ease-standard" style={{ width: `${Math.min(100, value)}%` }} />
-    </div>
-  );
-}
-
-function FolderInput({ value, onChange, placeholder, disabled, directory = false, extensions }: {
-  value: string; onChange: (v: string) => void; placeholder?: string; disabled?: boolean;
-  /** Pick a folder instead of a file. */
-  directory?: boolean;
-  /** Restrict the file picker to these extensions (ignored when directory). */
-  extensions?: string[];
-}) {
-  async function browse() {
-    try {
-      const picked = await openDialog({
-        multiple: false,
-        directory,
-        filters: !directory && extensions ? [{ name: extensions.map((e) => e.toUpperCase()).join("/"), extensions }] : undefined,
-      });
-      // Returns a string path (or null if cancelled); never an array here.
-      if (typeof picked === "string") onChange(picked);
-    } catch {
-      /* user cancelled / dialog unavailable — leave the field unchanged */
-    }
-  }
-
-  return (
-    <div className="flex gap-2">
-      <input
-        type="text"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        disabled={disabled}
-        className="flex-1 h-10 px-3 rounded-sm bg-transparent text-on-surface text-body-md font-mono border border-outline focus:outline-none focus:border-primary placeholder:text-on-surface-variant disabled:opacity-50 transition-colors duration-short3 ease-standard"
-      />
-      {/* M3 outlined button */}
-      <button
-        type="button"
-        onClick={() => { void browse(); }}
-        disabled={disabled}
-        className="h-10 px-4 rounded-full border border-outline text-on-surface text-label-md hover:bg-on-surface/8 active:bg-on-surface/12 disabled:opacity-50 transition-colors duration-short3 ease-standard shrink-0"
-      >
-        Browse…
-      </button>
-    </div>
-  );
-}
 
 function OptionalBadge() {
   /* M3 assist chip */
@@ -127,53 +75,22 @@ function CompletedBanner({ summary, onRerun }: { summary: string; onRerun: () =>
 
 // ── Step: Welcome ─────────────────────────────────────────────────────────────
 
-function WelcomeStep({ onExpress, onAdvanced }: {
-  onExpress: () => void;
-  onAdvanced: () => void;
-}) {
+function WelcomeStep({ onStart }: { onStart: () => void }) {
   return (
     <div className="space-y-5">
       <p className="text-on-surface text-body-md leading-relaxed">
-        This wizard will guide you through setting up your chess database.
-        You can stop at any time and continue later — completed steps are remembered.
+        This wizard sets up your chess reference database. You'll pick an optional historical
+        base and the live tournament feeds to keep current — then LPDO downloads, imports and
+        prepares everything for you in the background. You can stop at any time and continue
+        later; completed steps are remembered, and you can change everything afterwards under
+        Maintenance → Sources.
       </p>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Express — recommended; primary-tinted to draw the eye. */}
-        <button
-          onClick={onExpress}
-          className="text-left flex flex-col gap-2 p-5 rounded-2xl bg-primary-container text-on-primary-container hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard"
-        >
-          <span className="text-title-md">Express setup</span>
-          <span className="text-body-sm opacity-90">
-            Just the essentials: populate the reference database, deduplicate, and build the
-            position index. Skips the optional player-reference and existing-database
-            steps.
-          </span>
-          <span className="text-label-lg mt-1">Recommended →</span>
-        </button>
-
-        {/* Advanced — every step, including the optional imports. */}
-        <button
-          onClick={onAdvanced}
-          className="text-left flex flex-col gap-2 p-5 rounded-2xl bg-surface-container-highest text-on-surface hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard"
-        >
-          <span className="text-title-md">Advanced setup</span>
-          <span className="text-body-sm text-on-surface-variant">
-            Every step, including importing a player reference file and your existing
-            PGN collections.
-          </span>
-          <span className="text-label-lg text-primary mt-1">Configure everything →</span>
-        </button>
-      </div>
 
       <ul className="space-y-1.5 text-body-md text-on-surface-variant">
         {[
-          "Import a player reference file",
-          "Import your existing game collections",
-          "Populate from curated reference sources",
-          "Deduplicate the database",
-          "Build the position index",
+          "Choose a deep historical base",
+          "Choose the live tournament feeds to follow",
+          "Set your player profile",
         ].map((text, i) => (
           <li key={i} className="flex gap-3">
             <span className="text-outline shrink-0">{i + 1}.</span>
@@ -181,121 +98,39 @@ function WelcomeStep({ onExpress, onAdvanced }: {
           </li>
         ))}
       </ul>
+
+      <button
+        onClick={onStart}
+        className="h-10 px-5 inline-flex items-center rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard"
+      >
+        Get started →
+      </button>
     </div>
   );
 }
 
-// ── Step: Import players file ─────────────────────────────────────────────────
-
-function PlayersStep({ completed, onComplete, onRunningChange }: { completed: boolean; onComplete: () => void; onRunningChange: (r: boolean) => void }) {
-  const [path, setPath] = useState("");
-  const [rerunning, setRerunning] = useState(false);
-  const progress = useSidecarProgress();
-
-  useEffect(() => { if (progress.done) onComplete(); }, [progress.done]);
-  useEffect(() => { onRunningChange(progress.running); }, [progress.running]);
-
-  function run() {
-    void progress.run(["players", "import", path]);
-  }
-
-  if (completed && !rerunning) {
-    return <CompletedBanner summary="Players imported" onRerun={() => setRerunning(true)} />;
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-on-surface-variant text-body-md">
-          Import a pre-built player reference file containing canonical names and FIDE IDs.
-          This significantly improves player search and name consistency.
-        </p>
-        <OptionalBadge />
-      </div>
-      <div>
-        <div className="text-label-sm text-on-surface-variant uppercase tracking-wider mb-2">Player reference file</div>
-        <FolderInput value={path} onChange={setPath} placeholder="/path/to/players.csv" extensions={["csv"]} disabled={progress.running || progress.done} />
-      </div>
-      {path && !progress.running && !progress.done && (
-        <button onClick={run} className="w-full h-10 rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard">
-          Import Players
-        </button>
-      )}
-      {(progress.running || progress.done) && (
-        <div className="space-y-2">
-          <div className="flex justify-between text-label-md text-on-surface-variant">
-            <span>{progress.done ? "Complete" : "Importing…"}</span>
-            <span>{Math.round(progress.percent)}%</span>
-          </div>
-          <ProgressBar value={progress.percent} />
-          {progress.done && <p className="text-success text-body-sm">✓ {progress.doneMessage}</p>}
-          {progress.running && !progress.done && (
-            <div className="flex justify-end">
-              <button
-                onClick={progress.cancel}
-                className="h-8 px-4 inline-flex items-center rounded-full text-error border border-outline text-label-md hover:bg-error/8 transition-colors duration-short3 ease-standard"
-              >
-                Cancel
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Step: Import pre-owned databases ─────────────────────────────────────────
-
-function DatabasesStep({ completed, onComplete, onRunningChange }: { completed: boolean; onComplete: () => void; onRunningChange: (r: boolean) => void }) {
-  const [rerunning, setRerunning] = useState(false);
-
-  if (completed && !rerunning) {
-    return <CompletedBanner summary="PGN files imported" onRerun={() => setRerunning(true)} />;
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-on-surface-variant text-body-md">
-          Import any PGN files you already have — your own games, a tournament you follow, a repertoire.
-          Pick a preset to get started.
-        </p>
-        <OptionalBadge />
-      </div>
-      <AddGameDialog
-        embedded
-        initialMode="file"
-        allowedModes={["file"]}
-        bulk
-        onClose={() => { /* no-op: wizard handles step navigation */ }}
-        onImported={onComplete}
-        onRunningChange={onRunningChange}
-      />
-    </div>
-  );
-}
-
-// ── Step: Sources (populate the reference database) ───────────────────────────
+// ── Sources (multi-source import catalog, #40) ────────────────────────────────
 //
-// Phase C2 (#98): onboarding is a simple binary — populate the reference
-// database vs start empty — with all per-source detail deferred to
-// Maintenance → Sources (C1). The "populate" path enables the chosen catalog
-// sources (recording the attribution acknowledgment via the C1 `credit_acked`
-// gate) and fires their sync jobs, which run on the daemon in the background;
-// onboarding finishes immediately rather than blocking on a progress bar.
+// Phase C2 (#98): onboarding is split into two simple steps — pick a deep
+// historical base (this step), then pick the live feeds — with all per-source
+// detail (date windows, timeline, manual sync) deferred to Maintenance → Sources
+// (C1). Selecting a source IS its acknowledgment: a ticked row enables the
+// source and records the attribution acknowledgment via the C1 `credit_acked`
+// gate in one gesture, and sources are independently selectable (no feed is
+// forced). The daemon's scheduler picks up enabled-but-not-yet-synced sources
+// and imports them in the background (#40 C3), so each step finishes immediately.
 
-type History = "free" | "commercial" | "none";
-
-/** A non-commercial / restrictive licence we should visibly flag in the
- *  acknowledgment (e.g. CC BY-NC-SA sources like Lumbra's). Derived from the
- *  catalog credit line so new sources are flagged without extra metadata. */
+/** A non-commercial / restrictive licence we should visibly flag (e.g.
+ *  CC BY-NC-SA sources). Derived from the catalog credit line so new sources are
+ *  flagged without extra metadata. */
 function isNonCommercial(credit: string): boolean {
   return /non-?commercial|CC[\s-]?BY-NC|\bNC[\s-]?SA\b/i.test(credit);
 }
 
-/** One acknowledgment row: tick to accept a source's attribution/licence. */
-function AckRow({ source, checked, onChange }: { source: SourceStatus; checked: boolean; onChange: (v: boolean) => void }) {
+/** One selectable source row: tick to include the source (which also accepts its
+ *  attribution/licence). The credit line is shown right here so the tick is an
+ *  informed acknowledgment. */
+function SourceRow({ source, checked, onChange }: { source: SourceStatus; checked: boolean; onChange: (v: boolean) => void }) {
   const nc = isNonCommercial(source.credit);
   return (
     <label className="flex items-start gap-3 bg-surface-container-low rounded-lg px-3 py-2.5 cursor-pointer">
@@ -311,410 +146,261 @@ function AckRow({ source, checked, onChange }: { source: SourceStatus; checked: 
   );
 }
 
-// Replaces the old inline "download + import TWIC with a progress bar" step.
-// The step completes as soon as the chosen sources are enabled and their
-// background sync jobs are submitted — the daemon does the work afterwards.
-function SourcesStep({ completed, onComplete, onRunningChange }: { completed: boolean; onComplete: () => void; onRunningChange: (r: boolean) => void }) {
-  const [rerunning, setRerunning] = useState(false);
+function SourcesLoadError({ error, onRetry }: { error: string; onRetry: () => void }) {
+  return (
+    <div className="space-y-3">
+      <p className="text-body-sm text-error">Couldn't load the source catalog: {error}</p>
+      <button
+        onClick={onRetry}
+        className="h-9 px-4 inline-flex items-center rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 transition-all duration-short3 ease-standard"
+      >
+        Retry
+      </button>
+    </div>
+  );
+}
+
+/** Load the source catalog (+ this DB's per-source state). */
+function useSourceCatalog() {
   const [sources, setSources] = useState<SourceStatus[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [mode, setMode] = useState<"choice" | "configure">("choice");
+  const reload = useCallback(() => {
+    setLoadError(null);
+    setSources(null);
+    getSources()
+      .then(setSources)
+      .catch((e: unknown) => setLoadError(String(e)));
+  }, []);
+  useEffect(() => { reload(); }, [reload]);
+  return { sources, loadError, reload };
+}
+
+/** Make the enabled/acked state of `scope` match `selected`: enable + acknowledge
+ *  newly selected sources, disable newly deselected ones. Idempotent, so retrying
+ *  after a partial failure (or re-running the step) is safe. */
+async function applySourceSelection(scope: SourceStatus[], selected: Set<string>): Promise<void> {
+  for (const s of scope) {
+    const want = selected.has(s.key);
+    if (want && (!s.enabled || !s.credit_acked)) await setSourceEnabled(s.key, true, true);
+    else if (!want && s.enabled) await setSourceEnabled(s.key, false);
+  }
+}
+
+const sourcesFilledBtn =
+  "w-full h-10 rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 disabled:opacity-40 transition-all duration-short3 ease-standard";
+
+// ── Step: Deep history (the historical base — chosen first) ───────────────────
+
+type History = "free" | "commercial" | "none";
+
+function DeepHistoryStep({ completed, onComplete, onRunningChange }: { completed: boolean; onComplete: () => void; onRunningChange: (r: boolean) => void }) {
+  const [rerunning, setRerunning] = useState(false);
+  const { sources, loadError, reload } = useSourceCatalog();
   const [history, setHistory] = useState<History>("free");
-  const [acked, setAcked] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [enabling, setEnabling] = useState(false);
   const [importing, setImporting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const loadSources = useCallback(() => {
-    setLoadError(null);
-    setSources(null);
-    getSources()
-      .then((s) => { setSources(s); setAcked(new Set(s.filter((x) => x.credit_acked).map((x) => x.key))); })
-      .catch((e: unknown) => setLoadError(String(e)));
-  }, []);
-  useEffect(() => { loadSources(); }, [loadSources]);
+  // Pre-select bulk archives already enabled (e.g. on re-run); compute the filter
+  // inside the effect so the only dependency is the loaded catalog.
+  useEffect(() => {
+    if (!sources) return;
+    setSelected(new Set(sources.filter((s) => s.kind === "bulk" && s.enabled).map((s) => s.key)));
+  }, [sources]);
 
-  // Report this step's combined busy state to the wizard: the brief enable
-  // loop OR an in-progress commercial PGN import. Reporting the OR (rather than
-  // letting each writer set the shared flag directly) stops the enable loop's
-  // completion from clearing the "operation in progress" close guard while a
-  // commercial import is still running.
+  // Report combined busy state: the brief enable loop OR an in-progress
+  // commercial PGN import (reporting the OR keeps the close-guard up while a
+  // commercial import is still running).
   useEffect(() => { onRunningChange(enabling || importing); }, [enabling, importing, onRunningChange]);
 
   if (completed && !rerunning) {
-    return <CompletedBanner summary="Reference sources configured" onRerun={() => { setRerunning(true); setMode("choice"); }} />;
+    return <CompletedBanner summary="Deep history configured" onRerun={() => setRerunning(true)} />;
+  }
+  if (loadError !== null) return <SourcesLoadError error={loadError} onRetry={reload} />;
+  if (sources === null) return <p className="text-body-sm text-on-surface-variant">Loading sources…</p>;
+
+  const bulk = sources.filter((s) => s.kind === "bulk");
+
+  function toggle(key: string, on: boolean) {
+    setSelected((prev) => { const next = new Set(prev); if (on) next.add(key); else next.delete(key); return next; });
   }
 
-  // Currency = the auto-updating feeds; deep history = the bulk archives.
-  const feeds = sources?.filter((s) => s.kind === "feed") ?? [];
-  const bulk = sources?.filter((s) => s.kind === "bulk") ?? [];
-  // Sources enabled by the primary button: the feeds always, plus the free
-  // historical base when chosen. (Commercial = the user's own local PGN import;
-  // None = feeds only.)
-  const selected = [...feeds, ...(history === "free" ? bulk : [])];
-  const allAcked = selected.every((s) => acked.has(s.key));
-
-  function toggleAck(key: string, on: boolean) {
-    setAcked((prev) => { const next = new Set(prev); if (on) next.add(key); else next.delete(key); return next; });
-  }
-
-  function chooseEmpty() {
-    // Empty database: nothing to enable (sources default to off). Just finish.
-    onComplete();
-  }
-
-  async function enableAndImport() {
+  async function apply() {
     setSubmitError(null);
     setEnabling(true);
     try {
-      // Just enable each chosen source (recording the acknowledgment in the same
-      // step, per the C1 credit_acked gate). The daemon's scheduler picks up
-      // enabled-but-not-yet-synced sources and imports them in the background
-      // (#40 C3), so onboarding doesn't submit or wait on any sync itself.
-      for (const s of selected) {
-        await setSourceEnabled(s.key, true, true);
-      }
+      // Only the bulk archives are this step's concern. "free" enables the ticked
+      // archives; "commercial" (local PGN import below) and "none" enable nothing
+      // here — and clear any previously-enabled archive on re-run.
+      await applySourceSelection(bulk, history === "free" ? selected : new Set());
       onComplete();
     } catch (e: unknown) {
-      // Surface the failure and stay on the step rather than silently dropping
-      // it. Earlier sources in the loop may already be enabled; re-clicking is
-      // safe (enabling is idempotent).
-      setSubmitError(`Couldn’t enable the selected sources: ${String(e)} — some may already be enabled; you can retry.`);
+      setSubmitError(`Couldn't apply your choice: ${String(e)} — some sources may already be enabled; you can retry.`);
     } finally {
       setEnabling(false);
     }
   }
 
-  if (loadError !== null) {
-    return (
-      <div className="space-y-3">
-        <p className="text-body-sm text-error">Couldn’t load the source catalog: {loadError}</p>
-        <button
-          onClick={loadSources}
-          className="h-9 px-4 inline-flex items-center rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 transition-all duration-short3 ease-standard"
-        >
-          Retry
-        </button>
-      </div>
-    );
-  }
-  if (sources === null) {
-    return <p className="text-body-sm text-on-surface-variant">Loading sources…</p>;
-  }
-
-  // ── View 1: the binary choice ──
-  if (mode === "choice") {
-    return (
-      <div className="space-y-5">
-        <p className="text-on-surface text-body-md leading-relaxed">
-          Populate your database with curated reference collections, or start empty and import only
-          your own games. You can change any of this later under Maintenance → Sources.
-        </p>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <button
-            onClick={() => setMode("configure")}
-            className="text-left flex flex-col gap-2 p-5 rounded-2xl bg-primary-container text-on-primary-container hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard"
-          >
-            <span className="text-title-md">Populate the reference database</span>
-            <span className="text-body-sm opacity-90">
-              Import curated tournament archives and keep recent games current automatically.
-              The import runs in the background.
-            </span>
-            <span className="text-label-lg mt-1">Recommended →</span>
-          </button>
-          <button
-            onClick={chooseEmpty}
-            className="text-left flex flex-col gap-2 p-5 rounded-2xl bg-surface-container-highest text-on-surface hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard"
-          >
-            <span className="text-title-md">Start with an empty database</span>
-            <span className="text-body-sm text-on-surface-variant">
-              Skip the reference sources — import your own games only. You can add sources any time later.
-            </span>
-            <span className="text-label-lg text-primary mt-1">Empty →</span>
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── View 2: configure the populate path ──
-  const filledBtn = "w-full h-10 rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 disabled:opacity-40 transition-all duration-short3 ease-standard";
   const historyOptions: { value: History; label: string; hint: string }[] = [
     { value: "free", label: "Free historical base", hint: bulk.map((s) => s.name).join(", ") || "A free public archive of older games." },
     { value: "commercial", label: "I own a commercial database", hint: "e.g. ChessBase Megabase — export to PGN and import it below." },
-    { value: "none", label: "None", hint: "Just the live feeds for now." },
+    { value: "none", label: "None", hint: "Start without a historical base — just the live feeds you pick next." },
   ];
 
   return (
     <div className="space-y-5">
-      <button onClick={() => setMode("choice")} className="text-label-md text-primary">← Back to choice</button>
-
-      {/* Currency — the auto-updating feeds, always part of populate. */}
-      <section className="space-y-2">
-        <div className="text-label-sm text-on-surface-variant uppercase tracking-wider">Keep current automatically</div>
-        <p className="text-body-sm text-on-surface-variant">
-          Recent tournament games, refreshed in the background. Acknowledge each source to enable it.
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-on-surface text-body-md leading-relaxed">
+          Choose an optional historical base — a deep archive of older games beneath the live
+          feeds you'll pick next. Overlap is deduplicated automatically. You can change this
+          later under Maintenance → Sources.
         </p>
-        <div className="space-y-2">
-          {feeds.map((s) => (
-            <AckRow key={s.key} source={s} checked={acked.has(s.key)} onChange={(v) => toggleAck(s.key, v)} />
-          ))}
-        </div>
-      </section>
+        <OptionalBadge />
+      </div>
 
-      {/* Deep history — Free / Commercial / None. */}
-      <section className="space-y-2">
-        <div className="text-label-sm text-on-surface-variant uppercase tracking-wider">Deep history</div>
-        <p className="text-body-sm text-on-surface-variant">
-          An optional historical base beneath the live feeds. Overlap is deduplicated automatically.
-        </p>
-        <div className="space-y-1.5">
-          {historyOptions.map((opt) => (
-            <label key={opt.value} className="flex items-start gap-3 cursor-pointer">
-              <input
-                type="radio"
-                name="deep-history"
-                className="mt-1 shrink-0"
-                checked={history === opt.value}
-                onChange={() => setHistory(opt.value)}
-              />
-              <span>
-                <span className="block text-body-md text-on-surface">{opt.label}</span>
-                <span className="block text-label-sm text-on-surface-variant">{opt.hint}</span>
-              </span>
-            </label>
-          ))}
-        </div>
-        {history === "free" && bulk.length > 0 && (
-          <div className="space-y-2 pt-1">
+      <div className="space-y-1.5">
+        {historyOptions.map((opt) => (
+          <label key={opt.value} className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="radio"
+              name="deep-history"
+              className="mt-1 shrink-0"
+              checked={history === opt.value}
+              onChange={() => setHistory(opt.value)}
+            />
+            <span>
+              <span className="block text-body-md text-on-surface">{opt.label}</span>
+              <span className="block text-label-sm text-on-surface-variant">{opt.hint}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+
+      {history === "free" && (
+        bulk.length > 0 ? (
+          <div className="space-y-2">
+            <p className="text-body-sm text-on-surface-variant">Select the archives to include — ticking one accepts its source/licence.</p>
             {bulk.map((s) => (
-              <AckRow key={s.key} source={s} checked={acked.has(s.key)} onChange={(v) => toggleAck(s.key, v)} />
+              <SourceRow key={s.key} source={s} checked={selected.has(s.key)} onChange={(v) => toggle(s.key, v)} />
             ))}
           </div>
-        )}
-        {history === "commercial" && (
-          <div className="pt-1 space-y-2">
-            <p className="text-body-sm text-on-surface-variant">
-              Export your database to PGN, then import it here. You can also do this later, and cap the
-              live feeds to start after its cutoff under Maintenance → Sources.
-            </p>
-            <AddGameDialog
-              embedded
-              initialMode="file"
-              allowedModes={["file"]}
-              bulk
-              onClose={() => { /* wizard handles navigation */ }}
-              onImported={onComplete}
-              onRunningChange={setImporting}
-            />
-          </div>
-        )}
-      </section>
+        ) : (
+          <p className="text-body-sm text-on-surface-variant">No free archive is available right now.</p>
+        )
+      )}
+
+      {history === "commercial" && (
+        <div className="space-y-2">
+          <p className="text-body-sm text-on-surface-variant">
+            Export your database to PGN, then import it here. You can also do this later, and cap the
+            live feeds to start after its cutoff under Maintenance → Sources.
+          </p>
+          <AddGameDialog
+            embedded
+            initialMode="file"
+            allowedModes={["file"]}
+            bulk
+            onClose={() => { /* wizard handles navigation */ }}
+            onImported={onComplete}
+            onRunningChange={setImporting}
+          />
+        </div>
+      )}
 
       <div className="space-y-2">
-        <button
-          onClick={() => { void enableAndImport(); }}
-          disabled={!allAcked || selected.length === 0 || enabling}
-          className={filledBtn}
-        >
+        <button onClick={() => { void apply(); }} disabled={enabling} className={sourcesFilledBtn}>
           {enabling
-            ? "Enabling…"
-            : history === "commercial"
-              ? "Enable live feeds & finish"
-              : "Enable & import in the background"}
+            ? "Saving…"
+            : history === "free" && selected.size > 0
+              ? "Add historical base"
+              : history === "commercial"
+                ? "Continue"
+                : "Continue without a base"}
         </button>
-        {selected.length === 0 ? (
-          <p className="text-label-sm text-on-surface-variant">
-            No reference sources to enable.{history === "commercial" ? " Import your database above to populate it." : ""}
-          </p>
-        ) : !allAcked ? (
-          <p className="text-label-sm text-on-surface-variant">Acknowledge each selected source above to continue.</p>
-        ) : null}
         {submitError && <p className="text-label-sm text-error">{submitError}</p>}
-        {history === "commercial" && (
+        {history === "free" && selected.size > 0 && (
           <p className="text-label-sm text-on-surface-variant">
-            This enables the live feeds only — import your commercial database separately above (now or later).
+            ⓘ The archive imports on the daemon in the background — you can keep going.
           </p>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── Step: Live feeds (auto-updating sources) ──────────────────────────────────
+
+function FeedsStep({ completed, onComplete, onRunningChange }: { completed: boolean; onComplete: () => void; onRunningChange: (r: boolean) => void }) {
+  const [rerunning, setRerunning] = useState(false);
+  const { sources, loadError, reload } = useSourceCatalog();
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [enabling, setEnabling] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // Pre-select feeds already enabled (TWIC defaults on; and on re-run).
+  useEffect(() => {
+    if (!sources) return;
+    setSelected(new Set(sources.filter((s) => s.kind === "feed" && s.enabled).map((s) => s.key)));
+  }, [sources]);
+
+  useEffect(() => { onRunningChange(enabling); }, [enabling, onRunningChange]);
+
+  if (completed && !rerunning) {
+    return <CompletedBanner summary="Live feeds configured" onRerun={() => setRerunning(true)} />;
+  }
+  if (loadError !== null) return <SourcesLoadError error={loadError} onRetry={reload} />;
+  if (sources === null) return <p className="text-body-sm text-on-surface-variant">Loading sources…</p>;
+
+  const feeds = sources.filter((s) => s.kind === "feed");
+
+  function toggle(key: string, on: boolean) {
+    setSelected((prev) => { const next = new Set(prev); if (on) next.add(key); else next.delete(key); return next; });
+  }
+
+  async function apply() {
+    setSubmitError(null);
+    setEnabling(true);
+    try {
+      await applySourceSelection(feeds, selected);
+      onComplete();
+    } catch (e: unknown) {
+      setSubmitError(`Couldn't apply your choice: ${String(e)} — some feeds may already be enabled; you can retry.`);
+    } finally {
+      setEnabling(false);
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-on-surface text-body-md leading-relaxed">
+          Choose which live tournament feeds to follow. They refresh automatically in the
+          background to keep recent games current. Ticking a feed accepts its source/licence.
+          You can change this later under Maintenance → Sources.
+        </p>
+        <OptionalBadge />
+      </div>
+
+      {feeds.length === 0 ? (
+        <p className="text-body-sm text-on-surface-variant">No live feeds are available right now.</p>
+      ) : (
+        <div className="space-y-2">
+          {feeds.map((s) => (
+            <SourceRow key={s.key} source={s} checked={selected.has(s.key)} onChange={(v) => toggle(s.key, v)} />
+          ))}
+        </div>
+      )}
+
+      <div className="space-y-2">
+        <button onClick={() => { void apply(); }} disabled={enabling} className={sourcesFilledBtn}>
+          {enabling ? "Saving…" : selected.size > 0 ? "Enable selected feeds" : "Continue without feeds"}
+        </button>
+        {submitError && <p className="text-label-sm text-error">{submitError}</p>}
         <p className="text-label-sm text-on-surface-variant">
-          ⓘ Importing runs on the daemon — you can finish setup and even close LPDO; it keeps going.
+          ⓘ Imports run on the daemon — you can finish setup and even close LPDO; it keeps going.
         </p>
       </div>
-    </div>
-  );
-}
-
-// ── Step: Deduplicate ─────────────────────────────────────────────────────────
-
-function DedupStep({ completed, onComplete, onRunningChange }: { completed: boolean; onComplete: () => void; onRunningChange: (r: boolean) => void }) {
-  const [rerunning, setRerunning] = useState(false);
-  const progress = useSidecarProgress();
-
-  useEffect(() => { if (progress.done) onComplete(); }, [progress.done]);
-  useEffect(() => { onRunningChange(progress.running); }, [progress.running]);
-
-  function run() {
-    void progress.run(["games", "dedup"]);
-  }
-
-  if (completed && !rerunning) {
-    return <CompletedBanner summary="Deduplication complete" onRerun={() => setRerunning(true)} />;
-  }
-
-  return (
-    <div className="space-y-4">
-      <p className="text-on-surface-variant text-body-md">
-        Detect and remove duplicate games that may result from overlapping collections.
-      </p>
-      {!progress.running && !progress.done && (
-        <button onClick={run} className="w-full h-10 rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard">
-          Run Deduplication
-        </button>
-      )}
-      {(progress.running || progress.done) && (
-        <div className="space-y-2">
-          <div className="flex justify-between text-label-md text-on-surface-variant">
-            <span>{progress.done ? "Complete" : "Scanning…"}</span>
-            <span>{Math.round(progress.percent)}%</span>
-          </div>
-          <ProgressBar value={progress.percent} />
-          {progress.done && <p className="text-success text-body-sm">✓ {progress.doneMessage}</p>}
-          {progress.running && !progress.done && (
-            <div className="flex justify-end">
-              <button
-                onClick={progress.cancel}
-                className="h-8 px-4 inline-flex items-center rounded-full text-error border border-outline text-label-md hover:bg-error/8 transition-colors duration-short3 ease-standard"
-              >
-                Cancel
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Step: Normalise player names ──────────────────────────────────────────────
-
-const NORMALISE_LIMIT = 500;
-
-function NormaliseStep({ completed, onComplete, onRunningChange }: { completed: boolean; onComplete: () => void; onRunningChange: (r: boolean) => void }) {
-  const [rerunning, setRerunning] = useState(false);
-  const progress = useSidecarProgress();
-
-  useEffect(() => { if (progress.done) onComplete(); }, [progress.done]);
-  useEffect(() => { onRunningChange(progress.running); }, [progress.running]);
-
-  function run() {
-    // --stop-on-errors: abort immediately on 10 consecutive FIDE errors rather
-    // than pausing for hours, so the wizard never appears to hang.
-    void progress.run(["players", "normalise", "--limit", String(NORMALISE_LIMIT), "--stop-on-errors"]);
-  }
-
-  if (completed && !rerunning) {
-    return <CompletedBanner summary="Player names normalised" onRerun={() => setRerunning(true)} />;
-  }
-
-  return (
-    <div className="space-y-4">
-      <p className="text-on-surface-variant text-body-md">
-        Update player names to their FIDE-canonical form by looking up each player's FIDE ID.
-        This improves search results and name consistency.
-      </p>
-      {/* Names already in our cache are resolved instantly (one request, no
-          limit); only the slow FIDE lookups for the rest are capped. */}
-      <div className="bg-warning-container text-on-warning-container rounded-md px-4 py-3 text-body-sm space-y-1">
-        <p>
-          Names in our shared cache are resolved instantly. To keep setup quick, the
-          remaining online FIDE lookups are capped at{" "}
-          <span className="font-mono">{NORMALISE_LIMIT}</span> for this step.
-        </p>
-        <p>
-          For a complete pass — recommended especially if you didn't import a player reference file —
-          run <span className="font-mono">chess-db players normalise</span> from the command line.
-        </p>
-      </div>
-      {/* Run (also shown again after a stop, so the user can retry or skip). */}
-      {!progress.running && !progress.done && (
-        <button onClick={run} className="w-full h-10 rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard">
-          Normalise Player Names
-        </button>
-      )}
-      {(progress.running || progress.done) && (
-        <div className="space-y-2">
-          <div className="flex justify-between text-label-md text-on-surface-variant">
-            <span>{progress.done ? "Complete" : "Looking up FIDE names…"}</span>
-            <span>{Math.round(progress.percent)}%</span>
-          </div>
-          <ProgressBar value={progress.percent} />
-          {progress.done && <p className="text-success text-body-sm">✓ {progress.doneMessage}</p>}
-          {progress.running && !progress.done && (
-            <div className="flex justify-end">
-              <button
-                onClick={progress.cancel}
-                className="h-8 px-4 inline-flex items-center rounded-full text-error border border-outline text-label-md hover:bg-error/8 transition-colors duration-short3 ease-standard"
-              >
-                Cancel
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-      {/* Backend log: the "limited to N of M" warning, and any "stopped after N
-          consecutive errors" message. Kept visible after the run stops. */}
-      {progress.log.length > 0 && (
-        <div className="bg-surface-container-lowest rounded-sm p-2 text-label-sm font-mono text-on-surface-variant max-h-24 overflow-y-auto space-y-0.5">
-          {progress.log.slice(-6).map((l, i) => <div key={i}>{l}</div>)}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Step: Index positions ─────────────────────────────────────────────────────
-
-function IndexStep({ completed, onComplete, onRunningChange }: { completed: boolean; onComplete: () => void; onRunningChange: (r: boolean) => void }) {
-  const [rerunning, setRerunning] = useState(false);
-  const progress = useSidecarProgress();
-
-  useEffect(() => { if (progress.done) onComplete(); }, [progress.done]);
-  useEffect(() => { onRunningChange(progress.running); }, [progress.running]);
-
-  function run() {
-    // --fast = appender-based inserts (much quicker than row-by-row
-    // transactional inserts, which crawl on a full-database rebuild). Like the
-    // import step it must not be interrupted, so the progress below renders no
-    // Cancel button.
-    void progress.run(["index-positions", "--fast"]);
-  }
-
-  if (completed && !rerunning) {
-    return <CompletedBanner summary="Position index updated" onRerun={() => setRerunning(true)} />;
-  }
-
-  return (
-    <div className="space-y-4">
-      <p className="text-on-surface-variant text-body-md">
-        Build the position index — required for the move explorer. Each game is replayed and every position is recorded with its Zobrist hash.
-      </p>
-      {!progress.running && !progress.done && (
-        <button onClick={run} className="w-full h-10 rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard">
-          Build Position Index
-        </button>
-      )}
-      {(progress.running || progress.done) && (
-        <div className="space-y-2">
-          <div className="flex justify-between text-label-md text-on-surface-variant">
-            <span>{progress.done ? "Complete" : "Indexing…"}</span>
-            <span>{Math.round(progress.percent)}%</span>
-          </div>
-          <ProgressBar value={progress.percent} />
-          {progress.done && <p className="text-success text-body-sm">✓ {progress.doneMessage}</p>}
-          {/* No Cancel button: --fast (appender) indexing must not be
-              interrupted — doing so can corrupt the database. */}
-        </div>
-      )}
     </div>
   );
 }
@@ -770,10 +456,32 @@ function DoneStep() {
       <div className="text-center py-4">
         <div className="text-4xl mb-3">♟</div>
         <h3 className="text-headline-sm text-on-surface">Setup complete</h3>
-        <p className="text-on-surface-variant text-body-md mt-1">Your chess database is ready to use.</p>
+        <p className="text-on-surface-variant text-body-md mt-1">
+          Your database is now being prepared in the background — no further steps needed.
+        </p>
       </div>
+
+      {/* The maintenance the wizard used to ask the user to run by hand
+          (deduplicate / index / normalise) now happens automatically once the
+          chosen sources import. We surface it here so the process is visible,
+          rather than as manual steps that — with imports running asynchronously
+          on the daemon — would otherwise run before the games arrived. */}
+      <div className="bg-surface-container-low rounded-lg px-4 py-3 text-body-sm text-on-surface-variant space-y-2">
+        <p className="text-on-surface">What happens now, automatically</p>
+        <ol className="space-y-1 list-decimal list-inside">
+          <li>Your selected sources download and import — the daemon keeps going even if you close LPDO.</li>
+          <li>Imported games are deduplicated.</li>
+          <li>The position index is built — this powers the move explorer.</li>
+          <li>Player names are normalised to their FIDE-canonical form.</li>
+        </ol>
+        <p>
+          You don't need to run any of these by hand. After a first-time import these can take
+          a while; follow progress any time from the activity indicator in the header.
+        </p>
+      </div>
+
       <p className="text-on-surface-variant text-label-md">
-        Manage your reference sources and run maintenance operations at any time from
+        Manage your reference sources and run maintenance manually at any time from
         Maintenance → Sources, or re-open this wizard from the header.
       </p>
     </div>
@@ -819,18 +527,6 @@ export default function SetupWizard({ onClose, onFinish }: Props) {
   function next() { if (stepIndex < STEPS.length - 1) setStepIndex((i) => i + 1); }
   function skip() { setSkippedSteps((prev) => new Set([...prev, step])); next(); }
   function back() { if (stepIndex > 0) setStepIndex((i) => i - 1); }
-
-  // Welcome choices. Advanced walks every step; Express marks the two optional
-  // import steps (players, databases) as skipped and jumps straight to Sources.
-  function startAdvanced() {
-    markComplete("welcome");
-    next();
-  }
-  function startExpress() {
-    markComplete("welcome");
-    setSkippedSteps((prev) => new Set([...prev, "players", "databases"]));
-    setStepIndex(STEPS.indexOf("sources"));
-  }
 
   const stepProps = (s: Step) => ({
     completed: completedSteps.has(s),
@@ -879,13 +575,9 @@ export default function SetupWizard({ onClose, onFinish }: Props) {
 
         {/* Body */}
         <div className="px-6 py-5 flex-1 min-h-0 overflow-y-auto">
-          {step === "welcome"   && <WelcomeStep onExpress={startExpress} onAdvanced={startAdvanced} />}
-          {step === "players"   && <PlayersStep   {...stepProps("players")} />}
-          {step === "databases" && <DatabasesStep {...stepProps("databases")} />}
-          {step === "sources"   && <SourcesStep   {...stepProps("sources")} />}
-          {step === "dedup"     && <DedupStep     {...stepProps("dedup")} />}
-          {step === "normalise" && <NormaliseStep {...stepProps("normalise")} />}
-          {step === "index"     && <IndexStep     {...stepProps("index")} />}
+          {step === "welcome"   && <WelcomeStep onStart={() => { markComplete("welcome"); next(); }} />}
+          {step === "history"   && <DeepHistoryStep {...stepProps("history")} />}
+          {step === "feeds"     && <FeedsStep     {...stepProps("feeds")} />}
           {step === "profile"   && <ProfileStep   completed={completedSteps.has("profile")} onComplete={() => markComplete("profile")} />}
           {step === "done"      && <DoneStep />}
         </div>
@@ -910,7 +602,7 @@ export default function SetupWizard({ onClose, onFinish }: Props) {
                 </button>
               </div>
             ) : step === "welcome" ? (
-              // Navigation for Welcome is the Express / Advanced choice in the body.
+              // Navigation for Welcome is the "Get started" button in the body.
               null
             ) : completedSteps.has(step) ? (
               <button onClick={next} className={filledBtn}>
