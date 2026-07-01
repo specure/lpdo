@@ -1,6 +1,6 @@
 [package]
 name = "chess-client"
-version = "0.4.0"
+version = "0.5.0"
 description = "LPDO — desktop chess database for managing your games and preparing for tournaments"
 authors = ["Specure"]
 edition = "2021"
