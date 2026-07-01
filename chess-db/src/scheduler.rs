@@ -62,12 +62,19 @@ async fn tick(jobs: &Arc<JobManager>, reads: &ReadPool, writer: &ConnActor, db_p
         return Ok(());
     }
 
+    // Gate (#40 C4): hold off ALL background imports — auto-sync AND the daily
+    // update — until first-run setup has completed, so a source enabled mid-wizard
+    // isn't imported before the user finishes. A DB that already has games also
+    // opens the gate (upgrades / CLI-populated). Manual runs (/schedule/run,
+    // "Sync now") are explicit and bypass this.
+    let gate_open = setup_gate_open(reads).await?;
+
     // Enable→auto-sync (#40 C3): independent of the daily update. Enabling a
     // source in the Sources screen just sets its flag; the scheduler imports it
     // here in the background — so it works even with the GUI closed. Skipped
     // while a full update is in flight, since that update syncs every enabled
     // feed itself and would otherwise double-import the same source.
-    if !update_in_flight(jobs) {
+    if gate_open && !update_in_flight(jobs) {
         if let Err(e) = auto_sync_pending(jobs, reads).await {
             eprintln!("scheduler: auto-sync: {e:#}");
         }
@@ -91,8 +98,8 @@ async fn tick(jobs: &Arc<JobManager>, reads: &ReadPool, writer: &ConnActor, db_p
         return Ok(());
     }
 
-    // 2. Due? (enabled, and we haven't run since today's scheduled time)
-    if !s.enabled || !is_due(s.daily_minute, s.last_run.as_deref()) {
+    // 2. Due? (setup done, enabled, and we haven't run since today's scheduled time)
+    if !gate_open || !s.enabled || !is_due(s.daily_minute, s.last_run.as_deref()) {
         return Ok(());
     }
 
@@ -148,6 +155,27 @@ fn update_in_flight(jobs: &Arc<JobManager>) -> bool {
 /// skipping any that already has a sync queued or running (matched by its
 /// `source` param). De-duping this way keeps repeated ticks from piling up
 /// duplicate jobs while a long first import is still running.
+/// Whether background imports may run (#40 C4): only after first-run setup has
+/// completed (set by the wizard's `/setup/start`), or once the DB already has
+/// games (upgrades / CLI-populated). Before that, a source enabled mid-wizard
+/// must not be auto-imported until the user finishes setup.
+async fn setup_gate_open(reads: &ReadPool) -> anyhow::Result<bool> {
+    reads
+        .run(|c| -> anyhow::Result<bool> {
+            let done: bool = c
+                .query_row("SELECT setup_completed FROM schedule WHERE id = 1", [], |r| r.get(0))
+                .unwrap_or(false);
+            if done {
+                return Ok(true);
+            }
+            let games: i64 = c
+                .query_row("SELECT COUNT(*) FROM games WHERE deleted_at IS NULL", [], |r| r.get(0))
+                .unwrap_or(0);
+            Ok(games > 0)
+        })
+        .await
+}
+
 async fn auto_sync_pending(jobs: &Arc<JobManager>, reads: &ReadPool) -> anyhow::Result<()> {
     let candidates = reads.run(crate::sources::auto_sync_candidates).await?;
     if candidates.is_empty() {

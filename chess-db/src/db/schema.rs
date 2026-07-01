@@ -322,6 +322,14 @@ fn init_sources(conn: &Connection) -> Result<()> {
         ",
     )?;
 
+    // Was TWIC already tracked before this init? Distinguishes a legacy upgrade
+    // (sources table created now) from a normal restart, so the preserve-TWIC
+    // step below never overrides a user's later choice to disable it.
+    let twic_existed: bool = conn
+        .query_row("SELECT COUNT(*) FROM sources WHERE key = 'twic'", [], |r| r.get::<_, i64>(0))
+        .map(|n| n > 0)
+        .unwrap_or(false);
+
     // Seed a state row for every catalog source with its default enabled flag and
     // date window. ON CONFLICT DO NOTHING leaves existing rows (and the user's
     // choices) untouched — defaults only apply to sources new to this database.
@@ -337,6 +345,21 @@ fn init_sources(conn: &Connection) -> Result<()> {
                 s.default_to,
                 s.default_exclude_undated
             ],
+        )?;
+    }
+
+    // TWIC now seeds disabled so a fresh install imports nothing until the wizard
+    // enables it (#40 C4). But a database upgrading from the TWIC-only era was
+    // actively using TWIC — if TWIC is new to this DB yet imported TWIC items
+    // already exist, keep it enabled so those users' updates continue. Guarded on
+    // "TWIC wasn't already tracked" so a normal restart never re-enables a source
+    // the user has since disabled.
+    if !twic_existed {
+        conn.execute(
+            "UPDATE sources SET enabled = TRUE
+             WHERE key = 'twic'
+               AND EXISTS (SELECT 1 FROM source_items WHERE source_key = 'twic' AND imported = TRUE)",
+            [],
         )?;
     }
     Ok(())
@@ -384,13 +407,23 @@ fn init_schedule(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS schedule (
-            id             INTEGER PRIMARY KEY,
-            enabled        BOOLEAN NOT NULL DEFAULT TRUE,
-            interval_hours INTEGER NOT NULL DEFAULT 24,
-            last_run       TIMESTAMP,
-            last_status    VARCHAR,
-            last_job_id    VARCHAR
+            id              INTEGER PRIMARY KEY,
+            enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+            interval_hours  INTEGER NOT NULL DEFAULT 24,
+            last_run        TIMESTAMP,
+            last_status     VARCHAR,
+            last_job_id     VARCHAR,
+            -- Gate for background auto-sync (#40 C4): the daemon does not
+            -- auto-import enabled-but-unsynced sources until first-run setup has
+            -- completed (set by the wizard's /setup/start), so a source enabled
+            -- mid-wizard isn't synced before the user finishes. A populated DB
+            -- (games > 0) also opens the gate, so upgrades aren't blocked.
+            setup_completed BOOLEAN NOT NULL DEFAULT FALSE
         );
+
+        -- Add to databases whose `schedule` table predates the column.
+        ALTER TABLE schedule ADD COLUMN IF NOT EXISTS setup_completed BOOLEAN DEFAULT FALSE;
+        UPDATE schedule SET setup_completed = FALSE WHERE setup_completed IS NULL;
 
         INSERT INTO schedule (id, enabled, interval_hours)
         SELECT 1, TRUE, 24
@@ -422,7 +455,7 @@ mod migration_tests {
         let enabled: bool = conn
             .query_row("SELECT enabled FROM sources WHERE key = 'twic'", [], |r| r.get(0))
             .unwrap();
-        assert!(enabled, "twic should be seeded enabled");
+        assert!(!enabled, "twic should be seeded disabled on a fresh install (#40 C4)");
 
         // Date window (B1) defaults to unbounded so existing TWIC keeps importing
         // every date.
@@ -488,10 +521,12 @@ mod migration_tests {
             .unwrap();
         assert_eq!(manual_key, "manual");
 
-        // The new sources state table survives the Phase-2 `DROP TABLE sources`.
+        // Legacy upgrade: TWIC seeds disabled by default (#40 C4), but this DB has
+        // imported TWIC items (issue 1649), so it's preserved enabled — existing
+        // users' TWIC updates keep working after the upgrade.
         let enabled: bool = conn
             .query_row("SELECT enabled FROM sources WHERE key = 'twic'", [], |r| r.get(0))
             .unwrap();
-        assert!(enabled);
+        assert!(enabled, "TWIC should stay enabled for a legacy DB with imported items");
     }
 }

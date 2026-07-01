@@ -1104,6 +1104,18 @@ async fn setup_start_handler(State(state): State<AppState>) -> ApiResult<serde_j
         .run(crate::sources::enabled_sources_ordered)
         .await
         .map_err(db_err)?;
+
+    // Finishing the wizard opens the background auto-sync gate (#40 C4), whether
+    // or not any source was chosen — so sources enabled later (Sources screen) or
+    // an "empty database" setup both get normal auto-sync afterwards. Runs before
+    // the pipeline jobs are queued so it isn't stuck behind them on the writer.
+    state
+        .writer
+        .run(|c| {
+            let _ = c.execute("UPDATE schedule SET setup_completed = TRUE WHERE id = 1", []);
+        })
+        .await;
+
     if sources.is_empty() {
         // "Empty database" choice — nothing to import or prepare.
         return Ok(Json(serde_json::json!({ "job_ids": [] })));

@@ -310,6 +310,13 @@ jobs:
           for pkg in cli server; do
             nfpm pkg -f "packaging/nfpm-$pkg.yaml" -p deb -t dist-deb/
           done
+          # Bring the GUI .deb into dist-deb under the lowercase, hyphen-consistent
+          # name (lpdo_*), matching lpdo-cli / lpdo-server so `apt install ./lpdo*`
+          # picks up all three. tauri-action names the file after productName
+          # ("LPDO_…"); its Package: field is already `lpdo`, so this only fixes the
+          # filename. The uppercase asset it uploaded is removed in the next step.
+          gui=$(ls chess-client/src-tauri/target/release/bundle/deb/*.deb | head -1)
+          cp "$gui" "dist-deb/lpdo_${LPDO_VERSION}_amd64.deb"
           ls -la dist-deb/
           lintian dist-deb/*.deb || true   # advisory; don't fail the release
 
@@ -319,7 +326,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         shell: bash
-        run: gh release upload "$TAG" dist-deb/*.deb --clobber
+        run: |
+          set -euo pipefail
+          # Drop the uppercase GUI .deb tauri-action uploaded; we replace it with
+          # the lowercase lpdo_*.deb built above.
+          gh release delete-asset "$TAG" "LPDO_${LPDO_VERSION}_amd64.deb" --yes || true
+          gh release upload "$TAG" dist-deb/*.deb --clobber
 
   # Auto-fill the draft release body. Source of truth is the matching section of
   # CHANGELOG.md (so the file and the published notes never drift); if no section

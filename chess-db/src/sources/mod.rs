@@ -58,9 +58,10 @@ pub static CATALOG: &[CatalogSource] = &[
         homepage: "https://theweekinchess.com/",
         credit: "Games courtesy of Mark Crowther — The Week in Chess (theweekinchess.com).",
         collection: "TWIC",
-        // TWIC is the historical default: enabled, unbounded. The partition cap
-        // (from 2026) is applied via the wizard/UI, not forced on every install.
-        default_enabled: true,
+        // Seeded DISABLED so a fresh install imports nothing until the user picks
+        // sources in the setup wizard (#40 C4). Previously enabled-by-default,
+        // which made the daemon auto-import TWIC before onboarding.
+        default_enabled: false,
         default_from: None,
         default_to: None,
         default_exclude_undated: false,
@@ -627,7 +628,12 @@ mod auto_sync_tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::init(&conn).unwrap();
 
-        // Seeded state: only TWIC is enabled, and nothing has synced yet.
+        // Fresh seed enables nothing now (#40 C4: TWIC seeds disabled), so there
+        // are no auto-sync candidates until the user enables a source.
+        assert!(keys(&conn).is_empty(), "fresh install has nothing to auto-sync");
+
+        // Enabling TWIC makes it a candidate (enabled, never synced).
+        set_enabled(&conn, "twic", true).unwrap();
         assert_eq!(keys(&conn), vec!["twic"], "the enabled, never-synced source");
 
         // Enabling another joins the set; recording TWIC's run drops it out.
