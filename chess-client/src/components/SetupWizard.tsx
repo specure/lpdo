@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import AddGameDialog from "./AddGameDialog";
-import { ProfileSetupForm, loadMyPlayer, saveMyPlayer } from "./MyStatsWidget";
-import { getSources, setSourceEnabled } from "../api";
-import { PlayerInfo, SourceStatus } from "../types";
+import { getSources, setSourceEnabled, startSetup } from "../api";
+import { SourceStatus } from "../types";
 
 interface Props {
   onClose: () => void;
@@ -11,25 +10,23 @@ interface Props {
   onFinish?: () => void;
 }
 
-type Step = "welcome" | "history" | "feeds" | "profile" | "done";
+type Step = "welcome" | "history" | "feeds" | "done";
 
-const STEPS: Step[] = ["welcome", "history", "feeds", "profile", "done"];
+const STEPS: Step[] = ["welcome", "history", "feeds", "done"];
 const STEP_LABELS: Record<Step, string> = {
   welcome:   "Welcome",
   history:   "History",
   feeds:     "Feeds",
-  profile:   "Profile",
   done:      "Summary",
 };
 
-const OPTIONAL_STEPS: Step[] = ["history", "feeds", "profile"];
-// Bumped to -v3 with the Phase-C2 step restructure: welcome fork + players/
-// databases steps removed, Sources split into History+Feeds, and the manual
-// Dedup/Names/Index steps dropped (the daemon now does that maintenance
-// automatically after import — surfaced on the Summary screen). Bumping the key
-// discards stale persisted state from any earlier step set rather than
-// mis-mapping it.
-const STORAGE_KEY = "chess-setup-state-v3";
+const OPTIONAL_STEPS: Step[] = ["history", "feeds"];
+// Bumped on each step-set change so stale persisted state is discarded rather
+// than mis-mapped. -v4: dropped the Profile step (setting your identity is
+// premature before any games exist — do it from the Home "My profile" widget
+// once the database is populated). Earlier: -v3 removed the manual maintenance
+// steps; -v2 removed the welcome fork + players/databases steps.
+const STORAGE_KEY = "chess-setup-state-v4";
 
 interface PersistedState {
   stepIndex: number;
@@ -56,23 +53,6 @@ function OptionalBadge() {
   return <span className="text-label-sm text-on-surface-variant border border-outline px-2 h-5 inline-flex items-center rounded-full">Optional</span>;
 }
 
-function CompletedBanner({ summary, onRerun }: { summary: string; onRerun: () => void }) {
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-2 bg-success-container text-on-success-container rounded-md px-4 py-3">
-        <span className="text-base">✓</span>
-        <span className="text-body-md">{summary}</span>
-      </div>
-      <button
-        onClick={onRerun}
-        className="h-7 px-3 inline-flex items-center rounded-full text-primary text-label-md hover:bg-primary/8 transition-colors duration-short3 ease-standard"
-      >
-        Re-run this step
-      </button>
-    </div>
-  );
-}
-
 // ── Step: Welcome ─────────────────────────────────────────────────────────────
 
 function WelcomeStep({ onStart }: { onStart: () => void }) {
@@ -90,7 +70,6 @@ function WelcomeStep({ onStart }: { onStart: () => void }) {
         {[
           "Choose a deep historical base",
           "Choose the live tournament feeds to follow",
-          "Set your player profile",
         ].map((text, i) => (
           <li key={i} className="flex gap-3">
             <span className="text-outline shrink-0">{i + 1}.</span>
@@ -193,8 +172,7 @@ const sourcesFilledBtn =
 
 type History = "free" | "commercial" | "none";
 
-function DeepHistoryStep({ completed, onComplete, onRunningChange }: { completed: boolean; onComplete: () => void; onRunningChange: (r: boolean) => void }) {
-  const [rerunning, setRerunning] = useState(false);
+function DeepHistoryStep({ onComplete, onAdvance, onRunningChange }: { onComplete: () => void; onAdvance: () => void; onRunningChange: (r: boolean) => void }) {
   const { sources, loadError, reload } = useSourceCatalog();
   const [history, setHistory] = useState<History>("free");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -214,9 +192,6 @@ function DeepHistoryStep({ completed, onComplete, onRunningChange }: { completed
   // commercial import is still running).
   useEffect(() => { onRunningChange(enabling || importing); }, [enabling, importing, onRunningChange]);
 
-  if (completed && !rerunning) {
-    return <CompletedBanner summary="Deep history configured" onRerun={() => setRerunning(true)} />;
-  }
   if (loadError !== null) return <SourcesLoadError error={loadError} onRetry={reload} />;
   if (sources === null) return <p className="text-body-sm text-on-surface-variant">Loading sources…</p>;
 
@@ -235,6 +210,7 @@ function DeepHistoryStep({ completed, onComplete, onRunningChange }: { completed
       // here — and clear any previously-enabled archive on re-run.
       await applySourceSelection(bulk, history === "free" ? selected : new Set());
       onComplete();
+      onAdvance();
     } catch (e: unknown) {
       setSubmitError(`Couldn't apply your choice: ${String(e)} — some sources may already be enabled; you can retry.`);
     } finally {
@@ -331,8 +307,7 @@ function DeepHistoryStep({ completed, onComplete, onRunningChange }: { completed
 
 // ── Step: Live feeds (auto-updating sources) ──────────────────────────────────
 
-function FeedsStep({ completed, onComplete, onRunningChange }: { completed: boolean; onComplete: () => void; onRunningChange: (r: boolean) => void }) {
-  const [rerunning, setRerunning] = useState(false);
+function FeedsStep({ onComplete, onAdvance, onRunningChange }: { onComplete: () => void; onAdvance: () => void; onRunningChange: (r: boolean) => void }) {
   const { sources, loadError, reload } = useSourceCatalog();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [enabling, setEnabling] = useState(false);
@@ -346,9 +321,6 @@ function FeedsStep({ completed, onComplete, onRunningChange }: { completed: bool
 
   useEffect(() => { onRunningChange(enabling); }, [enabling, onRunningChange]);
 
-  if (completed && !rerunning) {
-    return <CompletedBanner summary="Live feeds configured" onRerun={() => setRerunning(true)} />;
-  }
   if (loadError !== null) return <SourcesLoadError error={loadError} onRetry={reload} />;
   if (sources === null) return <p className="text-body-sm text-on-surface-variant">Loading sources…</p>;
 
@@ -364,6 +336,7 @@ function FeedsStep({ completed, onComplete, onRunningChange }: { completed: bool
     try {
       await applySourceSelection(feeds, selected);
       onComplete();
+      onAdvance();
     } catch (e: unknown) {
       setSubmitError(`Couldn't apply your choice: ${String(e)} — some feeds may already be enabled; you can retry.`);
     } finally {
@@ -405,49 +378,6 @@ function FeedsStep({ completed, onComplete, onRunningChange }: { completed: bool
   );
 }
 
-// ── Step: Your profile ────────────────────────────────────────────────────────
-
-function ProfileStep({ completed, onComplete }: { completed: boolean; onComplete: () => void }) {
-  const [saved, setSaved] = useState<PlayerInfo | null>(loadMyPlayer);
-  const [changing, setChanging] = useState(false);
-
-  // A profile set previously (this or an earlier run) counts as done.
-  useEffect(() => { if (saved && !completed) onComplete(); }, []);
-
-  function handleSave(p: PlayerInfo) {
-    saveMyPlayer(p);
-    setSaved(p);
-    setChanging(false);
-    onComplete();
-  }
-
-  return (
-    <div className="space-y-4">
-      <p className="text-on-surface-variant text-body-md">
-        Tell us who you are. The Home screen uses this to show your FIDE ratings, recent
-        activity, and your games in the database. You can change it later under “My profile”.
-      </p>
-      {saved && !changing ? (
-        <div className="flex items-center gap-3 bg-success-container text-on-success-container rounded-md px-4 py-3">
-          <span className="text-base">✓</span>
-          <span className="text-body-md flex-1">
-            Set as <span className="font-medium">{saved.name}</span>
-            {saved.fide_id ? ` · FIDE ${saved.fide_id}` : ""}
-          </span>
-          <button
-            onClick={() => setChanging(true)}
-            className="h-7 px-3 inline-flex items-center rounded-full text-primary text-label-md hover:bg-primary/8 transition-colors duration-short3 ease-standard shrink-0"
-          >
-            Change
-          </button>
-        </div>
-      ) : (
-        <ProfileSetupForm onSave={handleSave} />
-      )}
-    </div>
-  );
-}
-
 // ── Step: Done ────────────────────────────────────────────────────────────────
 
 function DoneStep() {
@@ -481,8 +411,9 @@ function DoneStep() {
       </div>
 
       <p className="text-on-surface-variant text-label-md">
-        Manage your reference sources and run maintenance manually at any time from
-        Maintenance → Sources, or re-open this wizard from the header.
+        Once your games have imported, set yourself as a player from the Home screen’s “My
+        profile” to see your FIDE ratings and games. Manage your reference sources any time
+        from Maintenance → Sources, or re-open this wizard from the header.
       </p>
     </div>
   );
@@ -514,6 +445,15 @@ export default function SetupWizard({ onClose, onFinish }: Props) {
     setSkippedSteps(new Set());
   }
 
+  // Finishing kicks off the daemon's first-run pipeline: it downloads + imports
+  // the chosen sources (fast), then deduplicates, indexes and normalises — all in
+  // the background, visible in the header activity queue (#40 C4). Fire-and-forget
+  // and a no-op server-side if no sources were enabled ("empty database" choice).
+  function handleFinish() {
+    void startSetup();
+    (onFinish ?? onClose)();
+  }
+
   // Persist on every change
   useEffect(() => {
     saveState({ stepIndex, completedSteps: Array.from(completedSteps), skippedSteps: Array.from(skippedSteps) });
@@ -527,12 +467,6 @@ export default function SetupWizard({ onClose, onFinish }: Props) {
   function next() { if (stepIndex < STEPS.length - 1) setStepIndex((i) => i + 1); }
   function skip() { setSkippedSteps((prev) => new Set([...prev, step])); next(); }
   function back() { if (stepIndex > 0) setStepIndex((i) => i - 1); }
-
-  const stepProps = (s: Step) => ({
-    completed: completedSteps.has(s),
-    onComplete: () => markComplete(s),
-    onRunningChange: setStepRunning,
-  });
 
   // Footer button presets
   const filledBtn = "h-9 px-4 inline-flex items-center rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard";
@@ -576,9 +510,8 @@ export default function SetupWizard({ onClose, onFinish }: Props) {
         {/* Body */}
         <div className="px-6 py-5 flex-1 min-h-0 overflow-y-auto">
           {step === "welcome"   && <WelcomeStep onStart={() => { markComplete("welcome"); next(); }} />}
-          {step === "history"   && <DeepHistoryStep {...stepProps("history")} />}
-          {step === "feeds"     && <FeedsStep     {...stepProps("feeds")} />}
-          {step === "profile"   && <ProfileStep   completed={completedSteps.has("profile")} onComplete={() => markComplete("profile")} />}
+          {step === "history"   && <DeepHistoryStep onComplete={() => markComplete("history")} onAdvance={next} onRunningChange={setStepRunning} />}
+          {step === "feeds"     && <FeedsStep       onComplete={() => markComplete("feeds")}   onAdvance={next} onRunningChange={setStepRunning} />}
           {step === "done"      && <DoneStep />}
         </div>
 
@@ -597,7 +530,7 @@ export default function SetupWizard({ onClose, onFinish }: Props) {
                 <button onClick={handleRestart} className={tonalBtn}>
                   Restart the wizard
                 </button>
-                <button onClick={onFinish ?? onClose} className={filledBtn}>
+                <button onClick={handleFinish} className={filledBtn}>
                   Finish
                 </button>
               </div>

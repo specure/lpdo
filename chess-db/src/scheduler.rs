@@ -13,6 +13,7 @@
 //! `running` status orphaned by a restart (the in-memory job registry doesn't
 //! survive one, so the job is simply gone → the run was interrupted).
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,7 +35,7 @@ struct Schedule {
 }
 
 /// Spawn the scheduler loop onto the current Tokio runtime.
-pub fn spawn(jobs: Arc<JobManager>, reads: ReadPool, writer: ConnActor) {
+pub fn spawn(jobs: Arc<JobManager>, reads: ReadPool, writer: ConnActor, db_path: PathBuf) {
     // Test/debug escape hatch: skip the daily update entirely so the writer
     // thread stays free (e.g. when exercising the #82 fault injector).
     if std::env::var_os("LPDO_DISABLE_SCHEDULER").is_some() {
@@ -46,14 +47,21 @@ pub fn spawn(jobs: Arc<JobManager>, reads: ReadPool, writer: ConnActor) {
         let mut ticker = tokio::time::interval(TICK);
         loop {
             ticker.tick().await;
-            if let Err(e) = tick(&jobs, &reads, &writer).await {
+            if let Err(e) = tick(&jobs, &reads, &writer, &db_path).await {
                 eprintln!("scheduler: {e:#}");
             }
         }
     });
 }
 
-async fn tick(jobs: &Arc<JobManager>, reads: &ReadPool, writer: &ConnActor) -> anyhow::Result<()> {
+async fn tick(jobs: &Arc<JobManager>, reads: &ReadPool, writer: &ConnActor, db_path: &Path) -> anyhow::Result<()> {
+    // While the wizard's first-run pipeline owns the database, stay out of its
+    // way entirely: it imports the enabled sources itself (with `--fast`), so an
+    // auto-sync or daily update here would double-import or collide on the writer.
+    if crate::jobs::setup_sentinel_present(db_path) {
+        return Ok(());
+    }
+
     // Enable→auto-sync (#40 C3): independent of the daily update. Enabling a
     // source in the Sources screen just sets its flag; the scheduler imports it
     // here in the background — so it works even with the GUI closed. Skipped

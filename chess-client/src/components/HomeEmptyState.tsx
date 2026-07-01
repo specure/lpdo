@@ -7,9 +7,11 @@
 // M3 Expressive moves: tonal containers per action role, larger 28px/32px
 // corners, display-scale typography, asymmetric icon emphasis.
 
+import { useState, useEffect } from "react";
 import DatabaseStats from "./DatabaseStats";
 import MyStatsWidget from "./MyStatsWidget";
-import { StatusInfo } from "../types";
+import { StatusInfo, Job } from "../types";
+import { getStatus, getJobs, resetSetup } from "../api";
 
 interface Props {
   status: StatusInfo | null;
@@ -62,6 +64,105 @@ const IconSparkles = () => (
   </svg>
 );
 
+// ── First-run setup readiness (#40 C4) ────────────────────────────────────────
+//
+// The wizard's setup runs as a background queue (download → import → dedup →
+// index → normalise). The header activity indicator is the detailed view; here
+// on Home we surface a single rolled-up state: Preparing… / Ready / (failed →
+// Reset). Readiness is polled live (the parent's status only refreshes every
+// ~30 min), fast while preparing/failed and slowly once ready.
+
+const PIPELINE_LABELS: Record<string, string> = {
+  download: "Downloading sources",
+  import: "Importing games",
+  dedup_games: "Deduplicating",
+  index_positions: "Building the position index",
+  normalise: "Normalising player names",
+};
+
+function useReadiness(initial: StatusInfo | null) {
+  const [status, setStatus] = useState<StatusInfo | null>(initial);
+  const [active, setActive] = useState<Job[]>([]);
+  // Adopt the parent's status until our own poll supersedes it.
+  useEffect(() => { setStatus(initial); }, [initial]);
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      try {
+        const [s, jobs] = await Promise.all([getStatus(), getJobs()]);
+        if (stopped) return;
+        setStatus(s);
+        setActive(jobs.filter((j) => j.status === "running" || j.status === "queued"));
+        const fast = s.setup_status === "preparing" || s.setup_status === "failed";
+        timer = setTimeout(tick, fast ? 3000 : 20000);
+      } catch {
+        if (!stopped) timer = setTimeout(tick, 5000);
+      }
+    };
+    void tick();
+    return () => { stopped = true; if (timer) clearTimeout(timer); };
+  }, []);
+  return { status, active };
+}
+
+function PreparingBanner({ jobs, delayMs }: { jobs: Job[]; delayMs: number }) {
+  const running = jobs.find((j) => j.status === "running");
+  const label = running ? (PIPELINE_LABELS[running.type] ?? "Working") : "Preparing";
+  const pct = running && running.total > 0 ? Math.round((100 * running.value) / running.total) : null;
+  return (
+    <div
+      className="bg-secondary-container text-on-secondary-container rounded-2xl p-6 lpdo-rise-in"
+      style={{ animationDelay: `${delayMs}ms` }}
+    >
+      <div className="flex items-center gap-5">
+        <div className="w-12 h-12 shrink-0 inline-flex items-center justify-center rounded-2xl bg-on-secondary-container/15 text-2xl">
+          <span className="animate-spin">⟳</span>
+        </div>
+        <div className="flex-1">
+          <h2 className="text-title-lg mb-1">Preparing your database…</h2>
+          <p className="text-body-md opacity-90">
+            {label}{pct !== null ? ` — ${pct}%` : ""}
+            {jobs.length > 1 ? ` · ${jobs.length} tasks in the queue` : ""}. You can start
+            exploring now — newly imported games appear as processing finishes.
+          </p>
+          <p className="text-label-md opacity-80 mt-1">
+            Follow detailed progress from the activity indicator in the header.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SetupFailedBanner({ delayMs }: { delayMs: number }) {
+  const [resetting, setResetting] = useState(false);
+  return (
+    <div
+      className="bg-error-container text-on-error-container rounded-2xl p-6 lpdo-rise-in"
+      style={{ animationDelay: `${delayMs}ms` }}
+    >
+      <div className="flex flex-col md:flex-row md:items-center gap-5">
+        <div className="flex-1">
+          <h2 className="text-title-lg mb-1">Setup didn’t finish</h2>
+          <p className="text-body-md opacity-90">
+            The initial import was interrupted, so the database may be incomplete. Start over
+            with a fresh database — nothing else on your machine is affected. You’ll re-run the
+            setup wizard afterwards.
+          </p>
+        </div>
+        <button
+          onClick={() => { setResetting(true); resetSetup().catch(() => {}).finally(() => setResetting(false)); }}
+          disabled={resetting}
+          className="shrink-0 h-11 px-5 rounded-full bg-error text-on-error text-label-lg hover:brightness-110 active:brightness-95 disabled:opacity-50 transition-all duration-short3 ease-standard"
+        >
+          {resetting ? "Resetting…" : "Reset & start over"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function EmptyDatabaseCta({
   onRunWizard, delayMs,
 }: { onRunWizard: () => void; delayMs: number }) {
@@ -79,8 +180,8 @@ function EmptyDatabaseCta({
         <div className="flex-1">
           <h2 className="text-title-lg mb-1">Your database is empty</h2>
           <p className="text-body-md opacity-90">
-            Run the setup wizard to import a player reference file, your existing
-            PGN collections, and TWIC issues — then come back here to explore.
+            Run the setup wizard to choose your reference sources — a historical base and the
+            live tournament feeds. LPDO then imports and prepares everything in the background.
           </p>
         </div>
         <button
@@ -172,9 +273,17 @@ function ActionCard({
 export default function HomeEmptyState({
   status, onMyGames, onSearchPlayer, onOpenTournament, onBrowseLocal, onRunWizard,
 }: Props) {
-  // Empty-database state: server reachable but games table is 0. Distinct from
-  // "server offline" (status === null), which DatabaseStats handles itself.
-  const isEmptyDb = status !== null && status.games === 0;
+  // Live first-run readiness (overrides the parent's slow-polled status). The
+  // slot below the quick-start cards becomes one of: Preparing… / failed (Reset)
+  // / empty (wizard CTA) / Database stats. "offline" (status === null) falls
+  // through to DatabaseStats, which handles it.
+  const { status: live, active } = useReadiness(status);
+  const setupStatus = live?.setup_status;
+  const view =
+    setupStatus === "preparing" ? "preparing"
+    : setupStatus === "failed" ? "failed"
+    : live !== null && (setupStatus === "empty" || live.games === 0) ? "empty"
+    : "stats";
   // Atmospheric radial glow sourced near the logo's position. Sits on the
   // bg-surface base; the gradient adds a soft primary-tinted halo that the
   // logo emerges from. Subtle enough to feel like ambient lighting.
@@ -247,9 +356,14 @@ export default function HomeEmptyState({
           />
         </div>
 
-        {/* When the database is empty, swap the stats banner for a prominent
-            CTA pointing at the Setup Wizard. Same slot, same entrance delay. */}
-        {isEmptyDb ? (
+        {/* Same slot below the quick-start cards: a live readiness banner while
+            the first-run pipeline runs, a reset prompt if it failed, the wizard
+            CTA when empty, or the Database stats once populated. */}
+        {view === "preparing" ? (
+          <PreparingBanner jobs={active} delayMs={320} />
+        ) : view === "failed" ? (
+          <SetupFailedBanner delayMs={320} />
+        ) : view === "empty" ? (
           <EmptyDatabaseCta onRunWizard={onRunWizard} delayMs={320} />
         ) : (
           <div
@@ -257,7 +371,7 @@ export default function HomeEmptyState({
             style={{ animationDelay: "320ms" }}
           >
             <h2 className="text-title-md text-on-surface mb-4">Database</h2>
-            <DatabaseStats status={status} prominent countStartDelayMs={320} />
+            <DatabaseStats status={live} prominent countStartDelayMs={320} />
           </div>
         )}
 

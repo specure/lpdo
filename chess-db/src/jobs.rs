@@ -154,6 +154,9 @@ impl ReadPool {
 struct ReopenGate {
     db_path: PathBuf,
     parties: usize,
+    /// When true this is a *reset*, not a recovery: the old DB files are deleted
+    /// and a fresh empty schema is initialised, instead of restoring a snapshot.
+    reset: bool,
     inner: Mutex<GateInner>,
     cv: std::sync::Condvar,
 }
@@ -166,10 +169,11 @@ struct GateInner {
 }
 
 impl ReopenGate {
-    fn new(db_path: PathBuf, parties: usize) -> Self {
+    fn new(db_path: PathBuf, parties: usize, reset: bool) -> Self {
         ReopenGate {
             db_path,
             parties,
+            reset,
             inner: Mutex::new(GateInner {
                 arrived: Vec::with_capacity(parties),
                 fresh: Vec::new(),
@@ -189,11 +193,25 @@ impl ReopenGate {
             // Last arriver: drop every dead connection to release the invalidated
             // instance, then reopen a fresh one and clone it per party.
             g.arrived.clear();
-            if let Err(e) = restore_snapshot_if_present(&self.db_path) {
+            if self.reset {
+                // Reset: discard the (possibly half-written) database entirely and
+                // start from a fresh empty schema. Safe because reset is only ever
+                // invoked on a disposable initial-setup database.
+                delete_db_files(&self.db_path);
+            } else if let Err(e) = restore_snapshot_if_present(&self.db_path) {
                 eprintln!("reopen: safety-snapshot restore failed: {e:#}");
             }
             match open_set(&self.db_path, self.parties) {
                 Ok(conns) => {
+                    if self.reset {
+                        if let Err(e) = crate::db::schema::init(&conns[0]) {
+                            eprintln!(
+                                "FATAL: could not initialise schema after reset ({e:#}). \
+                                 Exiting so the service manager restarts the daemon."
+                            );
+                            std::process::exit(1);
+                        }
+                    }
                     g.fresh = conns;
                     g.ready = true;
                     self.cv.notify_all();
@@ -249,10 +267,49 @@ fn is_invalidation_error(msg: &str) -> bool {
 /// until every actor is live again.
 fn reopen_connections(writer: &ConnActor, reads: &ReadPool, db_path: PathBuf) {
     let parties = 1 + reads.len();
-    let gate = Arc::new(ReopenGate::new(db_path, parties));
+    let gate = Arc::new(ReopenGate::new(db_path, parties, false));
     writer.send_reopen(gate.clone());
     reads.send_reopen_all(gate.clone());
     gate.wait_done();
+}
+
+/// Reset to a fresh, empty database: surrender every connection (writer + read
+/// pool), delete the database and its sidecar files, then reopen on a freshly
+/// initialised empty schema. Blocks until every actor is live on the new file.
+///
+/// This is the clean-recovery path for an interrupted initial setup (#40 C4):
+/// the database is disposable until setup succeeds, so on failure we discard it
+/// and let the user re-run the wizard. Cancel in-flight jobs before calling, so
+/// no queued write runs ahead of the reopen on the writer's FIFO channel.
+pub(crate) fn reset_connections(writer: &ConnActor, reads: &ReadPool, db_path: PathBuf) {
+    let parties = 1 + reads.len();
+    let gate = Arc::new(ReopenGate::new(db_path, parties, true));
+    writer.send_reopen(gate.clone());
+    reads.send_reopen_all(gate.clone());
+    gate.wait_done();
+}
+
+// ── Initial-setup sentinel ────────────────────────────────────────────────────
+//
+// A marker file written next to the database while the wizard's first-run "fast"
+// pipeline runs (removed on success or reset). Because `--fast` (appender)
+// imports can leave the database unopenable if interrupted, its presence lets the
+// daemon recognise a disposable, mid-initial-setup database and recover cleanly
+// (see the startup safety-net in `main.rs`) — never touching a populated DB.
+
+pub fn setup_sentinel_path(db: &Path) -> PathBuf { with_suffix(db, ".setup-in-progress") }
+pub fn write_setup_sentinel(db: &Path) { let _ = std::fs::write(setup_sentinel_path(db), b"1"); }
+pub fn remove_setup_sentinel(db: &Path) { let _ = std::fs::remove_file(setup_sentinel_path(db)); }
+pub fn setup_sentinel_present(db: &Path) -> bool { setup_sentinel_path(db).exists() }
+
+/// Delete the database and every sidecar file (WAL, any safety snapshot, and the
+/// setup sentinel) — used by the reset path and the startup safety-net to start
+/// from a clean slate. Best-effort per file.
+pub fn delete_db_files(db: &Path) {
+    let _ = std::fs::remove_file(db);
+    let _ = std::fs::remove_file(wal_path(db));
+    remove_snapshot(db);
+    remove_setup_sentinel(db);
 }
 
 // ── Jobs ────────────────────────────────────────────────────────────────────

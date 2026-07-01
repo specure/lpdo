@@ -1,10 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
-import { useSidecarProgress } from "../hooks/useSidecarProgress";
 import {
   getSources,
   setSourceEnabled,
   setSourceWindow,
-  submitJob,
 } from "../api";
 import type { SourceStatus } from "../types";
 
@@ -162,7 +160,6 @@ function WindowEditor({
 // ── Source card ───────────────────────────────────────────────────────────────
 
 function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: () => void }) {
-  const sync = useSidecarProgress(`sources-sync-${source.key}`);
   const [editing, setEditing] = useState(false);
   const [ackChecked, setAckChecked] = useState(source.credit_acked);
   const [busy, setBusy] = useState(false);
@@ -183,10 +180,6 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
     } finally {
       setBusy(false);
     }
-  }
-
-  function runSync() {
-    sync.runJob(() => submitJob({ type: "sources_sync", params: { source: source.key } }));
   }
 
   const st = statusLine(source);
@@ -243,30 +236,16 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
         </div>
       )}
 
-      {/* Sync + progress */}
+      {/* Enabled sources import automatically in the background (the daemon's
+          scheduler picks them up; progress shows in the header activity queue).
+          There's no manual "Sync now" — enabling is the trigger. */}
       {source.enabled && (
         <div className="mt-auto pt-1 space-y-2">
-          {!sync.running ? (
-            <button
-              onClick={runSync}
-              className="h-8 px-3 inline-flex items-center rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard"
-            >
-              ⟳ Sync now
-            </button>
-          ) : (
-            <div className="space-y-1">
-              <div className="flex items-center justify-between text-label-sm text-on-surface-variant">
-                <span>{sync.message || "Syncing…"}</span>
-                <span>{Math.round(sync.percent)}%</span>
-              </div>
-              <div className="w-full bg-surface-container-highest rounded-full h-1.5 overflow-hidden">
-                <div className="bg-primary h-1.5 rounded-full transition-all duration-short3 ease-standard" style={{ width: `${Math.min(100, sync.percent)}%` }} />
-              </div>
-            </div>
-          )}
-          {sync.done && <div className="text-label-sm text-success">{sync.doneMessage || "Synced."}</div>}
           <div className="text-label-sm text-on-surface-variant opacity-85">
-            ⓘ Disabling keeps imported games — remove them via the “{source.collection}” collection.
+            ⓘ Imports run automatically in the background — follow progress from the activity indicator in the header.
+          </div>
+          <div className="text-label-sm text-on-surface-variant opacity-85">
+            Disabling keeps imported games — remove them via the “{source.collection}” collection.
           </div>
         </div>
       )}

@@ -337,6 +337,19 @@ pub fn enabled_feeds(conn: &Connection) -> Result<Vec<&'static CatalogSource>> {
         .collect())
 }
 
+/// Enabled sources that have a driver, ordered **deep-history (Bulk) first, then
+/// feeds** — the order the wizard's first-run pipeline downloads and imports them
+/// (a historical base beneath the live feeds, #40 C4). Same membership as
+/// [`enabled_feeds`], just ordered for the pipeline/queue display.
+pub fn enabled_sources_ordered(conn: &Connection) -> Result<Vec<&'static CatalogSource>> {
+    let mut v = enabled_feeds(conn)?;
+    v.sort_by_key(|s| match s.kind {
+        SourceKind::Bulk => 0,
+        SourceKind::Feed => 1,
+    });
+    Ok(v)
+}
+
 /// Enabled sources that have never recorded a sync run (`last_run IS NULL`) — the
 /// ones the scheduler auto-imports in the background once they're enabled (#40
 /// C3). A source that synced ok, failed, or was cancelled has `last_run` set, so

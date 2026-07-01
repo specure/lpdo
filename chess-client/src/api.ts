@@ -99,11 +99,28 @@ export async function runUpdateNow(): Promise<string> {
 
 // ── Sources (multi-source import catalog, #40) ────────────────────────────────
 
-import type { SourceStatus, Job } from "./types";
+import type { SourceStatus, Job, StatusInfo } from "./types";
 
 /** The curated source catalog + this database's state for each. */
 export function getSources(): Promise<SourceStatus[]> {
   return apiGet<SourceStatus[]>("/sources");
+}
+
+/** Server status, including `setup_status` (the first-run readiness state). */
+export function getStatus(): Promise<StatusInfo> {
+  return apiGet<StatusInfo>("/status");
+}
+
+/** Start the wizard's first-run setup pipeline on the daemon (#40 C4): it
+ *  enqueues download→import→dedup→index→normalise for the enabled sources. */
+export async function startSetup(): Promise<void> {
+  await postJson("/setup/start");
+}
+
+/** Reset to a fresh empty database — clean recovery from an interrupted/failed
+ *  first-run setup (#40 C4). The user re-runs the wizard afterwards. */
+export async function resetSetup(): Promise<void> {
+  await postJson("/setup/reset");
 }
 
 /** Enable/disable a source. When enabling for the first time, pass

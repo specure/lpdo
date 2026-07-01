@@ -27,8 +27,11 @@ function jobLabel(j: Job): string {
   const src = p.source ? SOURCE_NAMES[p.source] ?? p.source : "";
   switch (j.type) {
     case "sources_sync":       return `Sync ${src}`;
-    case "sources_set_enabled":return `Update ${src || "source"}`;
-    case "sources_set_window": return `Window ${src || "source"}`;
+    case "sources_set_enabled": {
+      const enabled = (j.params as Record<string, unknown> | undefined)?.enabled;
+      return `${enabled === false ? "Disable" : "Enable"} ${src || "source"}`;
+    }
+    case "sources_set_window": return `Set date range · ${src || "source"}`;
     case "update":             return "Scheduled update";
     case "index_positions":    return "Build position index";
     case "dedup_games":        return "Deduplicate games";

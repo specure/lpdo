@@ -215,6 +215,10 @@ export interface StatusInfo {
   last_twic_published?: string | null;
   /** ISO timestamp at which `last_twic_issue` was imported. */
   last_twic_imported?: string | null;
+  /** First-run setup readiness (#40 C4): "empty" (fresh, no games), "preparing"
+   *  (the import/maintenance pipeline is running), "failed" (interrupted/errored —
+   *  offer Reset), or "ready". Absent on older servers. */
+  setup_status?: "empty" | "preparing" | "failed" | "ready";
 }
 
 // ── Sources (multi-source import catalog, #40) ────────────────────────────────
