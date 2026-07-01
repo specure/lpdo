@@ -315,7 +315,8 @@ jobs:
           # picks up all three. tauri-action names the file after productName
           # ("LPDO_…"); its Package: field is already `lpdo`, so this only fixes the
           # filename. The uppercase asset it uploaded is removed in the next step.
-          gui=$(ls chess-client/src-tauri/target/release/bundle/deb/*.deb | head -1)
+          gui=$(find target/release/bundle/deb -maxdepth 1 -name '*.deb' | head -1)
+          test -n "$gui"   # fail loudly if the GUI .deb wasn't produced
           cp "$gui" "dist-deb/lpdo_${LPDO_VERSION}_amd64.deb"
           ls -la dist-deb/
           lintian dist-deb/*.deb || true   # advisory; don't fail the release
