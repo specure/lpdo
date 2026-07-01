@@ -356,6 +356,12 @@ jobs:
           fi
           # Previous version tag = the next-lower tag in version order.
           prev=$(git tag --sort=-version:refname | awk -v cur="$TAG" 'found{print;exit} $0==cur{found=1}')
+          # On a workflow_dispatch draft the tag doesn't exist as a git ref yet, so
+          # the loop above finds nothing — fall back to the most recent existing tag
+          # so the commit log is a sensible range, not the entire history.
+          if [ -z "$prev" ] && ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            prev=$(git tag --sort=-version:refname | head -n1)
+          fi
           [ -n "$prev" ] && footer="**Full Changelog**: https://github.com/$REPO/compare/$prev...$TAG" || footer=""
 
           # Pull the section for this version out of CHANGELOG.md: everything
@@ -375,8 +381,11 @@ jobs:
             { printf '%s\n' "$section"; [ -n "$footer" ] && { echo; echo "$footer"; }; } > notes.md
           else
             echo "No CHANGELOG.md section for $version; falling back to commit log."
+            # Log up to HEAD (the checked-out commit), not "$TAG": on a
+            # workflow_dispatch draft the tag isn't a git ref yet, and for a tag
+            # push HEAD is that tag's commit anyway.
             { echo "## What's changed"; echo;
-              git log --no-merges --pretty=format:'- %s' "${prev:+$prev..}$TAG"; echo;
+              git log --no-merges --pretty=format:'- %s' "${prev:+$prev..}HEAD"; echo;
               [ -n "$footer" ] && { echo; echo "$footer"; }; } > notes.md
           fi
           echo "----- release notes -----"; cat notes.md; echo "-------------------------"
