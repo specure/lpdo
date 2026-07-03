@@ -310,6 +310,14 @@ jobs:
           for pkg in cli server; do
             nfpm pkg -f "packaging/nfpm-$pkg.yaml" -p deb -t dist-deb/
           done
+          # Bring the GUI .deb into dist-deb under the lowercase, hyphen-consistent
+          # name (lpdo_*), matching lpdo-cli / lpdo-server so `apt install ./lpdo*`
+          # picks up all three. tauri-action names the file after productName
+          # ("LPDO_…"); its Package: field is already `lpdo`, so this only fixes the
+          # filename. The uppercase asset it uploaded is removed in the next step.
+          gui=$(find target/release/bundle/deb -maxdepth 1 -name '*.deb' | head -1)
+          test -n "$gui"   # fail loudly if the GUI .deb wasn't produced
+          cp "$gui" "dist-deb/lpdo_${LPDO_VERSION}_amd64.deb"
           ls -la dist-deb/
           lintian dist-deb/*.deb || true   # advisory; don't fail the release
 
@@ -319,7 +327,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         shell: bash
-        run: gh release upload "$TAG" dist-deb/*.deb --clobber
+        run: |
+          set -euo pipefail
+          # Drop the uppercase GUI .deb tauri-action uploaded; we replace it with
+          # the lowercase lpdo_*.deb built above.
+          gh release delete-asset "$TAG" "LPDO_${LPDO_VERSION}_amd64.deb" --yes || true
+          gh release upload "$TAG" dist-deb/*.deb --clobber
 
   # Auto-fill the draft release body. Source of truth is the matching section of
   # CHANGELOG.md (so the file and the published notes never drift); if no section
@@ -356,6 +369,12 @@ jobs:
           fi
           # Previous version tag = the next-lower tag in version order.
           prev=$(git tag --sort=-version:refname | awk -v cur="$TAG" 'found{print;exit} $0==cur{found=1}')
+          # On a workflow_dispatch draft the tag doesn't exist as a git ref yet, so
+          # the loop above finds nothing — fall back to the most recent existing tag
+          # so the commit log is a sensible range, not the entire history.
+          if [ -z "$prev" ] && ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            prev=$(git tag --sort=-version:refname | head -n1)
+          fi
           [ -n "$prev" ] && footer="**Full Changelog**: https://github.com/$REPO/compare/$prev...$TAG" || footer=""
 
           # Pull the section for this version out of CHANGELOG.md: everything
@@ -375,8 +394,11 @@ jobs:
             { printf '%s\n' "$section"; [ -n "$footer" ] && { echo; echo "$footer"; }; } > notes.md
           else
             echo "No CHANGELOG.md section for $version; falling back to commit log."
+            # Log up to HEAD (the checked-out commit), not "$TAG": on a
+            # workflow_dispatch draft the tag isn't a git ref yet, and for a tag
+            # push HEAD is that tag's commit anyway.
             { echo "## What's changed"; echo;
-              git log --no-merges --pretty=format:'- %s' "${prev:+$prev..}$TAG"; echo;
+              git log --no-merges --pretty=format:'- %s' "${prev:+$prev..}HEAD"; echo;
               [ -n "$footer" ] && { echo; echo "$footer"; }; } > notes.md
           fi
           echo "----- release notes -----"; cat notes.md; echo "-------------------------"

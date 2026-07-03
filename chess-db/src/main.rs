@@ -1332,8 +1332,25 @@ async fn main() -> Result<()> {
     spinner.set_message("Opening database...");
     if !cli.json { spinner.tick(); }
 
-    let conn = db::open(&cli.db)?;
-    db::schema::init(&conn)?;
+    // Open + initialise. If this fails while a first-run setup sentinel is present,
+    // the database is a disposable, mid-initial-load file that an interrupted
+    // `--fast` import left unopenable — discard it and recreate an empty one so the
+    // daemon boots cleanly instead of crash-looping (#40 C4). The sentinel gate
+    // means a populated database is never auto-deleted.
+    let conn = match db::open(&cli.db).and_then(|c| { db::schema::init(&c)?; Ok(c) }) {
+        Ok(c) => c,
+        Err(e) if jobs::setup_sentinel_present(&cli.db) => {
+            eprintln!(
+                "Initial setup was interrupted and left the database unusable ({e:#}). \
+                 Discarding it and starting fresh — re-run setup from the app."
+            );
+            jobs::delete_db_files(&cli.db);
+            let c = db::open(&cli.db)?;
+            db::schema::init(&c)?;
+            c
+        }
+        Err(e) => return Err(e),
+    };
 
     spinner.finish_and_clear();
 

@@ -17,7 +17,7 @@ use shakmaty::zobrist::Zobrist64;
 use shakmaty::{Chess, EnPassantMode, Position};
 use anyhow::Result;
 
-use crate::jobs::{ConnActor, JobManager, ReadPool};
+use crate::jobs::{ConnActor, JobManager, JobSnapshot, ReadPool};
 
 type ApiResult<T> = std::result::Result<Json<T>, (StatusCode, String)>;
 
@@ -45,6 +45,35 @@ pub struct AppState {
     /// GUI shows the server's real path (e.g. `/var/lib/lpdo/.chess-db/chess.db`)
     /// instead of guessing `~/.chess-db`.
     pub db_path: std::path::PathBuf,
+    /// Live phase of the wizard's first-run setup pipeline (#40 C4). Authoritative
+    /// while the server is up; the on-disk sentinel covers restarts/crashes.
+    pub setup: Arc<std::sync::Mutex<SetupPhase>>,
+}
+
+/// Phase of the wizard-driven first-run setup pipeline. `Idle` covers both
+/// "never set up" and "finished" — `/status` disambiguates by game count.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SetupPhase {
+    /// No setup pipeline running (fresh, or finished).
+    Idle,
+    /// The fast import→dedup→index→normalise pipeline is queued/running.
+    Running,
+    /// A pipeline job failed (or was interrupted) — the DB may be incomplete;
+    /// the user is offered "Reset & start over".
+    Failed,
+}
+
+impl SetupPhase {
+    /// The readiness string reported to the client. `Idle` resolves to `ready`
+    /// when the DB has games, else `empty` (a fresh, un-set-up database).
+    fn status_str(self, games: i64) -> &'static str {
+        match self {
+            SetupPhase::Running => "preparing",
+            SetupPhase::Failed => "failed",
+            SetupPhase::Idle if games > 0 => "ready",
+            SetupPhase::Idle => "empty",
+        }
+    }
 }
 
 // ── Response types ────────────────────────────────────────────────────────────
@@ -86,6 +115,11 @@ pub struct StatusInfo {
     pub last_twic_published: Option<String>,
     /// ISO timestamp at which `last_twic_issue` was imported, or null if none.
     pub last_twic_imported: Option<String>,
+    /// Readiness of the first-run setup pipeline (#40 C4): "empty" (fresh, no
+    /// games), "preparing" (import/maintenance pipeline running), "failed"
+    /// (interrupted/errored — offer Reset), or "ready" (has games, nothing
+    /// pending). The live queue (`/jobs`) carries the per-step detail.
+    pub setup_status: String,
 }
 
 #[derive(Serialize)]
@@ -578,7 +612,9 @@ async fn status_handler(State(state): State<AppState>) -> ApiResult<StatusInfo> 
         .parent()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
+    let phase = *state.setup.lock().unwrap();
     state.reads.run(move |conn| {
+        let games: i64 = conn.query_row("SELECT COUNT(*) FROM games WHERE deleted_at IS NULL", [], |r| r.get(0)).unwrap_or(0);
         Ok(Json(StatusInfo {
             version:     env!("CARGO_PKG_VERSION").to_string(),
             api_version: API_VERSION,
@@ -590,7 +626,7 @@ async fn status_handler(State(state): State<AppState>) -> ApiResult<StatusInfo> 
             // downloaded (old issues no longer offered as zips).
             issues:     conn.query_row("SELECT COUNT(*) FROM source_items WHERE source_key = 'twic' AND imported = TRUE", [], |r| r.get(0)).unwrap_or(0),
             local_imports: conn.query_row("SELECT COUNT(*) FROM source_items WHERE source_key = 'manual' AND imported = TRUE", [], |r| r.get(0)).unwrap_or(0),
-            games:      conn.query_row("SELECT COUNT(*) FROM games WHERE deleted_at IS NULL", [], |r| r.get(0)).unwrap_or(0),
+            games,
             players:    conn.query_row("SELECT COUNT(*) FROM players", [], |r| r.get(0)).unwrap_or(0),
             positions:  conn.query_row("SELECT COUNT(*) FROM positions", [], |r| r.get(0)).unwrap_or(0),
             deleted_games: conn.query_row("SELECT COUNT(*) FROM games WHERE deleted_at IS NOT NULL", [], |r| r.get(0)).unwrap_or(0),
@@ -618,6 +654,7 @@ async fn status_handler(State(state): State<AppState>) -> ApiResult<StatusInfo> 
                 [],
                 |r| r.get(0),
             ).unwrap_or(None),
+            setup_status: phase.status_str(games).to_string(),
         }))
     }).await
 }
@@ -1052,6 +1089,129 @@ async fn run_schedule_now_handler(State(state): State<AppState>) -> ApiResult<se
     Ok(Json(serde_json::json!({ "job_id": id })))
 }
 
+// ── First-run setup pipeline (#40 C4) ─────────────────────────────────────────
+
+/// Start the wizard's first-run pipeline. For each enabled source (deep-history
+/// first) enqueue a `download` then a `--fast` `import` with inline dedup skipped
+/// — a single global `dedup_games` runs at the end, followed by
+/// `index_positions --fast` and `normalise`. All are existing job types, so the
+/// activity-indicator queue *is* the progress view. Fast mode is safe because the
+/// database is empty/disposable; a sentinel marks the load so an interruption
+/// recovers cleanly (startup safety-net + reset).
+async fn setup_start_handler(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
+    let sources = state
+        .reads
+        .run(crate::sources::enabled_sources_ordered)
+        .await
+        .map_err(db_err)?;
+
+    // Finishing the wizard opens the background auto-sync gate (#40 C4), whether
+    // or not any source was chosen — so sources enabled later (Sources screen) or
+    // an "empty database" setup both get normal auto-sync afterwards. Runs before
+    // the pipeline jobs are queued so it isn't stuck behind them on the writer.
+    state
+        .writer
+        .run(|c| {
+            let _ = c.execute("UPDATE schedule SET setup_completed = TRUE WHERE id = 1", []);
+        })
+        .await;
+
+    if sources.is_empty() {
+        // "Empty database" choice — nothing to import or prepare.
+        return Ok(Json(serde_json::json!({ "job_ids": [] })));
+    }
+
+    crate::jobs::write_setup_sentinel(&state.db_path);
+    *state.setup.lock().unwrap() = SetupPhase::Running;
+
+    let mut ids: Vec<String> = Vec::new();
+    let mut keys: Vec<String> = Vec::new();
+    for s in &sources {
+        ids.push(state.jobs.submit("download".into(), serde_json::json!({ "source": s.key })));
+        ids.push(state.jobs.submit(
+            "import".into(),
+            serde_json::json!({ "source": s.key, "fast": true, "skip_dedup": true }),
+        ));
+        keys.push(s.key.to_string());
+    }
+    ids.push(state.jobs.submit("dedup_games".into(), serde_json::json!({})));
+    ids.push(state.jobs.submit("index_positions".into(), serde_json::json!({ "fast": true })));
+    ids.push(state.jobs.submit("normalise".into(), serde_json::json!({})));
+
+    spawn_setup_watcher(state.clone(), ids.clone(), keys);
+    Ok(Json(serde_json::json!({ "job_ids": ids })))
+}
+
+/// Watch the first-run pipeline and settle the setup phase: on success, record
+/// each source's sync run (so the scheduler won't re-import it), clear the
+/// sentinel and return to `Idle`; on any job error, mark `Failed`, cancel the
+/// rest, and leave the sentinel so the user is offered a reset.
+fn spawn_setup_watcher(state: AppState, ids: Vec<String>, source_keys: Vec<String>) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let snaps: Vec<Option<JobSnapshot>> =
+                ids.iter().map(|id| state.jobs.snapshot(id)).collect();
+            // A job failed → setup failed: stop the rest, keep the sentinel so the
+            // user is offered "Reset & start over".
+            if snaps.iter().any(|s| matches!(s, Some(sn) if sn.status == "error")) {
+                for id in &ids { state.jobs.cancel(id); }
+                *state.setup.lock().unwrap() = SetupPhase::Failed;
+                break;
+            }
+            // A job vanished (registry cleared by a restart) → stop; the startup
+            // safety-net handles the partially-set-up database.
+            if snaps.iter().any(Option::is_none) {
+                break;
+            }
+            // All done → success.
+            if snaps.iter().all(|s| matches!(s, Some(sn) if sn.status == "done")) {
+                let keys = source_keys.clone();
+                state.writer.run(move |conn| {
+                    for k in &keys {
+                        let _ = crate::sources::record_run(conn, k, "ok");
+                    }
+                }).await;
+                crate::jobs::remove_setup_sentinel(&state.db_path);
+                *state.setup.lock().unwrap() = SetupPhase::Idle;
+                break;
+            }
+        }
+    });
+}
+
+/// Reset to a fresh empty database — clean recovery from an interrupted/failed
+/// first-run load. Cancels in-flight jobs, then drops + recreates the database on
+/// an empty schema. The user re-runs the wizard afterwards.
+async fn setup_reset_handler(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
+    // Reset must run with the writer idle: it swaps every connection at once, and
+    // a write job running mid-swap could error into the #82 recovery reopen and
+    // race this reset's reopen (two gates competing for the same actors). The
+    // Reset action is only offered on the failed/idle state, so this is a guard
+    // against a stray call, not a normal path.
+    if state.jobs.list().iter().any(|j| j.status == "running") {
+        return Err((
+            StatusCode::CONFLICT,
+            "An operation is still running — wait for it to finish or cancel it before resetting."
+                .to_string(),
+        ));
+    }
+    // Cancel anything still queued so it doesn't run ahead of the reopen.
+    for j in state.jobs.list() {
+        if j.status == "queued" {
+            state.jobs.cancel(&j.id);
+        }
+    }
+    let writer = state.writer.clone();
+    let reads = state.reads.clone();
+    let db_path = state.db_path.clone();
+    tokio::task::spawn_blocking(move || crate::jobs::reset_connections(&writer, &reads, db_path))
+        .await
+        .map_err(db_err)?;
+    *state.setup.lock().unwrap() = SetupPhase::Idle;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 // ── Quick mutations (synchronous, run on the writer) ──────────────────────────
 
 #[derive(Deserialize)]
@@ -1272,10 +1432,25 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         db_path.clone(),
     ));
 
-    // Server-owned update scheduler: submits the `update` job when due.
-    crate::scheduler::spawn(jobs.clone(), reads.clone(), writer.clone());
+    // Server-owned update scheduler: submits the `update` job when due, and skips
+    // its work while a first-run setup is in progress (db_path lets it check the
+    // sentinel).
+    crate::scheduler::spawn(jobs.clone(), reads.clone(), writer.clone(), db_path.clone());
 
-    let state = AppState { reads, writer, jobs, db_path };
+    // A leftover sentinel means a prior first-run setup didn't finish cleanly. The
+    // unbootable case was already handled by the startup safety-net (which would
+    // have reset + cleared it); reaching here with the sentinel present means the
+    // DB opened but the load was interrupted → present it as Failed so the user
+    // can reset.
+    let setup = Arc::new(std::sync::Mutex::new(
+        if crate::jobs::setup_sentinel_present(&db_path) {
+            SetupPhase::Failed
+        } else {
+            SetupPhase::Idle
+        },
+    ));
+
+    let state = AppState { reads, writer, jobs, db_path, setup };
 
     let app = Router::new()
         .route("/status",                              get(status_handler))
@@ -1297,6 +1472,10 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         .route("/purge",                               post(purge_handler))
         .route("/schedule",                            get(get_schedule_handler).put(put_schedule_handler))
         .route("/schedule/run",                        post(run_schedule_now_handler))
+        // First-run setup pipeline (#40 C4): start the fast import→prepare queue,
+        // and reset to a clean empty DB if it was interrupted/failed.
+        .route("/setup/start",                         post(setup_start_handler))
+        .route("/setup/reset",                         post(setup_reset_handler))
         .route("/position",                            get(position_handler))
         .route("/position/moves",                      get(position_moves_handler))
         // Long-running mutation jobs with streamed progress.
