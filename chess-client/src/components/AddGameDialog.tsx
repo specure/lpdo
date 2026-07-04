@@ -151,6 +151,7 @@ export default function AddGameDialog({
 
   async function run() {
     setLastAction("import");
+    setPasteError(null);
     let importPath: string;
     try {
       if (mode === "file") {
@@ -297,14 +298,24 @@ export default function AddGameDialog({
 
       {/* Run / progress */}
       {!progress.running && !progress.done && (
-        /* M3 filled button — full-width primary action */
-        <button
-          onClick={run}
-          disabled={!canRun}
-          className="w-full h-10 rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:brightness-100 transition-all duration-short3 ease-standard"
-        >
-          Add to database
-        </button>
+        <div className="space-y-2">
+          {/* A failed submit (e.g. the daemon is unreachable) or a job error
+              leaves running=false/done=false, so surface it here — otherwise the
+              button just silently reappears and the click looks like a no-op. */}
+          {(progress.error || pasteError) && (
+            <div className="bg-error-container text-on-error-container rounded-md px-3 py-2 text-body-sm">
+              Import failed: {progress.error ?? pasteError}
+            </div>
+          )}
+          {/* M3 filled button — full-width primary action */}
+          <button
+            onClick={run}
+            disabled={!canRun}
+            className="w-full h-10 rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:brightness-100 transition-all duration-short3 ease-standard"
+          >
+            Add to database
+          </button>
+        </div>
       )}
 
       {(progress.running || progress.done) && (
