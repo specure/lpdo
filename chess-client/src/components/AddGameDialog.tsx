@@ -151,19 +151,22 @@ export default function AddGameDialog({
 
   async function run() {
     setLastAction("import");
-    let importPath: string;
+    setPasteError(null);
+    let content: string;
     try {
       if (mode === "file") {
-        importPath = path.trim();
+        // Read the file client-side — the app runs as the user, so it can read the
+        // home dir — and upload its content. The sandboxed system daemon can't open
+        // a path under $HOME or /tmp, so passing a path fails (#121).
+        content = await invoke<string>("read_pgn_file", { path: path.trim() });
       } else {
         if (mode === "scratch") {
           // Persist the user's chosen Site as the default for future new games.
           rememberPgnSite(tags.find((t) => t.name === "Site")?.value ?? "");
         }
-        const content = mode === "paste"
+        content = mode === "paste"
           ? pasteText
           : buildBlock(tags, tags.find((t) => t.name === "Result")?.value || "*");
-        importPath = await invoke<string>("write_temp_pgn_file", { content });
       }
     } catch (e) {
       setPasteError(String(e));
@@ -171,7 +174,7 @@ export default function AddGameDialog({
     }
     const args = [
       "import-pgn",
-      importPath,
+      "--content", content,
       "--collection", collectionName.trim(),
       "--on-duplicate", dedup,
     ];
@@ -297,14 +300,24 @@ export default function AddGameDialog({
 
       {/* Run / progress */}
       {!progress.running && !progress.done && (
-        /* M3 filled button — full-width primary action */
-        <button
-          onClick={run}
-          disabled={!canRun}
-          className="w-full h-10 rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:brightness-100 transition-all duration-short3 ease-standard"
-        >
-          Add to database
-        </button>
+        <div className="space-y-2">
+          {/* A failed submit (e.g. the daemon is unreachable) or a job error
+              leaves running=false/done=false, so surface it here — otherwise the
+              button just silently reappears and the click looks like a no-op. */}
+          {(progress.error || pasteError) && (
+            <div className="bg-error-container text-on-error-container rounded-md px-3 py-2 text-body-sm">
+              Import failed: {progress.error ?? pasteError}
+            </div>
+          )}
+          {/* M3 filled button — full-width primary action */}
+          <button
+            onClick={run}
+            disabled={!canRun}
+            className="w-full h-10 rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:brightness-100 transition-all duration-short3 ease-standard"
+          >
+            Add to database
+          </button>
+        </div>
       )}
 
       {(progress.running || progress.done) && (

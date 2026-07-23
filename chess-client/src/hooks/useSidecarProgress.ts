@@ -40,6 +40,12 @@ export interface SidecarProgress {
   /** Discrete log lines (milestones, warnings, errors) — NOT the rolling
    *  progress counter, which would flood this. */
   log: string[];
+  /** A terminal failure: the args couldn't be translated, the submit request
+   *  failed (e.g. the daemon is unreachable), or the job emitted an "error"
+   *  event. Set with running=false so callers can surface it even though no job
+   *  is running or done — otherwise a failed submit looks like nothing happened.
+   *  Cleared by reset() and at the start of the next run(). */
+  error: string | null;
   /** Run an operation. Accepts the legacy CLI-style argument array; it is
    *  translated to an HTTP job or a quick mutation against the server. */
   run: (args: string[]) => void;
@@ -89,7 +95,12 @@ function planFromArgs(args: string[]): Plan {
       return { kind: "job", type: "import", params };
     }
     case "import-pgn": {
-      const params: Record<string, unknown> = { path: a1 };
+      // #121: the GUI sends the PGN *content* (read client-side, so it works for
+      // files under the user's home that the sandboxed daemon can't reach); a
+      // bare positional path is still accepted for daemon-local files.
+      const content = flagVal(args, "--content");
+      const params: Record<string, unknown> =
+        content !== undefined ? { content } : { path: a1 };
       const collection = flagVal(args, "--collection");
       if (collection) params.collection = collection;
       const onDup = flagVal(args, "--on-duplicate");
@@ -168,6 +179,7 @@ export function useSidecarProgress(key?: string): SidecarProgress {
   const [donePath, setDonePath] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [log, setLog] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const jobIdRef = useRef<string | null>(null);
 
@@ -187,6 +199,7 @@ export function useSidecarProgress(key?: string): SidecarProgress {
     setMessage("");
     setDoneMessage("");
     setDonePath(null);
+    setError(null);
   }
 
   function cancel() {
@@ -225,6 +238,7 @@ export function useSidecarProgress(key?: string): SidecarProgress {
         setLog((l) => [...l, `⚠ ${data.message}`]);
         setMessage(data.message);
       }
+      setError(data.message || "The operation failed.");
       setRunning(false);
       if (key) activeJobs.delete(key);
       closeStream();
@@ -258,8 +272,7 @@ export function useSidecarProgress(key?: string): SidecarProgress {
     try {
       plan = planFromArgs(args);
     } catch (e) {
-      setRunning(false);
-      setLog((l) => [...l, `Error: ${String(e)}`]);
+      failRun(String(e));
       return;
     }
 
@@ -277,10 +290,16 @@ export function useSidecarProgress(key?: string): SidecarProgress {
         if (key) activeJobs.set(key, jobId);
         openStream(jobId);
       })
-      .catch((e: unknown) => {
-        setRunning(false);
-        setLog((l) => [...l, `Error: ${String(e)}`]);
-      });
+      .catch((e: unknown) => failRun(String(e)));
+  }
+
+  // A submit/translation failure never reaches the "error" event path (no job
+  // was created), so surface it here — otherwise the caller flips back to its
+  // idle state with the failure buried in the log, and the click looks inert.
+  function failRun(msg: string) {
+    setRunning(false);
+    setLog((l) => [...l, `Error: ${msg}`]);
+    setError(msg);
   }
 
   // Stream a job created by an arbitrary request (e.g. POST /schedule/run),
@@ -293,10 +312,7 @@ export function useSidecarProgress(key?: string): SidecarProgress {
         if (key) activeJobs.set(key, jobId);
         openStream(jobId);
       })
-      .catch((e: unknown) => {
-        setRunning(false);
-        setLog((l) => [...l, `Error: ${String(e)}`]);
-      });
+      .catch((e: unknown) => failRun(String(e)));
   }
 
   // On mount, reconnect to a job left running under this key (e.g. the user
@@ -336,5 +352,5 @@ export function useSidecarProgress(key?: string): SidecarProgress {
 
   useEffect(() => () => closeStream(), []);
 
-  return { percent, running, done, doneMessage, donePath, message, log, run, runJob, reset, cancel };
+  return { percent, running, done, doneMessage, donePath, message, log, error, run, runJob, reset, cancel };
 }

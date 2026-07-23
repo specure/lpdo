@@ -135,16 +135,16 @@ enum Commands {
     Import {
         /// Index positions by Zobrist hash up to this many half-moves (plies).
         /// Pass 0 to disable position indexing entirely.
-        /// Ignored in bulk mode (>= reindex-threshold files): run index-positions separately.
+        /// Ignored in bulk mode (chosen automatically by import size): run index-positions separately.
         /// Default: 40 half-moves (= 20 full moves each side).
         #[arg(long, default_value_t = 40)]
         max_position_depth: u16,
         /// Source directory
         #[arg(long, default_value_os_t = default_dir())]
         dir: PathBuf,
-        /// Drop all indexes before the bulk load and rebuild them at the end
-        /// when the number of pending files meets or exceeds this value.
-        /// Pass 0 to always use bulk mode. Default: 10.
+        /// Bulk-mode override: 0 forces bulk (drop indexes + defer position
+        /// indexing). Any other value lets bulk mode be chosen automatically from
+        /// the total import size, so it self-adjusts to per-source volume (#145).
         #[arg(long, default_value_t = 10)]
         reindex_threshold: usize,
         /// Use faster appender-based inserts instead of transactional inserts.
@@ -172,13 +172,13 @@ enum Commands {
         on_duplicate: String,
         /// Index positions by Zobrist hash up to this many half-moves (plies).
         /// Pass 0 to disable position indexing entirely.
-        /// Ignored in bulk mode (>= reindex-threshold files): run index-positions separately.
+        /// Ignored in bulk mode (chosen automatically by import size): run index-positions separately.
         /// Default: 40 half-moves (= 20 full moves each side).
         #[arg(long, default_value_t = 40)]
         max_position_depth: u16,
-        /// Drop all indexes before the bulk load and rebuild them at the end
-        /// when the number of pending files meets or exceeds this value.
-        /// Pass 0 to always use bulk mode. Default: 10.
+        /// Bulk-mode override: 0 forces bulk (drop indexes + defer position
+        /// indexing). Any other value lets bulk mode be chosen automatically from
+        /// the total import size, so it self-adjusts to per-source volume (#145).
         #[arg(long, default_value_t = 10)]
         reindex_threshold: usize,
         /// Use faster appender-based inserts instead of transactional inserts.
@@ -203,10 +203,11 @@ enum Commands {
         /// Use this when changing --max-position-depth on an existing index.
         #[arg(long)]
         rebuild: bool,
-        /// Use faster appender-based inserts instead of transactional inserts.
-        /// WARNING: interrupting in fast mode may corrupt the database.
+        /// Use slower, fully-transactional inserts instead of the default fast
+        /// appender path. The fast path is crash-safe here (a rebuild or large
+        /// index takes a safety snapshot first, #139), so --safe is rarely needed.
         #[arg(long)]
-        fast: bool,
+        safe: bool,
     },
     /// Search for games or players
     Search {
@@ -1423,9 +1424,9 @@ fn job_spec_for(command: &Commands) -> Option<proxy::JobSpec> {
                 "on_duplicate": on_duplicate, "fast": fast, "private": private,
             }),
         ),
-        Commands::IndexPositions { rebuild, fast, .. } => (
+        Commands::IndexPositions { rebuild, safe, .. } => (
             "index_positions",
-            json!({ "rebuild": rebuild, "fast": fast }),
+            json!({ "rebuild": rebuild, "fast": !safe }),
         ),
         Commands::Games { subcommand: GameCommands::Dedup { dry_run } } => (
             "dedup_games",
@@ -1753,13 +1754,15 @@ async fn main() -> Result<()> {
             let spec = importer::ImportSpec { collection, visibility, on_duplicate };
             importer::import_pgn(&conn, &path, depth, reindex_threshold, fast, skip_dedup, &spec, &reporter)?;
         }
-        Commands::IndexPositions { max_position_depth, rebuild, fast } => {
+        Commands::IndexPositions { max_position_depth, rebuild, safe } => {
             let depth = if max_position_depth == 0 {
                 None
             } else {
                 Some(max_position_depth as i16)
             };
-            importer::index_positions(&conn, depth, rebuild, fast, &reporter)?;
+            // Fast by default, snapshot-guarded (#139); --safe forces the slow
+            // transactional path. Same guard the daemon uses, so --local is safe too.
+            jobs::run_index_positions_guarded(&conn, &cli.db, depth, rebuild, !safe, &reporter)?;
         }
         Commands::Games { subcommand } => match subcommand {
             GameCommands::Dedup { dry_run } => {

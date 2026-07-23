@@ -20,6 +20,22 @@ const INDEX_READ_BATCH: usize = 50_000;
 const INDEX_REPORT_CHUNK: usize = 2_000;
 const LARGE_FILE_THRESHOLD: u64 = 100 * 1024 * 1024; // 100 MB
 
+/// Total download size above which an import switches to *bulk mode* (drop the
+/// games indexes, defer position indexing to a single pass) instead of indexing
+/// inline per game. Sizing on bytes (≈ games) makes the decision self-adjust
+/// across sources with different per-item volume: a Lichess *monthly* package is
+/// ~4× a TWIC *weekly* one, so the old item-count threshold under-triggered for
+/// Lichess and left a large sync grinding on the slow inline path (#145).
+const BULK_MODE_BYTES: u64 = 12 * 1024 * 1024; // ~12 MB (compressed feed or raw PGN)
+
+/// Choose bulk mode from the combined size of the files being imported. A
+/// `force_threshold` of 0 forces bulk (the scheduled `update` job passes 0); any
+/// other value defers entirely to the size estimate, so per-source item cadence
+/// no longer skews the decision (#145).
+fn bulk_mode_for_size(total_bytes: u64, force_threshold: usize) -> bool {
+    force_threshold == 0 || total_bytes >= BULK_MODE_BYTES
+}
+
 /// User-facing knobs for `import-pgn`: grouping + visibility + duplicate policy.
 pub struct ImportSpec {
     pub collection: String,
@@ -101,36 +117,32 @@ fn collect_pgn_files(path: &Path) -> Result<Vec<std::path::PathBuf>> {
     }
 }
 
-/// Wraps any `Read` impl and counts bytes consumed, so we can convert a parse
-/// error's position back into a human-readable line number.
+/// Wraps any `Read` impl and counts newlines as they stream past, so a parse
+/// error can be reported with an approximate line number WITHOUT holding the
+/// whole file in memory (the parser reads game-by-game; see #95). The count
+/// tracks bytes actually pulled from the underlying reader, so it may run a
+/// little ahead of the exact error position when the parser buffers — good
+/// enough for a diagnostic.
 struct LineCountingReader<R> {
     inner: R,
-    bytes_read: usize,
+    lines: usize,
 }
 
 impl<R: Read> LineCountingReader<R> {
     fn new(inner: R) -> Self {
-        Self { inner, bytes_read: 0 }
+        Self { inner, lines: 1 }
     }
-    fn bytes_read(&self) -> usize {
-        self.bytes_read
+    fn line(&self) -> usize {
+        self.lines
     }
 }
 
 impl<R: Read> Read for LineCountingReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = self.inner.read(buf)?;
-        self.bytes_read += n;
+        self.lines += buf[..n].iter().filter(|&&b| b == b'\n').count();
         Ok(n)
     }
-}
-
-fn byte_offset_to_line(bytes: &[u8], offset: usize) -> usize {
-    bytes[..offset.min(bytes.len())]
-        .iter()
-        .filter(|&&b| b == b'\n')
-        .count()
-        + 1
 }
 
 /// Drop all indexes that would be maintained live during a bulk import.
@@ -159,6 +171,23 @@ fn recreate_bulk_indexes(conn: &Connection) -> Result<()> {
     )?;
     conn.execute_batch("SET threads=4;")?;
     Ok(())
+}
+
+/// How many games an `index_positions(rebuild)` pass would process: every game
+/// for a rebuild, else only those not yet in `positions`. Callers use this to
+/// decide whether a fast index is large enough to warrant a safety snapshot (#139).
+pub fn pending_position_count(conn: &Connection, rebuild: bool) -> Result<i64> {
+    let n = if rebuild {
+        conn.query_row("SELECT COUNT(*) FROM games", [], |r| r.get(0))?
+    } else {
+        conn.query_row(
+            "SELECT COUNT(*) FROM games g
+             WHERE NOT EXISTS (SELECT 1 FROM positions p WHERE p.game_id = g.id)",
+            [],
+            |r| r.get(0),
+        )?
+    };
+    Ok(n)
 }
 
 /// Build or extend the positions table from PGN already stored in `games`.
@@ -198,16 +227,7 @@ pub fn index_positions(
     }
 
     // Count how many games need processing
-    let pending: i64 = if rebuild {
-        conn.query_row("SELECT COUNT(*) FROM games", [], |r| r.get(0))?
-    } else {
-        conn.query_row(
-            "SELECT COUNT(*) FROM games g
-             WHERE NOT EXISTS (SELECT 1 FROM positions p WHERE p.game_id = g.id)",
-            [],
-            |r| r.get(0),
-        )?
-    };
+    let pending: i64 = pending_position_count(conn, rebuild)?;
 
     if pending == 0 {
         reporter.done("All games are already indexed. Use --rebuild to reprocess with a different depth.");
@@ -307,9 +327,11 @@ fn fill_positions(
 
 /// `max_position_depth` — None = skip position indexing,
 /// Some(n) = index positions up to half-move n.
-/// `reindex_threshold` — drop all indexes before the bulk load and rebuild
-/// them at the end when the number of pending issues meets or exceeds this
-/// value. 0 = always reindex. Use a large value to disable.
+/// `reindex_threshold` — bulk-mode override: `0` forces bulk (drop the games
+/// indexes + defer position indexing); any other value lets bulk mode be chosen
+/// automatically from the total download size (`BULK_MODE_BYTES`), so the
+/// decision self-adjusts to a source's per-item volume instead of a raw item
+/// count (#145).
 pub fn import(
     conn: &Connection,
     dir: &Path,
@@ -336,7 +358,13 @@ pub fn import(
         return Ok(());
     }
 
-    let bulk_mode = issues.len() >= reindex_threshold;
+    // Decide bulk vs inline by total download size (≈ games), not item count, so a
+    // few large Lichess monthly packages defer like many small TWIC weekly ones (#145).
+    let total_bytes: u64 = issues
+        .iter()
+        .map(|(_, f)| std::fs::metadata(dir.join(f)).map(|m| m.len()).unwrap_or(0))
+        .sum();
+    let bulk_mode = bulk_mode_for_size(total_bytes, reindex_threshold);
 
     reporter.log(format!("Importing {} issue(s)...", issues.len()));
     if bulk_mode {
@@ -363,6 +391,10 @@ pub fn import(
         ));
     }
 
+    // Per-issue failures (e.g. a corrupt/truncated archive) are collected and
+    // warned about, not treated as terminal — the run continues and reports what
+    // to retry (#133).
+    let mut failed: Vec<i32> = Vec::new();
     let import_result = (|| -> Result<()> {
         for (issue_id, filename) in &issues {
             pb.set_message(format!("issue {}", issue_id));
@@ -390,9 +422,17 @@ pub fn import(
                     reporter.log(&msg);
                 }
                 Err(e) => {
-                    let msg = format!("  Issue {}: error: {}", issue_id, e);
+                    // A single bad issue (corrupt/truncated archive, parse error)
+                    // must not abort the run or emit a terminal `error` event: an
+                    // `error` event flips the job status to failed, so streaming
+                    // clients (the CLI, the activity dashboard) bail even though
+                    // the rest imports fine. Warn and continue; the issue stays
+                    // imported=FALSE so a re-sync (with a fresh download) retries
+                    // it. (#133 — mirrors the download loop's warn-don't-error.)
+                    failed.push(*issue_id);
+                    let msg = format!("  Issue {}: skipped — {}", issue_id, e);
                     pb.println(&msg);
-                    reporter.error(&msg);
+                    reporter.log(&msg);
                 }
             }
 
@@ -402,6 +442,17 @@ pub fn import(
         }
         Ok(())
     })();
+
+    if !failed.is_empty() {
+        let ids = failed.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+        let msg = format!(
+            "{} issue(s) skipped due to errors, left unimported — re-run to retry: {}",
+            failed.len(),
+            ids
+        );
+        pb.println(&msg);
+        reporter.log(&msg);
+    }
 
     if bulk_mode {
         pb.set_message("Rebuilding indexes…");
@@ -483,7 +534,13 @@ pub fn import_pgn(
         return Ok(());
     }
 
-    let bulk_mode = pending.len() >= reindex_threshold;
+    // Size-based bulk decision (#145): a single multi-GB PGN (1 file, so never
+    // over an item-count threshold) now correctly defers instead of indexing inline.
+    let total_bytes: u64 = pending
+        .iter()
+        .map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
+        .sum();
+    let bulk_mode = bulk_mode_for_size(total_bytes, reindex_threshold);
 
     reporter.log(format!("Importing {} PGN file(s)...", pending.len()));
     if bulk_mode {
@@ -544,8 +601,8 @@ pub fn import_pgn(
             // Remove any games from a previous interrupted run of this file.
             conn.execute("DELETE FROM games WHERE issue_id = ?", duckdb::params![issue_id])?;
 
-            let pgn_bytes = match std::fs::read(path) {
-                Ok(b) => b,
+            let file = match std::fs::File::open(path) {
+                Ok(f) => f,
                 Err(e) => {
                     let msg = format!("  {}: read error: {}", filename, e);
                     pb.println(&msg);
@@ -555,10 +612,11 @@ pub fn import_pgn(
                     continue;
                 }
             };
+            let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
 
-            let file_pb = if !reporter.is_json() && pgn_bytes.len() as u64 >= LARGE_FILE_THRESHOLD {
+            let file_pb = if !reporter.is_json() && file_size >= LARGE_FILE_THRESHOLD {
                 if let Some(ref mp) = mp {
-                    let fpb = mp.insert_before(&pb, ProgressBar::new(pgn_bytes.len() as u64));
+                    let fpb = mp.insert_before(&pb, ProgressBar::new(file_size));
                     fpb.set_style(progress::byte_bar_style());
                     Some(fpb)
                 } else {
@@ -568,10 +626,19 @@ pub fn import_pgn(
                 None
             };
 
+            // Stream the file rather than read it into memory, so a multi-GB PGN
+            // imports in bounded memory (#95). Wrap the reader in the byte-progress
+            // bar (if any) so it advances as the parser consumes bytes.
+            let buf = std::io::BufReader::new(file);
+            let src: Box<dyn Read> = match file_pb.as_ref() {
+                Some(fpb) => Box::new(fpb.wrap_read(buf)),
+                None => Box::new(buf),
+            };
+
             let effective_depth = if bulk_mode { None } else { max_position_depth };
             // Manual PGN imports are not date-filtered (unbounded window).
             let manual_window = crate::sources::DateWindow::default();
-            match process_pgn_bytes(conn, issue_id, collection_id, visibility, &pgn_bytes, effective_depth, &mut ctx, file_pb.as_ref(), fast, &manual_window) {
+            match process_pgn_stream(conn, issue_id, collection_id, visibility, src, effective_depth, &mut ctx, fast, &manual_window) {
                 Ok((imported, skipped_dups, skipped_ns, skipped_window)) => {
                     conn.execute(
                         "UPDATE source_items SET imported = TRUE, imported_at = NOW(), game_count = ? WHERE id = ?",
@@ -792,8 +859,20 @@ fn import_issue(
 ) -> Result<(usize, usize, usize, usize)> {
     // Delete any games written during a previous interrupted run of this issue.
     conn.execute("DELETE FROM games WHERE issue_id = ?", duckdb::params![issue_id])?;
+    // A zip entry is decompressed to memory first (small per issue); wrap it in a
+    // Cursor so the streaming importer consumes it uniformly.
     let pgn_bytes = extract_pgn(zip_path)?;
-    process_pgn_bytes(conn, issue_id, collection_id, visibility, &pgn_bytes, max_position_depth, ctx, None, fast, window)
+    process_pgn_stream(
+        conn,
+        issue_id,
+        collection_id,
+        visibility,
+        Box::new(std::io::Cursor::new(pgn_bytes)),
+        max_position_depth,
+        ctx,
+        fast,
+        window,
+    )
 }
 
 /// Repair PGN header lines that contain unescaped double-quotes in tag values.
@@ -887,27 +966,24 @@ fn escape_tag_value(value: &str) -> String {
 /// a public import, the existing row's visibility is ratcheted up (private →
 /// public). No auto-downgrade.
 #[allow(clippy::too_many_arguments)]
-fn process_pgn_bytes(
+fn process_pgn_stream(
     conn: &Connection,
     issue_id: i32,
     collection_id: i32,
     visibility: &'static str,
-    pgn_bytes: &[u8],
+    src: Box<dyn Read>,
     max_position_depth: Option<i16>,
     ctx: &mut ImportContext,
-    file_pb: Option<&ProgressBar>,
     fast: bool,
     window: &crate::sources::DateWindow,
 ) -> Result<(usize, usize, usize, usize)> {
     // Comments, NAGs and variations are preserved by the visitor (see
     // GameVisitor) and stored in the game's movetext, so the PGN is parsed
-    // as-is — no pre-stripping.
+    // as-is — no pre-stripping. `src` is read game-by-game, so a multi-GB file
+    // never lands in memory (#95); any byte-progress wrapping is applied by the
+    // caller before the reader is handed in.
     let mut visitor = GameVisitor::new(max_position_depth);
-    let inner: Box<dyn Read> = match file_pb {
-        Some(pb) => Box::new(pb.wrap_read(std::io::Cursor::new(pgn_bytes))),
-        None => Box::new(std::io::Cursor::new(pgn_bytes)),
-    };
-    let mut reader = Reader::new(LineCountingReader::new(inner));
+    let mut reader = Reader::new(LineCountingReader::new(src));
 
     let mut game_batch: Vec<GameRow> = Vec::with_capacity(BATCH_SIZE);
     let mut position_batch: Vec<PositionRow> = Vec::with_capacity(BATCH_SIZE * 40);
@@ -924,8 +1000,7 @@ fn process_pgn_bytes(
             Ok(None) => break,
             Ok(Some(r)) => r,
             Err(e) => {
-                let offset = reader.into_inner().bytes_read();
-                let line = byte_offset_to_line(pgn_bytes, offset);
+                let line = reader.into_inner().line();
                 return Err(anyhow::anyhow!("{} (line {})", e, line));
             }
         };
