@@ -34,9 +34,12 @@ use std::path::{Path, PathBuf};
 /// (id, white name, black name, date, event).
 type GameDeleteRow = (u32, String, String, Option<String>, Option<String>);
 
-/// A `source_items` row for `sources items`:
-/// (external_id, published_at, downloaded, imported, filename).
-type SourceItemRow = (Option<String>, Option<String>, bool, bool, Option<String>);
+/// A `source_items` row for `sources items`: (external_id, published_at,
+/// downloaded, imported, filename, imported_games, min_game_date, max_game_date).
+type SourceItemRow = (
+    Option<String>, Option<String>, bool, bool, Option<String>,
+    i64, Option<String>, Option<String>,
+);
 
 /// Root of LPDO's on-disk state. Honours `$LPDO_DATA_DIR` when set — used by the
 /// packaged servers to point at a system path (`/var/lib/lpdo` on Linux,
@@ -1208,14 +1211,20 @@ fn do_sources_items(
     limit: usize,
     json: bool,
 ) -> Result<()> {
-    let base = "SELECT external_id, CAST(published_at AS VARCHAR), downloaded, imported, filename
-                FROM source_items WHERE source_key = ?";
+    // Per-item imported-game count and game-date span (games.issue_id = source_items.id).
+    // MIN/MAX over the ISO-formatted `date` VARCHAR is chronological.
+    let base = "SELECT si.external_id, CAST(si.published_at AS VARCHAR), si.downloaded, si.imported,
+                       si.filename, COUNT(g.id), MIN(g.date), MAX(g.date)
+                FROM source_items si
+                LEFT JOIN games g ON g.issue_id = si.id
+                WHERE si.source_key = ?
+                GROUP BY si.id, si.external_id, si.published_at, si.downloaded, si.imported, si.filename";
     // limit == 0 → all rows in listing order; otherwise the most recent `limit`
     // by published_at, reversed below so the display stays oldest→newest.
     let sql = if limit == 0 {
-        format!("{base} ORDER BY published_at NULLS LAST, id")
+        format!("{base} ORDER BY si.published_at NULLS LAST, si.id")
     } else {
-        format!("{base} ORDER BY published_at DESC NULLS LAST, id DESC LIMIT {limit}")
+        format!("{base} ORDER BY si.published_at DESC NULLS LAST, si.id DESC LIMIT {limit}")
     };
 
     let mut stmt = conn.prepare(&sql)?;
@@ -1227,6 +1236,9 @@ fn do_sources_items(
                 r.get::<_, Option<bool>>(2)?.unwrap_or(false),
                 r.get::<_, Option<bool>>(3)?.unwrap_or(false),
                 r.get::<_, Option<String>>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<String>>(7)?,
             ))
         })?
         .filter_map(|r| r.ok())
@@ -1236,7 +1248,7 @@ fn do_sources_items(
     }
 
     if json {
-        for (external_id, published_at, downloaded, imported, filename) in &rows {
+        for (external_id, published_at, downloaded, imported, filename, games, min_date, max_date) in &rows {
             println!(
                 "{}",
                 serde_json::json!({
@@ -1245,21 +1257,27 @@ fn do_sources_items(
                     "downloaded": downloaded,
                     "imported": imported,
                     "filename": filename,
+                    "games": games,
+                    "date_from": min_date,
+                    "date_to": max_date,
                 })
             );
         }
     } else {
         println!(
-            "{:<12}  {:<12}  {:<10}  {:<8}  filename",
-            "external_id", "published_at", "downloaded", "imported"
+            "{:<12}  {:<11}  {:>10}  {:<11}  {:<11}  {:<3}  {:<3}  filename",
+            "external_id", "published", "games", "date_from", "date_to", "dl", "imp"
         );
-        for (external_id, published_at, downloaded, imported, filename) in &rows {
+        for (external_id, published_at, downloaded, imported, filename, games, min_date, max_date) in &rows {
             println!(
-                "{:<12}  {:<12}  {:<10}  {:<8}  {}",
+                "{:<12}  {:<11}  {:>10}  {:<11}  {:<11}  {:<3}  {:<3}  {}",
                 external_id.as_deref().unwrap_or("-"),
                 published_at.as_deref().unwrap_or("-"),
-                downloaded,
-                imported,
+                games,
+                min_date.as_deref().unwrap_or("-"),
+                max_date.as_deref().unwrap_or("-"),
+                if *downloaded { "yes" } else { "no" },
+                if *imported { "yes" } else { "no" },
                 filename.as_deref().unwrap_or("-"),
             );
         }

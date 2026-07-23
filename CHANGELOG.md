@@ -17,8 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     duplicate in collection B (using the exact `games dedup` match rule), with a
     coverage percentage.
   - **`chess-db sources items <key> [--limit N]`** — lists a source's tracked
-    items (e.g. TWIC issues) with publication dates and download/import status,
-    to map a chosen cut-off date back to a starting issue number.
+    items (e.g. TWIC issues, or the Ajedrez base/increment files) with
+    publication dates, download/import status, and each item's **imported-game
+    count and game-date span**, to map a chosen cut-off date back to a starting
+    issue number and see what date range each file actually covers.
+  - **`chess-db sources fide-coverage [--collection <name>] [--by year]`** —
+    reports the share of games with both / one / neither player FIDE-identified,
+    plus distinct-player coverage; FIDE ID is the reliable cross-source join
+    key, so this judges whether a source can back deep-history dedup.
   - **`chess-db search games --collection <name>`** — restrict search/count to a
     collection (works locally and via the daemon proxy).
   - **`chess-db sources sync --skip-dedup --max-position-depth <N>`** — sync a
