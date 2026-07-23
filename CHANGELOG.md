@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Reference-source overlap analysis (CLI)** — new read-only tooling to measure
+  how much two reference sources duplicate each other, so an installed deep base
+  (e.g. Ajedrez) can inform a date window for a weekly feed (e.g. TWIC). See
+  issue #142 and `scripts/twic-ajedrez-cutoff.sh`.
+  - **`chess-db sources overlap --a <col> --b <col> [--by month|year|none] [--json]`** —
+    reports, per date bucket, how many games in collection A already have a
+    duplicate in collection B (using the exact `games dedup` match rule), with a
+    coverage percentage.
+  - **`chess-db sources items <key> [--limit N]`** — lists a source's tracked
+    items (e.g. TWIC issues) with publication dates and download/import status,
+    to map a chosen cut-off date back to a starting issue number.
+  - **`chess-db search games --collection <name>`** — restrict search/count to a
+    collection (works locally and via the daemon proxy).
+  - **`chess-db sources sync --skip-dedup --max-position-depth <N>`** — sync a
+    source without duplicate detection and/or without building the position
+    index (both are unnecessary overhead for large bulk sources and for overlap
+    measurement; `--max-position-depth 0` disables indexing).
 - **`LPDO_DATA_DIR`** — set this environment variable to relocate all of
   `chess-db`'s data (database, TWIC zips, backups) from the default `~/.chess-db`
   to a chosen directory. Used by the packaged servers to keep data under a system

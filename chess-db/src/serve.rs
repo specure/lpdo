@@ -299,6 +299,10 @@ struct GamesQuery {
     fen: Option<String>,
     // scope filters (grouping)
     collection_id: Option<i32>,
+    /// Restrict to a collection by name (the CLI's `search games --collection`
+    /// sends this). Resolved to its id in the handler, reusing the collection_id
+    /// predicate; an unknown name matches no games.
+    collection: Option<String>,
     /// "public" or "private". Applied as `g.source_id IN (SELECT id FROM sources WHERE visibility = ?)`.
     visibility: Option<String>,
     /// Include soft-deleted games in the result (default: false).
@@ -707,13 +711,27 @@ async fn games_handler(
     };
 
     state.reads.run(move |conn| {
+        // A `collection` name filter resolves to the same collection_id predicate;
+        // an explicit collection_id (the GUI) wins. Unknown name → id -1 (matches
+        // nothing) so coverage stays well-defined.
+        let collection_id = match (q.collection_id, q.collection.as_deref()) {
+            (Some(id), _) => Some(id),
+            (None, Some(name)) => Some(
+                conn.query_row(
+                    "SELECT id FROM collections WHERE name = ?",
+                    duckdb::params![name],
+                    |r| r.get::<_, i32>(0),
+                ).unwrap_or(-1),
+            ),
+            (None, None) => None,
+        };
         let (sql, params) = build_games_sql(
             q.name.as_deref(), q.fide_id, q.player_id, q.color.as_deref(), q.opponent.as_deref(),
             q.white.as_deref(), q.black.as_deref(), q.white_fide_id, q.black_fide_id,
             q.event.as_deref(), q.eco.as_deref(), q.first_moves.as_deref(),
             q.from.as_deref(), q.to.as_deref(),
             fen_hash,
-            q.collection_id, q.visibility.as_deref(),
+            collection_id, q.visibility.as_deref(),
             q.include_deleted,
             q.pgn, q.count, q.limit, q.offset,
         );

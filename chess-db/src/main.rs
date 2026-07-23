@@ -34,6 +34,10 @@ use std::path::{Path, PathBuf};
 /// (id, white name, black name, date, event).
 type GameDeleteRow = (u32, String, String, Option<String>, Option<String>);
 
+/// A `source_items` row for `sources items`:
+/// (external_id, published_at, downloaded, imported, filename).
+type SourceItemRow = (Option<String>, Option<String>, bool, bool, Option<String>);
+
 /// Root of LPDO's on-disk state. Honours `$LPDO_DATA_DIR` when set — used by the
 /// packaged servers to point at a system path (`/var/lib/lpdo` on Linux,
 /// `C:\ProgramData\LPDO` on Windows, where `dirs::home_dir()` can't be
@@ -267,6 +271,16 @@ enum SourcesCommands {
         /// Use faster appender-based inserts (not crash-safe; see `import --fast`)
         #[arg(long)]
         fast: bool,
+        /// Index positions up to this many half-moves (plies); 0 disables
+        /// position indexing. Default 40. (Useful for large bulk sources like
+        /// Ajedrez where the position index is unwanted overhead.)
+        #[arg(long, default_value_t = 40)]
+        max_position_depth: u16,
+        /// Skip duplicate detection during import (lower memory, faster). Run
+        /// `games dedup` afterwards. Also keeps cross-source duplicates so
+        /// `sources overlap` can measure them.
+        #[arg(long)]
+        skip_dedup: bool,
     },
     /// Set a source's game-date window (which games to keep). Unspecified bounds
     /// are unbounded; re-run to change.
@@ -282,6 +296,30 @@ enum SourcesCommands {
         /// Drop games with no usable date
         #[arg(long)]
         exclude_undated: bool,
+    },
+    /// Report cross-collection duplicate coverage: how many games in
+    /// collection A already have a duplicate in collection B (same match rule
+    /// as `games dedup`). Read-only; requires --local when a daemon is running.
+    Overlap {
+        /// Collection A (the one whose coverage is measured), e.g. "TWIC"
+        #[arg(long)]
+        a: String,
+        /// Collection B (the reference), e.g. "Ajedrez OTB"
+        #[arg(long)]
+        b: String,
+        /// Bucket the result by date granularity
+        #[arg(long, value_parser = ["month", "year", "none"], default_value = "month")]
+        by: String,
+    },
+    /// List a source's tracked items (e.g. TWIC issues) with their publication
+    /// dates and download/import status. Read-only; requires --local when a
+    /// daemon is running.
+    Items {
+        /// Source key (e.g. "twic")
+        key: String,
+        /// Max rows to show (0 = all)
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
     },
 }
 
@@ -340,6 +378,9 @@ enum SearchCommands {
         /// Filter games that reach a specific position (FEN string); requires position index
         #[arg(long)]
         fen: Option<String>,
+        /// Restrict results to games in the named collection
+        #[arg(long)]
+        collection: Option<String>,
         /// Show aggregated move statistics for the position (requires --fen)
         #[arg(long)]
         moves_stats: bool,
@@ -1029,6 +1070,190 @@ fn do_backup(
     Ok(())
 }
 
+/// Report how many games in collection `a` have a duplicate in collection `b`,
+/// bucketed by date granularity (`month`/`year`/`none`). Uses the same
+/// duplicate-matching predicate as `games dedup` (same white_id/black_id, equal
+/// non-null date, result NOT DISTINCT, opening_line equal-or-prefix). Read-only.
+///
+/// `games.date` is an ISO `YYYY-MM-DD` VARCHAR, so buckets are taken with SUBSTR
+/// (not `strftime`, which would choke on partial dates like `2025-??-??`).
+fn do_sources_overlap(
+    conn: &duckdb::Connection,
+    a: &str,
+    b: &str,
+    by: &str,
+    json: bool,
+) -> Result<()> {
+    // Bucket expression over the ISO date string; `none` collapses to one row.
+    let bucket_expr = match by {
+        "year" => "SUBSTR(a.date, 1, 4)",
+        "none" => "'all'",
+        _ => "SUBSTR(a.date, 1, 7)", // month
+    };
+
+    // Numerator: A-games that have at least one B-duplicate, per bucket.
+    let overlap_sql = format!(
+        "SELECT {bucket_expr} AS bucket, COUNT(DISTINCT a.id) AS overlap
+         FROM games a
+         JOIN game_collections gca ON gca.game_id = a.id
+         JOIN collections ca ON ca.id = gca.collection_id AND ca.name = ?
+         JOIN games b
+           ON a.white_id = b.white_id AND a.black_id = b.black_id
+          AND a.date IS NOT NULL AND a.date = b.date
+          AND a.result IS NOT DISTINCT FROM b.result
+          AND (a.opening_line = b.opening_line
+               OR b.opening_line LIKE a.opening_line || ' %'
+               OR a.opening_line LIKE b.opening_line || ' %')
+         JOIN game_collections gcb ON gcb.game_id = b.id
+         JOIN collections cb ON cb.id = gcb.collection_id AND cb.name = ?
+         WHERE a.id <> b.id
+         GROUP BY bucket ORDER BY bucket"
+    );
+
+    // Denominator: all dated A-games per bucket (so coverage is well-defined).
+    let total_sql = format!(
+        "SELECT {bucket_expr} AS bucket, COUNT(*) AS a_total
+         FROM games a
+         JOIN game_collections gca ON gca.game_id = a.id
+         JOIN collections ca ON ca.id = gca.collection_id AND ca.name = ?
+         WHERE a.date IS NOT NULL
+         GROUP BY bucket ORDER BY bucket"
+    );
+
+    // (a_total, overlap) keyed by bucket; BTreeMap keeps buckets sorted.
+    let mut buckets: std::collections::BTreeMap<String, (i64, i64)> =
+        std::collections::BTreeMap::new();
+    {
+        let mut stmt = conn.prepare(&total_sql)?;
+        let rows = stmt.query_map(duckdb::params![a], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows.flatten() {
+            buckets.entry(row.0).or_insert((0, 0)).0 = row.1;
+        }
+    }
+    {
+        let mut stmt = conn.prepare(&overlap_sql)?;
+        let rows = stmt.query_map(duckdb::params![a, b], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows.flatten() {
+            buckets.entry(row.0).or_insert((0, 0)).1 = row.1;
+        }
+    }
+
+    let coverage = |overlap: i64, total: i64| -> f64 {
+        if total == 0 { 0.0 } else { overlap as f64 / total as f64 }
+    };
+
+    let mut sum_total = 0i64;
+    let mut sum_overlap = 0i64;
+
+    if json {
+        for (bucket, (total, overlap)) in &buckets {
+            sum_total += *total;
+            sum_overlap += *overlap;
+            let cov = (coverage(*overlap, *total) * 1000.0).round() / 1000.0;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "bucket": bucket, "a_total": total, "overlap": overlap, "coverage": cov
+                })
+            );
+        }
+        let cov = (coverage(sum_overlap, sum_total) * 1000.0).round() / 1000.0;
+        println!(
+            "{}",
+            serde_json::json!({
+                "bucket": "TOTAL", "a_total": sum_total, "overlap": sum_overlap, "coverage": cov
+            })
+        );
+    } else {
+        println!("{:<10}  {:>8}  {:>8}  {:>9}", "bucket", "a_total", "overlap", "coverage%");
+        for (bucket, (total, overlap)) in &buckets {
+            sum_total += *total;
+            sum_overlap += *overlap;
+            println!(
+                "{:<10}  {:>8}  {:>8}  {:>8.1}%",
+                bucket, total, overlap, coverage(*overlap, *total) * 100.0
+            );
+        }
+        println!(
+            "{:<10}  {:>8}  {:>8}  {:>8.1}%",
+            "TOTAL", sum_total, sum_overlap, coverage(sum_overlap, sum_total) * 100.0
+        );
+    }
+    Ok(())
+}
+
+/// List a source's tracked items (`source_items` rows) with their publication
+/// dates and download/import status. Read-only. `limit == 0` shows all rows
+/// (oldest first); otherwise the most recent `limit` by publication date.
+fn do_sources_items(
+    conn: &duckdb::Connection,
+    key: &str,
+    limit: usize,
+    json: bool,
+) -> Result<()> {
+    let base = "SELECT external_id, CAST(published_at AS VARCHAR), downloaded, imported, filename
+                FROM source_items WHERE source_key = ?";
+    // limit == 0 → all rows in listing order; otherwise the most recent `limit`
+    // by published_at, reversed below so the display stays oldest→newest.
+    let sql = if limit == 0 {
+        format!("{base} ORDER BY published_at NULLS LAST, id")
+    } else {
+        format!("{base} ORDER BY published_at DESC NULLS LAST, id DESC LIMIT {limit}")
+    };
+
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows: Vec<SourceItemRow> = stmt
+        .query_map(duckdb::params![key], |r| {
+            Ok((
+                r.get::<_, Option<String>>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<bool>>(2)?.unwrap_or(false),
+                r.get::<_, Option<bool>>(3)?.unwrap_or(false),
+                r.get::<_, Option<String>>(4)?,
+            ))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    if limit != 0 {
+        rows.reverse();
+    }
+
+    if json {
+        for (external_id, published_at, downloaded, imported, filename) in &rows {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "external_id": external_id,
+                    "published_at": published_at,
+                    "downloaded": downloaded,
+                    "imported": imported,
+                    "filename": filename,
+                })
+            );
+        }
+    } else {
+        println!(
+            "{:<12}  {:<12}  {:<10}  {:<8}  filename",
+            "external_id", "published_at", "downloaded", "imported"
+        );
+        for (external_id, published_at, downloaded, imported, filename) in &rows {
+            println!(
+                "{:<12}  {:<12}  {:<10}  {:<8}  {}",
+                external_id.as_deref().unwrap_or("-"),
+                published_at.as_deref().unwrap_or("-"),
+                downloaded,
+                imported,
+                filename.as_deref().unwrap_or("-"),
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Map a CLI command to the daemon job that performs it, or `None` if the
 /// command isn't a long-running job (those aren't proxyable yet — Phase B). The
 /// param keys match what `jobs::run_job` reads server-side. Some advanced flags
@@ -1082,9 +1307,9 @@ fn job_spec_for(command: &Commands) -> Option<proxy::JobSpec> {
             "backup",
             json!({ "collection": collection, "dir": dir.to_string_lossy() }),
         ),
-        Commands::Sources { subcommand: SourcesCommands::Sync { key, fast } } => (
+        Commands::Sources { subcommand: SourcesCommands::Sync { key, fast, max_position_depth, skip_dedup } } => (
             "sources_sync",
-            json!({ "source": key, "fast": fast }),
+            json!({ "source": key, "fast": fast, "max_position_depth": max_position_depth, "skip_dedup": skip_dedup }),
         ),
         Commands::Sources { subcommand: SourcesCommands::Enable { key } } => (
             "sources_set_enabled",
@@ -1226,7 +1451,7 @@ async fn try_proxy_read(command: &Commands, port: u16) -> Option<Result<()>> {
             subcommand:
                 SearchCommands::Games {
                     name, fide_id, white, black, white_fide_id, black_fide_id, event, eco,
-                    first_moves, from, to, fen, moves_stats, show_moves, limit, pgn, count,
+                    first_moves, from, to, fen, collection, moves_stats, show_moves, limit, pgn, count,
                 },
         } => {
             // moves-stats aggregates a position; no plain /games equivalent.
@@ -1246,6 +1471,7 @@ async fn try_proxy_read(command: &Commands, port: u16) -> Option<Result<()>> {
             if let Some(v) = from { q.push(("from", v.clone())); }
             if let Some(v) = to { q.push(("to", v.clone())); }
             if let Some(v) = fen { q.push(("fen", v.clone())); }
+            if let Some(v) = collection { q.push(("collection", v.clone())); }
             q.push(("limit", limit.to_string()));
             if *pgn { q.push(("pgn", "true".to_string())); }
             if *count { q.push(("count", "true".to_string())); }
@@ -1683,6 +1909,7 @@ async fn main() -> Result<()> {
                 from,
                 to,
                 fen,
+                collection,
                 moves_stats,
                 show_moves,
                 limit,
@@ -1722,6 +1949,7 @@ async fn main() -> Result<()> {
                         from.as_deref(),
                         to.as_deref(),
                         fen.as_deref(),
+                        collection.as_deref(),
                         show_moves,
                         limit,
                         pgn,
@@ -1770,19 +1998,26 @@ async fn main() -> Result<()> {
                 sources::set_enabled(&conn, &key, false)?;
                 println!("Disabled source '{key}'.");
             }
-            SourcesCommands::Sync { key, fast } => {
+            SourcesCommands::Sync { key, fast, max_position_depth, skip_dedup } => {
                 let src = sources::get(&key)
                     .ok_or_else(|| anyhow::anyhow!("unknown source '{key}'"))?;
                 let dir = source_dir(&key);
                 std::fs::create_dir_all(&dir)?;
+                let depth = if max_position_depth == 0 { None } else { Some(max_position_depth as i16) };
                 sources::download_feed(&conn, src, None, None, &dir, &reporter).await?;
-                importer::import(&conn, &dir, src.key, src.collection, Some(40), 10, fast, false, &reporter)?;
+                importer::import(&conn, &dir, src.key, src.collection, depth, 10, fast, skip_dedup, &reporter)?;
                 sources::record_run(&conn, src.key, "ok")?;
                 println!("{} synced.", src.name);
             }
             SourcesCommands::Window { key, from, to, exclude_undated } => {
                 sources::set_window(&conn, &key, from.as_deref(), to.as_deref(), exclude_undated)?;
                 println!("Updated date window for '{key}'.");
+            }
+            SourcesCommands::Overlap { a, b, by } => {
+                do_sources_overlap(&conn, &a, &b, &by, cli.json)?;
+            }
+            SourcesCommands::Items { key, limit } => {
+                do_sources_items(&conn, &key, limit, cli.json)?;
             }
         },
         Commands::Serve { port } => {
@@ -1859,5 +2094,58 @@ mod tests {
         assert!(text.contains("1. d4 d5"), "second game present");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `sources overlap` counts A-games that have a B-duplicate under the dedup
+    /// match rule, and its denominator counts all dated A-games. Verify both the
+    /// overlap SQL and the function run cleanly on real data.
+    #[test]
+    fn sources_overlap_counts_cross_collection_duplicates() {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        db::schema::init(&conn).unwrap();
+
+        conn.execute_batch(
+            "INSERT INTO players (id, name, name_normalized) VALUES
+                 (1, 'Alice', 'alice'), (2, 'Bob', 'bob');
+             INSERT INTO collections (id, name, created_at) VALUES
+                 (10, 'A', NOW()), (11, 'B', NOW());
+             -- A has 2 games in 2020-01; game 1 duplicates game 100 in B.
+             INSERT INTO games (id, white_id, black_id, date, result, move_count, opening_line, pgn, visibility) VALUES
+                 (1,   1, 2, '2020-01-05', '1-0', 3, 'e4 e5 Nf3', '', 'public'),
+                 (2,   1, 2, '2020-01-20', '0-1', 3, 'd4 d5 c4',  '', 'public'),
+                 (100, 1, 2, '2020-01-05', '1-0', 4, 'e4 e5 Nf3 Nc6', '', 'public');
+             INSERT INTO game_collections (game_id, collection_id) VALUES
+                 (1, 10), (2, 10), (100, 11);",
+        )
+        .unwrap();
+
+        // Overlap for A vs B: exactly game 1 (prefix-matches game 100 in B).
+        let overlap: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT a.id)
+                 FROM games a
+                 JOIN game_collections gca ON gca.game_id = a.id
+                 JOIN collections ca ON ca.id = gca.collection_id AND ca.name = 'A'
+                 JOIN games b
+                   ON a.white_id = b.white_id AND a.black_id = b.black_id
+                  AND a.date IS NOT NULL AND a.date = b.date
+                  AND a.result IS NOT DISTINCT FROM b.result
+                  AND (a.opening_line = b.opening_line
+                       OR b.opening_line LIKE a.opening_line || ' %'
+                       OR a.opening_line LIKE b.opening_line || ' %')
+                 JOIN game_collections gcb ON gcb.game_id = b.id
+                 JOIN collections cb ON cb.id = gcb.collection_id AND cb.name = 'B'
+                 WHERE a.id <> b.id",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(overlap, 1, "only game 1 has a B-duplicate");
+
+        // The command itself runs cleanly for every bucketing mode.
+        for by in ["month", "year", "none"] {
+            assert!(do_sources_overlap(&conn, "A", "B", by, false).is_ok());
+            assert!(do_sources_overlap(&conn, "A", "B", by, true).is_ok());
+        }
     }
 }
