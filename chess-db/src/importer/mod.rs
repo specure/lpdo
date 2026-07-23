@@ -157,6 +157,23 @@ fn recreate_bulk_indexes(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// How many games an `index_positions(rebuild)` pass would process: every game
+/// for a rebuild, else only those not yet in `positions`. Callers use this to
+/// decide whether a fast index is large enough to warrant a safety snapshot (#139).
+pub fn pending_position_count(conn: &Connection, rebuild: bool) -> Result<i64> {
+    let n = if rebuild {
+        conn.query_row("SELECT COUNT(*) FROM games", [], |r| r.get(0))?
+    } else {
+        conn.query_row(
+            "SELECT COUNT(*) FROM games g
+             WHERE NOT EXISTS (SELECT 1 FROM positions p WHERE p.game_id = g.id)",
+            [],
+            |r| r.get(0),
+        )?
+    };
+    Ok(n)
+}
+
 /// Build or extend the positions table from PGN already stored in `games`.
 ///
 /// - `rebuild = false` (default): only processes games with no existing positions rows.
@@ -194,16 +211,7 @@ pub fn index_positions(
     }
 
     // Count how many games need processing
-    let pending: i64 = if rebuild {
-        conn.query_row("SELECT COUNT(*) FROM games", [], |r| r.get(0))?
-    } else {
-        conn.query_row(
-            "SELECT COUNT(*) FROM games g
-             WHERE NOT EXISTS (SELECT 1 FROM positions p WHERE p.game_id = g.id)",
-            [],
-            |r| r.get(0),
-        )?
-    };
+    let pending: i64 = pending_position_count(conn, rebuild)?;
 
     if pending == 0 {
         reporter.done("All games are already indexed. Use --rebuild to reprocess with a different depth.");
