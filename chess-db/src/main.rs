@@ -128,16 +128,16 @@ enum Commands {
     Import {
         /// Index positions by Zobrist hash up to this many half-moves (plies).
         /// Pass 0 to disable position indexing entirely.
-        /// Ignored in bulk mode (>= reindex-threshold files): run index-positions separately.
+        /// Ignored in bulk mode (chosen automatically by import size): run index-positions separately.
         /// Default: 40 half-moves (= 20 full moves each side).
         #[arg(long, default_value_t = 40)]
         max_position_depth: u16,
         /// Source directory
         #[arg(long, default_value_os_t = default_dir())]
         dir: PathBuf,
-        /// Drop all indexes before the bulk load and rebuild them at the end
-        /// when the number of pending files meets or exceeds this value.
-        /// Pass 0 to always use bulk mode. Default: 10.
+        /// Bulk-mode override: 0 forces bulk (drop indexes + defer position
+        /// indexing). Any other value lets bulk mode be chosen automatically from
+        /// the total import size, so it self-adjusts to per-source volume (#145).
         #[arg(long, default_value_t = 10)]
         reindex_threshold: usize,
         /// Use faster appender-based inserts instead of transactional inserts.
@@ -165,13 +165,13 @@ enum Commands {
         on_duplicate: String,
         /// Index positions by Zobrist hash up to this many half-moves (plies).
         /// Pass 0 to disable position indexing entirely.
-        /// Ignored in bulk mode (>= reindex-threshold files): run index-positions separately.
+        /// Ignored in bulk mode (chosen automatically by import size): run index-positions separately.
         /// Default: 40 half-moves (= 20 full moves each side).
         #[arg(long, default_value_t = 40)]
         max_position_depth: u16,
-        /// Drop all indexes before the bulk load and rebuild them at the end
-        /// when the number of pending files meets or exceeds this value.
-        /// Pass 0 to always use bulk mode. Default: 10.
+        /// Bulk-mode override: 0 forces bulk (drop indexes + defer position
+        /// indexing). Any other value lets bulk mode be chosen automatically from
+        /// the total import size, so it self-adjusts to per-source volume (#145).
         #[arg(long, default_value_t = 10)]
         reindex_threshold: usize,
         /// Use faster appender-based inserts instead of transactional inserts.

@@ -20,6 +20,22 @@ const INDEX_READ_BATCH: usize = 50_000;
 const INDEX_REPORT_CHUNK: usize = 2_000;
 const LARGE_FILE_THRESHOLD: u64 = 100 * 1024 * 1024; // 100 MB
 
+/// Total download size above which an import switches to *bulk mode* (drop the
+/// games indexes, defer position indexing to a single pass) instead of indexing
+/// inline per game. Sizing on bytes (≈ games) makes the decision self-adjust
+/// across sources with different per-item volume: a Lichess *monthly* package is
+/// ~4× a TWIC *weekly* one, so the old item-count threshold under-triggered for
+/// Lichess and left a large sync grinding on the slow inline path (#145).
+const BULK_MODE_BYTES: u64 = 12 * 1024 * 1024; // ~12 MB (compressed feed or raw PGN)
+
+/// Choose bulk mode from the combined size of the files being imported. A
+/// `force_threshold` of 0 forces bulk (the scheduled `update` job passes 0); any
+/// other value defers entirely to the size estimate, so per-source item cadence
+/// no longer skews the decision (#145).
+fn bulk_mode_for_size(total_bytes: u64, force_threshold: usize) -> bool {
+    force_threshold == 0 || total_bytes >= BULK_MODE_BYTES
+}
+
 /// User-facing knobs for `import-pgn`: grouping + visibility + duplicate policy.
 pub struct ImportSpec {
     pub collection: String,
@@ -311,9 +327,11 @@ fn fill_positions(
 
 /// `max_position_depth` — None = skip position indexing,
 /// Some(n) = index positions up to half-move n.
-/// `reindex_threshold` — drop all indexes before the bulk load and rebuild
-/// them at the end when the number of pending issues meets or exceeds this
-/// value. 0 = always reindex. Use a large value to disable.
+/// `reindex_threshold` — bulk-mode override: `0` forces bulk (drop the games
+/// indexes + defer position indexing); any other value lets bulk mode be chosen
+/// automatically from the total download size (`BULK_MODE_BYTES`), so the
+/// decision self-adjusts to a source's per-item volume instead of a raw item
+/// count (#145).
 pub fn import(
     conn: &Connection,
     dir: &Path,
@@ -340,7 +358,13 @@ pub fn import(
         return Ok(());
     }
 
-    let bulk_mode = issues.len() >= reindex_threshold;
+    // Decide bulk vs inline by total download size (≈ games), not item count, so a
+    // few large Lichess monthly packages defer like many small TWIC weekly ones (#145).
+    let total_bytes: u64 = issues
+        .iter()
+        .map(|(_, f)| std::fs::metadata(dir.join(f)).map(|m| m.len()).unwrap_or(0))
+        .sum();
+    let bulk_mode = bulk_mode_for_size(total_bytes, reindex_threshold);
 
     reporter.log(format!("Importing {} issue(s)...", issues.len()));
     if bulk_mode {
@@ -510,7 +534,13 @@ pub fn import_pgn(
         return Ok(());
     }
 
-    let bulk_mode = pending.len() >= reindex_threshold;
+    // Size-based bulk decision (#145): a single multi-GB PGN (1 file, so never
+    // over an item-count threshold) now correctly defers instead of indexing inline.
+    let total_bytes: u64 = pending
+        .iter()
+        .map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
+        .sum();
+    let bulk_mode = bulk_mode_for_size(total_bytes, reindex_threshold);
 
     reporter.log(format!("Importing {} PGN file(s)...", pending.len()));
     if bulk_mode {
