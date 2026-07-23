@@ -40,6 +40,7 @@
 #   FROM_ISSUE   first TWIC issue to fetch  [1] (1 = full history; heavy!)
 #   TO_ISSUE     last TWIC issue to fetch   [latest]
 #   THRESHOLDS   coverage cut-offs (%)      ["90 95 99"]
+#   FAST         appender-based bulk inserts [1]; FAST=0 = safe transactional
 #   REUSE=1      skip sync/import if the DB already has both collections
 #   FRESH_DB=1   rebuild the DB from the CACHED archives (no re-download)
 #   CLEAN=1      wipe EVERYTHING incl. cached archives (full from-scratch)
@@ -84,12 +85,17 @@ have_both() {
 if [ "${REUSE:-0}" = 1 ] && have_both; then
   echo "== REUSE: both collections already populated, skipping sync/import =="
 else
+  # --fast = appender-based bulk inserts (much faster; not crash-safe, which is
+  # fine for a disposable experiment DB). Set FAST=0 to use safe transactional
+  # inserts.
+  FAST_FLAG=""; [ "${FAST:-1}" = 1 ] && FAST_FLAG="--fast"
+
   # --- 1. Ajedrez: the historical base ------------------------------------
   echo "== [1/3] syncing Ajedrez (bulk .7z; ~740 MB compressed) =="
-  echo "         (--skip-dedup --max-position-depth 0: no dup-scan, no position index —"
-  echo "          both are pure overhead for this overlap measurement)"
+  echo "         ($FAST_FLAG --skip-dedup --max-position-depth 0: fast bulk load, no dup-scan,"
+  echo "          no position index — all three are pure overhead for this measurement)"
   run sources enable ajedrez-otb
-  run sources sync   ajedrez-otb --skip-dedup --max-position-depth 0
+  run sources sync   ajedrez-otb $FAST_FLAG --skip-dedup --max-position-depth 0
 
   # --- 2. TWIC: the weekly tail -------------------------------------------
   echo "== [2/3] downloading + importing TWIC issues $FROM_ISSUE..${TO_ISSUE:-latest} =="
@@ -100,7 +106,7 @@ else
   else
     run download --from "$FROM_ISSUE" --dir "$DATA/twic"
   fi
-  run import --dir "$DATA/twic" --skip-dedup --max-position-depth 0
+  run import --dir "$DATA/twic" $FAST_FLAG --skip-dedup --max-position-depth 0
 fi
 
 echo "== collection sizes =="
