@@ -196,10 +196,11 @@ enum Commands {
         /// Use this when changing --max-position-depth on an existing index.
         #[arg(long)]
         rebuild: bool,
-        /// Use faster appender-based inserts instead of transactional inserts.
-        /// WARNING: interrupting in fast mode may corrupt the database.
+        /// Use slower, fully-transactional inserts instead of the default fast
+        /// appender path. The fast path is crash-safe here (a rebuild or large
+        /// index takes a safety snapshot first, #139), so --safe is rarely needed.
         #[arg(long)]
-        fast: bool,
+        safe: bool,
     },
     /// Search for games or players
     Search {
@@ -1052,9 +1053,9 @@ fn job_spec_for(command: &Commands) -> Option<proxy::JobSpec> {
                 "on_duplicate": on_duplicate, "fast": fast, "private": private,
             }),
         ),
-        Commands::IndexPositions { rebuild, fast, .. } => (
+        Commands::IndexPositions { rebuild, safe, .. } => (
             "index_positions",
-            json!({ "rebuild": rebuild, "fast": fast }),
+            json!({ "rebuild": rebuild, "fast": !safe }),
         ),
         Commands::Games { subcommand: GameCommands::Dedup { dry_run } } => (
             "dedup_games",
@@ -1381,13 +1382,15 @@ async fn main() -> Result<()> {
             let spec = importer::ImportSpec { collection, visibility, on_duplicate };
             importer::import_pgn(&conn, &path, depth, reindex_threshold, fast, skip_dedup, &spec, &reporter)?;
         }
-        Commands::IndexPositions { max_position_depth, rebuild, fast } => {
+        Commands::IndexPositions { max_position_depth, rebuild, safe } => {
             let depth = if max_position_depth == 0 {
                 None
             } else {
                 Some(max_position_depth as i16)
             };
-            importer::index_positions(&conn, depth, rebuild, fast, &reporter)?;
+            // Fast by default, snapshot-guarded (#139); --safe forces the slow
+            // transactional path. Same guard the daemon uses, so --local is safe too.
+            jobs::run_index_positions_guarded(&conn, &cli.db, depth, rebuild, !safe, &reporter)?;
         }
         Commands::Games { subcommand } => match subcommand {
             GameCommands::Dedup { dry_run } => {

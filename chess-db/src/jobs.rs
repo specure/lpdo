@@ -724,23 +724,7 @@ fn run_job(
             importer::import_pgn(conn, &path, Some(40), 10, fast, false, &spec, reporter)?;
         }
         "index_positions" => {
-            let rebuild = flag(p, "rebuild");
-            // A from-scratch rebuild uses the appender (not crash-safe); take a
-            // safety snapshot first so a crash mid-rebuild can be rolled back.
-            let snapshotted = rebuild && make_safety_snapshot(conn, db, reporter);
-            let res = importer::index_positions(conn, Some(40), rebuild, flag(p, "fast"), reporter);
-            if snapshotted {
-                match &res {
-                    Ok(_) => {
-                        remove_snapshot(db);
-                        reporter.log("Safety snapshot removed.");
-                    }
-                    Err(_) => reporter.log(
-                        "Rebuild did not complete — the safety snapshot will be restored on next start.",
-                    ),
-                }
-            }
-            res?;
+            run_index_positions_guarded(conn, db, Some(40), flag(p, "rebuild"), flag(p, "fast"), reporter)?;
         }
         "dedup_games" => {
             dedup::dedup_games(conn, flag(p, "dry_run"), reporter)?;
@@ -823,7 +807,7 @@ fn run_job(
             }
             if reporter.is_cancelled() { return Ok(()); }
             reporter.log("Indexing positions (fast)");
-            importer::index_positions(conn, Some(40), false, true, &step)?;
+            run_index_positions_guarded(conn, db, Some(40), false, true, &step)?;
             if reporter.is_cancelled() { return Ok(()); }
             reporter.log("Normalising players");
             normalise::normalise_players(
@@ -868,6 +852,50 @@ fn with_suffix(p: &Path, suffix: &str) -> PathBuf {
     s.push(suffix);
     PathBuf::from(s)
 }
+/// A fast incremental index only takes a (whole-DB) safety snapshot when at least
+/// this many games are pending — below it the copy cost isn't worth it and a
+/// killed appender just leaves a consistent partial to resume. A rebuild always
+/// snapshots regardless of this. (#139)
+const FAST_INDEX_SNAPSHOT_THRESHOLD: i64 = 200_000;
+
+/// Run a position index with the fast-path safety-snapshot guard (#139). Shared
+/// by the daemon job handler and the `--local` CLI path so both are crash-safe
+/// even with fast (appender) inserts as the default.
+///
+/// Fast indexing isn't crash-safe, so for a rebuild or a large incremental we
+/// CHECKPOINT + copy the DB to `<db>.snapshot` first; on success it's removed, and
+/// on a crash it's restored on next start (see `restore_snapshot_if_present`).
+/// Small incrementals skip it (cheap, and a killed appender only leaves a
+/// consistent partial to resume), as does first-run setup (the setup sentinel
+/// already protects a disposable DB).
+pub fn run_index_positions_guarded(
+    conn: &Connection,
+    db: &Path,
+    depth: Option<i16>,
+    rebuild: bool,
+    fast: bool,
+    reporter: &Reporter,
+) -> Result<()> {
+    let pending = crate::importer::pending_position_count(conn, rebuild).unwrap_or(0);
+    let snapshotted = fast
+        && (rebuild || pending >= FAST_INDEX_SNAPSHOT_THRESHOLD)
+        && !setup_sentinel_present(db)
+        && make_safety_snapshot(conn, db, reporter);
+    let res = crate::importer::index_positions(conn, depth, rebuild, fast, reporter);
+    if snapshotted {
+        match &res {
+            Ok(_) => {
+                remove_snapshot(db);
+                reporter.log("Safety snapshot removed.");
+            }
+            Err(_) => reporter.log(
+                "Indexing did not complete — the safety snapshot will be restored on next start.",
+            ),
+        }
+    }
+    res
+}
+
 pub fn snapshot_path(db: &Path) -> PathBuf { with_suffix(db, ".snapshot") }
 fn snapshot_tmp_path(db: &Path) -> PathBuf { with_suffix(db, ".snapshot.tmp") }
 fn wal_path(db: &Path) -> PathBuf { with_suffix(db, ".wal") }
