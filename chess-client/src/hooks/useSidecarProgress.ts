@@ -95,7 +95,12 @@ function planFromArgs(args: string[]): Plan {
       return { kind: "job", type: "import", params };
     }
     case "import-pgn": {
-      const params: Record<string, unknown> = { path: a1 };
+      // #121: the GUI sends the PGN *content* (read client-side, so it works for
+      // files under the user's home that the sandboxed daemon can't reach); a
+      // bare positional path is still accepted for daemon-local files.
+      const content = flagVal(args, "--content");
+      const params: Record<string, unknown> =
+        content !== undefined ? { content } : { path: a1 };
       const collection = flagVal(args, "--collection");
       if (collection) params.collection = collection;
       const onDup = flagVal(args, "--on-duplicate");

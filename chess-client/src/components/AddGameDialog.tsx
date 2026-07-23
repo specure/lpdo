@@ -152,19 +152,21 @@ export default function AddGameDialog({
   async function run() {
     setLastAction("import");
     setPasteError(null);
-    let importPath: string;
+    let content: string;
     try {
       if (mode === "file") {
-        importPath = path.trim();
+        // Read the file client-side — the app runs as the user, so it can read the
+        // home dir — and upload its content. The sandboxed system daemon can't open
+        // a path under $HOME or /tmp, so passing a path fails (#121).
+        content = await invoke<string>("read_pgn_file", { path: path.trim() });
       } else {
         if (mode === "scratch") {
           // Persist the user's chosen Site as the default for future new games.
           rememberPgnSite(tags.find((t) => t.name === "Site")?.value ?? "");
         }
-        const content = mode === "paste"
+        content = mode === "paste"
           ? pasteText
           : buildBlock(tags, tags.find((t) => t.name === "Result")?.value || "*");
-        importPath = await invoke<string>("write_temp_pgn_file", { content });
       }
     } catch (e) {
       setPasteError(String(e));
@@ -172,7 +174,7 @@ export default function AddGameDialog({
     }
     const args = [
       "import-pgn",
-      importPath,
+      "--content", content,
       "--collection", collectionName.trim(),
       "--on-duplicate", dedup,
     ];

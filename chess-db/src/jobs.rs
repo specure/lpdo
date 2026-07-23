@@ -729,13 +729,32 @@ fn run_job(
             }
         }
         "import_pgn" => {
-            let path = path_param(p, "path")?;
             let collection = p.get("collection").and_then(|v| v.as_str()).unwrap_or("Manual").to_string();
             let on_duplicate = p.get("on_duplicate").and_then(|v| v.as_str()).unwrap_or("skip").to_string();
             let fast = flag(p, "fast");
             let visibility = if flag(p, "private") { "private" } else { "public" }.to_string();
             let spec = importer::ImportSpec { collection, visibility, on_duplicate };
-            importer::import_pgn(conn, &path, Some(40), 10, fast, false, &spec, reporter)?;
+            // #121: the client may send PGN *content* instead of a path, because the
+            // hardened system daemon (ProtectHome/PrivateTmp) can't read files in the
+            // user's home or /tmp. Write it to a daemon-owned temp beside the DB
+            // (which the daemon can read/write), import, then clean up. A `path`
+            // (a daemon-local file, or the `--local` CLI) still works unchanged.
+            if let Some(content) = p.get("content").and_then(|v| v.as_str()) {
+                let dir = db.parent().unwrap_or_else(|| Path::new("."));
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                let tmp = dir.join(format!("upload-{stamp}.pgn"));
+                std::fs::write(&tmp, content)
+                    .with_context(|| format!("writing uploaded PGN to {}", tmp.display()))?;
+                let res = importer::import_pgn(conn, &tmp, Some(40), 10, fast, false, &spec, reporter);
+                let _ = std::fs::remove_file(&tmp);
+                res?;
+            } else {
+                let path = path_param(p, "path")?;
+                importer::import_pgn(conn, &path, Some(40), 10, fast, false, &spec, reporter)?;
+            }
         }
         "index_positions" => {
             run_index_positions_guarded(conn, db, Some(40), flag(p, "rebuild"), flag(p, "fast"), reporter)?;
