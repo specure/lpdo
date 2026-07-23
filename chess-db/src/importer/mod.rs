@@ -96,24 +96,134 @@ fn add_issue_to_collection(conn: &Connection, issue_id: i32, collection_id: i32)
 }
 
 /// Expand a path into a list of .pgn files. A file path returns just that file;
-/// a directory is read non-recursively (matches existing behaviour).
+/// a directory is read non-recursively (matches existing behaviour). Accepts
+/// plain `.pgn` and the compressed forms the importer can decompress:
+/// `.zip`, `.zst`/`.zstd`, `.7z`.
 fn collect_pgn_files(path: &Path) -> Result<Vec<std::path::PathBuf>> {
     if path.is_file() {
-        if path.extension().and_then(|s| s.to_str()) == Some("pgn") {
+        if is_supported_input(path) {
             Ok(vec![path.to_path_buf()])
         } else {
-            anyhow::bail!("not a .pgn file: {}", path.display());
+            anyhow::bail!("not a .pgn/.zip/.zst/.7z file: {}", path.display());
         }
     } else if path.is_dir() {
         let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(path)?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("pgn"))
+            .filter(|p| is_supported_input(p))
             .collect();
         files.sort();
         Ok(files)
     } else {
         anyhow::bail!("not a file or directory: {}", path.display());
+    }
+}
+
+/// True for file types `import-pgn` can ingest: plain `.pgn` or a compressed
+/// archive the importer decompresses (`.zip`, `.zst`/`.zstd`, `.7z`).
+fn is_supported_input(p: &Path) -> bool {
+    matches!(
+        p.extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .as_deref(),
+        Some("pgn") | Some("zip") | Some("zst") | Some("zstd") | Some("7z")
+    )
+}
+
+/// A temporary path removed on drop — used to stage a decompressed `.pgn` for
+/// archive inputs (`.zip`/`.7z`) so the streaming importer reads it in bounded
+/// memory without holding the whole decompressed file in RAM.
+struct TempPgn {
+    path: std::path::PathBuf,
+    is_dir: bool,
+}
+
+impl Drop for TempPgn {
+    fn drop(&mut self) {
+        if self.is_dir {
+            let _ = std::fs::remove_dir_all(&self.path);
+        } else {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Open `path` as a streaming PGN byte source, transparently decompressing by
+/// extension. Returns the reader, an optional temp guard the caller must keep
+/// alive until the import finishes (cleaned up on drop), and the number of
+/// bytes a progress bar should track.
+///
+/// - `.pgn` — streamed directly.
+/// - `.zst`/`.zstd` — streamed through a zstd decoder (bounded memory).
+/// - `.zip`/`.7z` — the first `.pgn` entry is streamed out to a sibling temp
+///   file first (archives don't offer a cheap owned streaming reader), then
+///   that temp file is streamed; the guard removes it afterwards.
+fn open_import_reader(path: &Path) -> Result<(Box<dyn Read>, Option<TempPgn>, u64)> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "pgn" | "" => {
+            let f = std::fs::File::open(path)?;
+            let sz = f.metadata().map(|m| m.len()).unwrap_or(0);
+            Ok((Box::new(std::io::BufReader::new(f)), None, sz))
+        }
+        "zst" | "zstd" => {
+            let f = std::fs::File::open(path)?;
+            // Progress tracks compressed bytes consumed (uncompressed size is
+            // not cheaply known); an approximate bar is fine.
+            let sz = f.metadata().map(|m| m.len()).unwrap_or(0);
+            let dec = zstd::stream::read::Decoder::new(std::io::BufReader::new(f))
+                .map_err(|e| anyhow::anyhow!("zstd open {}: {}", path.display(), e))?;
+            Ok((Box::new(dec), None, sz))
+        }
+        "zip" => {
+            let tmp = path.with_extension("import-tmp.pgn");
+            let _ = std::fs::remove_file(&tmp);
+            {
+                let f = std::fs::File::open(path)?;
+                let mut archive = zip::ZipArchive::new(f)?;
+                let mut idx = None;
+                for i in 0..archive.len() {
+                    if archive.by_index(i)?.name().to_ascii_lowercase().ends_with(".pgn") {
+                        idx = Some(i);
+                        break;
+                    }
+                }
+                let idx = idx
+                    .ok_or_else(|| anyhow::anyhow!("no .pgn entry inside {}", path.display()))?;
+                let mut entry = archive.by_index(idx)?;
+                let mut out = std::fs::File::create(&tmp)?;
+                std::io::copy(&mut entry, &mut out)?; // streaming, bounded memory
+            }
+            let f = std::fs::File::open(&tmp)?;
+            let sz = f.metadata().map(|m| m.len()).unwrap_or(0);
+            Ok((
+                Box::new(std::io::BufReader::new(f)),
+                Some(TempPgn { path: tmp, is_dir: false }),
+                sz,
+            ))
+        }
+        "7z" => {
+            let dir = path.with_extension("7z-import-tmp");
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir)?;
+            sevenz_rust2::decompress_file(path, &dir)
+                .map_err(|e| anyhow::anyhow!("7z extract {}: {}", path.display(), e))?;
+            let pgn = first_pgn_in_dir(&dir)
+                .ok_or_else(|| anyhow::anyhow!("no .pgn file inside {}", path.display()))?;
+            let f = std::fs::File::open(&pgn)?;
+            let sz = f.metadata().map(|m| m.len()).unwrap_or(0);
+            Ok((
+                Box::new(std::io::BufReader::new(f)),
+                Some(TempPgn { path: dir, is_dir: true }),
+                sz,
+            ))
+        }
+        other => anyhow::bail!("unsupported file type '.{}': {}", other, path.display()),
     }
 }
 
@@ -601,8 +711,12 @@ pub fn import_pgn(
             // Remove any games from a previous interrupted run of this file.
             conn.execute("DELETE FROM games WHERE issue_id = ?", duckdb::params![issue_id])?;
 
-            let file = match std::fs::File::open(path) {
-                Ok(f) => f,
+            // Open the input as a streaming PGN source, transparently
+            // decompressing .zip / .zst / .7z. `_tmp` (a staged temp .pgn for
+            // archive inputs) is held for the rest of this iteration and removed
+            // on drop, after the import below completes.
+            let (reader, _tmp, prog_size) = match open_import_reader(path) {
+                Ok(t) => t,
                 Err(e) => {
                     let msg = format!("  {}: read error: {}", filename, e);
                     pb.println(&msg);
@@ -612,11 +726,10 @@ pub fn import_pgn(
                     continue;
                 }
             };
-            let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
 
-            let file_pb = if !reporter.is_json() && file_size >= LARGE_FILE_THRESHOLD {
+            let file_pb = if !reporter.is_json() && prog_size >= LARGE_FILE_THRESHOLD {
                 if let Some(ref mp) = mp {
-                    let fpb = mp.insert_before(&pb, ProgressBar::new(file_size));
+                    let fpb = mp.insert_before(&pb, ProgressBar::new(prog_size));
                     fpb.set_style(progress::byte_bar_style());
                     Some(fpb)
                 } else {
@@ -626,13 +739,12 @@ pub fn import_pgn(
                 None
             };
 
-            // Stream the file rather than read it into memory, so a multi-GB PGN
-            // imports in bounded memory (#95). Wrap the reader in the byte-progress
-            // bar (if any) so it advances as the parser consumes bytes.
-            let buf = std::io::BufReader::new(file);
+            // Stream rather than read into memory, so a multi-GB PGN imports in
+            // bounded memory (#95). Wrap the reader in the byte-progress bar (if
+            // any) so it advances as the parser consumes bytes.
             let src: Box<dyn Read> = match file_pb.as_ref() {
-                Some(fpb) => Box::new(fpb.wrap_read(buf)),
-                None => Box::new(buf),
+                Some(fpb) => Box::new(fpb.wrap_read(reader)),
+                None => reader,
             };
 
             let effective_depth = if bulk_mode { None } else { max_position_depth };
@@ -1473,5 +1585,76 @@ mod sevenz_tests {
             "decompressed output is not PGN"
         );
         eprintln!("decoded {} bytes of PGN", out.len());
+    }
+}
+
+#[cfg(test)]
+mod compressed_input_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn read_all(mut r: Box<dyn Read>) -> Vec<u8> {
+        let mut v = Vec::new();
+        r.read_to_end(&mut v).unwrap();
+        v
+    }
+
+    /// `open_import_reader` transparently decompresses .zst / .zip / .7z back to
+    /// the original PGN bytes, and the temp guard removes any staged file/dir
+    /// once dropped.
+    #[test]
+    fn open_import_reader_handles_pgn_zst_zip_7z() {
+        let dir = std::env::temp_dir().join(format!("lpdo-cin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pgn: &[u8] = b"[Event \"T\"]\n[White \"A\"]\n[Black \"B\"]\n\n1. e4 e5 *\n";
+
+        // plain .pgn — streamed directly, no temp guard.
+        let p_pgn = dir.join("g.pgn");
+        std::fs::write(&p_pgn, pgn).unwrap();
+        let (r, guard, _) = open_import_reader(&p_pgn).unwrap();
+        assert_eq!(read_all(r), pgn);
+        assert!(guard.is_none());
+
+        // .zst — streamed through the decoder, no temp guard.
+        let p_zst = dir.join("g.pgn.zst");
+        std::fs::write(&p_zst, zstd::encode_all(pgn, 3).unwrap()).unwrap();
+        let (r, guard, _) = open_import_reader(&p_zst).unwrap();
+        assert_eq!(read_all(r), pgn);
+        assert!(guard.is_none());
+
+        // .zip — first .pgn entry staged to a sibling temp, removed on drop.
+        let p_zip = dir.join("g.zip");
+        {
+            let f = std::fs::File::create(&p_zip).unwrap();
+            let mut w = zip::ZipWriter::new(f);
+            w.start_file("inner.pgn", zip::write::SimpleFileOptions::default()).unwrap();
+            w.write_all(pgn).unwrap();
+            w.finish().unwrap();
+        }
+        let staged;
+        {
+            let (r, guard, _) = open_import_reader(&p_zip).unwrap();
+            assert_eq!(read_all(r), pgn);
+            let guard = guard.expect("zip stages a temp .pgn");
+            staged = guard.path.clone();
+            assert!(staged.exists(), "temp present while guard held");
+        }
+        assert!(!staged.exists(), "temp removed after guard dropped");
+
+        // .7z — extracted to a temp dir, removed on drop.
+        let p_7z = dir.join("g.7z");
+        sevenz_rust2::compress_to_path(&p_pgn, &p_7z).unwrap();
+        let staged_dir;
+        {
+            let (r, guard, _) = open_import_reader(&p_7z).unwrap();
+            assert_eq!(read_all(r), pgn);
+            let guard = guard.expect("7z stages a temp dir");
+            staged_dir = guard.path.clone();
+            assert!(staged_dir.exists());
+        }
+        assert!(!staged_dir.exists(), "temp dir removed after guard dropped");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

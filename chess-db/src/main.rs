@@ -158,7 +158,9 @@ enum Commands {
     },
     /// Import a PGN file or directory (skips already-imported files)
     ImportPgn {
-        /// Path to a .pgn file OR a directory containing .pgn files
+        /// Path to a .pgn file (or a compressed .zip/.zst/.7z containing one) OR
+        /// a directory of such files. Compressed inputs are decompressed and
+        /// imported directly — no need to unpack a multi-GB archive first.
         path: PathBuf,
         /// Collection to add imported games to. Created on first use.
         #[arg(long, default_value = "Manual")]
