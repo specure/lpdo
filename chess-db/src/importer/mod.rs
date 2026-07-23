@@ -363,6 +363,10 @@ pub fn import(
         ));
     }
 
+    // Per-issue failures (e.g. a corrupt/truncated archive) are collected and
+    // warned about, not treated as terminal — the run continues and reports what
+    // to retry (#133).
+    let mut failed: Vec<i32> = Vec::new();
     let import_result = (|| -> Result<()> {
         for (issue_id, filename) in &issues {
             pb.set_message(format!("issue {}", issue_id));
@@ -390,9 +394,17 @@ pub fn import(
                     reporter.log(&msg);
                 }
                 Err(e) => {
-                    let msg = format!("  Issue {}: error: {}", issue_id, e);
+                    // A single bad issue (corrupt/truncated archive, parse error)
+                    // must not abort the run or emit a terminal `error` event: an
+                    // `error` event flips the job status to failed, so streaming
+                    // clients (the CLI, the activity dashboard) bail even though
+                    // the rest imports fine. Warn and continue; the issue stays
+                    // imported=FALSE so a re-sync (with a fresh download) retries
+                    // it. (#133 — mirrors the download loop's warn-don't-error.)
+                    failed.push(*issue_id);
+                    let msg = format!("  Issue {}: skipped — {}", issue_id, e);
                     pb.println(&msg);
-                    reporter.error(&msg);
+                    reporter.log(&msg);
                 }
             }
 
@@ -402,6 +414,17 @@ pub fn import(
         }
         Ok(())
     })();
+
+    if !failed.is_empty() {
+        let ids = failed.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+        let msg = format!(
+            "{} issue(s) skipped due to errors, left unimported — re-run to retry: {}",
+            failed.len(),
+            ids
+        );
+        pb.println(&msg);
+        reporter.log(&msg);
+    }
 
     if bulk_mode {
         pb.set_message("Rebuilding indexes…");
