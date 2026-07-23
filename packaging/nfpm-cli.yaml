@@ -21,3 +21,8 @@ contents:
     dst: /usr/bin/chess-db
     file_info:
       mode: 0755
+# On (re)install/upgrade, restart a running lpdo-server so it picks up the new
+# chess-db binary — otherwise an `apt upgrade` leaves the old server running until
+# reboot (#120). try-restart is a no-op for CLI-only users (no server).
+scripts:
+  postinstall: packaging/scripts/cli.postinst

@@ -1,0 +1,31 @@
+#!/bin/sh
+# postinst for lpdo-cli — after the chess-db binary is (re)installed, restart a
+# running lpdo-server so it picks up the new binary. The server unit lives in the
+# separate lpdo-server package, so this cross-package `try-restart` is what makes
+# an `apt upgrade` actually run the NEW server: without it dpkg replaces
+# /usr/bin/chess-db on disk but the already-running daemon keeps executing the old
+# binary until a reboot or manual restart (#120).
+#
+# dpkg configures lpdo-cli before lpdo-server (server depends on cli), so the new
+# binary is already in place when this runs. `try-restart` only acts when the unit
+# is currently active — a no-op when lpdo-server isn't installed or isn't running,
+# so it's safe for CLI-only users. A brief restart interrupts any in-flight job;
+# acceptable for a localhost single-user daemon.
+set -e
+
+case "$1" in
+  configure)
+    if [ -d /run/systemd/system ]; then
+      systemctl --system daemon-reload >/dev/null 2>&1 || true
+      if command -v deb-systemd-invoke >/dev/null 2>&1; then
+        deb-systemd-invoke try-restart 'lpdo-server.service' >/dev/null 2>&1 || true
+      else
+        systemctl --system try-restart 'lpdo-server.service' >/dev/null 2>&1 || true
+      fi
+    fi
+    ;;
+  abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+esac
+
+exit 0
