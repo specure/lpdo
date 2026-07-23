@@ -23,21 +23,31 @@
 #   BIN=./target/release/chess-db  scripts/twic-ajedrez-cutoff.sh
 #   FROM_ISSUE=1400 TO_ISSUE=1650  scripts/twic-ajedrez-cutoff.sh
 #   REUSE=1 scripts/twic-ajedrez-cutoff.sh         # re-analyse without re-syncing
-#   CLEAN=1 scripts/twic-ajedrez-cutoff.sh         # wipe the throwaway DB first
+#   FRESH_DB=1 scripts/twic-ajedrez-cutoff.sh      # rebuild DB from cached archives
+#   CLEAN=1 scripts/twic-ajedrez-cutoff.sh         # wipe everything incl. cache
+#
+# Downloaded archives are CACHED and reused across runs.  `chess-db` reuses any
+# archive already on disk (the download step skips a file that exists), so the
+# ~740 MB Ajedrez base and the TWIC zips are fetched only once per machine as
+# long as DATA points at a persistent directory.  DATA therefore defaults to a
+# durable cache under $HOME, NOT /tmp (which is wiped on reboot).  Layout:
+#     $DATA/ajedrez-otb/  $DATA/twic/   <- cached archives (kept)
+#     $DATA/chess.db                    <- the experiment database (rebuildable)
 #
 # Env knobs (all optional):
 #   BIN          chess-db binary            [./target/release/chess-db]
-#   DATA         throwaway data dir         [/tmp/lpdo-cutoff]
+#   DATA         persistent cache + db dir  [${XDG_CACHE_HOME:-$HOME/.cache}/lpdo-experiments]
 #   FROM_ISSUE   first TWIC issue to fetch  [1] (1 = full history; heavy!)
 #   TO_ISSUE     last TWIC issue to fetch   [latest]
 #   THRESHOLDS   coverage cut-offs (%)      ["90 95 99"]
 #   REUSE=1      skip sync/import if the DB already has both collections
-#   CLEAN=1      remove DATA before running
+#   FRESH_DB=1   rebuild the DB from the CACHED archives (no re-download)
+#   CLEAN=1      wipe EVERYTHING incl. cached archives (full from-scratch)
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
 BIN="${BIN:-./target/release/chess-db}"
-DATA="${DATA:-/tmp/lpdo-cutoff}"
+DATA="${DATA:-${XDG_CACHE_HOME:-$HOME/.cache}/lpdo-experiments}"
 DB="$DATA/chess.db"
 FROM_ISSUE="${FROM_ISSUE:-1}"
 TO_ISSUE="${TO_ISSUE:-}"
@@ -46,7 +56,7 @@ TWIC_COL="TWIC"
 AJ_COL="Ajedrez OTB"
 OUT="$DATA/overlap.jsonl"
 
-# All commands run locally against the throwaway DB (never proxy to a daemon).
+# All commands run locally against the experiment DB (never proxy to a daemon).
 export LPDO_LOCAL=1
 export LPDO_DATA_DIR="$DATA"
 run() { "$BIN" --db "$DB" "$@"; }
@@ -55,7 +65,13 @@ command -v python3 >/dev/null || { echo "python3 is required for the analysis st
 [ -x "$BIN" ] || { echo "chess-db not found/executable at: $BIN (set BIN=...)" >&2; exit 1; }
 
 echo "== chess-db: $("$BIN" --version)  (data dir: $DATA) =="
-[ "${CLEAN:-0}" = 1 ] && { echo "== CLEAN: removing $DATA =="; rm -rf "$DATA"; }
+if [ "${CLEAN:-0}" = 1 ]; then
+  echo "== CLEAN: removing $DATA (including cached archives) =="
+  rm -rf "$DATA"
+elif [ "${FRESH_DB:-0}" = 1 ]; then
+  echo "== FRESH_DB: removing only the database, keeping cached archives =="
+  rm -f "$DB" "$DB".wal "$DB"-shm "$DB"-wal 2>/dev/null || true
+fi
 mkdir -p "$DATA"
 
 have_both() {
@@ -171,4 +187,5 @@ PY
   echo "== To apply the cut-off on a real install: =="
   echo "     chess-db sources window twic --from $DSTAR-01"
 fi
-echo "== done (throwaway DB left at $DB; re-run with REUSE=1 to re-analyse) =="
+echo "== done. DB: $DB  |  cached archives kept under $DATA (reused next run). =="
+echo "   re-run: REUSE=1 (re-analyse) · FRESH_DB=1 (rebuild DB, no re-download) · CLEAN=1 (wipe all)"
