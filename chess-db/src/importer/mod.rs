@@ -101,36 +101,32 @@ fn collect_pgn_files(path: &Path) -> Result<Vec<std::path::PathBuf>> {
     }
 }
 
-/// Wraps any `Read` impl and counts bytes consumed, so we can convert a parse
-/// error's position back into a human-readable line number.
+/// Wraps any `Read` impl and counts newlines as they stream past, so a parse
+/// error can be reported with an approximate line number WITHOUT holding the
+/// whole file in memory (the parser reads game-by-game; see #95). The count
+/// tracks bytes actually pulled from the underlying reader, so it may run a
+/// little ahead of the exact error position when the parser buffers — good
+/// enough for a diagnostic.
 struct LineCountingReader<R> {
     inner: R,
-    bytes_read: usize,
+    lines: usize,
 }
 
 impl<R: Read> LineCountingReader<R> {
     fn new(inner: R) -> Self {
-        Self { inner, bytes_read: 0 }
+        Self { inner, lines: 1 }
     }
-    fn bytes_read(&self) -> usize {
-        self.bytes_read
+    fn line(&self) -> usize {
+        self.lines
     }
 }
 
 impl<R: Read> Read for LineCountingReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = self.inner.read(buf)?;
-        self.bytes_read += n;
+        self.lines += buf[..n].iter().filter(|&&b| b == b'\n').count();
         Ok(n)
     }
-}
-
-fn byte_offset_to_line(bytes: &[u8], offset: usize) -> usize {
-    bytes[..offset.min(bytes.len())]
-        .iter()
-        .filter(|&&b| b == b'\n')
-        .count()
-        + 1
 }
 
 /// Drop all indexes that would be maintained live during a bulk import.
@@ -544,8 +540,8 @@ pub fn import_pgn(
             // Remove any games from a previous interrupted run of this file.
             conn.execute("DELETE FROM games WHERE issue_id = ?", duckdb::params![issue_id])?;
 
-            let pgn_bytes = match std::fs::read(path) {
-                Ok(b) => b,
+            let file = match std::fs::File::open(path) {
+                Ok(f) => f,
                 Err(e) => {
                     let msg = format!("  {}: read error: {}", filename, e);
                     pb.println(&msg);
@@ -555,10 +551,11 @@ pub fn import_pgn(
                     continue;
                 }
             };
+            let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
 
-            let file_pb = if !reporter.is_json() && pgn_bytes.len() as u64 >= LARGE_FILE_THRESHOLD {
+            let file_pb = if !reporter.is_json() && file_size >= LARGE_FILE_THRESHOLD {
                 if let Some(ref mp) = mp {
-                    let fpb = mp.insert_before(&pb, ProgressBar::new(pgn_bytes.len() as u64));
+                    let fpb = mp.insert_before(&pb, ProgressBar::new(file_size));
                     fpb.set_style(progress::byte_bar_style());
                     Some(fpb)
                 } else {
@@ -568,10 +565,19 @@ pub fn import_pgn(
                 None
             };
 
+            // Stream the file rather than read it into memory, so a multi-GB PGN
+            // imports in bounded memory (#95). Wrap the reader in the byte-progress
+            // bar (if any) so it advances as the parser consumes bytes.
+            let buf = std::io::BufReader::new(file);
+            let src: Box<dyn Read> = match file_pb.as_ref() {
+                Some(fpb) => Box::new(fpb.wrap_read(buf)),
+                None => Box::new(buf),
+            };
+
             let effective_depth = if bulk_mode { None } else { max_position_depth };
             // Manual PGN imports are not date-filtered (unbounded window).
             let manual_window = crate::sources::DateWindow::default();
-            match process_pgn_bytes(conn, issue_id, collection_id, visibility, &pgn_bytes, effective_depth, &mut ctx, file_pb.as_ref(), fast, &manual_window) {
+            match process_pgn_stream(conn, issue_id, collection_id, visibility, src, effective_depth, &mut ctx, fast, &manual_window) {
                 Ok((imported, skipped_dups, skipped_ns, skipped_window)) => {
                     conn.execute(
                         "UPDATE source_items SET imported = TRUE, imported_at = NOW(), game_count = ? WHERE id = ?",
@@ -792,8 +798,20 @@ fn import_issue(
 ) -> Result<(usize, usize, usize, usize)> {
     // Delete any games written during a previous interrupted run of this issue.
     conn.execute("DELETE FROM games WHERE issue_id = ?", duckdb::params![issue_id])?;
+    // A zip entry is decompressed to memory first (small per issue); wrap it in a
+    // Cursor so the streaming importer consumes it uniformly.
     let pgn_bytes = extract_pgn(zip_path)?;
-    process_pgn_bytes(conn, issue_id, collection_id, visibility, &pgn_bytes, max_position_depth, ctx, None, fast, window)
+    process_pgn_stream(
+        conn,
+        issue_id,
+        collection_id,
+        visibility,
+        Box::new(std::io::Cursor::new(pgn_bytes)),
+        max_position_depth,
+        ctx,
+        fast,
+        window,
+    )
 }
 
 /// Repair PGN header lines that contain unescaped double-quotes in tag values.
@@ -887,27 +905,24 @@ fn escape_tag_value(value: &str) -> String {
 /// a public import, the existing row's visibility is ratcheted up (private →
 /// public). No auto-downgrade.
 #[allow(clippy::too_many_arguments)]
-fn process_pgn_bytes(
+fn process_pgn_stream(
     conn: &Connection,
     issue_id: i32,
     collection_id: i32,
     visibility: &'static str,
-    pgn_bytes: &[u8],
+    src: Box<dyn Read>,
     max_position_depth: Option<i16>,
     ctx: &mut ImportContext,
-    file_pb: Option<&ProgressBar>,
     fast: bool,
     window: &crate::sources::DateWindow,
 ) -> Result<(usize, usize, usize, usize)> {
     // Comments, NAGs and variations are preserved by the visitor (see
     // GameVisitor) and stored in the game's movetext, so the PGN is parsed
-    // as-is — no pre-stripping.
+    // as-is — no pre-stripping. `src` is read game-by-game, so a multi-GB file
+    // never lands in memory (#95); any byte-progress wrapping is applied by the
+    // caller before the reader is handed in.
     let mut visitor = GameVisitor::new(max_position_depth);
-    let inner: Box<dyn Read> = match file_pb {
-        Some(pb) => Box::new(pb.wrap_read(std::io::Cursor::new(pgn_bytes))),
-        None => Box::new(std::io::Cursor::new(pgn_bytes)),
-    };
-    let mut reader = Reader::new(LineCountingReader::new(inner));
+    let mut reader = Reader::new(LineCountingReader::new(src));
 
     let mut game_batch: Vec<GameRow> = Vec::with_capacity(BATCH_SIZE);
     let mut position_batch: Vec<PositionRow> = Vec::with_capacity(BATCH_SIZE * 40);
@@ -924,8 +939,7 @@ fn process_pgn_bytes(
             Ok(None) => break,
             Ok(Some(r)) => r,
             Err(e) => {
-                let offset = reader.into_inner().bytes_read();
-                let line = byte_offset_to_line(pgn_bytes, offset);
+                let line = reader.into_inner().line();
                 return Err(anyhow::anyhow!("{} (line {})", e, line));
             }
         };
