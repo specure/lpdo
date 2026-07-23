@@ -61,6 +61,7 @@ pub fn games(
     from: Option<&str>,
     to: Option<&str>,
     fen: Option<&str>,
+    collection: Option<&str>,
     show_moves: bool,
     limit: u32,
     pgn: bool,
@@ -90,6 +91,9 @@ pub fn games(
     let moves_filter     = if first_moves.is_some()  { "AND g.opening_line LIKE ?" } else { "" };
     let date_from_filter = if from.is_some()         { "AND g.date >= ?"           } else { "" };
     let date_to_filter   = if to.is_some()           { "AND g.date <= ?"           } else { "" };
+    let collection_filter = if collection.is_some() {
+        "AND g.id IN (SELECT gc.game_id FROM game_collections gc JOIN collections c ON c.id = gc.collection_id WHERE c.name = ?)"
+    } else { "" };
 
     let sql = if name.is_some() || fide_id.is_some() {
         // ── Player mode: match either color ───────────────────────────────────
@@ -105,6 +109,7 @@ pub fn games(
         if let Some(e) = event       { param_vals.push(Box::new(format!("%{}%", e))); }
         if let Some(e) = eco         { param_vals.push(Box::new(format!("{}%", e))); }
         if let Some(fm) = first_moves { param_vals.push(Box::new(format!("{}%", parse_first_moves(fm)))); }
+        if let Some(c) = collection  { param_vals.push(Box::new(c.to_string())); }
 
         if count_only {
             format!(
@@ -114,7 +119,7 @@ pub fn games(
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE 1=1 {player_filter} {color_filter}
-                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {fen_filter}"
+                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {collection_filter} {fen_filter}"
             )
         } else {
             format!(
@@ -126,7 +131,7 @@ pub fn games(
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE 1=1 {player_filter} {color_filter}
-                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {fen_filter}
+                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {collection_filter} {fen_filter}
                  ORDER BY g.date DESC LIMIT {limit}"
             )
         }
@@ -152,6 +157,7 @@ pub fn games(
         if let Some(e) = event       { param_vals.push(Box::new(format!("%{}%", e))); }
         if let Some(e) = eco         { param_vals.push(Box::new(format!("{}%", e))); }
         if let Some(fm) = first_moves { param_vals.push(Box::new(format!("{}%", parse_first_moves(fm)))); }
+        if let Some(c) = collection  { param_vals.push(Box::new(c.to_string())); }
 
         let where_clause = if conditions.is_empty() {
             "1=1".to_string()
@@ -166,7 +172,7 @@ pub fn games(
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE {where_clause}
-                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {fen_filter}"
+                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {collection_filter} {fen_filter}"
             )
         } else {
             format!(
@@ -177,7 +183,7 @@ pub fn games(
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE {where_clause}
-                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {fen_filter}
+                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {collection_filter} {fen_filter}
                  ORDER BY g.date DESC LIMIT {limit}"
             )
         }
@@ -606,4 +612,56 @@ pub fn players(
         println!("[{}] {}  FIDE: {}  games: {}", id, name, fide_str, game_count);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod collection_filter_tests {
+    use super::*;
+
+    /// Two collections with a distinct set of games each; the `--collection`
+    /// filter must restrict the count to the named collection's games.
+    #[test]
+    fn collection_filter_restricts_count() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+
+        conn.execute_batch(
+            "INSERT INTO players (id, name, name_normalized) VALUES
+                 (1, 'Alice', 'alice'), (2, 'Bob', 'bob');
+             INSERT INTO collections (id, name, created_at) VALUES
+                 (10, 'ColA', NOW()), (11, 'ColB', NOW());
+             -- Three games in ColA, two in ColB.
+             INSERT INTO games (id, white_id, black_id, date, result, move_count, opening_line, pgn, visibility) VALUES
+                 (1, 1, 2, '2020-01-01', '1-0', 3, 'e4 e5 Nf3', '', 'public'),
+                 (2, 1, 2, '2020-02-01', '0-1', 3, 'd4 d5 c4', '', 'public'),
+                 (3, 1, 2, '2020-03-01', '1/2-1/2', 3, 'c4 e5 Nc3', '', 'public'),
+                 (4, 1, 2, '2021-01-01', '1-0', 3, 'e4 c5 Nf3', '', 'public'),
+                 (5, 1, 2, '2021-02-01', '0-1', 3, 'Nf3 d5 g3', '', 'public');
+             INSERT INTO game_collections (game_id, collection_id) VALUES
+                 (1, 10), (2, 10), (3, 10), (4, 11), (5, 11);",
+        )
+        .unwrap();
+
+        // Direct predicate (mirrors the filter appended in `games`) — correctness.
+        let count_in = |name: &str| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM games g WHERE g.id IN (
+                     SELECT gc.game_id FROM game_collections gc
+                     JOIN collections c ON c.id = gc.collection_id WHERE c.name = ?)",
+                duckdb::params![name],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(count_in("ColA"), 3);
+        assert_eq!(count_in("ColB"), 2);
+
+        // Exercise the real search path (count mode) so a wrong placeholder/param
+        // count would surface as a DuckDB error rather than passing silently.
+        assert!(games(
+            &conn, None, None, None, None, None, None, None, None, None, None, None, None,
+            Some("ColA"), false, 100, false, true,
+        )
+        .is_ok());
+    }
 }

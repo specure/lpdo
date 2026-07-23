@@ -682,6 +682,13 @@ fn run_job(
             let src = crate::sources::get(source_key)
                 .ok_or_else(|| anyhow!("unknown source '{}'", source_key))?;
             let fast = flag(p, "fast");
+            let skip_dedup = flag(p, "skip_dedup");
+            // Absent (GUI/scheduler) → default depth 40; 0 disables indexing.
+            let depth = match p.get("max_position_depth").and_then(|v| v.as_u64()) {
+                Some(0) => None,
+                Some(d) => Some(d as i16),
+                None => Some(40),
+            };
             let dir = crate::source_dir(source_key);
             std::fs::create_dir_all(&dir)?;
             let step = reporter.sub_step();
@@ -690,7 +697,7 @@ fn run_job(
                 rt.block_on(crate::sources::download_feed(conn, src, None, None, &dir, &step))?;
                 if reporter.is_cancelled() { return Ok(()); }
                 reporter.log(format!("{}: import", src.name));
-                importer::import(conn, &dir, src.key, src.collection, Some(40), 10, fast, false, &step)?;
+                importer::import(conn, &dir, src.key, src.collection, depth, 10, fast, skip_dedup, &step)?;
                 // Complete the maintenance the import may have deferred, so a large
                 // (bulk) sync is immediately searchable instead of waiting for the
                 // next daily update (#145/#146): build any positions the import
@@ -698,8 +705,12 @@ fn run_job(
                 // idempotent — a cheap no-op when the import was small (indexed
                 // inline) and nothing is pending. (Dedup already ran inline.)
                 if reporter.is_cancelled() { return Ok(()); }
-                reporter.log(format!("{}: indexing positions", src.name));
-                run_index_positions_guarded(conn, db, Some(40), false, fast, &step)?;
+                // Skip when indexing is disabled (depth 0/None) — passing None would
+                // *clear* the positions table rather than skip it (#144 + #145/#146).
+                if depth.is_some() {
+                    reporter.log(format!("{}: indexing positions", src.name));
+                    run_index_positions_guarded(conn, db, depth, false, fast, &step)?;
+                }
                 if reporter.is_cancelled() { return Ok(()); }
                 reporter.log(format!("{}: normalising players", src.name));
                 normalise::normalise_players(
