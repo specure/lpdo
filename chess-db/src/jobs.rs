@@ -691,6 +691,20 @@ fn run_job(
                 if reporter.is_cancelled() { return Ok(()); }
                 reporter.log(format!("{}: import", src.name));
                 importer::import(conn, &dir, src.key, src.collection, Some(40), 10, fast, false, &step)?;
+                // Complete the maintenance the import may have deferred, so a large
+                // (bulk) sync is immediately searchable instead of waiting for the
+                // next daily update (#145/#146): build any positions the import
+                // skipped, then normalise new players. Both are incremental and
+                // idempotent — a cheap no-op when the import was small (indexed
+                // inline) and nothing is pending. (Dedup already ran inline.)
+                if reporter.is_cancelled() { return Ok(()); }
+                reporter.log(format!("{}: indexing positions", src.name));
+                run_index_positions_guarded(conn, db, Some(40), false, fast, &step)?;
+                if reporter.is_cancelled() { return Ok(()); }
+                reporter.log(format!("{}: normalising players", src.name));
+                normalise::normalise_players(
+                    conn, false, 1500, 100, 30_000, 3, 10, 7_200_000, false, None, None, None, false, &step,
+                )?;
                 Ok(())
             })();
             // Record the run's outcome so the enable→auto-sync scheduler doesn't
