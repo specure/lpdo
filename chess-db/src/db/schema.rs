@@ -457,8 +457,8 @@ mod migration_tests {
             .unwrap();
         assert!(!enabled, "twic should be seeded disabled on a fresh install (#40 C4)");
 
-        // Date window (B1) defaults to unbounded so existing TWIC keeps importing
-        // every date.
+        // Date window (B1): TWIC seeds a from-2024-08-01 window so it complements
+        // the Ajedrez deep-history base instead of overlapping ~30 years (#126).
         let (from, to, excl): (Option<String>, Option<String>, bool) = conn
             .query_row(
                 "SELECT CAST(from_date AS VARCHAR), CAST(to_date AS VARCHAR), exclude_undated
@@ -467,7 +467,11 @@ mod migration_tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
-        assert_eq!((from, to, excl), (None, None, false), "window defaults unbounded");
+        assert_eq!(
+            (from.as_deref(), to.as_deref(), excl),
+            (Some("2024-08-01"), None, false),
+            "twic seeds a complementary from-2024-08-01 window (#126)"
+        );
 
         // Lichess Broadcasts is seeded from the catalog: disabled, live-tail
         // window (from 2026-01-01).
@@ -481,11 +485,17 @@ mod migration_tests {
         assert!(!lenabled, "lichess should be seeded disabled");
         assert_eq!(lfrom.as_deref(), Some("2026-01-01"));
 
-        // Ajedrez OTB seeded from the catalog: disabled, unbounded (B3).
-        let aenabled: bool = conn
-            .query_row("SELECT enabled FROM sources WHERE key = 'ajedrez-otb'", [], |r| r.get(0))
+        // Ajedrez OTB seeded from the catalog: disabled, bounded at its coverage
+        // end (to 2024-08-01) so TWIC complements it from there (#126).
+        let (aenabled, ato): (bool, Option<String>) = conn
+            .query_row(
+                "SELECT enabled, CAST(to_date AS VARCHAR) FROM sources WHERE key = 'ajedrez-otb'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
         assert!(!aenabled, "ajedrez-otb should be seeded disabled");
+        assert_eq!(ato.as_deref(), Some("2024-08-01"), "ajedrez seeds a to-2024-08-01 window (#126)");
     }
 
     #[test]
