@@ -1,10 +1,12 @@
 use axum::{
-    extract::{Path as AxumPath, Query, State},
+    body::Body,
+    extract::{DefaultBodyLimit, Path as AxumPath, Query, State},
     http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
     routing::{get, post},
     Json, Router,
 };
+use tokio::io::AsyncWriteExt;
 use duckdb::Connection;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
@@ -1002,6 +1004,88 @@ async fn create_job_handler(
     Ok(Json(serde_json::json!({ "job_id": id })))
 }
 
+#[derive(Deserialize)]
+struct ImportUploadQuery {
+    collection: Option<String>,
+    /// Original filename; only its extension is used (to preserve
+    /// .pgn/.zip/.zst/.7z so the importer decompresses correctly).
+    filename: Option<String>,
+    #[serde(default)]
+    private: bool,
+    #[serde(default)]
+    fast: bool,
+    on_duplicate: Option<String>,
+}
+
+/// Streamed PGN upload (#154). The client streams a (possibly compressed,
+/// multi-GB) file straight to the daemon; we spool it to a daemon-owned file in
+/// bounded memory — no body-size cap — and start an import job on it. The
+/// original extension is preserved so `import-pgn` decompresses .zip/.zst/.7z.
+/// Works when the daemon can't read the client's files (hardened system daemon)
+/// or is on a different machine. Returns the job id; the client follows
+/// `/jobs/{id}/events` as usual. `body` must be the final extractor.
+async fn import_upload_handler(
+    State(state): State<AppState>,
+    Query(q): Query<ImportUploadQuery>,
+    body: Body,
+) -> ApiResult<serde_json::Value> {
+    let dir = state
+        .db_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    // Never trust an arbitrary client extension — allow only the ingest types.
+    let ext = q
+        .filename
+        .as_deref()
+        .and_then(|f| std::path::Path::new(f).extension())
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .filter(|e| matches!(e.as_str(), "pgn" | "zip" | "zst" | "zstd" | "7z"))
+        .unwrap_or_else(|| "pgn".to_string());
+    let spool = dir.join(format!("upload-{stamp}.{ext}"));
+
+    // Stream the request body to the spool file (bounded memory).
+    let mut file = tokio::fs::File::create(&spool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("create upload spool: {e}")))?;
+    let mut stream = body.into_data_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => {
+                // Client aborted / network drop: don't leave a partial spool.
+                let _ = tokio::fs::remove_file(&spool).await;
+                return Err((StatusCode::BAD_REQUEST, format!("upload stream error: {e}")));
+            }
+        };
+        if let Err(e) = file.write_all(&chunk).await {
+            let _ = tokio::fs::remove_file(&spool).await;
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("write upload spool: {e}")));
+        }
+    }
+    file.flush()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("flush upload spool: {e}")))?;
+    drop(file);
+
+    let params = serde_json::json!({
+        "path": spool.to_string_lossy(),
+        "collection": q.collection.unwrap_or_else(|| "Manual".to_string()),
+        "private": q.private,
+        "fast": q.fast,
+        "on_duplicate": q.on_duplicate.unwrap_or_else(|| "skip".to_string()),
+        // Delete the spool once the import finishes (see jobs.rs import_pgn).
+        "cleanup": true,
+    });
+    let id = state.jobs.submit("import_pgn".to_string(), params);
+    Ok(Json(serde_json::json!({ "job_id": id })))
+}
+
 async fn list_jobs_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::to_value(state.jobs.list()).unwrap_or_default())
 }
@@ -1498,6 +1582,9 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         .route("/position/moves",                      get(position_moves_handler))
         // Long-running mutation jobs with streamed progress.
         .route("/jobs",                                get(list_jobs_handler).post(create_job_handler))
+        // Streamed PGN upload (#154): disable the default body-size cap so a
+        // multi-GB file streams straight to a spool + import job.
+        .route("/import/upload", post(import_upload_handler).layer(DefaultBodyLimit::disable()))
         .route("/jobs/{id}",                           get(get_job_handler))
         .route("/jobs/{id}/events",                    get(job_events_handler))
         .route("/jobs/{id}/cancel",                    post(cancel_job_handler))

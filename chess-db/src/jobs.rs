@@ -764,7 +764,13 @@ fn run_job(
                 res?;
             } else {
                 let path = path_param(p, "path")?;
-                importer::import_pgn(conn, &path, Some(40), 10, fast, false, &spec, reporter)?;
+                let res = importer::import_pgn(conn, &path, Some(40), 10, fast, false, &spec, reporter);
+                // Streamed uploads (#154) spool to a daemon-owned file and set
+                // `cleanup` so it's removed once imported (success or failure).
+                if flag(p, "cleanup") {
+                    let _ = std::fs::remove_file(&path);
+                }
+                res?;
             }
         }
         "index_positions" => {
