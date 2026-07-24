@@ -1105,7 +1105,8 @@ async fn import_upload_handler(
         "cleanup": true,
     });
     let id = state.jobs.submit("import_pgn".to_string(), import_params);
-    // Owe a global dedup only when the import skipped inline dedup (bulk).
+    // A bulk (large/BYO) upload gets the full identity-first pipeline; a small
+    // upload gets the light pass (#167).
     state.jobs.request_maintenance(bulk);
     // The client follows the import job for the upload→import handoff; the
     // coalesced maintenance jobs then appear and run on their own in the queue.
@@ -1281,14 +1282,14 @@ async fn setup_start_handler(State(state): State<AppState>) -> ApiResult<serde_j
         ));
         keys.push(s.key.to_string());
     }
-    // Request the coalesced tail pass (#131) instead of enqueuing dedup/index/
-    // normalise at a fixed queue position: the first-run imports use skip_dedup,
-    // so a single global dedup is owed (needs_dedup = true), then index +
-    // normalise. Coalescing means a source enabled mid-wizard, or an own-PGN
-    // import, is covered by the same one pass that runs once every import drains
-    // — no maintenance stranded ahead of later imports. The setup watcher tracks
-    // only the import ids, so setup settles when imports finish and maintenance
-    // continues in the background (matching the Summary screen's copy).
+    // Request the coalesced tail pass (#131/#167) instead of enqueuing the steps
+    // at a fixed queue position: first-run is a large import, so it gets the FULL
+    // identity-first pipeline (resolve-fide → dedup_players → normalise →
+    // dedup_games → index). Coalescing means a source enabled mid-wizard, or an
+    // own-PGN import, is covered by the same one pass that runs once every import
+    // drains — no maintenance stranded ahead of later imports. The setup watcher
+    // tracks only the import ids, so setup settles when imports finish and
+    // maintenance continues in the background (matching the Summary screen's copy).
     state.jobs.request_maintenance(true);
 
     spawn_setup_watcher(state.clone(), ids.clone(), keys);

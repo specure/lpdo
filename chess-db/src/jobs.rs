@@ -421,10 +421,10 @@ pub struct JobManager {
     maintenance: Mutex<MaintenanceNeeds>,
 }
 
-/// What post-import maintenance is currently owed. `index_normalise` is the
-/// always-cheap incremental tail (only new games are indexed/normalised);
-/// `dedup` is set only by imports that deferred dedup (first-run `skip_dedup`),
-/// since ordinary imports dedup inline.
+/// What post-import maintenance is currently owed (#131, #167). `requested` marks
+/// that a coalesced pass should run once the import queue drains; `full` chooses
+/// the identity-first pipeline (first-run setup, large/bulk imports) over the
+/// light feed pass.
 #[derive(Default, Clone, Copy)]
 struct MaintenanceNeeds {
     /// Any coalesced maintenance is owed.
