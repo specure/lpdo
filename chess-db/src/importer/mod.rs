@@ -475,6 +475,11 @@ pub fn import(
         .map(|(_, f)| std::fs::metadata(dir.join(f)).map(|m| m.len()).unwrap_or(0))
         .sum();
     let bulk_mode = bulk_mode_for_size(total_bytes, reindex_threshold);
+    // A size-triggered bulk import always uses the fast Appender path: for large
+    // databases (10M+ games) the transactional prepared-INSERT path is far too
+    // slow. Couple it to bulk_mode so every large import gets it regardless of
+    // the `fast` flag the caller passed (#154).
+    let fast = fast || bulk_mode;
 
     reporter.log(format!("Importing {} issue(s)...", issues.len()));
     if bulk_mode {
@@ -651,6 +656,9 @@ pub fn import_pgn(
         .map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
         .sum();
     let bulk_mode = bulk_mode_for_size(total_bytes, reindex_threshold);
+    // Large imports always use the fast Appender path (see `import` above): the
+    // transactional INSERT path can't keep up with a multi-million-game file.
+    let fast = fast || bulk_mode;
 
     reporter.log(format!("Importing {} PGN file(s)...", pending.len()));
     if bulk_mode {
