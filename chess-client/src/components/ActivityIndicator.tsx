@@ -71,7 +71,7 @@ function formatEta(sec: number): string {
   return m ? `~${h}h ${m}m left` : `~${h}h left`;
 }
 
-function ActiveRow({ job, eta, onCancel }: { job: Job; eta?: string; onCancel: (id: string) => void }) {
+function ActiveRow({ job, eta, cancelling, onCancel }: { job: Job; eta?: string; cancelling: boolean; onCancel: (id: string) => void }) {
   const queued = job.status === "queued";
   const known = job.total > 0;
   return (
@@ -81,13 +81,15 @@ function ActiveRow({ job, eta, onCancel }: { job: Job; eta?: string; onCancel: (
         {/* Queued jobs can always be cancelled (they haven't started). A running
             job shows Cancel when it honours cooperative cancellation — it stops on
             a committed boundary, so a fast import counts even though it can't be
-            killed mid-write (#157/#161). */}
+            killed mid-write (#157/#161). Cancellation is cooperative, so once
+            requested the button shows "Cancelling…" until the job stops. */}
         {(queued || (job.status === "running" && job.cancellable)) && (
           <button
             onClick={() => onCancel(job.id)}
-            className="shrink-0 h-6 px-2 inline-flex items-center rounded-full text-error border border-outline text-label-sm hover:bg-error/8 transition-colors duration-short3 ease-standard"
+            disabled={cancelling}
+            className="shrink-0 h-6 px-2 inline-flex items-center rounded-full text-error border border-outline text-label-sm hover:bg-error/8 transition-colors duration-short3 ease-standard disabled:opacity-60 disabled:cursor-default disabled:hover:bg-transparent"
           >
-            Cancel
+            {cancelling ? "Cancelling…" : "Cancel"}
           </button>
         )}
       </div>
@@ -135,6 +137,10 @@ function RecentRow({ job }: { job: Job }) {
 export default function ActivityIndicator() {
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [etas, setEtas] = useState<Map<string, string>>(new Map());
+  // Ids the user has asked to cancel — the job keeps running until it reaches a
+  // committed boundary (cooperative cancel), so the button shows "Cancelling…"
+  // meanwhile. Cleared once the job is no longer active (see the poll below).
+  const [cancelling, setCancelling] = useState<Set<string>>(() => new Set());
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   // Per-job {time, value} anchor for a cumulative-rate ETA. Cumulative (since the
@@ -167,6 +173,18 @@ export default function ActivityIndicator() {
         }
         setJobs(j);
         setEtas(nextEtas);
+        // Drop "Cancelling…" markers for jobs that have left the active set
+        // (finished/cancelled), so a reused id can't stay stuck disabled.
+        setCancelling((prev) => {
+          if (prev.size === 0) return prev;
+          const stillActive = new Set(
+            j.filter((x) => x.status === "queued" || x.status === "running").map((x) => x.id),
+          );
+          let changed = false;
+          const next = new Set<string>();
+          for (const id of prev) { if (stillActive.has(id)) next.add(id); else changed = true; }
+          return changed ? next : prev;
+        });
       }).catch(() => { /* offline — leave last known */ });
     };
     poll();
@@ -195,6 +213,7 @@ export default function ActivityIndicator() {
   const busy = active.length > 0;
 
   function handleCancel(id: string) {
+    setCancelling((s) => new Set(s).add(id));
     void cancelJob(id);
   }
 
@@ -233,7 +252,7 @@ export default function ActivityIndicator() {
             <>
               {active.length > 0 && (
                 <div className="divide-y divide-outline-variant">
-                  {active.map((j) => <ActiveRow key={j.id} job={j} eta={etas.get(j.id)} onCancel={handleCancel} />)}
+                  {active.map((j) => <ActiveRow key={j.id} job={j} eta={etas.get(j.id)} cancelling={cancelling.has(j.id)} onCancel={handleCancel} />)}
                 </div>
               )}
               {recent.length > 0 && (
