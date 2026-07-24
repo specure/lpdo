@@ -51,6 +51,15 @@ pub fn init(conn: &Connection) -> Result<()> {
             checked_at       DATE
         );
 
+        -- Local copy of the official FIDE player list (#162), refreshed monthly
+        -- from ratings.fide.com. Powers both forward normalise (fide_id → name)
+        -- and reverse resolve-fide (name → fide_id) as local joins, replacing the
+        -- normalise service + per-player scraping. ~1.9M rows.
+        CREATE TABLE IF NOT EXISTS fide_players (
+            fide_id  INTEGER PRIMARY KEY,
+            name     VARCHAR NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS games (
             id            UINTEGER PRIMARY KEY,
             issue_id      INTEGER,

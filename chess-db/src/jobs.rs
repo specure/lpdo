@@ -344,6 +344,8 @@ fn uses_appender(job_type: &str, params: &serde_json::Value) -> bool {
         "import" | "import_pgn" | "index_positions" => fast,
         // The update job runs `import --fast` and `index-positions --fast`.
         "update" => true,
+        // fide_refresh bulk-appends ~1.9M rows into fide_players.
+        "fide_refresh" => true,
         _ => false,
     }
 }
@@ -886,6 +888,11 @@ fn run_job(
         "resolve_import" => {
             let path = path_param(p, "path")?;
             crate::reverse::import_resolutions(conn, &path, reporter)?;
+        }
+        // Load the local FIDE player list (#162) from a downloaded file.
+        "fide_refresh" => {
+            let path = path_param(p, "file")?;
+            crate::fide::load_from_file(conn, &path, reporter)?;
         }
         "players_import" => {
             let path = path_param(p, "path")?;

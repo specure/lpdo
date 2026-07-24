@@ -1,20 +1,17 @@
 // Reverse player normalisation: assign FIDE IDs to players FROM their names
-// (#152). The forward path (normalise.rs) is fide_id → canonical name; this is
-// the opposite — name → fide_id — for FIDE-less sources like Ajedrez (0% FIDE).
+// (#152, #162). The forward path (normalise.rs) is fide_id → canonical name; this
+// is the opposite — name → fide_id — for FIDE-less sources like Ajedrez.
 //
-// Policy (#152): assign a FIDE ID only on a SINGLE EXACT match after canonical
-// name normalisation. Ambiguous (several candidate fide_ids) is treated exactly
-// like not-found — never guess, because a wrong FIDE ID corrupts stats worse
-// than a missing one. Outcomes (matched + unresolved) are recorded in the
-// `name_resolution` ledger so the same name isn't re-queried, with `checked_at`
-// dating negatives so they can be revisited as FIDE grows.
+// Since #162 this is a purely LOCAL operation: it matches FIDE-less players
+// against the union of the local `fide_players` table (the monthly FIDE download)
+// and this DB's own FIDE-tagged players (which cover registrations arriving via
+// TWIC etc. between refreshes). No network, no cache service.
 //
-// Phases, cheapest first:
-//   1. local   — invert the FIDE IDs already in this DB (no network).
-//   2. cache   — the shared lpdo-normalise-service /resolve endpoint.
-//   3. fide    — (optional) live FIDE name search for recent-import misses.
+// Policy: assign a FIDE ID only on a SINGLE EXACT match after folding accents +
+// punctuation. A folded name shared by several distinct FIDE IDs is treated as
+// not-found — never guess, because a wrong FIDE ID corrupts stats worse than a
+// missing one.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -22,70 +19,13 @@ use duckdb::Connection;
 
 use crate::reporter::Reporter;
 
-/// Names per `/resolve` request. Mirrors the forward service's chunking.
-const RESOLVE_CHUNK: usize = 20_000;
-
-/// A `/resolve` outcome for one name.
-#[derive(serde::Deserialize)]
-struct ResolveOutcome {
-    status: String, // "matched" | "unresolved"
-    fide_id: Option<u32>,
-}
-
-// Names are compared on the DB's existing `name_normalized` column (computed at
-// import: lowercase, commas → spaces, whitespace collapsed). The client sends
-// that value to /resolve; the service applies the identical normalization when
-// building its reverse index, so keys line up without re-normalizing here.
-
-/// Outcome counts for a reverse-resolution run.
-#[derive(Default, Debug, Clone, Copy)]
-pub struct ResolveStats {
-    /// Distinct names newly resolved to a single fide_id this run.
-    pub matched_names: usize,
-    /// Player rows that were assigned a fide_id (a name can cover many rows).
-    pub assigned_players: usize,
-    /// Names checked and left unresolved (none / ambiguous).
-    pub unresolved_names: usize,
-}
-
-/// Phase 1 — local inversion (no network). A normalized name that maps to
-/// exactly one fide_id among the players that ALREADY have a fide_id is assigned
-/// to every fide-less player sharing that name. Captures the common case where a
-/// pre-2013 Ajedrez player also appears in a modern FIDE-keyed source (TWIC) in
-/// the same DB. The newly-assigned rows then share a fide_id with the original,
-/// which `dedup_players` later merges.
-pub fn resolve_local(conn: &Connection, reporter: &Reporter) -> Result<ResolveStats> {
-    // Record single-exact matches into the ledger (idempotent). Local inversion
-    // only ever adds positives — a name that's ambiguous *here* may still resolve
-    // via the shared cache, so we don't write a local negative.
-    let matched_names = conn.execute(
-        "INSERT OR REPLACE INTO name_resolution (name_normalized, fide_id, source, checked_at)
-         SELECT name_normalized, MIN(fide_id), 'local', CURRENT_DATE
-         FROM players
-         WHERE fide_id IS NOT NULL AND name_normalized <> ''
-         GROUP BY name_normalized
-         HAVING COUNT(DISTINCT fide_id) = 1",
-        [],
-    )?;
-
-    // Assign to fide-less players from the ledger's positive entries. Reset
-    // name_normalised so the forward `normalise` then canonicalises the name.
-    let assigned_players = conn.execute(
-        "UPDATE players
-         SET fide_id = nr.fide_id, name_normalised = FALSE
-         FROM name_resolution nr
-         WHERE players.name_normalized = nr.name_normalized
-           AND players.fide_id IS NULL
-           AND nr.fide_id IS NOT NULL",
-        [],
-    )?;
-
-    let stats = ResolveStats { matched_names, assigned_players, unresolved_names: 0 };
-    reporter.log(format!(
-        "Local inversion: {} name(s) uniquely resolvable → {} player row(s) assigned a FIDE ID.",
-        matched_names, assigned_players,
-    ));
-    Ok(stats)
+/// The fold key for FIDE name matching, as a DuckDB expression over `col`:
+/// lowercase → strip accents (é→e, č→c) → punctuation/whitespace collapsed to
+/// single spaces → trimmed. Applied identically to both sides of every match so
+/// spelling/accent variants line up (e.g. `Svrček, Jozef` == `Svrcek, Jozef`),
+/// while genuinely different names (incl. abbreviated initials) stay distinct.
+fn fold_expr(col: &str) -> String {
+    format!("trim(regexp_replace(strip_accents(lower({col})), '[^a-z0-9]+', ' ', 'g'))")
 }
 
 /// How many players still lack a fide_id (the reverse-resolution backlog).
@@ -98,197 +38,102 @@ pub fn pending_count(conn: &Connection) -> Result<usize> {
     Ok(n as usize)
 }
 
-/// Phase 2 — shared-cache inversion via the lpdo-normalise-service `/resolve`
-/// endpoint. Sends the distinct normalized names of still-FIDE-less players that
-/// we haven't already recorded a fresh answer for, and records each outcome in
-/// the ledger (matched → assign; unresolved → negative cache). `service` is the
-/// (base_url, key) from `resolve_service`; the `/resolve` path is derived from it.
-fn resolve_via_cache(
-    conn: &Connection,
-    service: &(String, String),
-    dry_run: bool,
-    reporter: &Reporter,
-) -> Result<ResolveStats> {
-    // Distinct FIDE-less names with no fresh ledger answer yet. A prior negative
-    // (unresolved) is re-tried only if it predates the staleness window, so names
-    // added to FIDE later still get picked up (#152).
-    let names: Vec<String> = {
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT p.name_normalized
-             FROM players p
-             LEFT JOIN name_resolution nr ON nr.name_normalized = p.name_normalized
-             WHERE p.fide_id IS NULL AND p.name_normalized <> ''
-               AND (nr.name_normalized IS NULL
-                    OR (nr.fide_id IS NULL AND nr.checked_at < CURRENT_DATE - INTERVAL 90 DAY))",
-        )?;
-        stmt.query_map([], |r| r.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .collect()
-    };
-    if names.is_empty() {
-        return Ok(ResolveStats::default());
-    }
-
-    let (url, key) = service;
-    let resolve_url = derive_resolve_url(url);
-    let client = crate::normalise::build_client()?;
-    reporter.log(format!(
-        "Querying the shared cache for {} unresolved name(s)…",
-        names.len()
-    ));
-
-    let mut stats = ResolveStats::default();
-    for chunk in names.chunks(RESOLVE_CHUNK) {
-        let outcomes = resolve_chunk(&client, &resolve_url, key, chunk)
-            .context("cache /resolve request failed")?;
-        for name in chunk {
-            match outcomes.get(name) {
-                Some(o) if o.status == "matched" && o.fide_id.is_some() => {
-                    let fide_id = o.fide_id.unwrap();
-                    stats.matched_names += 1;
-                    if !dry_run {
-                        record_resolution(conn, name, Some(fide_id), "cache")?;
-                        stats.assigned_players += assign_name(conn, name, fide_id)?;
-                    }
-                }
-                _ => {
-                    stats.unresolved_names += 1;
-                    if !dry_run {
-                        record_resolution(conn, name, None, "cache")?;
-                    }
-                }
-            }
-        }
-    }
-    reporter.log(format!(
-        "Cache: {} name(s) resolved → {} player row(s) assigned; {} left unresolved.",
-        stats.matched_names, stats.assigned_players, stats.unresolved_names,
-    ));
-    Ok(stats)
-}
-
-/// POST one batch of names to `/resolve`; returns each name's outcome.
-fn resolve_chunk(
-    client: &reqwest::blocking::Client,
-    url: &str,
-    key: &str,
-    names: &[String],
-) -> Result<HashMap<String, ResolveOutcome>> {
-    #[derive(serde::Deserialize)]
-    struct Resp {
-        resolved: HashMap<String, ResolveOutcome>,
-    }
-    let body = serde_json::to_string(&serde_json::json!({ "names": names }))
-        .context("serialise resolve request")?;
-    let resp = client
-        .post(url)
-        .header("Authorization", format!("Bearer {}", key))
-        .header("Content-Type", "application/json")
-        .body(body)
-        .send()
-        .context("resolve request failed")?;
-    if !resp.status().is_success() {
-        anyhow::bail!("resolve service returned HTTP {}", resp.status());
-    }
-    let text = resp.text().context("read resolve response")?;
-    let parsed: Resp = serde_json::from_str(&text).context("parse resolve response")?;
-    Ok(parsed.resolved)
-}
-
-/// The forward URL ends in `/normalise`; the reverse endpoint is `/resolve` on
-/// the same host. Swap the trailing path segment.
-fn derive_resolve_url(normalise_url: &str) -> String {
-    match normalise_url.rsplit_once('/') {
-        Some((base, _)) => format!("{base}/resolve"),
-        None => "https://normalise.lpdo.com/resolve".to_string(),
-    }
-}
-
-/// Upsert a ledger entry: matched (`Some(fide_id)`) or negative (`None`).
-fn record_resolution(conn: &Connection, name: &str, fide_id: Option<u32>, source: &str) -> Result<()> {
-    conn.execute(
-        "INSERT OR REPLACE INTO name_resolution (name_normalized, fide_id, source, checked_at)
-         VALUES (?, ?, ?, CURRENT_DATE)",
-        duckdb::params![name, fide_id, source],
-    )?;
-    Ok(())
-}
-
-/// Assign `fide_id` to every still-FIDE-less player with this normalized name.
-/// Returns the number of player rows updated.
-fn assign_name(conn: &Connection, name: &str, fide_id: u32) -> Result<usize> {
-    let n = conn.execute(
-        "UPDATE players SET fide_id = ?, name_normalised = FALSE
-         WHERE name_normalized = ? AND fide_id IS NULL",
-        duckdb::params![fide_id, name],
-    )?;
-    Ok(n)
-}
-
-/// Orchestrate reverse resolution: local inversion first (free), then the shared
-/// cache (unless disabled / no key). The optional live-FIDE name search for
-/// recent-import misses is a later add-on (#152). Assigned players get
-/// `name_normalised = FALSE` so a subsequent forward `normalise` canonicalises
-/// their names.
+/// Assign FIDE IDs to FIDE-less players by matching their (folded) name against
+/// the union of the local FIDE list and this DB's own FIDE-tagged players, taking
+/// only single-exact matches. Local-only since #162 (the `service_*`/`no_service`
+/// arguments are vestigial and ignored — the normalise service is being retired).
 pub fn resolve_fide(
     conn: &Connection,
     dry_run: bool,
-    service_url: Option<String>,
-    service_key: Option<String>,
-    no_service: bool,
+    _service_url: Option<String>,
+    _service_key: Option<String>,
+    _no_service: bool,
     reporter: &Reporter,
-) -> Result<ResolveStats> {
+) -> Result<usize> {
     let before = pending_count(conn)?;
-    reporter.log(format!("{} player(s) without a FIDE ID.", before));
+    reporter.log(format!("{before} player(s) without a FIDE ID."));
 
-    let mut total = if dry_run {
-        // Dry run: report what local inversion *would* resolve without writing.
+    let fide_count: i64 = conn.query_row("SELECT COUNT(*) FROM fide_players", [], |r| r.get(0))?;
+    if fide_count == 0 {
+        reporter.done(
+            "No FIDE list loaded — run `chess-db fide refresh --file <FIDE players list>` first.",
+        );
+        return Ok(0);
+    }
+    reporter.log(format!(
+        "Matching FIDE-less names against {fide_count} FIDE players + this DB's tagged players…"
+    ));
+
+    // Materialise the single-exact name→fide_id map from the union of the FIDE
+    // list and the DB's own FIDE-tagged players. A folded name that maps to more
+    // than one distinct fide_id across the union is dropped (never guessed).
+    let fold_u = fold_expr("u.name");
+    conn.execute_batch(&format!(
+        "DROP TABLE IF EXISTS resolve_cand;
+         CREATE TEMP TABLE resolve_cand AS
+         WITH folded AS (
+           SELECT fide_id, {fold_u} AS nf
+           FROM (SELECT fide_id, name FROM fide_players
+                 UNION ALL
+                 SELECT fide_id, name FROM players WHERE fide_id IS NOT NULL) u
+           WHERE u.name <> ''
+         )
+         SELECT nf, MIN(fide_id) AS fide_id
+         FROM folded WHERE nf <> ''
+         GROUP BY nf HAVING COUNT(DISTINCT fide_id) = 1;"
+    ))?;
+
+    let assigned_players = if dry_run {
+        let fold_p = fold_expr("p.name");
         let n: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM (
-                SELECT name_normalized FROM players
-                WHERE fide_id IS NOT NULL AND name_normalized <> ''
-                GROUP BY name_normalized HAVING COUNT(DISTINCT fide_id) = 1)",
+            &format!(
+                "SELECT COUNT(*) FROM players p JOIN resolve_cand c ON {fold_p} = c.nf
+                 WHERE p.fide_id IS NULL"
+            ),
             [],
             |r| r.get(0),
         )?;
-        ResolveStats { matched_names: n as usize, assigned_players: 0, unresolved_names: 0 }
+        n as usize
     } else {
-        resolve_local(conn, reporter)?
+        // name_normalised=FALSE so a subsequent forward `normalise` canonicalises
+        // the newly-fide'd name from fide_players.
+        let fold_pl = fold_expr("players.name");
+        conn.execute(
+            &format!(
+                "UPDATE players SET fide_id = c.fide_id, name_normalised = FALSE
+                 FROM resolve_cand c
+                 WHERE {fold_pl} = c.nf AND players.fide_id IS NULL"
+            ),
+            [],
+        )?
     };
+    conn.execute_batch("DROP TABLE IF EXISTS resolve_cand;")?;
 
-    match crate::normalise::resolve_service(service_url.as_deref(), service_key.as_deref(), no_service) {
-        Some(service) => {
-            let c = resolve_via_cache(conn, &service, dry_run, reporter)?;
-            total.matched_names += c.matched_names;
-            total.assigned_players += c.assigned_players;
-            total.unresolved_names += c.unresolved_names;
-        }
-        None => reporter.log("Shared cache disabled (no key / --no-service) — local inversion only."),
+    if dry_run {
+        reporter.done(format!(
+            "Dry run — would assign a FIDE ID to {assigned_players} of {before} FIDE-less player(s)."
+        ));
+    } else {
+        let after = pending_count(conn)?;
+        reporter.done(format!(
+            "Resolved FIDE IDs: {assigned_players} player row(s) assigned ({before} → {after} still without one)."
+        ));
     }
-
-    let after = pending_count(conn)?;
-    reporter.done(format!(
-        "Resolved FIDE IDs: {} name(s) matched, {} player row(s) assigned ({} → {} still without a FIDE ID).",
-        total.matched_names, total.assigned_players, before, after,
-    ));
-    Ok(total)
+    Ok(assigned_players)
 }
 
-/// Export the resolution ledger (#152) — the accumulated name → outcome answers,
-/// INCLUDING negatives — so the work is shareable across clients/runs and the
-/// same name isn't re-queried. Columns: name_normalized, fide_id (empty =
-/// unresolved), source, checked_at. Returns the row count.
+/// Export the resolution ledger (name → outcome), including negatives, to CSV.
+/// (Legacy sharing path from #152; superseded by the shared FIDE list under #162
+/// but kept until the service is fully retired.)
 pub fn export_resolutions(conn: &Connection, path: &Path) -> Result<usize> {
     let rows: Vec<(String, Option<u32>, Option<String>, Option<String>)> = {
         let mut stmt = conn.prepare(
             "SELECT name_normalized, fide_id, source, CAST(checked_at AS VARCHAR)
              FROM name_resolution ORDER BY name_normalized",
         )?;
-        stmt.query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        })?
-        .filter_map(|r| r.ok())
-        .collect()
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .filter_map(|r| r.ok())
+            .collect()
     };
     let mut wtr = csv::Writer::from_path(path)
         .with_context(|| format!("cannot write {}", path.display()))?;
@@ -305,10 +150,8 @@ pub fn export_resolutions(conn: &Connection, path: &Path) -> Result<usize> {
     Ok(rows.len())
 }
 
-/// Import a resolution ledger produced by `export_resolutions`. Positive answers
-/// win (upsert + assign to matching FIDE-less players); negatives never clobber
-/// an existing answer (`DO NOTHING`), so a local match is preserved. After
-/// loading, one pass assigns fide_ids to still-FIDE-less players by name.
+/// Import a resolution ledger produced by `export_resolutions`: positives win
+/// (upsert + assign), negatives never clobber an existing answer.
 pub fn import_resolutions(conn: &Connection, path: &Path, reporter: &Reporter) -> Result<()> {
     let mut rdr = csv::Reader::from_path(path)
         .with_context(|| format!("cannot read {}", path.display()))?;
@@ -329,7 +172,6 @@ pub fn import_resolutions(conn: &Connection, path: &Path, reporter: &Reporter) -
         let checked = rec.get(3).map(|s| s.trim()).filter(|s| !s.is_empty());
         let src = source.unwrap_or("import");
         if let Some(id) = fide_id {
-            // Positive: upsert (positives win).
             conn.execute(
                 "INSERT INTO name_resolution (name_normalized, fide_id, source, checked_at)
                  VALUES (?, ?, ?, COALESCE(TRY_CAST(? AS DATE), CURRENT_DATE))
@@ -339,7 +181,6 @@ pub fn import_resolutions(conn: &Connection, path: &Path, reporter: &Reporter) -
             )?;
             positives += 1;
         } else {
-            // Negative: don't clobber an existing (possibly positive) answer.
             conn.execute(
                 "INSERT INTO name_resolution (name_normalized, fide_id, source, checked_at)
                  VALUES (?, NULL, ?, COALESCE(TRY_CAST(? AS DATE), CURRENT_DATE))
@@ -349,8 +190,6 @@ pub fn import_resolutions(conn: &Connection, path: &Path, reporter: &Reporter) -
             negatives += 1;
         }
     }
-
-    // Assign fide_ids to still-FIDE-less players from the ledger's positives.
     let assigned = conn.execute(
         "UPDATE players SET fide_id = nr.fide_id, name_normalised = FALSE
          FROM name_resolution nr
@@ -377,39 +216,47 @@ mod tests {
     }
 
     #[test]
-    fn local_inversion_assigns_single_exact_and_skips_ambiguous() {
+    fn resolve_single_exact_from_fide_list_folding_accents() {
         let conn = setup();
-        // fide'd rows: Carlsen(1)=100 (unique); Smith(2)=200, Smith(3)=201 (ambiguous).
-        // fide-less rows: Carlsen(4), Smith(5), Nobody(6).
         conn.execute_batch(
-            "INSERT INTO players (id,name,name_normalized,fide_id,name_normalised) VALUES
-             (1,'Carlsen, Magnus','carlsen magnus',100,FALSE),
-             (2,'Smith, John','smith john',200,FALSE),
-             (3,'Smith, John','smith john',201,FALSE),
-             (4,'Carlsen, Magnus','carlsen magnus',NULL,FALSE),
-             (5,'Smith, John','smith john',NULL,FALSE),
-             (6,'Nobody, X','nobody x',NULL,FALSE);",
+            "INSERT INTO fide_players (fide_id, name) VALUES
+               (100, 'Svrcek, Jozef'),
+               (200, 'Smith, John'),
+               (201, 'Smith, John');           -- same name, two ids → ambiguous
+             INSERT INTO players (id,name,name_normalized,fide_id,name_normalised) VALUES
+               (1,'Svrček, Jozef','svrcek jozef',NULL,FALSE),  -- accented, FIDE-less
+               (2,'Smith, John','smith john',NULL,FALSE),       -- ambiguous
+               (3,'Nobody, X','nobody x',NULL,FALSE);           -- not in FIDE",
         )
         .unwrap();
 
-        let stats = resolve_local(&conn, &Reporter::silent()).unwrap();
-        assert_eq!(stats.assigned_players, 1, "only the unique Carlsen row is assigned");
+        let assigned = resolve_fide(&conn, false, None, None, false, &Reporter::silent()).unwrap();
+        assert_eq!(assigned, 1);
 
         let f = |id: u32| -> Option<u32> {
             conn.query_row("SELECT fide_id FROM players WHERE id=?", duckdb::params![id], |r| r.get(0)).unwrap()
         };
-        assert_eq!(f(4), Some(100), "unique-name fide-less player gets the fide_id");
-        assert_eq!(f(5), None, "ambiguous name is never guessed");
-        assert_eq!(f(6), None, "no fide'd match → unchanged");
+        assert_eq!(f(1), Some(100), "accented FIDE-less name folds to the ASCII FIDE entry");
+        assert_eq!(f(2), None, "name shared by two FIDE IDs is never guessed");
+        assert_eq!(f(3), None, "name not in FIDE stays unresolved");
+    }
 
-        // Ledger recorded the single-exact match (positive), not the ambiguous one.
-        let carlsen: Option<u32> = conn
-            .query_row("SELECT fide_id FROM name_resolution WHERE name_normalized='carlsen magnus'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(carlsen, Some(100));
-        let smith_ct: i64 = conn
-            .query_row("SELECT COUNT(*) FROM name_resolution WHERE name_normalized='smith john'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(smith_ct, 0, "ambiguous name not recorded as a local positive");
+    #[test]
+    fn resolve_uses_db_tagged_players_as_fresh_delta() {
+        let conn = setup();
+        // fide_id 999 is NOT in the FIDE list yet, but a source tagged a DB player
+        // with it (fresh TWIC registration) — under a slightly different spelling.
+        conn.execute_batch(
+            "INSERT INTO fide_players (fide_id, name) VALUES (100, 'Carlsen, Magnus');
+             INSERT INTO players (id,name,name_normalized,fide_id,name_normalised) VALUES
+               (1,'Svrcek, Jozef','svrcek jozef',999,FALSE),   -- DB-tagged (ASCII)
+               (2,'Svrček, Jozef','svrcek jozef',NULL,FALSE);  -- FIDE-less namesake (accented)",
+        )
+        .unwrap();
+
+        resolve_fide(&conn, false, None, None, false, &Reporter::silent()).unwrap();
+        let f2: Option<u32> =
+            conn.query_row("SELECT fide_id FROM players WHERE id=2", [], |r| r.get(0)).unwrap();
+        assert_eq!(f2, Some(999), "resolves via the DB-tagged side even though not in the FIDE list");
     }
 }

@@ -11,6 +11,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 mod ajedrez;
 mod db;
 mod dedup;
+mod fide;
 mod importer;
 mod jobs;
 mod lichess;
@@ -227,6 +228,11 @@ enum Commands {
         #[command(subcommand)]
         subcommand: PlayersCommands,
     },
+    /// Manage the local FIDE player list (#162)
+    Fide {
+        #[command(subcommand)]
+        subcommand: FideCommands,
+    },
     /// Back up a collection's games to a timestamped, zip-compressed PGN file
     Backup {
         /// Collection to export (default: the private "My games" collection)
@@ -431,6 +437,18 @@ enum SearchCommands {
         /// Print only the player ID (errors if not exactly one match)
         #[arg(long)]
         id_only: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum FideCommands {
+    /// Load/refresh the local FIDE player list from a downloaded file (the
+    /// fixed-width FIDE players list, e.g. players_list_foa.txt). Replaces the
+    /// `fide_players` table contents.
+    Refresh {
+        /// Path to the FIDE players list file
+        #[arg(long)]
+        file: PathBuf,
     },
 }
 
@@ -1503,6 +1521,10 @@ fn job_spec_for(command: &Commands) -> Option<proxy::JobSpec> {
             "backup",
             json!({ "collection": collection, "dir": dir.to_string_lossy() }),
         ),
+        Commands::Fide { subcommand: FideCommands::Refresh { file } } => (
+            "fide_refresh",
+            json!({ "file": file.to_string_lossy() }),
+        ),
         Commands::Sources { subcommand: SourcesCommands::Sync { key, fast, max_position_depth, skip_dedup } } => (
             "sources_sync",
             json!({ "source": key, "fast": fast, "max_position_depth": max_position_depth, "skip_dedup": skip_dedup }),
@@ -2172,6 +2194,11 @@ async fn main() -> Result<()> {
         Commands::Backup { collection, dir } => {
             do_backup(&conn, &collection, &dir, &reporter)?;
         }
+        Commands::Fide { subcommand } => match subcommand {
+            FideCommands::Refresh { file } => {
+                fide::load_from_file(&conn, &file, &reporter)?;
+            }
+        },
         Commands::Status => {
             db::queries::status(&conn, &cli.db)?;
         }
