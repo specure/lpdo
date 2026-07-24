@@ -487,8 +487,8 @@ mod migration_tests {
             .unwrap();
         assert!(!enabled, "twic should be seeded disabled on a fresh install (#40 C4)");
 
-        // Date window (B1): TWIC seeds a from-2024-08-01 window so it complements
-        // the Ajedrez deep-history base instead of overlapping ~30 years (#126).
+        // Date window (B1): TWIC seeds a from-2013-01-01 window — the 2013 quality
+        // handoff where TWIC takes over from Ajedrez's pre-2013 deep history (#148).
         let (from, to, excl): (Option<String>, Option<String>, bool) = conn
             .query_row(
                 "SELECT CAST(from_date AS VARCHAR), CAST(to_date AS VARCHAR), exclude_undated
@@ -499,8 +499,8 @@ mod migration_tests {
             .unwrap();
         assert_eq!(
             (from.as_deref(), to.as_deref(), excl),
-            (Some("2024-08-01"), None, false),
-            "twic seeds a complementary from-2024-08-01 window (#126)"
+            (Some("2013-01-01"), None, false),
+            "twic seeds a from-2013-01-01 window (the 2013 handoff, #148)"
         );
 
         // Lichess Broadcasts is seeded from the catalog: disabled, live-tail
@@ -515,8 +515,8 @@ mod migration_tests {
         assert!(!lenabled, "lichess should be seeded disabled");
         assert_eq!(lfrom.as_deref(), Some("2026-01-01"));
 
-        // Ajedrez OTB seeded from the catalog: disabled, bounded at its coverage
-        // end (to 2024-08-01) so TWIC complements it from there (#126).
+        // Ajedrez OTB seeded from the catalog: disabled, bounded ABOVE at the 2013
+        // handoff (to 2013-01-01) — pre-2013 deep history, TWIC takes 2013+ (#148).
         let (aenabled, ato): (bool, Option<String>) = conn
             .query_row(
                 "SELECT enabled, CAST(to_date AS VARCHAR) FROM sources WHERE key = 'ajedrez-otb'",
@@ -525,7 +525,7 @@ mod migration_tests {
             )
             .unwrap();
         assert!(!aenabled, "ajedrez-otb should be seeded disabled");
-        assert_eq!(ato.as_deref(), Some("2024-08-01"), "ajedrez seeds a to-2024-08-01 window (#126)");
+        assert_eq!(ato.as_deref(), Some("2013-01-01"), "ajedrez seeds a to-2013-01-01 window (the 2013 handoff, #148)");
     }
 
     #[test]
