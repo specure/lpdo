@@ -169,6 +169,7 @@ impl Drop for TempPgn {
 /// - `.zip`/`.7z` — the first `.pgn` entry is streamed out to a sibling temp
 ///   file first (archives don't offer a cheap owned streaming reader), then
 ///   that temp file is streamed; the guard removes it afterwards.
+///
 /// Wraps a reader and tallies the bytes pulled through it into a shared counter,
 /// so the importer can report byte-based progress (a real % + ETA) without the
 /// parser knowing about the job reporter. `open_import_reader` places it at the
@@ -188,10 +189,15 @@ impl<R: Read> Read for CountingReader<R> {
     }
 }
 
+/// What `open_import_reader` yields: the decompressing reader, an optional
+/// temp-file drop guard, the byte total the progress bar measures against, and
+/// the shared byte counter the caller passes to `process_pgn_stream`.
+type ImportReader = (Box<dyn Read>, Option<TempPgn>, u64, Arc<AtomicU64>);
+
 /// Returns the decompressing reader, an optional temp-file drop guard, the byte
 /// total the progress bar measures against, and the shared byte counter the
 /// caller passes to `process_pgn_stream` for a real progress bar.
-fn open_import_reader(path: &Path) -> Result<(Box<dyn Read>, Option<TempPgn>, u64, Arc<AtomicU64>)> {
+fn open_import_reader(path: &Path) -> Result<ImportReader> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())

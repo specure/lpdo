@@ -95,7 +95,7 @@ pub fn load_from_reader<R: BufRead>(conn: &Connection, reader: R, source: &str, 
             if let Some((fide_id, name)) = parse_line(&line) {
                 app.append_row(duckdb::params![fide_id, name])?;
                 count += 1;
-                if count % 200_000 == 0 {
+                if count.is_multiple_of(200_000) {
                     reporter.progress(count as u64, 0, format!("Loaded {count} FIDE players…"));
                 }
             }

@@ -126,7 +126,9 @@ pub fn resolve_fide(
 /// (Legacy sharing path from #152; superseded by the shared FIDE list under #162
 /// but kept until the service is fully retired.)
 pub fn export_resolutions(conn: &Connection, path: &Path) -> Result<usize> {
-    let rows: Vec<(String, Option<u32>, Option<String>, Option<String>)> = {
+    // (name_normalized, fide_id, source, checked_at) per resolution-ledger row.
+    type ResolutionRow = (String, Option<u32>, Option<String>, Option<String>);
+    let rows: Vec<ResolutionRow> = {
         let mut stmt = conn.prepare(
             "SELECT name_normalized, fide_id, source, CAST(checked_at AS VARCHAR)
              FROM name_resolution ORDER BY name_normalized",
