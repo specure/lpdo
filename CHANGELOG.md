@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-25
+
+### Added
+- **Redesigned first-run wizard** — setup is now two clear steps: pick a
+  deep-history base (the free Ajedrez Data archive, or an empty database) and
+  choose which live feeds to follow (TWIC and/or Lichess Broadcasts). Each
+  source is included only if you explicitly tick "I accept these terms", with an
+  "About & licence" link to the source's own page. The bring-your-own-Megabase
+  path was dropped in favour of this simpler, licence-clear flow.
+  (#123, #124, #127, #130, #148)
+- **Automatic quality-based date cut-offs** — sources are seeded with windows
+  that stitch the best available data together with no manual tuning: Ajedrez up
+  to 2012-12-31 for deep history, TWIC from 2013-01-01 (~99% FIDE-identified
+  from there), and Lichess Broadcasts from 2020-01-01 (the earliest available).
+  You can still widen or narrow any window on the Sources screen. (#148)
+- **Backup to a remembered folder** — the Backup panel keeps a backup folder
+  (type a path or pick one with Browse) and reuses it, so repeat backups don't
+  re-prompt; each file is named by date and collection. (#121)
+
+### Changed
+- **Clearer Sources & coverage** — date windows read in plain English
+  ("up to 2012-12-31"), the coverage timeline is ordered by start date with the
+  deep-history band on top, and each source links to its home page. Activity
+  entries name the source being downloaded or imported.
+- **Player deduplication shows real progress** — the merge-apply pass reports an
+  advancing percentage instead of an indeterminate bar, while keeping the
+  set-based speed. (#172)
+
+### Fixed
+- **Backup lands where you can open it** — backups are streamed to your chosen
+  location (the hardened daemon can't write your home directory itself), and
+  "Reveal in file manager" now opens the actual saved file. (#121)
+- **Cancelling a large single-file import works** — cancelling an Ajedrez import
+  now stops promptly at a safe point instead of running to completion; the
+  interrupted archive is left unimported so a re-sync finishes it cleanly. (#157)
+- **Collection list stays current** — the player-filter Collection dropdown and
+  Home tiles refresh as background imports finish, instead of showing a stale
+  count until the next poll.
+- **Home statistics no longer flash** during an import.
+
 ## [0.8.0] - 2026-07-24
 
 ### Added
