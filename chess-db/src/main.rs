@@ -442,13 +442,16 @@ enum SearchCommands {
 
 #[derive(Subcommand)]
 enum FideCommands {
-    /// Load/refresh the local FIDE player list from a downloaded file (the
-    /// fixed-width FIDE players list, e.g. players_list_foa.txt). Replaces the
-    /// `fide_players` table contents.
+    /// Refresh the local FIDE player list (`fide_players`). With no arguments it
+    /// downloads the official FIDE list zip and loads it; pass `--file` to load a
+    /// local already-unzipped players list instead. Replaces the table contents.
     Refresh {
-        /// Path to the FIDE players list file
+        /// Load a local FIDE players list file instead of downloading
         #[arg(long)]
-        file: PathBuf,
+        file: Option<PathBuf>,
+        /// Override the download URL (default: the official FIDE list zip)
+        #[arg(long)]
+        url: Option<String>,
     },
 }
 
@@ -1521,9 +1524,9 @@ fn job_spec_for(command: &Commands) -> Option<proxy::JobSpec> {
             "backup",
             json!({ "collection": collection, "dir": dir.to_string_lossy() }),
         ),
-        Commands::Fide { subcommand: FideCommands::Refresh { file } } => (
+        Commands::Fide { subcommand: FideCommands::Refresh { file, url } } => (
             "fide_refresh",
-            json!({ "file": file.to_string_lossy() }),
+            json!({ "file": file.as_ref().map(|f| f.to_string_lossy().into_owned()), "url": url }),
         ),
         Commands::Sources { subcommand: SourcesCommands::Sync { key, fast, max_position_depth, skip_dedup } } => (
             "sources_sync",
@@ -2195,8 +2198,15 @@ async fn main() -> Result<()> {
             do_backup(&conn, &collection, &dir, &reporter)?;
         }
         Commands::Fide { subcommand } => match subcommand {
-            FideCommands::Refresh { file } => {
-                fide::load_from_file(&conn, &file, &reporter)?;
+            FideCommands::Refresh { file, url } => {
+                match file {
+                    Some(f) => fide::load_from_file(&conn, &f, &reporter)?,
+                    None => fide::download_and_load(
+                        &conn,
+                        url.as_deref().unwrap_or(fide::FIDE_LIST_URL),
+                        &reporter,
+                    )?,
+                };
             }
         },
         Commands::Status => {

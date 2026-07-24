@@ -889,10 +889,22 @@ fn run_job(
             let path = path_param(p, "path")?;
             crate::reverse::import_resolutions(conn, &path, reporter)?;
         }
-        // Load the local FIDE player list (#162) from a downloaded file.
+        // Refresh the local FIDE player list (#162): download the official zip and
+        // load it, or load a local `file` if one was given (the daemon can't read
+        // the user's home dir, so the default path is a self-contained download).
         "fide_refresh" => {
-            let path = path_param(p, "file")?;
-            crate::fide::load_from_file(conn, &path, reporter)?;
+            match p.get("file").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                Some(path) => {
+                    crate::fide::load_from_file(conn, Path::new(path), reporter)?;
+                }
+                None => {
+                    let url = p
+                        .get("url")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(crate::fide::FIDE_LIST_URL);
+                    crate::fide::download_and_load(conn, url, reporter)?;
+                }
+            }
         }
         "players_import" => {
             let path = path_param(p, "path")?;

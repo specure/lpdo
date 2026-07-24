@@ -10,11 +10,15 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use duckdb::Connection;
 
 use crate::reporter::Reporter;
+
+/// Official FIDE combined player list (a zip of the fixed-width `players_list_foa.txt`).
+pub const FIDE_LIST_URL: &str = "https://ratings.fide.com/download/players_list.zip";
 
 /// Parse one line of the fixed-width FIDE list into (fide_id, name). Returns None
 /// for the header, blanks, or unparseable ids.
@@ -35,12 +39,9 @@ fn parse_line(line: &str) -> Option<(u32, String)> {
     Some((fide_id, name))
 }
 
-/// Replace the contents of `fide_players` with the FIDE list at `path`. Returns
-/// the number of players loaded. Uses the Appender for a fast bulk load.
-pub fn load_from_file(conn: &Connection, path: &Path, reporter: &Reporter) -> Result<usize> {
-    let file = File::open(path).with_context(|| format!("opening FIDE list {}", path.display()))?;
-    let reader = BufReader::new(file);
-
+/// Replace `fide_players` with the fixed-width FIDE list read from `reader`.
+/// Returns the number of players loaded (Appender bulk load).
+pub fn load_from_reader<R: BufRead>(conn: &Connection, reader: R, source: &str, reporter: &Reporter) -> Result<usize> {
     conn.execute_batch("DELETE FROM fide_players")?;
 
     let mut count = 0usize;
@@ -65,8 +66,61 @@ pub fn load_from_file(conn: &Connection, path: &Path, reporter: &Reporter) -> Re
         app.flush()?;
     }
 
-    reporter.done(format!("Loaded {count} FIDE players from {}", path.display()));
+    reporter.done(format!("Loaded {count} FIDE players from {source}"));
     Ok(count)
+}
+
+/// Load `fide_players` from a local FIDE list file (already unzipped .txt).
+pub fn load_from_file(conn: &Connection, path: &Path, reporter: &Reporter) -> Result<usize> {
+    let file = File::open(path).with_context(|| format!("opening FIDE list {}", path.display()))?;
+    load_from_reader(conn, BufReader::new(file), &path.display().to_string(), reporter)
+}
+
+/// Download the FIDE list zip from `url`, extract its `.txt`, and load it. The
+/// daemon can't read the user's home dir (ProtectHome), so it fetches the list
+/// itself — this is also the scheduled monthly-refresh path (#162).
+pub fn download_and_load(conn: &Connection, url: &str, reporter: &Reporter) -> Result<usize> {
+    reporter.log(format!("Downloading FIDE list from {url} …"));
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(900))
+        .build()
+        .context("building HTTP client")?;
+    let mut resp = client
+        .get(url)
+        .send()
+        .with_context(|| format!("requesting {url}"))?
+        .error_for_status()
+        .context("FIDE download failed")?;
+
+    // Spool the zip to a temp file (bounded memory), then stream the .txt entry
+    // straight into the loader without materialising the ~300 MB uncompressed.
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = std::env::temp_dir().join(format!("fide-list-{stamp}.zip"));
+    {
+        let mut f = File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+        resp.copy_to(&mut f).context("saving FIDE download")?;
+    }
+    reporter.log("Download complete; extracting and loading…");
+
+    let result = (|| -> Result<usize> {
+        let zf = File::open(&tmp)?;
+        let mut archive = zip::ZipArchive::new(zf).context("opening FIDE zip")?;
+        let mut idx = None;
+        for i in 0..archive.len() {
+            if archive.by_index(i)?.name().to_ascii_lowercase().ends_with(".txt") {
+                idx = Some(i);
+                break;
+            }
+        }
+        let idx = idx.ok_or_else(|| anyhow::anyhow!("no .txt entry inside the FIDE zip"))?;
+        let entry = archive.by_index(idx)?;
+        load_from_reader(conn, BufReader::new(entry), url, reporter)
+    })();
+    let _ = std::fs::remove_file(&tmp);
+    result
 }
 
 #[cfg(test)]
