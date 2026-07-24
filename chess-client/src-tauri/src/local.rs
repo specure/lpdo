@@ -204,8 +204,23 @@ pub async fn download_backup(
         return Err(format!("backup failed ({status}): {text}"));
     }
 
+    // The client writes the file as the user, so `~` here is the user's home
+    // (unlike the daemon, whose HOME is /var/lib/lpdo — that mismatch was #121).
+    let dest = if let Some(rest) = dest_path.strip_prefix("~/") {
+        let home = home_dir().ok_or_else(|| "Cannot determine home directory".to_string())?;
+        home.join(rest)
+    } else {
+        PathBuf::from(&dest_path)
+    };
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    let dest_path = dest.to_string_lossy().into_owned();
+
     let total = resp.content_length().unwrap_or(0);
-    let mut file = tokio::fs::File::create(&dest_path)
+    let mut file = tokio::fs::File::create(&dest)
         .await
         .map_err(|e| format!("{dest_path}: {e}"))?;
 

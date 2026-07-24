@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useSidecarProgress } from "../hooks/useSidecarProgress";
@@ -454,11 +454,18 @@ interface Collection { id: number; name: string; game_count: number }
 
 // Save a collection's backup where the USER chooses (#121). The hardened daemon
 // can't write to the user's home, so it builds the .pgn.zip and streams it here
-// via `download_backup`; the GUI writes it to a native Save-dialog path the user
-// can actually open + reveal.
+// via `download_backup`; the GUI writes it to a folder the user picks. The folder
+// is remembered (localStorage) so repeat backups don't re-prompt — the user can
+// type a path or pick one with Browse, and the filename is generated per backup.
+const BACKUP_DIR_KEY = "lpdo.backupDir";
+const DEFAULT_BACKUP_DIR = "~/lpdo/backup";
+
 function BackupSection() {
   const [collections, setCollections] = useState<Collection[] | null>(null);
   const [collection, setCollection] = useState(DEFAULT_COLLECTION);
+  const [folder, setFolder] = useState<string>(
+    () => localStorage.getItem(BACKUP_DIR_KEY) || DEFAULT_BACKUP_DIR,
+  );
   const [phase, setPhase] = useState<"idle" | "saving" | "done" | "error">("idle");
   const [pct, setPct] = useState<number | null>(null);
   const [savedPath, setSavedPath] = useState<string | null>(null);
@@ -481,15 +488,22 @@ function BackupSection() {
     return () => { cancelled = true; };
   }, []);
 
+  async function browse() {
+    const picked = await openDialog({ multiple: false, directory: true });
+    if (typeof picked === "string") {
+      setFolder(picked);
+      localStorage.setItem(BACKUP_DIR_KEY, picked);
+    }
+  }
+
   async function run() {
     setError(null);
+    const dir = folder.trim().replace(/\/+$/, "");
+    if (!dir) return;
+    localStorage.setItem(BACKUP_DIR_KEY, dir);
     const date = new Date().toISOString().slice(0, 10);
     const safe = collection.replace(/[^\w.-]+/g, "_");
-    const dest = await saveDialog({
-      defaultPath: `${date}-${safe}.pgn.zip`,
-      filters: [{ name: "PGN backup (zip)", extensions: ["zip"] }],
-    });
-    if (!dest) return; // user cancelled the Save dialog
+    const dest = `${dir}/${date}-${safe}.pgn.zip`;
     setPhase("saving");
     setPct(null);
     const un = await listen<{ received: number; total: number }>("backup-download-progress", (e) => {
@@ -513,8 +527,8 @@ function BackupSection() {
   return (
     <SectionCard title="Backup">
       <p className="text-body-sm text-on-surface-variant">
-        Save a collection to a zip-compressed PGN file — you choose where it goes, so it lands
-        somewhere you can open it.
+        Save a collection to a zip-compressed PGN file in the folder you choose. The folder is
+        remembered for next time; each backup is named by date and collection.
       </p>
 
       {phase === "idle" && (
@@ -536,8 +550,24 @@ function BackupSection() {
                 ))
               )}
             </select>
-            <ActionButton onClick={() => { void run(); }} disabled={collections === null || !collection}>
-              Back up & save…
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={folder}
+                onChange={(e) => setFolder(e.target.value)}
+                placeholder={DEFAULT_BACKUP_DIR}
+                spellCheck={false}
+                className="flex-1 min-w-0 h-9 px-3 rounded-sm bg-transparent text-on-surface text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
+              />
+              <button
+                onClick={() => { void browse(); }}
+                className="h-9 px-3 shrink-0 inline-flex items-center rounded-sm border border-outline text-on-surface text-label-md hover:bg-on-surface/8 transition-colors duration-short3 ease-standard"
+              >
+                Browse…
+              </button>
+            </div>
+            <ActionButton onClick={() => { void run(); }} disabled={collections === null || !collection || !folder.trim()}>
+              Back up
             </ActionButton>
           </div>
         ) : (
