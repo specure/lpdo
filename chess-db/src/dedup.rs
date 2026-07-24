@@ -106,13 +106,13 @@ pub fn dedup_players(conn: &Connection, reporter: &Reporter) -> Result<()> {
         return Ok(());
     }
 
-    // Apply the whole reassignment set-based: two passes over games (indexed on
-    // white_id/black_id) and one delete, instead of two UPDATEs per merged row.
-    // This is the fix for the O(duplicates × games) cost — columnar UPDATEs are
-    // expensive, so we do a bounded number of them regardless of duplicate count.
-    reporter.progress(0, 0, format!(
-        "Reassigning games for {} duplicate player row(s)…", mapping.len()
-    ));
+    // Apply the reassignment set-based (two passes over games + one delete), but
+    // split each pass into game-id ranges so we can report REAL progress. DuckDB
+    // prunes row groups by the id min/max, so a range UPDATE only touches that
+    // range's row groups — each row group is still rewritten once per pass (the
+    // same total work as one statement), while the bar advances per range. Keeps
+    // the O(games) cost from #172, not O(duplicates × games).
+    reporter.progress(0, 0, format!("Preparing to merge {} player row(s)…", mapping.len()));
     conn.execute_batch(
         "DROP TABLE IF EXISTS merge_map;
          CREATE TEMP TABLE merge_map (old_id INTEGER, new_id INTEGER);",
@@ -124,12 +124,48 @@ pub fn dedup_players(conn: &Connection, reporter: &Reporter) -> Result<()> {
         }
         app.flush()?;
     }
-    conn.execute_batch(
-        "UPDATE games SET white_id = m.new_id FROM merge_map m WHERE games.white_id = m.old_id;
-         UPDATE games SET black_id = m.new_id FROM merge_map m WHERE games.black_id = m.old_id;
-         DELETE FROM players WHERE id IN (SELECT old_id FROM merge_map);
-         DROP TABLE IF EXISTS merge_map;",
-    )?;
+
+    let max_id: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) FROM games", [], |r| r.get(0))?;
+    const RANGE: i64 = 1_000_000; // games per progress step
+    let ranges: Vec<(i64, i64)> = {
+        let mut v = Vec::new();
+        let mut lo = 0i64;
+        loop {
+            v.push((lo, lo + RANGE));
+            lo += RANGE;
+            if lo > max_id {
+                break;
+            }
+        }
+        v
+    };
+    // Two passes (white, black) over the ranges, then the delete = total steps.
+    let total_steps = ranges.len() as u64 * 2 + 1;
+    let mut step = 0u64;
+
+    for col in ["white_id", "black_id"] {
+        let sql = format!(
+            "UPDATE games SET {col} = m.new_id FROM merge_map m
+             WHERE games.{col} = m.old_id AND games.id >= ? AND games.id < ?"
+        );
+        for &(lo, hi) in &ranges {
+            if reporter.is_cancelled() {
+                // Reassignment is idempotent and re-run rebuilds the same map, so a
+                // partial merge is safe — just don't delete the (still-referenced)
+                // old rows; the next run finishes it.
+                conn.execute_batch("DROP TABLE IF EXISTS merge_map;")?;
+                reporter.done("Cancelled — player merge partially applied; re-run to finish.");
+                return Ok(());
+            }
+            conn.execute(&sql, duckdb::params![lo, hi])?;
+            step += 1;
+            reporter.progress(step, total_steps, "Merging duplicate players…".to_string());
+        }
+    }
+    conn.execute("DELETE FROM players WHERE id IN (SELECT old_id FROM merge_map)", [])?;
+    step += 1;
+    reporter.progress(step, total_steps, "Merging duplicate players…".to_string());
+    conn.execute_batch("DROP TABLE IF EXISTS merge_map;")?;
 
     reporter.done(format!(
         "Removed {} duplicate player record(s) across {} FIDE ID(s).",
