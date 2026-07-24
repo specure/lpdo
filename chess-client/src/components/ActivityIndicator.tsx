@@ -33,6 +33,7 @@ function jobLabel(j: Job): string {
     }
     case "sources_set_window": return `Set date range · ${src || "source"}`;
     case "update":             return "Scheduled update";
+    case "fide_refresh":       return "Update FIDE player list";
     case "index_positions":    return "Build position index";
     case "dedup_games":        return "Deduplicate games";
     case "dedup_players":      return "Merge duplicate players";

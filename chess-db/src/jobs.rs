@@ -443,7 +443,8 @@ fn blocks_maintenance(job_type: &str) -> bool {
     matches!(
         job_type,
         "import" | "import_pgn" | "sources_sync" | "download" | "update"
-            | "resolve_fide" | "dedup_players" | "dedup_games" | "index_positions" | "normalise"
+            | "fide_refresh" | "resolve_fide" | "dedup_players" | "dedup_games"
+            | "index_positions" | "normalise"
     )
 }
 
@@ -520,6 +521,9 @@ impl JobManager {
         // same-FIDE-ID rows, canonicalise names) BEFORE deduplicating games —
         // dedup_games keys on player IDs — then index once the dust settles.
         if needs.full {
+            // Ensure the FIDE list exists/current before it's used (no-op when
+            // fresh, so no re-download per import); then the identity steps.
+            self.submit("fide_refresh".to_string(), serde_json::json!({ "if_due": true }));
             self.submit("resolve_fide".to_string(), serde_json::json!({}));
             self.submit("dedup_players".to_string(), serde_json::json!({}));
             self.submit("normalise".to_string(), serde_json::json!({}));
@@ -930,21 +934,29 @@ fn run_job(
         // load it, or load a local `file` if one was given (the daemon can't read
         // the user's home dir, so the default path is a self-contained download).
         "fide_refresh" => {
-            match p.get("file").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
-                Some(path) => {
-                    crate::fide::load_from_file(conn, Path::new(path), reporter)?;
+            // `if_due` (set by the full maintenance pipeline, #167) makes this a
+            // no-op when the list is already current — so a large import ensures
+            // the FIDE list exists before resolve/normalise without re-downloading
+            // it on every import. A manual/scheduled refresh omits it and forces.
+            if flag(p, "if_due") && !crate::fide::refresh_due(conn)? {
+                reporter.done("FIDE list is current — no refresh needed.");
+            } else {
+                match p.get("file").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                    Some(path) => {
+                        crate::fide::load_from_file(conn, Path::new(path), reporter)?;
+                    }
+                    None => {
+                        let url = p
+                            .get("url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(crate::fide::FIDE_LIST_URL);
+                        crate::fide::download_and_load(conn, url, reporter)?;
+                    }
                 }
-                None => {
-                    let url = p
-                        .get("url")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(crate::fide::FIDE_LIST_URL);
-                    crate::fide::download_and_load(conn, url, reporter)?;
-                }
+                // Stamp the monthly clock so a manual refresh also defers the next
+                // scheduled one (#162).
+                crate::fide::record_refresh(conn)?;
             }
-            // Stamp the monthly clock so a manual refresh also defers the next
-            // scheduled one (#162).
-            crate::fide::record_refresh(conn)?;
         }
         "players_import" => {
             let path = path_param(p, "path")?;

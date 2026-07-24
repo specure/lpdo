@@ -75,6 +75,7 @@ const IconSparkles = () => (
 const PIPELINE_LABELS: Record<string, string> = {
   download: "Downloading sources",
   import: "Importing games",
+  fide_refresh: "Updating the FIDE player list",
   resolve_fide: "Fetching FIDE IDs",
   dedup_players: "Merging duplicate players",
   normalise: "Normalising player names",
