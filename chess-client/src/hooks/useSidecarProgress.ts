@@ -140,10 +140,9 @@ function planFromArgs(args: string[]): Plan {
         return { kind: "job", type: "players_export", params };
       }
       if (a1 === "normalise") {
+        // Local FIDE-list normalise (no scraping); only --dry-run is meaningful.
         const params: Record<string, unknown> = {};
-        const limit = flagVal(args, "--limit");
-        if (limit) params.limit = Number(limit);
-        if (hasFlag(args, "--stop-on-errors")) params.stop_on_errors = true;
+        if (hasFlag(args, "--dry-run")) params.dry_run = true;
         return { kind: "job", type: "normalise", params };
       }
       break;

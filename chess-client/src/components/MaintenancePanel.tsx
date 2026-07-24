@@ -370,10 +370,7 @@ function IndexSection() {
 
 // ── Player name normalisation section ─────────────────────────────────────────
 
-const NORMALISE_LIMIT_DEFAULT = 500;
-
 function NormaliseSection({ onMutated }: { onMutated?: () => void }) {
-  const [limit, setLimit] = useState(String(NORMALISE_LIMIT_DEFAULT));
   const progress = useSidecarProgress("maint-normalise");
 
   // Player names change here, so refresh server status + any open game lists
@@ -381,41 +378,21 @@ function NormaliseSection({ onMutated }: { onMutated?: () => void }) {
   useEffect(() => { if (progress.done) onMutated?.(); }, [progress.done]);
 
   function run() {
-    const parsed = parseInt(limit, 10);
-    const n = Number.isFinite(parsed) ? Math.max(0, parsed) : NORMALISE_LIMIT_DEFAULT;
-    // --stop-on-errors: abort on 10 consecutive FIDE errors instead of pausing
-    // for hours, so the panel never appears to hang. n === 0 → no limit (omit
-    // --limit, which the CLI treats as "process all pending players").
-    const args = ["players", "normalise", "--stop-on-errors"];
-    if (n > 0) args.push("--limit", String(n));
-    void progress.run(args);
+    void progress.run(["players", "normalise"]);
   }
 
   return (
     <SectionCard title="Normalise player names">
       <p className="text-body-sm text-on-surface-variant">
-        Update player names to their FIDE-canonical form. Names in our shared cache are resolved
-        instantly in one request; the rest need a slow online FIDE lookup each, so only those are
-        capped — raise the limit to cover more in one run.
+        Update player names to their FIDE-canonical form using the locally-stored FIDE list.
+        This runs instantly — no online lookups. If names don't change, refresh the FIDE list
+        first from Automatic updates.
       </p>
       {!progress.running && !progress.done && (
-        <div className="space-y-2">
-          <label className="flex items-center gap-2 text-body-sm text-on-surface-variant">
-            <span>Max FIDE lookups</span>
-            <input
-              type="number"
-              min={0}
-              value={limit}
-              onChange={(e) => setLimit(e.target.value)}
-              className="w-28 h-9 px-3 rounded-sm bg-transparent text-on-surface text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
-            />
-            <span className="text-label-sm text-on-surface-variant">0 = no limit</span>
-          </label>
-          <ActionButton onClick={run}>Normalise names</ActionButton>
-        </div>
+        <ActionButton onClick={run}>Normalise names</ActionButton>
       )}
       {(progress.running || progress.done) && (
-        <ProgressSection progress={progress} label="Looking up FIDE names…" />
+        <ProgressSection progress={progress} label="Normalising player names…" />
       )}
     </SectionCard>
   );

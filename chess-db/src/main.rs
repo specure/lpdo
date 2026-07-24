@@ -15,7 +15,6 @@ mod fide;
 mod importer;
 mod jobs;
 mod lichess;
-mod normalise;
 mod players;
 mod reverse;
 mod progress;
@@ -249,6 +248,22 @@ enum Commands {
         /// Port to listen on
         #[arg(long, default_value_t = 7777)]
         port: u16,
+        /// Wipe the database before serving, starting from an empty schema. For a
+        /// clean test run — combine with a stopped daemon or systemd override.
+        #[arg(long)]
+        fresh: bool,
+    },
+    /// Delete the database so the next start is a clean slate (for testing). Wipes
+    /// the DB, its WAL and any safety snapshot; add --caches to also drop
+    /// downloaded source archives. Refuses while the daemon holds the database.
+    Reset {
+        /// Also delete downloaded source archives (TWIC/Ajedrez/… under the data
+        /// dir), forcing a fresh download on the next sync.
+        #[arg(long)]
+        caches: bool,
+        /// Skip the confirmation prompt.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Manage the server as a background service (Linux systemd user service /
     /// macOS launchd LaunchAgent)
@@ -636,47 +651,13 @@ enum PlayersCommands {
         /// FIDE ID to assign
         fide_id: u32,
     },
-    /// Update player names to FIDE canonical form (looks up ratings.fide.com)
+    /// Canonicalise player names from the local FIDE list (fide_id → FIDE name).
+    /// Purely local — run `fide refresh` first to populate the list. The old
+    /// ratings.fide.com scraping was removed.
     Normalise {
-        /// Print what would be changed without writing to the database
+        /// Print how many names would change without writing to the database
         #[arg(long)]
         dry_run: bool,
-        /// Milliseconds to wait between individual FIDE requests per worker
-        #[arg(long, default_value_t = 1500)]
-        delay: u64,
-        /// Number of players per batch (pause after each batch)
-        #[arg(long, default_value_t = 100)]
-        batch_size: usize,
-        /// Milliseconds to pause between batches
-        #[arg(long, default_value_t = 30000)]
-        batch_pause: u64,
-        /// Number of parallel worker threads making FIDE requests
-        #[arg(long, default_value_t = 3)]
-        workers: usize,
-        /// Consecutive network errors that trigger a long pause (0 = disabled)
-        #[arg(long, default_value_t = 10)]
-        error_threshold: usize,
-        /// Milliseconds to pause after hitting --error-threshold errors in a row (default: 2 hours)
-        #[arg(long, default_value_t = 7_200_000)]
-        error_pause: u64,
-        /// Stop the run immediately on --error-threshold consecutive errors
-        /// instead of pausing for --error-pause. Used by the setup wizard.
-        #[arg(long)]
-        stop_on_errors: bool,
-        /// Cap the number of players processed in this run. Omit to normalise all
-        /// pending players. The setup wizard passes 500 to keep the step bounded.
-        #[arg(long)]
-        limit: Option<usize>,
-        /// Override the batch normalisation cache service URL (default: compiled-in).
-        #[arg(long)]
-        service_url: Option<String>,
-        /// API key for the cache service. Defaults to env CHESSVAULT_NORMALISE_API_KEY
-        /// or the compile-time baked key; without a key the service is skipped.
-        #[arg(long)]
-        service_key: Option<String>,
-        /// Skip the batch cache service entirely (FIDE lookups only).
-        #[arg(long)]
-        no_service: bool,
     },
     /// Reverse of `normalise` (#152): fetch missing FIDE IDs for named players —
     /// assign a FIDE ID to players that have none, FROM their name. For
@@ -1493,10 +1474,10 @@ fn job_spec_for(command: &Commands) -> Option<proxy::JobSpec> {
             json!({ "non_standard": non_standard, "dry_run": dry_run }),
         ),
         Commands::Players {
-            subcommand: PlayersCommands::Normalise { dry_run, stop_on_errors, limit, .. },
+            subcommand: PlayersCommands::Normalise { dry_run },
         } => (
             "normalise",
-            json!({ "dry_run": dry_run, "stop_on_errors": stop_on_errors, "limit": limit }),
+            json!({ "dry_run": dry_run }),
         ),
         Commands::Players {
             subcommand: PlayersCommands::ResolveFide { dry_run, no_service, .. },
@@ -1571,6 +1552,55 @@ fn warn_dropped_flags(command: &Commands) {
         }
         _ => {}
     }
+}
+
+/// `chess-db reset`: delete the database (and, with `--caches`, downloaded source
+/// archives) so the next start is a clean slate. Refuses while a daemon holds the
+/// database, since a wipe would just be undone on its next write.
+async fn run_reset(cli: &Cli, caches: bool, yes: bool) -> Result<()> {
+    let force_local = cli.local
+        || std::env::var("LPDO_LOCAL").map(|v| v == "1" || v == "true").unwrap_or(false);
+    if !force_local {
+        let port = cli
+            .port
+            .or_else(|| std::env::var("LPDO_PORT").ok().and_then(|v| v.parse().ok()))
+            .unwrap_or(7777);
+        if let Some(d) = proxy::detect_daemon(port).await {
+            bail!(
+                "lpdo-server (v{}) is running and owns the database — a reset now would be \
+                 undone on its next write. Stop it first (e.g. `sudo systemctl stop lpdo-server`), \
+                 then re-run `chess-db reset`.",
+                d.version
+            );
+        }
+    }
+
+    let root = data_root();
+    if !yes {
+        eprintln!("This will permanently delete:");
+        eprintln!("  - the database {} (+ its WAL and any safety snapshot)", cli.db.display());
+        if caches {
+            eprintln!("  - all downloaded source archives under {}", root.display());
+        }
+        eprint!("Continue? [y/N] ");
+        use std::io::Write;
+        std::io::stderr().flush().ok();
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        if !matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            println!("Aborted — nothing deleted.");
+            return Ok(());
+        }
+    }
+
+    jobs::delete_db_files(&cli.db);
+    if caches {
+        // Remove the whole data root (per-source download dirs, TWIC zips, …).
+        // Best-effort — a missing dir is fine.
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    println!("Database reset. A fresh, empty database is created on the next start.");
+    Ok(())
 }
 
 /// Proxy a quick "mutation" command to the daemon's existing endpoints (the same
@@ -1713,16 +1743,27 @@ async fn main() -> Result<()> {
         return service::run(subcommand);
     }
 
+    // `reset` deletes the database files and likewise must not open the DB — and
+    // must refuse while a daemon holds it (else the wipe is undone on next write).
+    if let Commands::Reset { caches, yes } = cli.command {
+        return run_reset(&cli, caches, yes).await;
+    }
+
     // Ensure DB directory exists
     if let Some(parent) = cli.db.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    // The server owns the database, so it is also the only safe place to restore
-    // a pre-rebuild safety snapshot if a previous rebuild crashed mid-write.
-    // Done before opening the DB; only for `serve` to avoid touching files a
-    // running server may hold open.
-    if matches!(cli.command, Commands::Serve { .. }) {
+    // `serve --fresh`: wipe the database before opening so the daemon boots on an
+    // empty schema. A fresh wipe makes any leftover safety snapshot moot.
+    if matches!(cli.command, Commands::Serve { fresh: true, .. }) {
+        eprintln!("--fresh: wiping the database at {} before serving.", cli.db.display());
+        jobs::delete_db_files(&cli.db);
+    } else if matches!(cli.command, Commands::Serve { .. }) {
+        // The server owns the database, so it is also the only safe place to restore
+        // a pre-rebuild safety snapshot if a previous rebuild crashed mid-write.
+        // Done before opening the DB; only for `serve` to avoid touching files a
+        // running server may hold open.
         jobs::restore_snapshot_if_present(&cli.db)?;
     }
 
@@ -2114,8 +2155,16 @@ async fn main() -> Result<()> {
             PlayersCommands::SetFideId { player_id, fide_id } => {
                 do_set_fide_id(&conn, player_id, fide_id)?;
             }
-            PlayersCommands::Normalise { dry_run, delay, batch_size, batch_pause, workers, error_threshold, error_pause, stop_on_errors, limit, service_url, service_key, no_service } => {
-                normalise::normalise_players(&conn, dry_run, delay, batch_size, batch_pause, workers, error_threshold, error_pause, stop_on_errors, limit, service_url, service_key, no_service, &reporter)?;
+            PlayersCommands::Normalise { dry_run } => {
+                let fide_count: i64 =
+                    conn.query_row("SELECT COUNT(*) FROM fide_players", [], |r| r.get(0))?;
+                if fide_count == 0 {
+                    reporter.done(
+                        "No FIDE list loaded — run `chess-db fide refresh` first; nothing to normalise.",
+                    );
+                } else {
+                    fide::normalise_from_local(&conn, dry_run, &reporter)?;
+                }
             }
             PlayersCommands::ResolveFide { dry_run, service_url, service_key, no_service } => {
                 reverse::resolve_fide(&conn, dry_run, service_url, service_key, no_service, &reporter)?;
@@ -2268,15 +2317,15 @@ async fn main() -> Result<()> {
                 do_sources_fide_coverage(&conn, collection.as_deref(), &by, cli.json)?;
             }
         },
-        Commands::Serve { port } => {
+        Commands::Serve { port, .. } => {
             // The server owns the database read-write: it runs every mutation as
             // an in-process job and serves queries from a pool of cloned read
             // connections (DuckDB MVCC). No separate writer process exists, so
             // there is no read-only reopen.
             serve::run(conn, port, cli.db.clone()).await?;
         }
-        // Handled before the database is opened (see the early return above).
-        Commands::Service { .. } => unreachable!(),
+        // Handled before the database is opened (see the early returns above).
+        Commands::Service { .. } | Commands::Reset { .. } => unreachable!(),
     }
 
     Ok(())

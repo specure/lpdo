@@ -702,7 +702,7 @@ fn run_job(
     db: &Path,
     jm: &Arc<JobManager>,
 ) -> Result<()> {
-    use crate::{dedup, importer, normalise, players};
+    use crate::{dedup, importer, players};
 
     // Fault injection for testing the auto-recovery path on a live daemon
     // (#82). Inert unless LPDO_FAULT_INJECTION is set in the server's
@@ -867,21 +867,18 @@ fn run_job(
             dedup::cleanup_nonstandard(conn, flag(p, "non_standard"), flag(p, "dry_run"), reporter)?;
         }
         "normalise" => {
-            // #162 phase 4: with the local FIDE list loaded, canonicalise names via
-            // a local join (instant, no network) instead of scraping ratings.fide.com
-            // per player. Only fall back to the legacy service/scrape path when no
-            // list is present (e.g. a fresh DB before the first `fide refresh`).
+            // #162 phase 4: canonicalise names via a local join against the FIDE
+            // list (instant, no network). The old per-player ratings.fide.com
+            // scraping was removed — with no list loaded there's simply nothing to
+            // do (tell the user to refresh it) rather than a slow scraping fallback.
             let fide_count: i64 =
                 conn.query_row("SELECT COUNT(*) FROM fide_players", [], |r| r.get(0))?;
-            if fide_count > 0 {
-                crate::fide::normalise_from_local(conn, reporter)?;
+            if fide_count == 0 {
+                reporter.done(
+                    "No FIDE list loaded — run `chess-db fide refresh` first; nothing to normalise.",
+                );
             } else {
-                let limit = p.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
-                normalise::normalise_players(
-                    conn, flag(p, "dry_run"),
-                    1500, 100, 30_000, 3, 10, 7_200_000,
-                    flag(p, "stop_on_errors"), limit, None, None, false, reporter,
-                )?;
+                crate::fide::normalise_from_local(conn, flag(p, "dry_run"), reporter)?;
             }
         }
         // Reverse of `normalise` (#152): fetch missing FIDE IDs for named players
@@ -984,10 +981,14 @@ fn run_job(
             reporter.log("Indexing positions (fast)");
             run_index_positions_guarded(conn, db, Some(40), false, true, &step)?;
             if reporter.is_cancelled() { return Ok(()); }
-            reporter.log("Normalising players");
-            normalise::normalise_players(
-                conn, false, 1500, 100, 30_000, 3, 10, 7_200_000, false, None, None, None, false, &step,
-            )?;
+            // Local FIDE-list normalise only (no scraping). A fresh DB with no list
+            // loaded yet just skips this — the monthly `fide_refresh` fills it in.
+            let has_fide: i64 =
+                conn.query_row("SELECT COUNT(*) FROM fide_players", [], |r| r.get(0))?;
+            if has_fide > 0 {
+                reporter.log("Normalising players");
+                crate::fide::normalise_from_local(conn, false, &step)?;
+            }
             reporter.done("Database update complete");
         }
         other => return Err(anyhow!("unknown job type: {}", other)),

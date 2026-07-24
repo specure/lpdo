@@ -127,9 +127,23 @@ pub fn download_and_load(conn: &Connection, url: &str, reporter: &Reporter) -> R
 /// name to the FIDE-canonical spelling for their fide_id — a local join, no
 /// network. Recomputes `name_normalized` to match and marks `name_normalised`.
 /// Players whose fide_id isn't in the list (e.g. FIDE-retired IDs) are left with
-/// their imported name. Returns rows updated. Replaces the per-player
-/// ratings.fide.com scraping when the list is loaded.
-pub fn normalise_from_local(conn: &Connection, reporter: &Reporter) -> Result<usize> {
+/// their imported name. Returns rows updated (or, for `dry_run`, that would be).
+/// This is the ONLY normalise path since the ratings.fide.com scraping was
+/// removed — no network fallback.
+pub fn normalise_from_local(conn: &Connection, dry_run: bool, reporter: &Reporter) -> Result<usize> {
+    // Pending = FIDE-tagged players whose name isn't yet canonicalised and whose
+    // fide_id is actually in the local list.
+    const PENDING: &str = "FROM players p JOIN fide_players fp ON p.fide_id = fp.fide_id
+         WHERE p.name_normalised = FALSE OR p.name_normalised IS NULL";
+
+    if dry_run {
+        let n: i64 = conn.query_row(&format!("SELECT COUNT(*) {PENDING}"), [], |r| r.get(0))?;
+        reporter.done(format!(
+            "Dry run — would normalise {n} player name(s) from the local FIDE list."
+        ));
+        return Ok(n as usize);
+    }
+
     let n = conn.execute(
         "UPDATE players
          SET name = fp.name,
@@ -140,7 +154,7 @@ pub fn normalise_from_local(conn: &Connection, reporter: &Reporter) -> Result<us
            AND (players.name_normalised = FALSE OR players.name_normalised IS NULL)",
         [],
     )?;
-    reporter.log(format!("Normalised {n} player name(s) from the local FIDE list."));
+    reporter.done(format!("Normalised {n} player name(s) from the local FIDE list."));
     Ok(n)
 }
 
@@ -182,7 +196,14 @@ mod tests {
         )
         .unwrap();
 
-        let n = normalise_from_local(&conn, &Reporter::silent()).unwrap();
+        // dry-run reports the same count without writing.
+        assert_eq!(normalise_from_local(&conn, true, &Reporter::silent()).unwrap(), 1);
+        let untouched: bool = conn
+            .query_row("SELECT name_normalised FROM players WHERE id=1", [], |r| r.get(0))
+            .unwrap();
+        assert!(!untouched, "dry-run must not write");
+
+        let n = normalise_from_local(&conn, false, &Reporter::silent()).unwrap();
         assert_eq!(n, 1, "only the player whose fide_id is in the list is touched");
 
         let row = |id: u32| -> (String, String, bool) {
