@@ -40,6 +40,7 @@ function jobLabel(j: Job): string {
     case "cleanup":            return "Clean up games";
     case "normalise":          return "Normalise player names";
     case "resolve_fide":       return "Fetch missing FIDE IDs";
+    case "download":           return src ? `Download ${src}` : "Download";
     case "import":             return src ? `Import ${src}` : "Import";
     case "import_pgn": {
       // Prefer the original filename (what's importing); the collection (where it
