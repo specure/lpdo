@@ -462,6 +462,14 @@ impl JobManager {
         }
     }
 
+    /// Whether a coalesced maintenance pass is owed but not yet enqueued (it runs
+    /// once the import queue drains). Surfaced in the activity panel as a pending
+    /// row so the user can see maintenance is coming while an import is still in
+    /// flight (#131).
+    pub fn maintenance_owed(&self) -> bool {
+        self.maintenance.lock().unwrap().index_normalise
+    }
+
     /// Request post-import maintenance (#131). Idempotent: sets the "owed" flags;
     /// the coalesced pass runs later, once the import queue has drained. Pass
     /// `needs_dedup = true` when the import deferred dedup (first-run

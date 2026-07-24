@@ -39,6 +39,7 @@ function jobLabel(j: Job): string {
     case "normalise":          return "Normalise player names";
     case "import":             return "Import";
     case "import_pgn":         return p.collection ? `Import PGN → ${p.collection}` : "Import PGN";
+    case "maintenance_pending": return "Prepare database — dedup · index · normalise";
     case "players_import":     return "Import players";
     case "players_export":     return "Export players";
     case "backup":             return p.collection ? `Backup ${p.collection}` : "Backup";
@@ -69,7 +70,7 @@ function ActiveRow({ job, onCancel }: { job: Job; onCancel: (id: string) => void
         )}
       </div>
       {queued ? (
-        <div className="text-label-sm text-on-surface-variant">Queued</div>
+        <div className="text-label-sm text-on-surface-variant">{job.message ? `Queued · ${job.message}` : "Queued"}</div>
       ) : (
         <>
           <div className="flex items-center justify-between gap-2 text-label-sm text-on-surface-variant">

@@ -1110,7 +1110,26 @@ async fn import_upload_handler(
 }
 
 async fn list_jobs_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
-    Json(serde_json::to_value(state.jobs.list()).unwrap_or_default())
+    let mut jobs = serde_json::to_value(state.jobs.list()).unwrap_or_else(|_| serde_json::json!([]));
+    // Coalesced maintenance (#131) isn't enqueued until the import queue drains,
+    // so while an import is in flight it would otherwise be invisible. Surface a
+    // synthetic "queued" pending row so the activity panel shows it's coming.
+    // Only here (not in JobManager::list, which the scheduler introspects).
+    if state.jobs.maintenance_owed() {
+        if let Some(arr) = jobs.as_array_mut() {
+            arr.push(serde_json::json!({
+                "id": "maintenance-pending",
+                "type": "maintenance_pending",
+                "status": "queued",
+                "value": 0,
+                "total": 0,
+                "message": "Runs after the import finishes",
+                "interruptible": false,
+                "params": {},
+            }));
+        }
+    }
+    Json(jobs)
 }
 
 async fn get_job_handler(
