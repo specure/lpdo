@@ -515,8 +515,8 @@ mod migration_tests {
         assert!(!lenabled, "lichess should be seeded disabled");
         assert_eq!(lfrom.as_deref(), Some("2026-01-01"));
 
-        // Ajedrez OTB seeded from the catalog: disabled, bounded ABOVE at the 2013
-        // handoff (to 2013-01-01) — pre-2013 deep history, TWIC takes 2013+ (#148).
+        // Ajedrez OTB seeded from the catalog: disabled, bounded ABOVE at 2012-12-31
+        // — pre-2013 deep history; TWIC takes 2013-01-01+ (the 2013 handoff, #148).
         let (aenabled, ato): (bool, Option<String>) = conn
             .query_row(
                 "SELECT enabled, CAST(to_date AS VARCHAR) FROM sources WHERE key = 'ajedrez-otb'",
@@ -525,7 +525,7 @@ mod migration_tests {
             )
             .unwrap();
         assert!(!aenabled, "ajedrez-otb should be seeded disabled");
-        assert_eq!(ato.as_deref(), Some("2013-01-01"), "ajedrez seeds a to-2013-01-01 window (the 2013 handoff, #148)");
+        assert_eq!(ato.as_deref(), Some("2012-12-31"), "ajedrez seeds a to-2012-12-31 window (the 2013 handoff, #148)");
     }
 
     #[test]

@@ -100,13 +100,13 @@ pub static CATALOG: &[CatalogSource] = &[
         credit: "Ajedrez Data (ajedrezdata.com) — public-domain game scores, distributed without annotations.",
         collection: "Ajedrez OTB",
         // Off by default. The deep-history base — open start (games go back to the
-        // 1990s), bounded ABOVE at the 2013 quality handoff (#148): pre-2013 is
-        // where Ajedrez is the best available source; from 2013 on, TWIC covers the
-        // same era with more games at ~99% FIDE + clean names, so we hand off rather
-        // than import ~2.3M lower-quality overlapping games. Seeds NEW rows only.
+        // 1990s), bounded ABOVE at 2012-12-31 for a clean 2013 quality handoff
+        // (#148): pre-2013 is where Ajedrez is the best available source; TWIC takes
+        // 2013-01-01 onward with more games at ~99% FIDE + clean names, so we hand
+        // off rather than import ~2.3M lower-quality overlapping games. NEW rows only.
         default_enabled: false,
         default_from: None,
-        default_to: Some("2013-01-01"),
+        default_to: Some("2012-12-31"),
         default_exclude_undated: false,
     },
 ];
