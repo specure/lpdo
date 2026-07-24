@@ -851,7 +851,12 @@ fn run_job(
                 rt.block_on(crate::sources::download_feed(conn, src, None, None, &dir, &step))?;
                 if reporter.is_cancelled() { return Ok(()); }
                 reporter.log(format!("{}: import (fast)", src.name));
-                importer::import(conn, &dir, src.key, src.collection, None, 10, true, true, &step)?;
+                // Snapshot-guard a bulk source import (e.g. Ajedrez) so a fatal
+                // appender fault rolls back cleanly instead of half-importing (#82).
+                let bulk = importer::source_import_is_bulk(conn, &dir, src.key, 10)?;
+                run_import_guarded(conn, db, bulk, &step, || {
+                    importer::import(conn, &dir, src.key, src.collection, None, 10, true, true, &step)
+                })?;
                 Ok(())
             })();
             if reporter.is_cancelled() {
@@ -913,12 +918,18 @@ fn run_job(
                 let tmp = dir.join(format!("upload-{stamp}.pgn"));
                 std::fs::write(&tmp, content)
                     .with_context(|| format!("writing uploaded PGN to {}", tmp.display()))?;
-                let res = importer::import_pgn(conn, &tmp, depth, 10, fast, skip_dedup, &spec, reporter);
+                // A bulk upload sets skip_dedup (serve.rs, from the spooled size) —
+                // snapshot-guard it so a fatal appender fault rolls back cleanly (#82).
+                let res = run_import_guarded(conn, db, skip_dedup, reporter, || {
+                    importer::import_pgn(conn, &tmp, depth, 10, fast, skip_dedup, &spec, reporter)
+                });
                 let _ = std::fs::remove_file(&tmp);
                 res
             } else {
                 let path = path_param(p, "path")?;
-                let res = importer::import_pgn(conn, &path, depth, 10, fast, skip_dedup, &spec, reporter);
+                let res = run_import_guarded(conn, db, skip_dedup, reporter, || {
+                    importer::import_pgn(conn, &path, depth, 10, fast, skip_dedup, &spec, reporter)
+                });
                 // Streamed uploads (#154) spool to a daemon-owned file and set
                 // `cleanup` so it's removed once imported (success or failure).
                 if flag(p, "cleanup") {
@@ -1145,6 +1156,44 @@ const FAST_INDEX_SNAPSHOT_THRESHOLD: i64 = 200_000;
 /// Small incrementals skip it (cheap, and a killed appender only leaves a
 /// consistent partial to resume), as does first-run setup (the setup sentinel
 /// already protects a disposable DB).
+/// Run a bulk import under a safety snapshot (#82). A `--fast` (Appender) import
+/// isn't crash-safe: a fatal DuckDB fault can invalidate the writer connection.
+/// When `bulk`, we CHECKPOINT + snapshot the DB first, then:
+/// - on success → remove the snapshot;
+/// - on a FATAL (invalidation) error → leave it, so the in-process reopen (#81)
+///   restores the pre-import state — the import fails all-or-nothing and the
+///   writer comes back clean instead of half-imported;
+/// - on a non-fatal error → remove it (the connection is still usable; a leftover
+///   snapshot would wrongly roll back later work on the next start).
+///
+/// Non-bulk imports (small feed syncs, scratch/paste) skip the snapshot — they're
+/// cheap and low-risk, and a full-DB copy per weekly TWIC sync isn't worth it.
+/// First-run setup also skips it (the setup sentinel already guards a disposable DB).
+fn run_import_guarded(
+    conn: &Connection,
+    db: &Path,
+    bulk: bool,
+    reporter: &Reporter,
+    run: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let snapshotted =
+        bulk && !setup_sentinel_present(db) && make_safety_snapshot(conn, db, reporter);
+    let res = run();
+    if snapshotted {
+        match &res {
+            Ok(_) => {
+                remove_snapshot(db);
+                reporter.log("Safety snapshot removed.");
+            }
+            Err(e) if is_invalidation_error(&format!("{e:#}")) => reporter.log(
+                "Import failed fatally — the safety snapshot will be restored, rolling back this import.",
+            ),
+            Err(_) => remove_snapshot(db),
+        }
+    }
+    res
+}
+
 pub fn run_index_positions_guarded(
     conn: &Connection,
     db: &Path,
@@ -1256,6 +1305,62 @@ pub fn restore_snapshot_if_present(db: &Path) -> Result<()> {
     }
     eprintln!("Database restored from snapshot.");
     Ok(())
+}
+
+#[cfg(test)]
+mod import_guard_tests {
+    use super::*;
+
+    fn tmp_db(name: &str) -> (PathBuf, Connection) {
+        let dir = std::env::temp_dir().join(format!("lpdo-guard-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("t.db");
+        let conn = crate::db::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE t(x INT); INSERT INTO t VALUES (1);").unwrap();
+        (db, conn)
+    }
+
+    #[test]
+    fn bulk_success_removes_snapshot() {
+        let (db, conn) = tmp_db("ok");
+        run_import_guarded(&conn, &db, true, &Reporter::silent(), || Ok(())).unwrap();
+        assert!(!snapshot_path(&db).exists(), "snapshot removed after a successful bulk import");
+    }
+
+    #[test]
+    fn bulk_fatal_leaves_snapshot_for_reopen() {
+        let (db, conn) = tmp_db("fatal");
+        let r = run_import_guarded(&conn, &db, true, &Reporter::silent(), || {
+            Err(anyhow!("FATAL Error: database has been invalidated because of a previous fatal error"))
+        });
+        assert!(r.is_err());
+        assert!(
+            snapshot_path(&db).exists(),
+            "a fatal invalidation must leave the snapshot so reopen rolls the import back",
+        );
+    }
+
+    #[test]
+    fn bulk_nonfatal_removes_snapshot() {
+        let (db, conn) = tmp_db("nonfatal");
+        let r = run_import_guarded(&conn, &db, true, &Reporter::silent(), || {
+            Err(anyhow!("a corrupt PGN — ordinary, non-fatal import error"))
+        });
+        assert!(r.is_err());
+        assert!(
+            !snapshot_path(&db).exists(),
+            "a non-fatal error must not leave a snapshot that would roll back later work on restart",
+        );
+    }
+
+    #[test]
+    fn non_bulk_never_snapshots() {
+        let (db, conn) = tmp_db("nonbulk");
+        let r = run_import_guarded(&conn, &db, false, &Reporter::silent(), || Err(anyhow!("boom")));
+        assert!(r.is_err());
+        assert!(!snapshot_path(&db).exists(), "a non-bulk import doesn't snapshot at all");
+    }
 }
 
 #[cfg(test)]
