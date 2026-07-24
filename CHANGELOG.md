@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-24
+
+### Added
+- **Identity-first maintenance pipeline** — after a large import (or first-run
+  setup), the database is prepared in a single coalesced pass that runs in the
+  right order: fetch missing FIDE IDs → merge duplicate players → normalise
+  names → deduplicate games → build the position index. Weekly feed syncs run a
+  lighter pass. Each step appears as its own job in the activity panel. (#167)
+- **Manual maintenance tasks** — the Maintenance → Databases tab now offers each
+  of these to run on demand: Fetch missing FIDE IDs, Merge duplicate players,
+  Normalise player names, Deduplicate games, Position index, and Update FIDE
+  list. (#160)
+- **Job cancellation** — long-running jobs (imports, indexing, deduplication)
+  can be cancelled and stop cleanly at a safe point; queued jobs can be cancelled
+  before they start and leave the queue immediately. (#157, #140, #161)
+
+### Changed
+- **Updates are governed by Sources, not a global toggle** — enabling a
+  reference source (TWIC, Lichess Broadcasts) opts it into automatic background
+  refresh; if you enable nothing, nothing runs. The redundant "Automatic
+  updates" schedule and the "Additional databases" importer were removed from
+  Maintenance (use Add games for imports). The FIDE player list refreshes
+  automatically about once a month, independent of feeds. (#160)
+- **Merging duplicate players is now near-instant** — reworked from a per-player
+  loop into a set-based operation (seconds instead of tens of minutes on a large
+  database). (#172)
+- **Clearer background progress** — import jobs end with a meaningful summary
+  (games imported, into which collection) instead of "Import complete"; steps
+  whose duration can't be measured (index rebuild, snapshot, game-count update)
+  show an animated "working" bar instead of a stuck 100%; longer text no longer
+  truncates to a single line. (#171)
+
+### Fixed
+- **Recent players opened the wrong player's games after a reimport** — the
+  "Recent" list now re-resolves each player against the current database (by FIDE
+  ID or name) instead of trusting a stored id that a reimport invalidates. (#178)
+- The setup wizard's "I own a commercial database" step no longer shows two
+  competing primary buttons. (#175)
+- Import logs show a readable date window ("games dated up to 2024-08-01")
+  instead of a cryptic `…..2024-08-01`. (#174)
+
 ## [0.7.0] - 2026-07-24
 
 ### Added
@@ -265,7 +306,8 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/specure/lpdo/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/specure/lpdo/compare/v0.5.2...v0.7.0
 [0.4.0]: https://github.com/specure/lpdo/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/specure/lpdo/compare/v0.2.0...v0.3.0
