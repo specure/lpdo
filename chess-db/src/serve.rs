@@ -1015,8 +1015,6 @@ struct ImportUploadQuery {
     #[serde(default)]
     fast: bool,
     on_duplicate: Option<String>,
-    /// Position-index depth; 0 disables indexing (bulk loads). Absent → 40.
-    max_position_depth: Option<u16>,
 }
 
 /// Streamed PGN upload (#154). The client streams a (possibly compressed,
@@ -1075,20 +1073,39 @@ async fn import_upload_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("flush upload spool: {e}")))?;
     drop(file);
 
-    let params = serde_json::json!({
+    // A large upload defers dedup to the background: skip inline dedup on the
+    // import (no per-game fingerprinting / growing in-memory fingerprint map to
+    // slow a multi-million-game load) and instead include one global dedup_games
+    // in the coalesced maintenance. A small upload dedups inline as before and
+    // needs no whole-DB dedup pass. Sized from the spooled bytes, matching the
+    // importer's own bulk-mode estimate (#154).
+    let bulk = tokio::fs::metadata(&spool)
+        .await
+        .map(|m| crate::importer::is_bulk_size(m.len()))
+        .unwrap_or(false);
+
+    // Import the uploaded file, then request post-import maintenance (#131),
+    // debounced + coalesced by the JobManager to run once after the whole import
+    // queue drains — so importing several files, or a file during the wizard's
+    // first-run, triggers a single tail pass instead of one per import, and later
+    // imports never miss it. Inline position indexing is skipped here (depth 0)
+    // so the coalesced index_positions job does that work and shows its progress.
+    let import_params = serde_json::json!({
         "path": spool.to_string_lossy(),
         "collection": q.collection.unwrap_or_else(|| "Manual".to_string()),
         "private": q.private,
         "fast": q.fast,
+        "skip_dedup": bulk,
         "on_duplicate": q.on_duplicate.unwrap_or_else(|| "skip".to_string()),
-        "max_position_depth": q.max_position_depth,
+        "max_position_depth": 0,
         // Delete the spool once the import finishes (see jobs.rs import_pgn).
         "cleanup": true,
-        // Chain index + normalise after the import so a streamed bulk import is
-        // self-completing (like a source sync), not left unindexed/unnormalised.
-        "maintain": true,
     });
-    let id = state.jobs.submit("import_pgn".to_string(), params);
+    let id = state.jobs.submit("import_pgn".to_string(), import_params);
+    // Owe a global dedup only when the import skipped inline dedup (bulk).
+    state.jobs.request_maintenance(bulk);
+    // The client follows the import job for the upload→import handoff; the
+    // coalesced maintenance jobs then appear and run on their own in the queue.
     Ok(Json(serde_json::json!({ "job_id": id })))
 }
 
@@ -1242,9 +1259,15 @@ async fn setup_start_handler(State(state): State<AppState>) -> ApiResult<serde_j
         ));
         keys.push(s.key.to_string());
     }
-    ids.push(state.jobs.submit("dedup_games".into(), serde_json::json!({})));
-    ids.push(state.jobs.submit("index_positions".into(), serde_json::json!({ "fast": true })));
-    ids.push(state.jobs.submit("normalise".into(), serde_json::json!({})));
+    // Request the coalesced tail pass (#131) instead of enqueuing dedup/index/
+    // normalise at a fixed queue position: the first-run imports use skip_dedup,
+    // so a single global dedup is owed (needs_dedup = true), then index +
+    // normalise. Coalescing means a source enabled mid-wizard, or an own-PGN
+    // import, is covered by the same one pass that runs once every import drains
+    // — no maintenance stranded ahead of later imports. The setup watcher tracks
+    // only the import ids, so setup settles when imports finish and maintenance
+    // continues in the background (matching the Summary screen's copy).
+    state.jobs.request_maintenance(true);
 
     spawn_setup_watcher(state.clone(), ids.clone(), keys);
     Ok(Json(serde_json::json!({ "job_ids": ids })))

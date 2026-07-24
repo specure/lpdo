@@ -30,6 +30,14 @@ interface ChessDbEvent {
 export interface SidecarProgress {
   percent: number;
   running: boolean;
+  /** The followed job exists but is still queued behind other jobs (not yet
+   *  running). Distinct from `running` so the UI can show "Queued" instead of a
+   *  misleading "Running… 0%" (#128). `running` stays true while queued so
+   *  callers that only gate on "in progress" keep working. */
+  queued: boolean;
+  /** How many jobs are queued/running ahead of this one (0 = next up), or null
+   *  when not queued / unknown. */
+  queuePosition: number | null;
   done: boolean;
   doneMessage: string;
   /** Result file path from the "done" event, when the command emitted one. */
@@ -174,6 +182,8 @@ function planFromArgs(args: string[]): Plan {
 export function useSidecarProgress(key?: string): SidecarProgress {
   const [percent, setPercent] = useState(0);
   const [running, setRunning] = useState(false);
+  const [queued, setQueued] = useState(false);
+  const [queuePosition, setQueuePosition] = useState<number | null>(null);
   const [done, setDone] = useState(false);
   const [doneMessage, setDoneMessage] = useState("");
   const [donePath, setDonePath] = useState<string | null>(null);
@@ -182,10 +192,48 @@ export function useSidecarProgress(key?: string): SidecarProgress {
   const [error, setError] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const jobIdRef = useRef<string | null>(null);
+  const queuePollRef = useRef<number | null>(null);
+
+  function stopQueuePoll() {
+    if (queuePollRef.current !== null) {
+      clearInterval(queuePollRef.current);
+      queuePollRef.current = null;
+    }
+  }
+
+  // While a followed job is still `queued`, the SSE stream is silent (events
+  // only start once it runs), so poll /jobs to report the real queued state and
+  // how many jobs are ahead of it — instead of showing a misleading 0% (#128).
+  function startQueuePoll(jobId: string) {
+    stopQueuePoll();
+    const tick = () => {
+      apiGet<Array<{ id: string; status: string }>>("/jobs")
+        .then((list) => {
+          const idx = list.findIndex((j) => j.id === jobId);
+          const self = idx >= 0 ? list[idx] : undefined;
+          if (!self || self.status !== "queued") {
+            // Running/done/error — the stream now carries progress; stop polling.
+            setQueued(false);
+            setQueuePosition(null);
+            stopQueuePoll();
+            return;
+          }
+          const ahead = list
+            .slice(0, idx)
+            .filter((j) => j.status === "queued" || j.status === "running").length;
+          setQueued(true);
+          setQueuePosition(ahead);
+        })
+        .catch(() => { /* offline — leave last known */ });
+    };
+    tick();
+    queuePollRef.current = window.setInterval(tick, 1500);
+  }
 
   function closeStream() {
     esRef.current?.close();
     esRef.current = null;
+    stopQueuePoll();
   }
 
   function reset() {
@@ -194,6 +242,8 @@ export function useSidecarProgress(key?: string): SidecarProgress {
     jobIdRef.current = null;
     setPercent(0);
     setRunning(false);
+    setQueued(false);
+    setQueuePosition(null);
     setDone(false);
     setLog([]);
     setMessage("");
@@ -208,6 +258,10 @@ export function useSidecarProgress(key?: string): SidecarProgress {
   }
 
   function handleEvent(data: ChessDbEvent) {
+    // Any event means the job has started (or finished) — it's no longer merely
+    // queued (a queued job's stream is silent until it runs).
+    setQueued(false);
+    setQueuePosition(null);
     if (data.type === "log") {
       // Discrete milestone — keep it in the log and as the current status.
       if (data.message) {
@@ -249,6 +303,7 @@ export function useSidecarProgress(key?: string): SidecarProgress {
   function openStream(jobId: string) {
     closeStream();
     jobIdRef.current = jobId;
+    startQueuePoll(jobId);
     const es = new EventSource(jobEventsUrl(jobId));
     esRef.current = es;
     es.onmessage = (ev) => {
@@ -352,5 +407,5 @@ export function useSidecarProgress(key?: string): SidecarProgress {
 
   useEffect(() => () => closeStream(), []);
 
-  return { percent, running, done, doneMessage, donePath, message, log, error, run, runJob, reset, cancel };
+  return { percent, running, queued, queuePosition, done, doneMessage, donePath, message, log, error, run, runJob, reset, cancel };
 }

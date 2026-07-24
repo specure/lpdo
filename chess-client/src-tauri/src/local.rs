@@ -94,7 +94,6 @@ pub async fn upload_pgn_file(
     on_duplicate: String,
     fast: bool,
     private: bool,
-    max_position_depth: Option<u16>,
 ) -> Result<String, String> {
     use futures_util::StreamExt;
     use tauri::Emitter;
@@ -136,16 +135,13 @@ pub async fn upload_pgn_file(
     });
     let body = reqwest::Body::wrap_stream(stream);
 
-    let mut query: Vec<(&str, String)> = vec![
+    let query: Vec<(&str, String)> = vec![
         ("collection", collection),
         ("filename", filename),
         ("fast", fast.to_string()),
         ("private", private.to_string()),
         ("on_duplicate", on_duplicate),
     ];
-    if let Some(d) = max_position_depth {
-        query.push(("max_position_depth", d.to_string()));
-    }
 
     let url = format!("{}/import/upload", base_url.trim_end_matches('/'));
     let resp = reqwest::Client::new()

@@ -411,6 +411,33 @@ pub struct JobManager {
     /// Set while a connection reopen is in flight, so a second failure during
     /// recovery does not start an overlapping reopen cycle.
     reopening: Arc<AtomicBool>,
+    /// Debounced, coalesced post-import maintenance (#131). Import submitters
+    /// call `request_maintenance`; the coalesced pass (index + normalise, plus a
+    /// global dedup when a `skip_dedup` import owed one) is enqueued exactly once
+    /// after the import queue drains, so later imports never miss maintenance and
+    /// two passes never stack for one drain cycle.
+    maintenance: Mutex<MaintenanceNeeds>,
+}
+
+/// What post-import maintenance is currently owed. `index_normalise` is the
+/// always-cheap incremental tail (only new games are indexed/normalised);
+/// `dedup` is set only by imports that deferred dedup (first-run `skip_dedup`),
+/// since ordinary imports dedup inline.
+#[derive(Default, Clone, Copy)]
+struct MaintenanceNeeds {
+    index_normalise: bool,
+    dedup: bool,
+}
+
+/// Job types that must drain before a coalesced maintenance pass runs: any
+/// import-class job (would add games maintenance must then cover) or a
+/// maintenance job already in flight (don't stack a second pass).
+fn blocks_maintenance(job_type: &str) -> bool {
+    matches!(
+        job_type,
+        "import" | "import_pgn" | "sources_sync" | "download" | "update"
+            | "dedup_games" | "index_positions" | "normalise"
+    )
 }
 
 /// Read-only jobs only read the database (e.g. backup reads games and writes a
@@ -431,7 +458,50 @@ impl JobManager {
             order: Mutex::new(Vec::new()),
             counter: AtomicU64::new(1),
             reopening: Arc::new(AtomicBool::new(false)),
+            maintenance: Mutex::new(MaintenanceNeeds::default()),
         }
+    }
+
+    /// Request post-import maintenance (#131). Idempotent: sets the "owed" flags;
+    /// the coalesced pass runs later, once the import queue has drained. Pass
+    /// `needs_dedup = true` when the import deferred dedup (first-run
+    /// `skip_dedup`) so a single global `dedup_games` is included in the tail.
+    pub fn request_maintenance(&self, needs_dedup: bool) {
+        let mut m = self.maintenance.lock().unwrap();
+        m.index_normalise = true;
+        m.dedup |= needs_dedup;
+    }
+
+    /// If maintenance is owed and nothing import- or maintenance-class is queued
+    /// or running, enqueue the coalesced pass ([dedup] → index → normalise) once
+    /// and clear the owed flags. If the queue hasn't drained yet, re-arm and wait
+    /// for a later call. Safe to call from any thread and as often as you like —
+    /// the flags are claimed atomically so two callers can't both submit (#131).
+    pub fn maybe_run_maintenance(self: &Arc<Self>) {
+        // Atomically claim what's owed so a concurrent caller sees nothing.
+        let needs = {
+            let mut m = self.maintenance.lock().unwrap();
+            std::mem::take(&mut *m)
+        };
+        if !needs.index_normalise {
+            return;
+        }
+        let busy = self
+            .list()
+            .iter()
+            .any(|j| (j.status == "queued" || j.status == "running") && blocks_maintenance(&j.job_type));
+        if busy {
+            // Not drained yet — put back what we claimed and wait for a later call.
+            let mut m = self.maintenance.lock().unwrap();
+            m.index_normalise = true;
+            m.dedup |= needs.dedup;
+            return;
+        }
+        if needs.dedup {
+            self.submit("dedup_games".to_string(), serde_json::json!({}));
+        }
+        self.submit("index_positions".to_string(), serde_json::json!({ "fast": true }));
+        self.submit("normalise".to_string(), serde_json::json!({}));
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<JobSlot>> {
@@ -496,6 +566,12 @@ impl JobManager {
         // (and thus its sender) is dropped at job completion.
         let (ev_tx, mut ev_rx) = tokio::sync::mpsc::unbounded_channel::<JobEvent>();
         let slot_ev = slot.clone();
+        // Trigger a coalesced-maintenance drain check the instant this job ends
+        // (the loop below exits when the reporter's sender drops at completion),
+        // so maintenance starts right after the queue drains rather than waiting
+        // for the scheduler's periodic tick. No-op unless maintenance is owed and
+        // the queue is empty (#131).
+        let jm = Arc::clone(self);
         self.rt.spawn(async move {
             while let Some(ev) = ev_rx.recv().await {
                 {
@@ -536,6 +612,7 @@ impl JobManager {
                 }
                 let _ = slot_ev.events.send(ev);
             }
+            jm.maybe_run_maintenance();
         });
 
         // Job body: read-only jobs run on the read pool (concurrent with a
@@ -729,6 +806,11 @@ fn run_job(
             let collection = p.get("collection").and_then(|v| v.as_str()).unwrap_or("Manual").to_string();
             let on_duplicate = p.get("on_duplicate").and_then(|v| v.as_str()).unwrap_or("skip").to_string();
             let fast = flag(p, "fast");
+            // A bulk upload sets `skip_dedup` so a single background `dedup_games`
+            // pass (coalesced maintenance, #131) does the dedup instead — keeping
+            // per-game fingerprinting and a growing in-memory fingerprint map off
+            // the critical path of a multi-million-game load (#154).
+            let skip_dedup = flag(p, "skip_dedup");
             let visibility = if flag(p, "private") { "private" } else { "public" }.to_string();
             let spec = importer::ImportSpec { collection, visibility, on_duplicate };
             // Absent → default depth 40; 0 disables position indexing (bulk loads).
@@ -742,13 +824,6 @@ fn run_job(
             // user's home or /tmp. Write it to a daemon-owned temp beside the DB
             // (which the daemon can read/write), import, then clean up. A `path`
             // (a daemon-local file, or the `--local` CLI) still works unchanged.
-            // When asked to maintain (streamed uploads set it), chain
-            // index+normalise after the import and run everything under a
-            // sub-step so only the final `done` terminates the job.
-            let maintain = flag(p, "maintain");
-            let sub = maintain.then(|| reporter.sub_step());
-            let rep: &Reporter = sub.as_ref().unwrap_or(reporter);
-
             let import_res = if let Some(content) = p.get("content").and_then(|v| v.as_str()) {
                 let dir = db.parent().unwrap_or_else(|| Path::new("."));
                 let stamp = std::time::SystemTime::now()
@@ -758,12 +833,12 @@ fn run_job(
                 let tmp = dir.join(format!("upload-{stamp}.pgn"));
                 std::fs::write(&tmp, content)
                     .with_context(|| format!("writing uploaded PGN to {}", tmp.display()))?;
-                let res = importer::import_pgn(conn, &tmp, depth, 10, fast, false, &spec, rep);
+                let res = importer::import_pgn(conn, &tmp, depth, 10, fast, skip_dedup, &spec, reporter);
                 let _ = std::fs::remove_file(&tmp);
                 res
             } else {
                 let path = path_param(p, "path")?;
-                let res = importer::import_pgn(conn, &path, depth, 10, fast, false, &spec, rep);
+                let res = importer::import_pgn(conn, &path, depth, 10, fast, skip_dedup, &spec, reporter);
                 // Streamed uploads (#154) spool to a daemon-owned file and set
                 // `cleanup` so it's removed once imported (success or failure).
                 if flag(p, "cleanup") {
@@ -772,11 +847,6 @@ fn run_job(
                 res
             };
             import_res?;
-
-            if maintain {
-                run_post_import_maintenance(conn, db, depth, fast, rep, "Import")?;
-                reporter.done("Import and maintenance complete.");
-            }
         }
         "index_positions" => {
             run_index_positions_guarded(conn, db, Some(40), flag(p, "rebuild"), flag(p, "fast"), reporter)?;

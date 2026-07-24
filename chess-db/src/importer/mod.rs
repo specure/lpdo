@@ -36,6 +36,14 @@ fn bulk_mode_for_size(total_bytes: u64, force_threshold: usize) -> bool {
     force_threshold == 0 || total_bytes >= BULK_MODE_BYTES
 }
 
+/// Whether an upload of this many bytes should be treated as a bulk load — i.e.
+/// skip inline dedup (defer it to one background `dedup_games` pass) and use the
+/// fast path — matching `bulk_mode_for_size`'s size estimate. The upload handler
+/// uses this to pick `skip_dedup` from the spooled file size (#154).
+pub fn is_bulk_size(total_bytes: u64) -> bool {
+    total_bytes >= BULK_MODE_BYTES
+}
+
 /// User-facing knobs for `import-pgn`: grouping + visibility + duplicate policy.
 pub struct ImportSpec {
     pub collection: String,
@@ -819,6 +827,11 @@ struct ImportContext {
     seen_this_run: HashMap<u64, u32>,
     /// ChessBase GameId → game_id (same dual purpose as seen_this_run).
     seen_chessbase_ids: HashMap<i64, u32>,
+    /// When set, insert every game without any dedup — no fingerprinting, no
+    /// growing in-memory fingerprint map — because a single background
+    /// `dedup_games` pass cleans up afterwards. Bulk loads use this to keep dedup
+    /// off the import's critical path (#131/#154).
+    skip_dedup: bool,
 }
 
 impl ImportContext {
@@ -943,6 +956,7 @@ impl ImportContext {
             next_game_id,
             seen_this_run,
             seen_chessbase_ids,
+            skip_dedup,
         })
     }
 }
@@ -1184,33 +1198,42 @@ fn process_pgn_stream(
         // When a duplicate is detected we skip the insert but still tag the
         // existing row into the current import's collection — so a game can
         // belong to multiple collections without being duplicated.
-        if let Some(cbid) = game.chessbase_id {
-            if let Some(&existing_id) = ctx.seen_chessbase_ids.get(&cbid) {
+        let game_id = if ctx.skip_dedup {
+            // Bulk load: insert everything with no dedup — no fingerprint compute
+            // and no growing fingerprint map. A single background dedup_games pass
+            // removes duplicates afterwards (#131/#154).
+            let id = ctx.next_game_id;
+            ctx.next_game_id += 1;
+            id
+        } else {
+            if let Some(cbid) = game.chessbase_id {
+                if let Some(&existing_id) = ctx.seen_chessbase_ids.get(&cbid) {
+                    tag_existing_match(conn, existing_id, collection_id, visibility)?;
+                    skipped_games += 1;
+                    continue;
+                }
+            }
+            let fp = game_fingerprint(
+                white_id,
+                black_id,
+                game.date.as_deref(),
+                game.result.as_deref(),
+                &game.opening_line,
+                game.move_count,
+            );
+            if let Some(&existing_id) = ctx.seen_this_run.get(&fp) {
                 tag_existing_match(conn, existing_id, collection_id, visibility)?;
                 skipped_games += 1;
                 continue;
             }
-        }
-        let fp = game_fingerprint(
-            white_id,
-            black_id,
-            game.date.as_deref(),
-            game.result.as_deref(),
-            &game.opening_line,
-            game.move_count,
-        );
-        if let Some(&existing_id) = ctx.seen_this_run.get(&fp) {
-            tag_existing_match(conn, existing_id, collection_id, visibility)?;
-            skipped_games += 1;
-            continue;
-        }
-
-        let game_id = ctx.next_game_id;
-        ctx.next_game_id += 1;
-        ctx.seen_this_run.insert(fp, game_id);
-        if let Some(cbid) = game.chessbase_id {
-            ctx.seen_chessbase_ids.insert(cbid, game_id);
-        }
+            let id = ctx.next_game_id;
+            ctx.next_game_id += 1;
+            ctx.seen_this_run.insert(fp, id);
+            if let Some(cbid) = game.chessbase_id {
+                ctx.seen_chessbase_ids.insert(cbid, id);
+            }
+            id
+        };
 
         game_batch.push(GameRow {
             id: game_id,

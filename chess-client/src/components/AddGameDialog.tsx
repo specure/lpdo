@@ -116,6 +116,10 @@ export default function AddGameDialog({
   }, []);
 
   const uploading = uploadPhase === "uploading";
+  // A followed paste/scratch job that's still queued behind other jobs (#128):
+  // show "Queued" rather than a misleading "Adding… 0%". (The file path hands
+  // off after upload, so it never sits here.)
+  const waiting = progress.queued && !uploading;
 
   // Keep the wizard's close-guard up while a paste/scratch import runs OR a file
   // uploads (interrupting an in-flight upload would abort it).
@@ -200,10 +204,6 @@ export default function AddGameDialog({
         onDuplicate: dedup,
         fast: bulk,
         private: !isPublic,
-        // Bulk loads (the wizard) skip per-import indexing — the wizard's
-        // startSetup rebuilds the whole index afterwards; otherwise the daemon
-        // default (40) applies and the import self-indexes.
-        maxPositionDepth: bulk ? 0 : null,
       })
         .then(() => { setUploadPhase("queued"); })
         .catch((e) => { setUploadPhase("idle"); setUploadPct(null); setPasteError(String(e)); });
@@ -398,14 +398,23 @@ export default function AddGameDialog({
         <div className="space-y-2">
           <div className="flex justify-between text-label-md text-on-surface-variant">
             <span>
-              {uploading
-                ? "Uploading…"
-                : progress.done ? "Complete" : (lastAction === "normalise" ? "Normalising players…" : "Adding…")}
+              {uploading ? "Uploading…"
+                : waiting ? "Queued"
+                : progress.done ? "Complete"
+                : (lastAction === "normalise" ? "Normalising players…" : "Adding…")}
             </span>
-            <span>{Math.round(uploading ? uploadPct! : progress.percent)}%</span>
+            <span>
+              {waiting
+                ? (progress.queuePosition && progress.queuePosition > 0 ? `behind ${progress.queuePosition}` : "next up")
+                : `${Math.round(uploading ? uploadPct! : progress.percent)}%`}
+            </span>
           </div>
-          <ProgressBar value={uploading ? uploadPct! : progress.percent} />
-          {!uploading && <LogBox lines={progress.log} />}
+          {waiting ? (
+            <p className="text-label-sm text-on-surface-variant">Waiting for other background tasks to finish…</p>
+          ) : (
+            <ProgressBar value={uploading ? uploadPct! : progress.percent} />
+          )}
+          {!uploading && !waiting && <LogBox lines={progress.log} />}
           {progress.done && (
             <>
               <p className="text-success text-body-sm">✓ {progress.doneMessage}</p>
