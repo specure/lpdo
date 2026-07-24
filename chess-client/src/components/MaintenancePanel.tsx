@@ -2,9 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useSidecarProgress } from "../hooks/useSidecarProgress";
-import { getSchedule, updateSchedule, runUpdateNow, type ScheduleInfo } from "../api";
 import SourcesPanel from "./SourcesPanel";
-import AddGameDialog from "./AddGameDialog";
 import MergePlayersDialog from "./MergePlayersDialog";
 import { StatusInfo } from "../types";
 
@@ -262,26 +260,71 @@ function PlayersSection() {
   );
 }
 
-// ── Additional databases section ──────────────────────────────────────────────
+// ── Fetch missing FIDE IDs (reverse resolution) ───────────────────────────────
 
-function DatabasesSection({ onMutated }: { onMutated?: () => void }) {
-  // Reuse the same import UI as the setup wizard (AddGameDialog, embedded "file"
-  // mode): a file/folder picker and a collection chooser, instead of a bare path
-  // text field. No `bulk` here — unlike the wizard there's no follow-up index
-  // rebuild, so positions are indexed per import as before.
+function ResolveFideSection({ onMutated }: { onMutated?: () => void }) {
+  const progress = useSidecarProgress("maint-resolve-fide");
+  useEffect(() => { if (progress.done) onMutated?.(); }, [progress.done]);
   return (
-    <SectionCard title="Additional databases">
+    <SectionCard title="Fetch missing FIDE IDs">
       <p className="text-body-sm text-on-surface-variant">
-        Import PGN files — pick a single file or a whole folder, and choose the collection they go
-        into. Already-imported files are skipped.
+        Assign FIDE IDs to players that lack one by matching their name against the local FIDE list
+        — useful for FIDE-less sources (e.g. Ajedrez). Only a single exact match is used; ambiguous
+        names are left as-is.
       </p>
-      <AddGameDialog
-        embedded
-        initialMode="file"
-        allowedModes={["file"]}
-        onClose={() => { /* embedded: no close button */ }}
-        onImported={() => onMutated?.()}
-      />
+      {!progress.running && !progress.done && (
+        <ActionButton onClick={() => void progress.run(["players", "resolve-fide"])}>
+          Fetch FIDE IDs
+        </ActionButton>
+      )}
+      {(progress.running || progress.done) && (
+        <ProgressSection progress={progress} label="Matching names…" />
+      )}
+    </SectionCard>
+  );
+}
+
+// ── Merge duplicate players (same FIDE ID) ────────────────────────────────────
+
+function DedupPlayersSection({ onMutated }: { onMutated?: () => void }) {
+  const progress = useSidecarProgress("maint-dedup-players");
+  useEffect(() => { if (progress.done) onMutated?.(); }, [progress.done]);
+  return (
+    <SectionCard title="Merge duplicate players">
+      <p className="text-body-sm text-on-surface-variant">
+        Merge player records that share the same FIDE ID (e.g. name variants across sources),
+        reassigning their games to a single row. Run after fetching FIDE IDs.
+      </p>
+      {!progress.running && !progress.done && (
+        <ActionButton onClick={() => void progress.run(["players", "dedup"])}>
+          Merge duplicates
+        </ActionButton>
+      )}
+      {(progress.running || progress.done) && (
+        <ProgressSection progress={progress} label="Merging duplicate players…" />
+      )}
+    </SectionCard>
+  );
+}
+
+// ── Update the local FIDE player list ─────────────────────────────────────────
+
+function FideRefreshSection() {
+  const progress = useSidecarProgress("maint-fide-refresh");
+  return (
+    <SectionCard title="FIDE player list">
+      <p className="text-body-sm text-on-surface-variant">
+        Download the latest official FIDE player list. It also refreshes automatically about once a
+        month; use this to update it now (it powers name normalisation and FIDE-ID matching).
+      </p>
+      {!progress.running && !progress.done && (
+        <ActionButton onClick={() => void progress.run(["fide", "refresh"])}>
+          Update FIDE list
+        </ActionButton>
+      )}
+      {(progress.running || progress.done) && (
+        <ProgressSection progress={progress} label="Downloading FIDE list…" />
+      )}
     </SectionCard>
   );
 }
@@ -385,8 +428,8 @@ function NormaliseSection({ onMutated }: { onMutated?: () => void }) {
     <SectionCard title="Normalise player names">
       <p className="text-body-sm text-on-surface-variant">
         Update player names to their FIDE-canonical form using the locally-stored FIDE list.
-        This runs instantly — no online lookups. If names don't change, refresh the FIDE list
-        first from Automatic updates.
+        This runs instantly — no online lookups. If names don't change, update the FIDE list
+        first (FIDE player list, above).
       </p>
       {!progress.running && !progress.done && (
         <ActionButton onClick={run}>Normalise names</ActionButton>
@@ -582,137 +625,6 @@ function MergePlayersSection({ onMutated }: { onMutated?: () => void }) {
   );
 }
 
-// ── Automatic updates section ─────────────────────────────────────────────────
-
-// minutes-past-midnight ⇄ "HH:MM" for the <input type="time"> control.
-function minuteToHHMM(m: number): string {
-  const h = Math.floor(m / 60), mm = m % 60;
-  return `${String(h).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
-}
-function hhmmToMinute(s: string): number | null {
-  const m = /^(\d{2}):(\d{2})$/.exec(s);
-  if (!m) return null;
-  return Math.min(1439, Math.max(0, Number(m[1]) * 60 + Number(m[2])));
-}
-
-function AutoUpdateSection({ onMutated }: { onMutated?: () => void }) {
-  const [sched, setSched] = useState<ScheduleInfo | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const progress = useSidecarProgress("maint-auto-update");
-
-  async function refresh() {
-    try {
-      setSched(await getSchedule());
-      setError(null);
-    } catch (e) {
-      setError(String(e));
-    }
-  }
-  useEffect(() => { void refresh(); }, []);
-
-  // After a manual run finishes, the schedule's last-run/next-check change and
-  // the database grew — refresh this card and the host's status/lists. The
-  // server settles last_status from `running` → `ok` a moment after the job
-  // ends, so poll briefly until it's no longer `running`.
-  useEffect(() => {
-    if (!progress.done) return;
-    onMutated?.();
-    let stop = false;
-    let tries = 0;
-    const poll = async () => {
-      const s = await getSchedule().catch(() => null);
-      if (stop) return;
-      if (s) setSched(s);
-      if ((!s || s.last_status === "running") && tries++ < 8) {
-        setTimeout(() => void poll(), 2000);
-      }
-    };
-    void poll();
-    return () => { stop = true; };
-  }, [progress.done]);
-
-  async function save(body: Partial<Pick<ScheduleInfo, "enabled" | "daily_minute">>) {
-    setSaving(true);
-    try {
-      await updateSchedule(body);
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const lastRun = sched?.last_run ? sched.last_run.slice(0, 16) : null;
-  const status = sched?.last_status;
-
-  return (
-    <SectionCard title="Automatic updates">
-      <p className="text-body-sm text-on-surface-variant">
-        Let the server pull new TWIC issues in the background, so the database is current whenever you
-        open the app. Runs even while the app is closed if the server is installed as a background
-        service.
-      </p>
-      {sched ? (
-        <>
-          <label className="flex items-center gap-2 text-body-md text-on-surface cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={sched.enabled}
-              disabled={saving}
-              onChange={(e) => void save({ enabled: e.target.checked })}
-              className="cursor-pointer accent-primary w-4 h-4"
-            />
-            <span>Keep the database up to date</span>
-          </label>
-
-          {/* Daily run time — a clock-time picker the user controls. */}
-          <label className="flex items-center gap-2 text-body-md text-on-surface">
-            <span className="text-on-surface-variant">Check daily at</span>
-            <input
-              type="time"
-              value={minuteToHHMM(sched.daily_minute)}
-              disabled={saving || !sched.enabled}
-              onChange={(e) => {
-                const m = hhmmToMinute(e.target.value);
-                if (m !== null) void save({ daily_minute: m });
-              }}
-              className="h-9 px-3 rounded-sm bg-transparent text-on-surface text-body-sm font-mono border border-outline focus:outline-none focus:border-primary disabled:opacity-40 transition-colors duration-short3 ease-standard"
-            />
-          </label>
-
-          <div className="text-label-md text-on-surface-variant space-y-0.5">
-            {lastRun ? (
-              <div>
-                Last run: {lastRun}{" "}
-                {status === "ok" && <span className="text-success">✓</span>}
-                {status === "running" && <span>(running…)</span>}
-                {status && status !== "ok" && status !== "running" && (
-                  <span className="text-error">⚠ {status}</span>
-                )}
-              </div>
-            ) : (
-              <div>No automatic update has run yet.</div>
-            )}
-            {sched.enabled && sched.next_due && <div>Next check: {sched.next_due.slice(0, 16)}</div>}
-          </div>
-
-          {/* Run now — reuses the update job + SSE progress. */}
-          {!progress.running && !progress.done && (
-            <ActionButton onClick={() => progress.runJob(runUpdateNow)}>Run update now</ActionButton>
-          )}
-          {(progress.running || progress.done) && (
-            <ProgressSection progress={progress} label="Updating…" />
-          )}
-        </>
-      ) : (
-        <p className="text-body-sm text-on-surface-variant">{error ?? "Loading…"}</p>
-      )}
-      {sched && error && <p className="text-error text-body-sm">{error}</p>}
-    </SectionCard>
-  );
-}
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 
@@ -791,16 +703,19 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated }: Pro
             <SourcesPanel onMutated={onMutated} />
           </div>
 
+          {/* Maintenance tasks in recommended run order — the same identity-first
+              pipeline the background maintenance runs automatically after imports. */}
           <div className={`${grid} ${tab === "databases" ? "" : "hidden"}`}>
-            <AutoUpdateSection onMutated={onMutated} />
-            <DatabasesSection onMutated={onMutated} />
+            <ResolveFideSection onMutated={onMutated} />
+            <DedupPlayersSection onMutated={onMutated} />
+            <NormaliseSection onMutated={onMutated} />
             <DeduplicationSection onMutated={onMutated} />
             <IndexSection />
+            <FideRefreshSection />
           </div>
 
           <div className={`${grid} ${tab === "players" ? "" : "hidden"}`}>
             <PlayersSection />
-            <NormaliseSection onMutated={onMutated} />
             <MergePlayersSection onMutated={onMutated} />
           </div>
 
