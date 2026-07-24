@@ -1043,12 +1043,18 @@ fn sanitize_for_filename(name: &str) -> String {
 /// Export every non-deleted game in `collection` to a timestamped PGN file in
 /// `dir` (created if missing). Filename: `YYYYMMDD-HHMMSS-<collection>.pgn`,
 /// e.g. `20260603-084231-My_games.pgn`. Read-only over the database.
-fn do_backup(
+/// Build a `.pgn.zip` backup of `collection` at `out_path`: a single deflated
+/// `.pgn` entry named `entry_name`, games oldest-first (undated first). Returns
+/// the number of games written. Shared by the CLI/job `do_backup` and the
+/// streamed-download endpoint (#121), so a hardened daemon can hand the backup
+/// to the client instead of writing it into its own sandbox.
+pub(crate) fn build_backup_zip(
     conn: &duckdb::Connection,
     collection: &str,
-    dir: &Path,
-    reporter: &reporter::Reporter,
-) -> Result<()> {
+    entry_name: &str,
+    out_path: &Path,
+    mut on_progress: impl FnMut(u64, u64),
+) -> Result<u64> {
     let collection_id: i32 = conn
         .query_row(
             "SELECT id FROM collections WHERE name = ?",
@@ -1076,47 +1082,60 @@ fn do_backup(
         anyhow::bail!("collection {:?} has no games to back up", collection);
     }
 
-    let dir = expand_home(dir);
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("cannot create backup directory {}", dir.display()))?;
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("cannot create backup directory {}", parent.display()))?;
+    }
 
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let base = format!("{}-{}", stamp, sanitize_for_filename(collection));
     // A single deflated `.pgn` entry inside a `.pgn.zip`. PGN is text (~3-5×
     // smaller zipped), zip opens natively on every OS, and the entry round-trips
-    // back through the importer's existing zip reader. The `zip` crate is already
-    // a dependency (used on the import side).
-    let entry_name = format!("{base}.pgn");
-    let filename = format!("{base}.pgn.zip");
-    let path = dir.join(&filename);
-
-    let file = std::fs::File::create(&path)
-        .with_context(|| format!("cannot create {}", path.display()))?;
+    // back through the importer's existing zip reader.
+    let file = std::fs::File::create(out_path)
+        .with_context(|| format!("cannot create {}", out_path.display()))?;
     let mut zip = zip::write::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .compression_level(Some(9));
-    zip.start_file(entry_name.as_str(), options)
-        .with_context(|| format!("cannot start zip entry in {}", path.display()))?;
+    zip.start_file(entry_name, options)
+        .with_context(|| format!("cannot start zip entry in {}", out_path.display()))?;
 
     // Stream each game straight into the zip entry (games separated by a blank
     // line, standard PGN) rather than building the whole file in memory first.
-    // Emit periodic progress (≈100 ticks) with no message so the bar advances
-    // without flooding the GUI log.
     use std::io::Write;
     let total = pgns.len() as u64;
     let step = (total / 100).max(1);
     for (i, pgn) in pgns.iter().enumerate() {
         zip.write_all(pgn.trim_end().as_bytes())
             .and_then(|()| zip.write_all(b"\n\n"))
-            .with_context(|| format!("cannot write {}", path.display()))?;
+            .with_context(|| format!("cannot write {}", out_path.display()))?;
         let done = i as u64 + 1;
         if done.is_multiple_of(step) || done == total {
-            reporter.progress(done, total, "");
+            on_progress(done, total);
         }
     }
-    zip.finish().with_context(|| format!("cannot finalize {}", path.display()))?;
+    zip.finish().with_context(|| format!("cannot finalize {}", out_path.display()))?;
+    Ok(total)
+}
 
+/// Default backup filename stem for a collection: `<stamp>-<collection>`.
+pub(crate) fn backup_base_name(collection: &str) -> String {
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    format!("{}-{}", stamp, sanitize_for_filename(collection))
+}
+
+fn do_backup(
+    conn: &duckdb::Connection,
+    collection: &str,
+    dir: &Path,
+    reporter: &reporter::Reporter,
+) -> Result<()> {
+    let dir = expand_home(dir);
+    let base = backup_base_name(collection);
+    let path = dir.join(format!("{base}.pgn.zip"));
+    let entry_name = format!("{base}.pgn");
+    let total = build_backup_zip(conn, collection, &entry_name, &path, |done, tot| {
+        reporter.progress(done, tot, "");
+    })?;
     reporter.done_with_path(
         format!("Backed up {} game(s) from {:?} to {}", total, collection, path.display()),
         path.display(),

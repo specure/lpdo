@@ -73,6 +73,7 @@ pub fn run() {
             local::list_directory,
             local::read_pgn_file,
             local::upload_pgn_file,
+            local::download_backup,
             local::append_pgn_file,
             local::write_pgn_file,
             local::write_temp_pgn_file,

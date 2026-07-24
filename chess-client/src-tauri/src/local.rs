@@ -174,6 +174,67 @@ pub async fn upload_pgn_file(
         .ok_or_else(|| "upload response missing job_id".to_string())
 }
 
+/// Download a collection's backup from the daemon's `GET /backup/download` and
+/// write it to `dest_path` — a user-chosen, user-accessible location (#121). The
+/// hardened daemon can't write the backup to the user's home itself, so it builds
+/// it and streams the bytes here, where the GUI (running as the user) saves it.
+/// Emits `backup-download-progress` so the panel shows the transfer.
+#[tauri::command]
+pub async fn download_backup(
+    app: tauri::AppHandle,
+    base_url: String,
+    collection: String,
+    dest_path: String,
+) -> Result<(), String> {
+    use futures_util::StreamExt;
+    use tauri::Emitter;
+    use tokio::io::AsyncWriteExt;
+
+    let url = format!("{}/backup/download", base_url.trim_end_matches('/'));
+    let resp = reqwest::Client::new()
+        .get(url)
+        .query(&[("collection", collection)])
+        .send()
+        .await
+        .map_err(|e| format!("backup request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("backup failed ({status}): {text}"));
+    }
+
+    let total = resp.content_length().unwrap_or(0);
+    let mut file = tokio::fs::File::create(&dest_path)
+        .await
+        .map_err(|e| format!("{dest_path}: {e}"))?;
+
+    let mut stream = resp.bytes_stream();
+    let step = (total / 100).max(1);
+    let mut received: u64 = 0;
+    let mut next_emit: u64 = 0;
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|e| format!("backup stream error: {e}"))?;
+        file.write_all(&bytes)
+            .await
+            .map_err(|e| format!("write {dest_path}: {e}"))?;
+        received += bytes.len() as u64;
+        if received >= next_emit {
+            next_emit = received + step;
+            let _ = app.emit(
+                "backup-download-progress",
+                serde_json::json!({ "received": received, "total": total }),
+            );
+        }
+    }
+    file.flush().await.map_err(|e| format!("flush {dest_path}: {e}"))?;
+    let _ = app.emit(
+        "backup-download-progress",
+        serde_json::json!({ "received": received, "total": total.max(received) }),
+    );
+    Ok(())
+}
+
 const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024; // 100 MB
 
 #[tauri::command]
