@@ -399,7 +399,7 @@ fn apply_canonical(conn: &Connection, id: u32, current_name: &str, canonical: &s
 ///        compile-time `option_env!("CHESSVAULT_NORMALISE_API_KEY")`.
 /// The service is enabled only when a non-empty key resolves (the public URL on
 /// its own does nothing), so contributor builds without the secret are FIDE-only.
-fn resolve_service(service_url: Option<&str>, service_key: Option<&str>, no_service: bool) -> Option<(String, String)> {
+pub(crate) fn resolve_service(service_url: Option<&str>, service_key: Option<&str>, no_service: bool) -> Option<(String, String)> {
     if no_service {
         return None;
     }
@@ -455,7 +455,7 @@ fn fetch_cache_names(
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
-fn build_client() -> Result<reqwest::blocking::Client> {
+pub(crate) fn build_client() -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .user_agent("Mozilla/5.0 (X11; Linux x86_64) chess-db/0.1")

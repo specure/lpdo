@@ -39,6 +39,18 @@ pub fn init(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_players_name    ON players(name_normalized);
         CREATE INDEX IF NOT EXISTS idx_players_fide_id ON players(fide_id);
 
+        -- Reverse player-name → FIDE-ID resolution ledger (#152). Keyed by the
+        -- normalized name; `fide_id` NULL is a *negative* cache entry (name was
+        -- checked and not uniquely resolvable). `source` records how it was
+        -- resolved (local | cache | fide | import) and `checked_at` dates the
+        -- attempt so stale negatives can be revisited as FIDE grows.
+        CREATE TABLE IF NOT EXISTS name_resolution (
+            name_normalized  VARCHAR PRIMARY KEY,
+            fide_id          INTEGER,
+            source           VARCHAR,
+            checked_at       DATE
+        );
+
         CREATE TABLE IF NOT EXISTS games (
             id            UINTEGER PRIMARY KEY,
             issue_id      INTEGER,

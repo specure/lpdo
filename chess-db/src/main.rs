@@ -16,6 +16,7 @@ mod jobs;
 mod lichess;
 mod normalise;
 mod players;
+mod reverse;
 mod progress;
 mod proxy;
 mod reporter;
@@ -592,6 +593,19 @@ enum PlayersCommands {
         /// Input CSV file path
         path: PathBuf,
     },
+    /// Export the reverse-resolution ledger (name → FIDE-ID outcomes, incl.
+    /// unresolved negatives) to CSV, so the work is shareable and the same name
+    /// isn't re-queried across clients/runs (#152).
+    ExportResolutions {
+        /// Output CSV file path
+        path: PathBuf,
+    },
+    /// Import a resolution ledger produced by `players export-resolutions`:
+    /// assign name→FIDE (single-exact) and record known-unresolved names.
+    ImportResolutions {
+        /// Input CSV file path
+        path: PathBuf,
+    },
     /// Set or back-fill a player's FIDE ID. Used by the edit-header dialog
     /// when the user supplies a FIDE ID for a player whose row was created
     /// from an earlier import that lacked it.
@@ -640,6 +654,25 @@ enum PlayersCommands {
         #[arg(long)]
         service_key: Option<String>,
         /// Skip the batch cache service entirely (FIDE lookups only).
+        #[arg(long)]
+        no_service: bool,
+    },
+    /// Reverse of `normalise` (#152): fetch missing FIDE IDs for named players —
+    /// assign a FIDE ID to players that have none, FROM their name. For
+    /// FIDE-less sources like Ajedrez. Resolves a name only on a single exact
+    /// match (local DB, then the shared cache); ambiguous/unknown = left as-is.
+    ResolveFide {
+        /// Print what would be changed without writing to the database
+        #[arg(long)]
+        dry_run: bool,
+        /// Override the cache service URL (default: compiled-in).
+        #[arg(long)]
+        service_url: Option<String>,
+        /// API key for the cache service. Defaults to env CHESSVAULT_NORMALISE_API_KEY
+        /// or the compile-time baked key; without a key the cache is skipped.
+        #[arg(long)]
+        service_key: Option<String>,
+        /// Skip the shared cache service (local-DB inversion only).
         #[arg(long)]
         no_service: bool,
     },
@@ -1444,6 +1477,20 @@ fn job_spec_for(command: &Commands) -> Option<proxy::JobSpec> {
             "normalise",
             json!({ "dry_run": dry_run, "stop_on_errors": stop_on_errors, "limit": limit }),
         ),
+        Commands::Players {
+            subcommand: PlayersCommands::ResolveFide { dry_run, no_service, .. },
+        } => (
+            "resolve_fide",
+            json!({ "dry_run": dry_run, "no_service": no_service }),
+        ),
+        Commands::Players { subcommand: PlayersCommands::ExportResolutions { path } } => (
+            "resolve_export",
+            json!({ "path": path.to_string_lossy() }),
+        ),
+        Commands::Players { subcommand: PlayersCommands::ImportResolutions { path } } => (
+            "resolve_import",
+            json!({ "path": path.to_string_lossy() }),
+        ),
         Commands::Players { subcommand: PlayersCommands::Import { path } } => (
             "players_import",
             json!({ "path": path.to_string_lossy() }),
@@ -2044,6 +2091,16 @@ async fn main() -> Result<()> {
             }
             PlayersCommands::Normalise { dry_run, delay, batch_size, batch_pause, workers, error_threshold, error_pause, stop_on_errors, limit, service_url, service_key, no_service } => {
                 normalise::normalise_players(&conn, dry_run, delay, batch_size, batch_pause, workers, error_threshold, error_pause, stop_on_errors, limit, service_url, service_key, no_service, &reporter)?;
+            }
+            PlayersCommands::ResolveFide { dry_run, service_url, service_key, no_service } => {
+                reverse::resolve_fide(&conn, dry_run, service_url, service_key, no_service, &reporter)?;
+            }
+            PlayersCommands::ExportResolutions { path } => {
+                let n = reverse::export_resolutions(&conn, &path)?;
+                println!("Exported {} resolution(s) to {}", n, path.display());
+            }
+            PlayersCommands::ImportResolutions { path } => {
+                reverse::import_resolutions(&conn, &path, &reporter)?;
             }
         },
         Commands::Search { subcommand } => match subcommand {

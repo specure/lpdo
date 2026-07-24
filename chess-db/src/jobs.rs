@@ -444,7 +444,7 @@ fn blocks_maintenance(job_type: &str) -> bool {
 /// PGN file). They run on the read pool so they don't queue behind a long write
 /// like an index rebuild.
 fn is_read_only(job_type: &str) -> bool {
-    matches!(job_type, "backup" | "players_export")
+    matches!(job_type, "backup" | "players_export" | "resolve_export")
 }
 
 impl JobManager {
@@ -872,6 +872,20 @@ fn run_job(
                 1500, 100, 30_000, 3, 10, 7_200_000,
                 flag(p, "stop_on_errors"), limit, None, None, false, reporter,
             )?;
+        }
+        // Reverse of `normalise` (#152): fetch missing FIDE IDs for named players
+        // (local-DB inversion + shared cache). A distinct job from `normalise`.
+        "resolve_fide" => {
+            crate::reverse::resolve_fide(conn, flag(p, "dry_run"), None, None, flag(p, "no_service"), reporter)?;
+        }
+        "resolve_export" => {
+            let path = path_param(p, "path")?;
+            let n = crate::reverse::export_resolutions(conn, &path)?;
+            reporter.done(format!("Exported {} resolution(s) to {}", n, path.display()));
+        }
+        "resolve_import" => {
+            let path = path_param(p, "path")?;
+            crate::reverse::import_resolutions(conn, &path, reporter)?;
         }
         "players_import" => {
             let path = path_param(p, "path")?;

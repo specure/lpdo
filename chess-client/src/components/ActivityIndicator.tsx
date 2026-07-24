@@ -37,6 +37,7 @@ function jobLabel(j: Job): string {
     case "dedup_games":        return "Deduplicate games";
     case "cleanup":            return "Clean up games";
     case "normalise":          return "Normalise player names";
+    case "resolve_fide":       return "Fetch missing FIDE IDs";
     case "import":             return "Import";
     case "import_pgn": {
       // Prefer the original filename (what's importing); the collection (where it
