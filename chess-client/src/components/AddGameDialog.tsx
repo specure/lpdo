@@ -80,7 +80,8 @@ export default function AddGameDialog({
   bulk = false,
 }: Props) {
   const visibleModes = ALL_MODES.filter((m) => !allowedModes || allowedModes.includes(m.mode));
-  const [mode, setMode] = useState<Mode>(initialMode ?? (embedded ? "file" : "scratch"));
+  const initialModeResolved = initialMode ?? (embedded ? "file" : "scratch");
+  const [mode, setMode] = useState<Mode>(initialModeResolved);
 
   // Per-mode inputs
   const [tags, setTags] = useState<Tag[]>(initialTags ?? defaultNewGameTags);
@@ -88,8 +89,16 @@ export default function AddGameDialog({
   const [pasteError, setPasteError] = useState<string | null>(null);
   const [path, setPath] = useState("");
 
-  // Shared
-  const [collectionName, setCollectionName] = useState("My games");
+  // Shared. Collection defaults to "My games" ONLY when adding your own game
+  // (scratch mode). For file/paste imports it starts empty so the destination is
+  // an explicit choice — importing a public reference DB (e.g. a Megabase) into
+  // "My games (private)" by forgetting to change a silent default is expensive to
+  // unpick (#159). `collectionTouched` tracks whether the user set it, so a mode
+  // switch only re-applies the default while the field is still untouched.
+  const [collectionName, setCollectionName] = useState(
+    () => (initialModeResolved === "scratch" ? "My games" : ""),
+  );
+  const [collectionTouched, setCollectionTouched] = useState(false);
   const [isPublic, setIsPublic] = useState(false);
   const [dedup, setDedup] = useState<DedupMode>("skip");
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -163,9 +172,18 @@ export default function AddGameDialog({
     !progress.done &&
     uploadPhase === "idle";
 
+  // Re-apply the per-mode default collection when switching modes, but only while
+  // the user hasn't set it themselves (#159): scratch → "My games", imports → "".
+  useEffect(() => {
+    if (!collectionTouched) {
+      setCollectionName(mode === "scratch" ? "My games" : "");
+    }
+  }, [mode, collectionTouched]);
+
   function applyPreset(p: Preset) {
     if (p.collection) setCollectionName(p.collection);
     setIsPublic(p.isPublic);
+    setCollectionTouched(true);
   }
 
   async function pasteFromClipboard() {
@@ -289,13 +307,19 @@ export default function AddGameDialog({
         <Field label="Collection" hint="Pick an existing collection or type a new name. The same collection can hold games from many imports.">
           <Combobox
             value={collectionName}
-            onChange={setCollectionName}
+            onChange={(v) => { setCollectionName(v); setCollectionTouched(true); }}
             placeholder="e.g. Bundesliga 2024"
             disabled={locked}
             options={collections.map((c) => ({
               value: c.name, label: c.name, secondary: `${c.game_count} games`,
             }))}
           />
+          {mode !== "scratch" && !collectionName.trim() && (
+            <p className="text-label-sm text-on-surface-variant mt-1.5">
+              Choose where these games go — pick a collection, type a new name, or use a quick-fill.
+              Set <span className="text-on-surface">Public</span> below for a shared reference database.
+            </p>
+          )}
           <div className="flex flex-wrap gap-1.5 mt-2">
             <span className="text-label-sm text-on-surface-variant self-center mr-1">Quick fill:</span>
             {PRESETS.map((p) => (
