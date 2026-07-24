@@ -256,7 +256,7 @@ export interface Job {
   id: string;
   /** Job kind, e.g. "sources_sync" | "update" | "index_positions" | "backup". */
   type: string;
-  status: "queued" | "running" | "done" | "error";
+  status: "queued" | "running" | "done" | "error" | "cancelled";
   value: number;
   total: number;
   message: string;

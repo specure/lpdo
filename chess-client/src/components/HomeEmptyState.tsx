@@ -75,9 +75,11 @@ const IconSparkles = () => (
 const PIPELINE_LABELS: Record<string, string> = {
   download: "Downloading sources",
   import: "Importing games",
-  dedup_games: "Deduplicating",
-  index_positions: "Building the position index",
+  resolve_fide: "Fetching FIDE IDs",
+  dedup_players: "Merging duplicate players",
   normalise: "Normalising player names",
+  dedup_games: "Deduplicating games",
+  index_positions: "Building the position index",
 };
 
 function useReadiness(initial: StatusInfo | null) {

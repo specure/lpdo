@@ -8,7 +8,7 @@ const activeJobs = new Map<string, string>();
 
 interface JobSnapshot {
   id: string;
-  status: "queued" | "running" | "done" | "error";
+  status: "queued" | "running" | "done" | "error" | "cancelled";
   value: number;
   total: number;
   message: string;
@@ -18,7 +18,7 @@ interface JobSnapshot {
 // Progress events streamed by the server's job runner (same shape the CLI
 // emitted in --json mode).
 interface ChessDbEvent {
-  type: "log" | "progress" | "done" | "error";
+  type: "log" | "progress" | "done" | "error" | "cancelled";
   message?: string;
   value?: number;
   total?: number;
@@ -145,6 +145,7 @@ function planFromArgs(args: string[]): Plan {
         if (hasFlag(args, "--dry-run")) params.dry_run = true;
         return { kind: "job", type: "normalise", params };
       }
+      if (a1 === "dedup") return { kind: "job", type: "dedup_players", params: {} };
       break;
     }
     case "games": {
@@ -293,6 +294,16 @@ export function useSidecarProgress(key?: string): SidecarProgress {
       }
       setError(data.message || "The operation failed.");
       setRunning(false);
+      if (key) activeJobs.delete(key);
+      closeStream();
+    } else if (data.type === "cancelled") {
+      // A cooperative cancel is a clean terminal state, not an error.
+      setRunning(false);
+      setDone(true);
+      if (data.message) {
+        setDoneMessage(data.message);
+        setMessage(data.message);
+      }
       if (key) activeJobs.delete(key);
       closeStream();
     }

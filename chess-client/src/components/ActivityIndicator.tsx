@@ -35,6 +35,7 @@ function jobLabel(j: Job): string {
     case "update":             return "Scheduled update";
     case "index_positions":    return "Build position index";
     case "dedup_games":        return "Deduplicate games";
+    case "dedup_players":      return "Merge duplicate players";
     case "cleanup":            return "Clean up games";
     case "normalise":          return "Normalise player names";
     case "resolve_fide":       return "Fetch missing FIDE IDs";
@@ -47,7 +48,7 @@ function jobLabel(j: Job): string {
       if (f) return c ? `Import ${f} → ${c}` : `Import ${f}`;
       return c ? `Import PGN → ${c}` : "Import PGN";
     }
-    case "maintenance_pending": return "Prepare database — dedup · index · normalise";
+    case "maintenance_pending": return "Prepare database — resolve · dedup · normalise · index";
     case "players_import":     return "Import players";
     case "players_export":     return "Export players";
     case "backup":             return p.collection ? `Backup ${p.collection}` : "Backup";
@@ -76,9 +77,10 @@ function ActiveRow({ job, eta, onCancel }: { job: Job; eta?: string; onCancel: (
     <div className="px-4 py-3 space-y-1.5">
       <div className="flex items-center justify-between gap-2">
         <span className="text-body-sm text-on-surface truncate">{jobLabel(job)}</span>
-        {/* Cancel only running, interruptible jobs — an appender (fast) write
-            can corrupt the DB if killed mid-flight, so it isn't cancelable. */}
-        {job.status === "running" && job.interruptible && (
+        {/* Queued jobs can always be cancelled (they haven't started). A running
+            job is cancellable when interruptible — an appender (fast) write can
+            corrupt the DB if killed mid-flight, so those aren't. (#161) */}
+        {(queued || (job.status === "running" && job.interruptible)) && (
           <button
             onClick={() => onCancel(job.id)}
             className="shrink-0 h-6 px-2 inline-flex items-center rounded-full text-error border border-outline text-label-sm hover:bg-error/8 transition-colors duration-short3 ease-standard"
@@ -109,13 +111,20 @@ function ActiveRow({ job, eta, onCancel }: { job: Job; eta?: string; onCancel: (
 
 function RecentRow({ job }: { job: Job }) {
   const ok = job.status === "done";
+  const cancelled = job.status === "cancelled";
+  // ✓ done (green) · ⊘ cancelled (muted) · ✕ error (red)
+  const { icon, color } = ok
+    ? { icon: "✓", color: "text-success" }
+    : cancelled
+    ? { icon: "⊘", color: "text-on-surface-variant" }
+    : { icon: "✕", color: "text-error" };
   return (
     <div className="px-4 py-2 flex items-start gap-2">
-      <span className={`text-base leading-5 shrink-0 ${ok ? "text-success" : "text-error"}`}>{ok ? "✓" : "✕"}</span>
+      <span className={`text-base leading-5 shrink-0 ${color}`}>{icon}</span>
       <div className="min-w-0">
         <div className="text-body-sm text-on-surface truncate">{jobLabel(job)}</div>
-        {!ok && job.error && <div className="text-label-sm text-error break-words">{job.error}</div>}
-        {ok && job.message && <div className="text-label-sm text-on-surface-variant truncate">{job.message}</div>}
+        {job.status === "error" && job.error && <div className="text-label-sm text-error break-words">{job.error}</div>}
+        {(ok || cancelled) && job.message && <div className="text-label-sm text-on-surface-variant truncate">{job.message}</div>}
       </div>
     </div>
   );
@@ -177,7 +186,10 @@ export default function ActivityIndicator() {
   // Submission order (oldest→newest); active oldest-first reads as the pipeline,
   // recent newest-first so the latest finish is on top.
   const active = all.filter((j) => j.status === "running" || j.status === "queued");
-  const recent = all.filter((j) => j.status === "done" || j.status === "error").slice(-8).reverse();
+  const recent = all
+    .filter((j) => j.status === "done" || j.status === "error" || j.status === "cancelled")
+    .slice(-8)
+    .reverse();
   const busy = active.length > 0;
 
   function handleCancel(id: string) {
