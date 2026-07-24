@@ -1433,7 +1433,7 @@ fn import_summary(imported: usize, skipped_dups: usize, skipped_ns: usize, skipp
 /// Apply queued FIDE-ID back-fills: each (player_id, fide_id) pair updates
 /// `players.fide_id` for a player who previously had none. Runs in a single
 /// transaction. Sets `name_normalised = FALSE` so a future `players normalise`
-/// pass will reconcile the name spelling against ratings.fide.com.
+/// pass will canonicalise the name spelling from the local FIDE list.
 fn flush_player_fide_backfill(
     conn: &Connection,
     backfill: &[(u32, u32)],
