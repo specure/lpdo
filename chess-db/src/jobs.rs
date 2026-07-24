@@ -326,6 +326,11 @@ pub struct JobSnapshot {
     /// False for appender (fast) operations, which can corrupt the database if
     /// the process is killed mid-write — the UI uses this to guard app-close.
     pub interruptible: bool,
+    /// Whether a *running* job honours cooperative cancellation (its loop polls
+    /// is_cancelled and stops on a committed boundary). Distinct from
+    /// `interruptible`: a fast import can't be killed mid-write but CAN be asked
+    /// to stop between batches. The UI shows the Cancel button on this.
+    pub cancellable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -384,6 +389,7 @@ impl JobSlot {
             total: s.total,
             message: s.message.clone(),
             interruptible: self.interruptible,
+            cancellable: is_cancellable(&self.job_type),
             path: s.path.clone(),
             error: s.error.clone(),
             params: self.params.clone(),
@@ -439,6 +445,19 @@ struct MaintenanceNeeds {
 /// Job types that must drain before a coalesced maintenance pass runs: any
 /// import-class job (would add games maintenance must then cover) or a
 /// maintenance job already in flight (don't stack a second pass).
+/// Job types whose long-running loop polls `is_cancelled` and can stop mid-run on
+/// a committed boundary (#157/#140). Short/atomic jobs (normalise, resolve_fide)
+/// and the FIDE download aren't cancellable mid-flight, so the UI doesn't offer a
+/// (dead) Cancel for them while running — but any queued job can still be cancelled
+/// before it starts.
+fn is_cancellable(job_type: &str) -> bool {
+    matches!(
+        job_type,
+        "import" | "import_pgn" | "sources_sync" | "update"
+            | "index_positions" | "dedup_games" | "dedup_players"
+    )
+}
+
 fn blocks_maintenance(job_type: &str) -> bool {
     matches!(
         job_type,
@@ -488,6 +507,13 @@ impl JobManager {
         let mut m = self.maintenance.lock().unwrap();
         m.requested = true;
         m.full |= full;
+    }
+
+    /// Cancel owed-but-not-yet-enqueued maintenance (the synthetic
+    /// "maintenance-pending" row). Clears the flags so the coalesced pass won't
+    /// start when the import queue drains. A later import can re-request it.
+    pub fn clear_maintenance(&self) {
+        *self.maintenance.lock().unwrap() = MaintenanceNeeds::default();
     }
 
     /// If maintenance is owed and nothing import- or maintenance-class is queued

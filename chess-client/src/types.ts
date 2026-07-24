@@ -262,6 +262,9 @@ export interface Job {
   message: string;
   /** False for appender (fast) writes that must not be interrupted. */
   interruptible: boolean;
+  /** True when a running job honours cooperative cancellation (stops on a
+   *  committed boundary). Drives whether the Cancel button is shown. */
+  cancellable?: boolean;
   path?: string;
   error?: string;
   /** Submission params, used to label a job by what it operates on. */

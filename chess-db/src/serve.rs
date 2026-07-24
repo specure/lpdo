@@ -1129,6 +1129,7 @@ async fn list_jobs_handler(State(state): State<AppState>) -> Json<serde_json::Va
                 "total": 0,
                 "message": "Runs after the import finishes",
                 "interruptible": false,
+                "cancellable": false,
                 "params": {},
             }));
         }
@@ -1150,6 +1151,12 @@ async fn cancel_job_handler(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
 ) -> std::result::Result<StatusCode, (StatusCode, String)> {
+    // The synthetic "maintenance-pending" row isn't a real job — cancelling it
+    // means "don't run the coalesced maintenance", i.e. clear the owed flags.
+    if id == "maintenance-pending" {
+        state.jobs.clear_maintenance();
+        return Ok(StatusCode::NO_CONTENT);
+    }
     if state.jobs.cancel(&id) {
         Ok(StatusCode::NO_CONTENT)
     } else {

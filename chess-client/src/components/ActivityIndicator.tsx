@@ -79,9 +79,10 @@ function ActiveRow({ job, eta, onCancel }: { job: Job; eta?: string; onCancel: (
       <div className="flex items-center justify-between gap-2">
         <span className="text-body-sm text-on-surface truncate">{jobLabel(job)}</span>
         {/* Queued jobs can always be cancelled (they haven't started). A running
-            job is cancellable when interruptible — an appender (fast) write can
-            corrupt the DB if killed mid-flight, so those aren't. (#161) */}
-        {(queued || (job.status === "running" && job.interruptible)) && (
+            job shows Cancel when it honours cooperative cancellation — it stops on
+            a committed boundary, so a fast import counts even though it can't be
+            killed mid-write (#157/#161). */}
+        {(queued || (job.status === "running" && job.cancellable)) && (
           <button
             onClick={() => onCancel(job.id)}
             className="shrink-0 h-6 px-2 inline-flex items-center rounded-full text-error border border-outline text-label-sm hover:bg-error/8 transition-colors duration-short3 ease-standard"
