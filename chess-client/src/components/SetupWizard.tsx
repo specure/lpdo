@@ -168,6 +168,12 @@ async function applySourceSelection(scope: SourceStatus[], selected: Set<string>
 const sourcesFilledBtn =
   "w-full h-10 rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 disabled:opacity-40 transition-all duration-short3 ease-standard";
 
+// Secondary full-width variant: used for the commercial path's "continue without
+// importing" action, so it doesn't compete with AddGameDialog's primary
+// "Add to database" button (two identical primary buttons read as a bug).
+const sourcesTonalBtn =
+  "w-full h-10 rounded-full bg-secondary-container text-on-secondary-container text-label-lg hover:brightness-110 disabled:opacity-40 transition-all duration-short3 ease-standard";
+
 // ── Step: Deep history (the historical base — chosen first) ───────────────────
 
 type History = "free" | "commercial" | "none";
@@ -285,13 +291,17 @@ function DeepHistoryStep({ onComplete, onAdvance, onRunningChange }: { onComplet
       )}
 
       <div className="space-y-2">
-        <button onClick={() => { void apply(); }} disabled={enabling} className={sourcesFilledBtn}>
+        <button
+          onClick={() => { void apply(); }}
+          disabled={enabling}
+          className={history === "commercial" ? sourcesTonalBtn : sourcesFilledBtn}
+        >
           {enabling
             ? "Saving…"
             : history === "free" && selected.size > 0
               ? "Add historical base"
               : history === "commercial"
-                ? "Continue"
+                ? "Continue without importing"
                 : "Continue without a base"}
         </button>
         {submitError && <p className="text-label-sm text-error">{submitError}</p>}
