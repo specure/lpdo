@@ -303,19 +303,29 @@ impl<R: Read> Read for LineCountingReader<R> {
 
 /// Drop all indexes that would be maintained live during a bulk import.
 /// Safe to call even if the indexes do not exist yet.
+///
+/// The players indexes are included deliberately (#82): they are ART indexes, and
+/// maintaining them live while the Appender bulk-inserts players can leave the
+/// index inconsistent with the table — a later `DELETE FROM players` (dedup /
+/// merge) then hits "Failed to delete all rows from index", a *fatal* error that
+/// invalidates the whole writer connection. Dropping them during the bulk window
+/// and rebuilding cleanly afterwards avoids that state entirely.
 fn drop_bulk_indexes(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "DROP INDEX IF EXISTS idx_games_white;
          DROP INDEX IF EXISTS idx_games_black;
          DROP INDEX IF EXISTS idx_games_date;
-         DROP INDEX IF EXISTS idx_games_eco;",
+         DROP INDEX IF EXISTS idx_games_eco;
+         DROP INDEX IF EXISTS idx_players_name;
+         DROP INDEX IF EXISTS idx_players_fide_id;",
     )?;
     Ok(())
 }
 
-/// Recreate games indexes after a bulk import.
-/// Position index is intentionally excluded — use `chess-db index-positions`
-/// after the import completes, which runs in a clean memory state.
+/// Recreate the games + players indexes after a bulk import (mirrors
+/// `drop_bulk_indexes`). Position index is intentionally excluded — use
+/// `chess-db index-positions` after the import completes, which runs in a clean
+/// memory state. Must match the index definitions in `db::schema`.
 fn recreate_bulk_indexes(conn: &Connection) -> Result<()> {
     // Use single-threaded builds to avoid memory pressure on large tables
     conn.execute_batch("SET threads=1;")?;
@@ -323,7 +333,9 @@ fn recreate_bulk_indexes(conn: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_games_white ON games(white_id);
          CREATE INDEX IF NOT EXISTS idx_games_black ON games(black_id);
          CREATE INDEX IF NOT EXISTS idx_games_date  ON games(date);
-         CREATE INDEX IF NOT EXISTS idx_games_eco   ON games(eco);",
+         CREATE INDEX IF NOT EXISTS idx_games_eco   ON games(eco);
+         CREATE INDEX IF NOT EXISTS idx_players_name    ON players(name_normalized);
+         CREATE INDEX IF NOT EXISTS idx_players_fide_id ON players(fide_id);",
     )?;
     conn.execute_batch("SET threads=4;")?;
     Ok(())
@@ -1728,6 +1740,63 @@ mod sevenz_tests {
             "decompressed output is not PGN"
         );
         eprintln!("decoded {} bytes of PGN", out.len());
+    }
+}
+
+#[cfg(test)]
+mod bulk_index_tests {
+    use super::*;
+    use duckdb::Connection;
+
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        conn
+    }
+
+    /// Appender-insert `n` players, bulk-style. fide_id alternates NULL/value to
+    /// exercise both players indexes (idx_players_name, idx_players_fide_id).
+    fn bulk_insert_players(conn: &Connection, n: i32) {
+        let mut app = conn.appender("players").unwrap();
+        for i in 1..=n {
+            let fide: Option<i32> = if i % 2 == 0 { Some(1_000_000 + i) } else { None };
+            // Column order matches flush_players: id, name, name_normalized,
+            // fide_id, game_count, name_normalised.
+            app.append_row(duckdb::params![
+                i, format!("Player {i}"), format!("player {i}"), fide, 0_i32, false
+            ])
+            .unwrap();
+        }
+        app.flush().unwrap();
+    }
+
+    /// The #82 fix: dropping the players indexes for the bulk window and rebuilding
+    /// them afterwards leaves a consistent state, so a later DELETE (dedup / merge)
+    /// succeeds cleanly instead of hitting the fatal index error.
+    #[test]
+    fn bulk_drop_recreate_leaves_players_deletable() {
+        let conn = setup();
+        drop_bulk_indexes(&conn).unwrap();
+        bulk_insert_players(&conn, 5000);
+        recreate_bulk_indexes(&conn).unwrap();
+
+        // Delete a player (the operation that failed in #82) — must succeed.
+        let deleted = conn
+            .execute("DELETE FROM players WHERE id = ?", duckdb::params![100])
+            .expect("delete after clean index rebuild must not hit a fatal index error");
+        assert_eq!(deleted, 1);
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM players", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 4999);
+
+        // The indexes exist again and back a lookup.
+        let by_name: i64 = conn
+            .query_row(
+                "SELECT id FROM players WHERE name_normalized = 'player 200'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(by_name, 200);
     }
 }
 
