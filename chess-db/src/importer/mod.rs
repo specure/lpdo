@@ -556,14 +556,8 @@ pub fn import(
     let mut ctx = ImportContext::new(conn, skip_dedup)?;
     let collection_id = upsert_collection(conn, collection)?;
     let window = crate::sources::window(conn, source_key)?;
-    if !window.is_unbounded() {
-        reporter.log(format!(
-            "Date window for '{}': {}..{}{}",
-            source_key,
-            window.from.as_deref().unwrap_or("…"),
-            window.to.as_deref().unwrap_or("now"),
-            if window.exclude_undated { " (undated excluded)" } else { "" },
-        ));
+    if let Some(desc) = window.describe() {
+        reporter.log(format!("Importing {desc}."));
     }
 
     // Per-issue failures (e.g. a corrupt/truncated archive) are collected and
