@@ -20,6 +20,43 @@ use crate::reporter::Reporter;
 /// Official FIDE combined player list (a zip of the fixed-width `players_list_foa.txt`).
 pub const FIDE_LIST_URL: &str = "https://ratings.fide.com/download/players_list.zip";
 
+/// FIDE publishes the list monthly, so we don't re-download sooner than this.
+const REFRESH_DAYS: i64 = 30;
+
+/// Whether the local FIDE list should be (re)loaded: empty, never refreshed, or
+/// older than a month. Drives the daily update's monthly FIDE refresh (#162).
+pub fn refresh_due(conn: &Connection) -> Result<bool> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM fide_players", [], |r| r.get(0))?;
+    if count == 0 {
+        return Ok(true);
+    }
+    let last: Option<String> = conn.query_row(
+        "SELECT CAST(fide_refreshed_at AS VARCHAR) FROM schedule WHERE id = 1",
+        [],
+        |r| r.get(0),
+    )?;
+    let Some(last) = last else { return Ok(true) };
+    let cutoff = chrono::Local::now().naive_local() - chrono::Duration::days(REFRESH_DAYS);
+    let due = chrono::NaiveDateTime::parse_from_str(&last, "%Y-%m-%d %H:%M:%S%.f")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(&last, "%Y-%m-%d %H:%M:%S"))
+        .map(|dt| dt < cutoff)
+        .unwrap_or(true); // unparseable → treat as due
+    Ok(due)
+}
+
+/// Stamp a successful FIDE refresh so the monthly cadence restarts from now.
+pub fn record_refresh(conn: &Connection) -> Result<()> {
+    let now = chrono::Local::now()
+        .naive_local()
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+    conn.execute(
+        "UPDATE schedule SET fide_refreshed_at = CAST(? AS TIMESTAMP) WHERE id = 1",
+        duckdb::params![now],
+    )?;
+    Ok(())
+}
+
 /// Parse one line of the fixed-width FIDE list into (fide_id, name). Returns None
 /// for the header, blanks, or unparseable ids.
 fn parse_line(line: &str) -> Option<(u32, String)> {
@@ -181,6 +218,30 @@ mod tests {
         assert!(parse_line("ID Number      Name").is_none());
         assert!(parse_line("").is_none());
         assert!(parse_line("short").is_none());
+    }
+
+    #[test]
+    fn refresh_due_tracks_emptiness_and_staleness() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+
+        // Empty list → always due.
+        assert!(refresh_due(&conn).unwrap(), "empty fide_players is due");
+
+        conn.execute_batch("INSERT INTO fide_players (fide_id, name) VALUES (1, 'A, B');").unwrap();
+        // Non-empty but never stamped (NULL) → due.
+        assert!(refresh_due(&conn).unwrap(), "never-refreshed is due");
+
+        // Fresh stamp → not due.
+        record_refresh(&conn).unwrap();
+        assert!(!refresh_due(&conn).unwrap(), "just-refreshed is not due");
+
+        // Backdate the stamp well beyond the window → due again.
+        conn.execute_batch(
+            "UPDATE schedule SET fide_refreshed_at = TIMESTAMP '2000-01-01 00:00:00' WHERE id = 1;",
+        )
+        .unwrap();
+        assert!(refresh_due(&conn).unwrap(), "an old list is due");
     }
 
     #[test]

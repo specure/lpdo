@@ -2256,6 +2256,8 @@ async fn main() -> Result<()> {
                         &reporter,
                     )?,
                 };
+                // Stamp the monthly clock so the scheduled refresh defers (#162).
+                fide::record_refresh(&conn)?;
             }
         },
         Commands::Status => {

@@ -439,7 +439,11 @@ fn init_schedule(conn: &Connection) -> Result<()> {
             -- completed (set by the wizard's /setup/start), so a source enabled
             -- mid-wizard isn't synced before the user finishes. A populated DB
             -- (games > 0) also opens the gate, so upgrades aren't blocked.
-            setup_completed BOOLEAN NOT NULL DEFAULT FALSE
+            setup_completed BOOLEAN NOT NULL DEFAULT FALSE,
+            -- Last time the local FIDE list was successfully (re)loaded (#162). The
+            -- daily update refreshes it monthly; NULL means never → refresh on the
+            -- next update.
+            fide_refreshed_at TIMESTAMP
         );
 
         -- Add to databases whose `schedule` table predates the column.
@@ -459,6 +463,11 @@ fn init_schedule(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "ALTER TABLE schedule ADD COLUMN IF NOT EXISTS daily_minute INTEGER DEFAULT 240;
          UPDATE schedule SET daily_minute = 240 WHERE daily_minute IS NULL;",
+    )?;
+    // Track the last successful FIDE-list refresh so the daily update can refresh
+    // it monthly rather than every run (#162).
+    conn.execute_batch(
+        "ALTER TABLE schedule ADD COLUMN IF NOT EXISTS fide_refreshed_at TIMESTAMP;",
     )?;
     Ok(())
 }

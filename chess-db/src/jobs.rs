@@ -911,6 +911,9 @@ fn run_job(
                     crate::fide::download_and_load(conn, url, reporter)?;
                 }
             }
+            // Stamp the monthly clock so a manual refresh also defers the next
+            // scheduled one (#162).
+            crate::fide::record_refresh(conn)?;
         }
         "players_import" => {
             let path = path_param(p, "path")?;
@@ -959,6 +962,22 @@ fn run_job(
             // stream after step 1; the sub-step reporter downgrades those to log
             // lines so only the final `done` below ends the job.
             let step = reporter.sub_step();
+            // #162: keep the local FIDE list current — monthly, off-peak with the
+            // daily update (independent of feed sources). Non-fatal: a failed
+            // download just retries on the next update, and the existing list (if
+            // any) still serves normalise. Only stamp the monthly clock on success.
+            if crate::fide::refresh_due(conn)? {
+                reporter.log("Refreshing the FIDE player list…");
+                match crate::fide::download_and_load(conn, crate::fide::FIDE_LIST_URL, &step) {
+                    Ok(n) => {
+                        crate::fide::record_refresh(conn)?;
+                        reporter.log(format!("FIDE list refreshed ({n} players)."));
+                    }
+                    Err(e) => reporter.log(format!(
+                        "FIDE list refresh failed (will retry next update): {e:#}"
+                    )),
+                }
+            }
             let feeds = crate::sources::enabled_feeds(conn)?;
             if feeds.is_empty() {
                 reporter.done("No feed sources enabled — nothing to update.");
