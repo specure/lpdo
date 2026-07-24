@@ -174,6 +174,18 @@ impl Reporter {
         }
     }
 
+    /// Terminal event for a cooperatively-cancelled job — a clean stop, distinct
+    /// from `done` (finished) and `error` (failed), so the UI can label it.
+    pub fn cancelled(&self, msg: impl std::fmt::Display) {
+        match &self.sink {
+            Sink::Terminal => println!("{}", msg),
+            Sink::Json => self.emit_json(serde_json::json!({ "type": "cancelled", "message": msg.to_string() })),
+            Sink::Channel(_) => self.send(JobEvent {
+                kind: "cancelled".into(), message: msg.to_string(), value: None, total: None, path: None,
+            }),
+        }
+    }
+
     /// Create a count-based progress bar (hidden unless interactive terminal).
     pub fn bar(&self, len: u64) -> ProgressBar {
         if matches!(self.sink, Sink::Terminal) {

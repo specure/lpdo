@@ -1493,6 +1493,10 @@ fn job_spec_for(command: &Commands) -> Option<proxy::JobSpec> {
             "resolve_import",
             json!({ "path": path.to_string_lossy() }),
         ),
+        Commands::Players { subcommand: PlayersCommands::Dedup } => (
+            "dedup_players",
+            json!({}),
+        ),
         Commands::Players { subcommand: PlayersCommands::Import { path } } => (
             "players_import",
             json!({ "path": path.to_string_lossy() }),
@@ -2111,7 +2115,7 @@ async fn main() -> Result<()> {
                 println!("Done.");
             }
             PlayersCommands::Dedup => {
-                dedup::dedup_players(&conn)?;
+                dedup::dedup_players(&conn, &reporter)?;
             }
             PlayersCommands::Merge { keep_id, drop_id, yes } => {
                 do_merge_players(&conn, keep_id, drop_id, yes)?;

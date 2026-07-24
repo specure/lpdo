@@ -400,8 +400,12 @@ pub fn index_positions(
 
     let insert_result = fill_positions(conn, &pb, reporter, pending as u64, rebuild, max_position_depth, fast);
 
-    pb.finish_with_message("Indexing complete");
-    reporter.done(format!("Indexing complete. {} games indexed.", pending));
+    pb.finish_and_clear();
+    if insert_result.is_ok() && reporter.is_cancelled() {
+        reporter.cancelled("Position indexing cancelled — resumes on the next run.");
+    } else if insert_result.is_ok() {
+        reporter.done(format!("Indexing complete. {} games indexed.", pending));
+    }
     insert_result
 }
 
@@ -435,6 +439,13 @@ fn fill_positions(
             .collect();
 
         if rows.is_empty() {
+            break;
+        }
+
+        // Cooperative cancellation (#140): stop between read batches. Positions
+        // already flushed stay committed and are simply resumed on the next run
+        // (the WHERE-NOT-EXISTS filter skips indexed games).
+        if reporter.is_cancelled() {
             break;
         }
 
@@ -1337,6 +1348,12 @@ fn process_pgn_stream(
                     0,
                     format!("Imported {total_games} games…"),
                 );
+            }
+            // Cooperative cancellation (#157): break on a batch boundary. The
+            // batch above was just flushed/committed, so stopping here can't
+            // corrupt the appender mid-write; games imported so far are kept.
+            if reporter.is_cancelled() {
+                break;
             }
         }
     }

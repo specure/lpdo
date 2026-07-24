@@ -25,7 +25,7 @@ pub fn merge_collections(conn: &Connection, keep_id: u32, drop_id: u32) -> Resul
     Ok(())
 }
 
-pub fn dedup_players(conn: &Connection) -> Result<()> {
+pub fn dedup_players(conn: &Connection, reporter: &Reporter) -> Result<()> {
     // Find all fide_ids that have more than one player row
     let dup_fide_ids: Vec<u32> = {
         let mut stmt = conn.prepare(
@@ -40,14 +40,24 @@ pub fn dedup_players(conn: &Connection) -> Result<()> {
     };
 
     if dup_fide_ids.is_empty() {
-        println!("No duplicate players found.");
+        reporter.done("No duplicate players found.");
         return Ok(());
     }
 
-    println!("Found {} fide_id(s) with duplicate player records.", dup_fide_ids.len());
+    let total = dup_fide_ids.len() as u64;
+    reporter.log(format!("{total} FIDE ID(s) with duplicate player records — merging."));
     let mut merged = 0usize;
 
-    for fide_id in &dup_fide_ids {
+    for (i, fide_id) in dup_fide_ids.iter().enumerate() {
+        // Cooperative cancellation: stop between fide_ids (each merge is a
+        // committed unit, so a partial run leaves a consistent database).
+        if reporter.is_cancelled() {
+            reporter.done(format!(
+                "Cancelled — merged {merged} duplicate player row(s) before stopping."
+            ));
+            return Ok(());
+        }
+        reporter.progress(i as u64, total, format!("Merging duplicate players ({i}/{total})"));
         // Fetch all rows for this fide_id plus their most recent game date
         let rows: Vec<(u32, String, bool, Option<String>)> = {
             let mut stmt = conn.prepare(
@@ -70,19 +80,7 @@ pub fn dedup_players(conn: &Connection) -> Result<()> {
         }
 
         let survivor_idx = pick_survivor(&rows);
-        let (survivor_id, survivor_name, ..) = &rows[survivor_idx];
-
-        println!(
-            "  fide_id {}: merging {} variants → \"{}\"",
-            fide_id,
-            rows.len(),
-            survivor_name
-        );
-        for (id, name, normalised, _) in &rows {
-            let marker = if id == survivor_id { " ← keep" } else { " → merge" };
-            let norm = if *normalised { " [normalised]" } else { "" };
-            println!("    [{}] {}{}{}", id, name, norm, marker);
-        }
+        let (survivor_id, ..) = &rows[survivor_idx];
 
         // Reassign games to the survivor, then delete the duplicate rows.
         // Wrapped in a single batch transaction so DuckDB defers FK validation
@@ -95,11 +93,11 @@ pub fn dedup_players(conn: &Connection) -> Result<()> {
         }
     }
 
-    println!(
-        "\nRemoved {} duplicate player record(s) across {} fide_id(s).",
+    reporter.done(format!(
+        "Removed {} duplicate player record(s) across {} FIDE ID(s).",
         merged,
         dup_fide_ids.len()
-    );
+    ));
     Ok(())
 }
 
@@ -225,6 +223,15 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, reporter: &Reporter) -> Res
     let mut checked = 0u64;
 
     for (id1, id2, moves1, moves2, pgn1, pgn2) in &candidates {
+        // Cooperative cancellation (#157): stop between pairs. Each delete is its
+        // own committed unit, so a partial run leaves a consistent database.
+        if reporter.is_cancelled() {
+            pb.finish_and_clear();
+            reporter.cancelled(format!(
+                "Cancelled — {deleted} duplicate(s) deleted before stopping ({checked}/{total} pairs checked)."
+            ));
+            return Ok(());
+        }
         pb.inc(1);
         checked += 1;
 

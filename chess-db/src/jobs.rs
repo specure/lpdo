@@ -427,8 +427,13 @@ pub struct JobManager {
 /// since ordinary imports dedup inline.
 #[derive(Default, Clone, Copy)]
 struct MaintenanceNeeds {
-    index_normalise: bool,
-    dedup: bool,
+    /// Any coalesced maintenance is owed.
+    requested: bool,
+    /// Run the full identity-first pipeline (resolve-fide → dedup_players →
+    /// normalise → dedup_games → index) rather than the light feed pass
+    /// (normalise → index). Set by first-run setup and large/bulk imports; feed
+    /// syncs request the light pass (#167).
+    full: bool,
 }
 
 /// Job types that must drain before a coalesced maintenance pass runs: any
@@ -438,7 +443,7 @@ fn blocks_maintenance(job_type: &str) -> bool {
     matches!(
         job_type,
         "import" | "import_pgn" | "sources_sync" | "download" | "update"
-            | "dedup_games" | "index_positions" | "normalise"
+            | "resolve_fide" | "dedup_players" | "dedup_games" | "index_positions" | "normalise"
     )
 }
 
@@ -469,31 +474,35 @@ impl JobManager {
     /// row so the user can see maintenance is coming while an import is still in
     /// flight (#131).
     pub fn maintenance_owed(&self) -> bool {
-        self.maintenance.lock().unwrap().index_normalise
+        self.maintenance.lock().unwrap().requested
     }
 
     /// Request post-import maintenance (#131). Idempotent: sets the "owed" flags;
     /// the coalesced pass runs later, once the import queue has drained. Pass
     /// `needs_dedup = true` when the import deferred dedup (first-run
-    /// `skip_dedup`) so a single global `dedup_games` is included in the tail.
-    pub fn request_maintenance(&self, needs_dedup: bool) {
+    /// `full = true` runs the identity-first pipeline (first-run setup, large/bulk
+    /// imports); `false` requests the light feed pass (normalise → index). When a
+    /// pass is already owed, `full` is sticky (a full request wins over a light one).
+    pub fn request_maintenance(&self, full: bool) {
         let mut m = self.maintenance.lock().unwrap();
-        m.index_normalise = true;
-        m.dedup |= needs_dedup;
+        m.requested = true;
+        m.full |= full;
     }
 
     /// If maintenance is owed and nothing import- or maintenance-class is queued
-    /// or running, enqueue the coalesced pass ([dedup] → index → normalise) once
-    /// and clear the owed flags. If the queue hasn't drained yet, re-arm and wait
-    /// for a later call. Safe to call from any thread and as often as you like —
-    /// the flags are claimed atomically so two callers can't both submit (#131).
+    /// or running, enqueue the coalesced pass once and clear the owed flags. The
+    /// full pass is identity-first (#167): resolve-fide → dedup_players →
+    /// normalise → dedup_games → index; the light pass is normalise → index. If
+    /// the queue hasn't drained yet, re-arm and wait for a later call. Safe to
+    /// call from any thread and as often as you like — the flags are claimed
+    /// atomically so two callers can't both submit (#131).
     pub fn maybe_run_maintenance(self: &Arc<Self>) {
         // Atomically claim what's owed so a concurrent caller sees nothing.
         let needs = {
             let mut m = self.maintenance.lock().unwrap();
             std::mem::take(&mut *m)
         };
-        if !needs.index_normalise {
+        if !needs.requested {
             return;
         }
         let busy = self
@@ -503,15 +512,22 @@ impl JobManager {
         if busy {
             // Not drained yet — put back what we claimed and wait for a later call.
             let mut m = self.maintenance.lock().unwrap();
-            m.index_normalise = true;
-            m.dedup |= needs.dedup;
+            m.requested = true;
+            m.full |= needs.full;
             return;
         }
-        if needs.dedup {
+        // Identity-first (#167): consolidate players (fetch FIDE IDs, merge
+        // same-FIDE-ID rows, canonicalise names) BEFORE deduplicating games —
+        // dedup_games keys on player IDs — then index once the dust settles.
+        if needs.full {
+            self.submit("resolve_fide".to_string(), serde_json::json!({}));
+            self.submit("dedup_players".to_string(), serde_json::json!({}));
+            self.submit("normalise".to_string(), serde_json::json!({}));
             self.submit("dedup_games".to_string(), serde_json::json!({}));
+        } else {
+            self.submit("normalise".to_string(), serde_json::json!({}));
         }
         self.submit("index_positions".to_string(), serde_json::json!({ "fast": true }));
-        self.submit("normalise".to_string(), serde_json::json!({}));
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<JobSlot>> {
@@ -606,6 +622,9 @@ impl JobManager {
                             s.status = "error".into();
                             s.error = Some(ev.message.clone());
                         }
+                        "cancelled" => {
+                            s.status = "cancelled".into();
+                        }
                         _ => {
                             if s.status == "queued" {
                                 s.status = "running".into();
@@ -644,10 +663,15 @@ impl JobManager {
             }
             let reporter = Reporter::channel(ev_tx, cancel);
             if reporter.is_cancelled() {
-                reporter.error("Cancelled before start");
+                // Cancelled while queued (#161): skip cleanly with a cancelled
+                // status rather than a spurious error.
+                reporter.cancelled("Cancelled before it started");
                 return;
             }
             match run_job(&slot_run.job_type, &params, conn, &reporter, &rt, &db_path, &jm_run) {
+                // A job that returns Ok after observing cancellation stopped
+                // cooperatively — report it as cancelled, not done (#157/#140).
+                Ok(()) if reporter.is_cancelled() => reporter.cancelled("Cancelled"),
                 // Empty message keeps the operation's own final message; this
                 // just guarantees a terminal "done" even if the op didn't emit one.
                 Ok(()) => reporter.done(""),
@@ -800,10 +824,14 @@ fn run_job(
                     // own visible jobs (#131).
                     crate::sources::record_run(conn, src.key, "ok")?;
                     reporter.done(format!(
-                        "{} imported — preparing (dedup, index, normalise) in the background.",
+                        "{} imported — preparing the database in the background.",
                         src.name
                     ));
-                    jm.request_maintenance(true);
+                    // A bulk/deep-history source (e.g. Ajedrez) gets the full
+                    // identity-first pipeline; an incremental feed (TWIC, Lichess)
+                    // gets the light pass (#167).
+                    let full = src.kind == crate::sources::SourceKind::Bulk;
+                    jm.request_maintenance(full);
                 }
                 Err(e) => {
                     let _ = crate::sources::record_run(conn, src.key, &format!("error: {e}"));
@@ -862,6 +890,9 @@ fn run_job(
         }
         "dedup_games" => {
             dedup::dedup_games(conn, flag(p, "dry_run"), reporter)?;
+        }
+        "dedup_players" => {
+            dedup::dedup_players(conn, reporter)?;
         }
         "cleanup" => {
             dedup::cleanup_nonstandard(conn, flag(p, "non_standard"), flag(p, "dry_run"), reporter)?;
