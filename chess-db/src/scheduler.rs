@@ -55,6 +55,14 @@ pub fn spawn(jobs: Arc<JobManager>, reads: ReadPool, writer: ConnActor, db_path:
 }
 
 async fn tick(jobs: &Arc<JobManager>, reads: &ReadPool, writer: &ConnActor, db_path: &Path) -> anyhow::Result<()> {
+    // #131: fallback trigger for coalesced post-import maintenance. The job-
+    // completion hook (jobs.rs) normally starts it the instant the queue drains;
+    // this periodic call covers the case where maintenance was requested with an
+    // already-empty queue (no completion event to react to). Deliberately BEFORE
+    // the setup-sentinel gate so it also runs after the wizard's first-run
+    // imports finish. No-op unless maintenance is owed and nothing is in flight.
+    jobs.maybe_run_maintenance();
+
     // While the wizard's first-run pipeline owns the database, stay out of its
     // way entirely: it imports the enabled sources itself (with `--fast`), so an
     // auto-sync or daily update here would double-import or collide on the writer.

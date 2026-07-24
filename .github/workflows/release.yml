@@ -8,9 +8,8 @@ name: Release
 # or manually via "Run workflow" (provide a tag name).
 #
 # Repository secrets (Settings → Secrets and variables → Actions):
-#   CHESSVAULT_NORMALISE_API_KEY — baked into the chess-db sidecar at compile time
-#     so the released app can use the name-normalisation cache service. Without it
-#     the app still works (FIDE-only normalisation).
+#   (Player-name normalisation is fully local — it uses the FIDE player list the
+#   server downloads itself — so no normalisation API key is needed at build time.)
 #
 #   macOS code-signing + notarization. The macOS leg ships a .pkg that installs the
 #   GUI + a system launchd daemon (see the pkg steps below). The .app is signed with
@@ -116,13 +115,11 @@ jobs:
         working-directory: chess-client
         run: npm ci
 
-      # Build the chess-db sidecar separately so the secret key is baked in via
-      # option_env! (build.rs forces a rebuild when the key changes). `tauri build`
-      # does NOT recompile chess-db — it bundles the binary we copy here.
-      - name: Build chess-db sidecar (with cache-service key)
+      # Build the chess-db sidecar separately and copy it where tauri expects it.
+      # `tauri build` does NOT recompile chess-db — it bundles the binary we copy
+      # here. (Normalisation is local now, so no compile-time key is involved.)
+      - name: Build chess-db sidecar
         shell: bash
-        env:
-          CHESSVAULT_NORMALISE_API_KEY: ${{ secrets.CHESSVAULT_NORMALISE_API_KEY }}
         run: |
           cargo build -p chess-db --release
           mkdir -p "$(dirname "${{ matrix.sidecar_dst }}")"

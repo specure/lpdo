@@ -1,6 +1,6 @@
 [package]
 name = "chess-client"
-version = "0.5.2"
+version = "0.6.1"
 description = "LPDO — desktop chess database for managing your games and preparing for tournaments"
 authors = ["Specure"]
 edition = "2021"
@@ -30,7 +30,12 @@ tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt"] }
+tokio = { version = "1", features = ["rt", "fs", "io-util"] }
+# Streamed PGN upload to the daemon (#154): stream the file body without
+# buffering it, so a multi-GB import works and can target a remote server.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+tokio-util = { version = "0.7", features = ["io"] }
+futures-util = "0.3"
 fide-client = { path = "../../fide-client" }
 chess-results-client = { path = "../../chess-results-client" }
 # Like std::fs::canonicalize but strips Windows' \\?\ verbatim prefix so paths

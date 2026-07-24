@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 const BATCH_SIZE: usize = 10_000;
 const INDEX_READ_BATCH: usize = 50_000;
@@ -34,6 +36,14 @@ const BULK_MODE_BYTES: u64 = 12 * 1024 * 1024; // ~12 MB (compressed feed or raw
 /// no longer skews the decision (#145).
 fn bulk_mode_for_size(total_bytes: u64, force_threshold: usize) -> bool {
     force_threshold == 0 || total_bytes >= BULK_MODE_BYTES
+}
+
+/// Whether an upload of this many bytes should be treated as a bulk load — i.e.
+/// skip inline dedup (defer it to one background `dedup_games` pass) and use the
+/// fast path — matching `bulk_mode_for_size`'s size estimate. The upload handler
+/// uses this to pick `skip_dedup` from the spooled file size (#154).
+pub fn is_bulk_size(total_bytes: u64) -> bool {
+    total_bytes >= BULK_MODE_BYTES
 }
 
 /// User-facing knobs for `import-pgn`: grouping + visibility + duplicate policy.
@@ -96,24 +106,164 @@ fn add_issue_to_collection(conn: &Connection, issue_id: i32, collection_id: i32)
 }
 
 /// Expand a path into a list of .pgn files. A file path returns just that file;
-/// a directory is read non-recursively (matches existing behaviour).
+/// a directory is read non-recursively (matches existing behaviour). Accepts
+/// plain `.pgn` and the compressed forms the importer can decompress:
+/// `.zip`, `.zst`/`.zstd`, `.7z`.
 fn collect_pgn_files(path: &Path) -> Result<Vec<std::path::PathBuf>> {
     if path.is_file() {
-        if path.extension().and_then(|s| s.to_str()) == Some("pgn") {
+        if is_supported_input(path) {
             Ok(vec![path.to_path_buf()])
         } else {
-            anyhow::bail!("not a .pgn file: {}", path.display());
+            anyhow::bail!("not a .pgn/.zip/.zst/.7z file: {}", path.display());
         }
     } else if path.is_dir() {
         let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(path)?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("pgn"))
+            .filter(|p| is_supported_input(p))
             .collect();
         files.sort();
         Ok(files)
     } else {
         anyhow::bail!("not a file or directory: {}", path.display());
+    }
+}
+
+/// True for file types `import-pgn` can ingest: plain `.pgn` or a compressed
+/// archive the importer decompresses (`.zip`, `.zst`/`.zstd`, `.7z`).
+fn is_supported_input(p: &Path) -> bool {
+    matches!(
+        p.extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .as_deref(),
+        Some("pgn") | Some("zip") | Some("zst") | Some("zstd") | Some("7z")
+    )
+}
+
+/// A temporary path removed on drop — used to stage a decompressed `.pgn` for
+/// archive inputs (`.zip`/`.7z`) so the streaming importer reads it in bounded
+/// memory without holding the whole decompressed file in RAM.
+struct TempPgn {
+    path: std::path::PathBuf,
+    is_dir: bool,
+}
+
+impl Drop for TempPgn {
+    fn drop(&mut self) {
+        if self.is_dir {
+            let _ = std::fs::remove_dir_all(&self.path);
+        } else {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Open `path` as a streaming PGN byte source, transparently decompressing by
+/// extension. Returns the reader, an optional temp guard the caller must keep
+/// alive until the import finishes (cleaned up on drop), and the number of
+/// bytes a progress bar should track.
+///
+/// - `.pgn` — streamed directly.
+/// - `.zst`/`.zstd` — streamed through a zstd decoder (bounded memory).
+/// - `.zip`/`.7z` — the first `.pgn` entry is streamed out to a sibling temp
+///   file first (archives don't offer a cheap owned streaming reader), then
+///   that temp file is streamed; the guard removes it afterwards.
+/// Wraps a reader and tallies the bytes pulled through it into a shared counter,
+/// so the importer can report byte-based progress (a real % + ETA) without the
+/// parser knowing about the job reporter. `open_import_reader` places it at the
+/// level whose size it returns as `prog_size` — the compressed file for `.zst`,
+/// the decompressed stream for `.pgn`/`.zip`/`.7z` — so `count / prog_size` is a
+/// valid 0..1 fraction in every case.
+struct CountingReader<R> {
+    inner: R,
+    count: Arc<AtomicU64>,
+}
+
+impl<R: Read> Read for CountingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.count.fetch_add(n as u64, Ordering::Relaxed);
+        Ok(n)
+    }
+}
+
+/// Returns the decompressing reader, an optional temp-file drop guard, the byte
+/// total the progress bar measures against, and the shared byte counter the
+/// caller passes to `process_pgn_stream` for a real progress bar.
+fn open_import_reader(path: &Path) -> Result<(Box<dyn Read>, Option<TempPgn>, u64, Arc<AtomicU64>)> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let count = Arc::new(AtomicU64::new(0));
+    match ext.as_str() {
+        "pgn" | "" => {
+            let f = std::fs::File::open(path)?;
+            let sz = f.metadata().map(|m| m.len()).unwrap_or(0);
+            let r = CountingReader { inner: std::io::BufReader::new(f), count: count.clone() };
+            Ok((Box::new(r), None, sz, count))
+        }
+        "zst" | "zstd" => {
+            let f = std::fs::File::open(path)?;
+            // Progress tracks compressed bytes consumed (uncompressed size is
+            // not cheaply known): count the file *before* the decoder so the
+            // tally matches the compressed size reported here.
+            let sz = f.metadata().map(|m| m.len()).unwrap_or(0);
+            let counted = CountingReader { inner: std::io::BufReader::new(f), count: count.clone() };
+            let dec = zstd::stream::read::Decoder::new(counted)
+                .map_err(|e| anyhow::anyhow!("zstd open {}: {}", path.display(), e))?;
+            Ok((Box::new(dec), None, sz, count))
+        }
+        "zip" => {
+            let tmp = path.with_extension("import-tmp.pgn");
+            let _ = std::fs::remove_file(&tmp);
+            {
+                let f = std::fs::File::open(path)?;
+                let mut archive = zip::ZipArchive::new(f)?;
+                let mut idx = None;
+                for i in 0..archive.len() {
+                    if archive.by_index(i)?.name().to_ascii_lowercase().ends_with(".pgn") {
+                        idx = Some(i);
+                        break;
+                    }
+                }
+                let idx = idx
+                    .ok_or_else(|| anyhow::anyhow!("no .pgn entry inside {}", path.display()))?;
+                let mut entry = archive.by_index(idx)?;
+                let mut out = std::fs::File::create(&tmp)?;
+                std::io::copy(&mut entry, &mut out)?; // streaming, bounded memory
+            }
+            let f = std::fs::File::open(&tmp)?;
+            let sz = f.metadata().map(|m| m.len()).unwrap_or(0);
+            let r = CountingReader { inner: std::io::BufReader::new(f), count: count.clone() };
+            Ok((
+                Box::new(r),
+                Some(TempPgn { path: tmp, is_dir: false }),
+                sz,
+                count,
+            ))
+        }
+        "7z" => {
+            let dir = path.with_extension("7z-import-tmp");
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir)?;
+            sevenz_rust2::decompress_file(path, &dir)
+                .map_err(|e| anyhow::anyhow!("7z extract {}: {}", path.display(), e))?;
+            let pgn = first_pgn_in_dir(&dir)
+                .ok_or_else(|| anyhow::anyhow!("no .pgn file inside {}", path.display()))?;
+            let f = std::fs::File::open(&pgn)?;
+            let sz = f.metadata().map(|m| m.len()).unwrap_or(0);
+            let r = CountingReader { inner: std::io::BufReader::new(f), count: count.clone() };
+            Ok((
+                Box::new(r),
+                Some(TempPgn { path: dir, is_dir: true }),
+                sz,
+                count,
+            ))
+        }
+        other => anyhow::bail!("unsupported file type '.{}': {}", other, path.display()),
     }
 }
 
@@ -365,6 +515,11 @@ pub fn import(
         .map(|(_, f)| std::fs::metadata(dir.join(f)).map(|m| m.len()).unwrap_or(0))
         .sum();
     let bulk_mode = bulk_mode_for_size(total_bytes, reindex_threshold);
+    // A size-triggered bulk import always uses the fast Appender path: for large
+    // databases (10M+ games) the transactional prepared-INSERT path is far too
+    // slow. Couple it to bulk_mode so every large import gets it regardless of
+    // the `fast` flag the caller passed (#154).
+    let fast = fast || bulk_mode;
 
     reporter.log(format!("Importing {} issue(s)...", issues.len()));
     if bulk_mode {
@@ -541,6 +696,9 @@ pub fn import_pgn(
         .map(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
         .sum();
     let bulk_mode = bulk_mode_for_size(total_bytes, reindex_threshold);
+    // Large imports always use the fast Appender path (see `import` above): the
+    // transactional INSERT path can't keep up with a multi-million-game file.
+    let fast = fast || bulk_mode;
 
     reporter.log(format!("Importing {} PGN file(s)...", pending.len()));
     if bulk_mode {
@@ -601,8 +759,12 @@ pub fn import_pgn(
             // Remove any games from a previous interrupted run of this file.
             conn.execute("DELETE FROM games WHERE issue_id = ?", duckdb::params![issue_id])?;
 
-            let file = match std::fs::File::open(path) {
-                Ok(f) => f,
+            // Open the input as a streaming PGN source, transparently
+            // decompressing .zip / .zst / .7z. `_tmp` (a staged temp .pgn for
+            // archive inputs) is held for the rest of this iteration and removed
+            // on drop, after the import below completes.
+            let (reader, _tmp, prog_size, bytes_read) = match open_import_reader(path) {
+                Ok(t) => t,
                 Err(e) => {
                     let msg = format!("  {}: read error: {}", filename, e);
                     pb.println(&msg);
@@ -612,11 +774,10 @@ pub fn import_pgn(
                     continue;
                 }
             };
-            let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
 
-            let file_pb = if !reporter.is_json() && file_size >= LARGE_FILE_THRESHOLD {
+            let file_pb = if !reporter.is_json() && prog_size >= LARGE_FILE_THRESHOLD {
                 if let Some(ref mp) = mp {
-                    let fpb = mp.insert_before(&pb, ProgressBar::new(file_size));
+                    let fpb = mp.insert_before(&pb, ProgressBar::new(prog_size));
                     fpb.set_style(progress::byte_bar_style());
                     Some(fpb)
                 } else {
@@ -626,19 +787,18 @@ pub fn import_pgn(
                 None
             };
 
-            // Stream the file rather than read it into memory, so a multi-GB PGN
-            // imports in bounded memory (#95). Wrap the reader in the byte-progress
-            // bar (if any) so it advances as the parser consumes bytes.
-            let buf = std::io::BufReader::new(file);
+            // Stream rather than read into memory, so a multi-GB PGN imports in
+            // bounded memory (#95). Wrap the reader in the byte-progress bar (if
+            // any) so it advances as the parser consumes bytes.
             let src: Box<dyn Read> = match file_pb.as_ref() {
-                Some(fpb) => Box::new(fpb.wrap_read(buf)),
-                None => Box::new(buf),
+                Some(fpb) => Box::new(fpb.wrap_read(reader)),
+                None => reader,
             };
 
             let effective_depth = if bulk_mode { None } else { max_position_depth };
             // Manual PGN imports are not date-filtered (unbounded window).
             let manual_window = crate::sources::DateWindow::default();
-            match process_pgn_stream(conn, issue_id, collection_id, visibility, src, effective_depth, &mut ctx, fast, &manual_window) {
+            match process_pgn_stream(conn, issue_id, collection_id, visibility, src, effective_depth, &mut ctx, fast, &manual_window, prog_size, &bytes_read, reporter) {
                 Ok((imported, skipped_dups, skipped_ns, skipped_window)) => {
                     conn.execute(
                         "UPDATE source_items SET imported = TRUE, imported_at = NOW(), game_count = ? WHERE id = ?",
@@ -699,6 +859,11 @@ struct ImportContext {
     seen_this_run: HashMap<u64, u32>,
     /// ChessBase GameId → game_id (same dual purpose as seen_this_run).
     seen_chessbase_ids: HashMap<i64, u32>,
+    /// When set, insert every game without any dedup — no fingerprinting, no
+    /// growing in-memory fingerprint map — because a single background
+    /// `dedup_games` pass cleans up afterwards. Bulk loads use this to keep dedup
+    /// off the import's critical path (#131/#154).
+    skip_dedup: bool,
 }
 
 impl ImportContext {
@@ -823,6 +988,7 @@ impl ImportContext {
             next_game_id,
             seen_this_run,
             seen_chessbase_ids,
+            skip_dedup,
         })
     }
 }
@@ -872,6 +1038,12 @@ fn import_issue(
         ctx,
         fast,
         window,
+        // In-memory source (whole issue already decompressed): no byte total, and
+        // a silent reporter anyway — the bulk path reports per-issue progress, so
+        // a per-game live count across many small issues would just be noise.
+        0,
+        &AtomicU64::new(0),
+        &crate::reporter::Reporter::silent(),
     )
 }
 
@@ -976,12 +1148,19 @@ fn process_pgn_stream(
     ctx: &mut ImportContext,
     fast: bool,
     window: &crate::sources::DateWindow,
+    // Byte-based progress: `byte_total` is the size the caller's CountingReader
+    // measures against (0 = unknown → fall back to a live game count), and
+    // `bytes_read` is that reader's shared counter. Lets the activity bar show a
+    // real % (and ETA) instead of a fixed indeterminate placeholder (#158).
+    byte_total: u64,
+    bytes_read: &AtomicU64,
+    reporter: &Reporter,
 ) -> Result<(usize, usize, usize, usize)> {
     // Comments, NAGs and variations are preserved by the visitor (see
     // GameVisitor) and stored in the game's movetext, so the PGN is parsed
     // as-is — no pre-stripping. `src` is read game-by-game, so a multi-GB file
-    // never lands in memory (#95); any byte-progress wrapping is applied by the
-    // caller before the reader is handed in.
+    // never lands in memory (#95); the byte-progress CountingReader is applied by
+    // the caller (open_import_reader) before the reader is handed in.
     let mut visitor = GameVisitor::new(max_position_depth);
     let mut reader = Reader::new(LineCountingReader::new(src));
 
@@ -1060,33 +1239,42 @@ fn process_pgn_stream(
         // When a duplicate is detected we skip the insert but still tag the
         // existing row into the current import's collection — so a game can
         // belong to multiple collections without being duplicated.
-        if let Some(cbid) = game.chessbase_id {
-            if let Some(&existing_id) = ctx.seen_chessbase_ids.get(&cbid) {
+        let game_id = if ctx.skip_dedup {
+            // Bulk load: insert everything with no dedup — no fingerprint compute
+            // and no growing fingerprint map. A single background dedup_games pass
+            // removes duplicates afterwards (#131/#154).
+            let id = ctx.next_game_id;
+            ctx.next_game_id += 1;
+            id
+        } else {
+            if let Some(cbid) = game.chessbase_id {
+                if let Some(&existing_id) = ctx.seen_chessbase_ids.get(&cbid) {
+                    tag_existing_match(conn, existing_id, collection_id, visibility)?;
+                    skipped_games += 1;
+                    continue;
+                }
+            }
+            let fp = game_fingerprint(
+                white_id,
+                black_id,
+                game.date.as_deref(),
+                game.result.as_deref(),
+                &game.opening_line,
+                game.move_count,
+            );
+            if let Some(&existing_id) = ctx.seen_this_run.get(&fp) {
                 tag_existing_match(conn, existing_id, collection_id, visibility)?;
                 skipped_games += 1;
                 continue;
             }
-        }
-        let fp = game_fingerprint(
-            white_id,
-            black_id,
-            game.date.as_deref(),
-            game.result.as_deref(),
-            &game.opening_line,
-            game.move_count,
-        );
-        if let Some(&existing_id) = ctx.seen_this_run.get(&fp) {
-            tag_existing_match(conn, existing_id, collection_id, visibility)?;
-            skipped_games += 1;
-            continue;
-        }
-
-        let game_id = ctx.next_game_id;
-        ctx.next_game_id += 1;
-        ctx.seen_this_run.insert(fp, game_id);
-        if let Some(cbid) = game.chessbase_id {
-            ctx.seen_chessbase_ids.insert(cbid, game_id);
-        }
+            let id = ctx.next_game_id;
+            ctx.next_game_id += 1;
+            ctx.seen_this_run.insert(fp, id);
+            if let Some(cbid) = game.chessbase_id {
+                ctx.seen_chessbase_ids.insert(cbid, id);
+            }
+            id
+        };
 
         game_batch.push(GameRow {
             id: game_id,
@@ -1131,6 +1319,24 @@ fn process_pgn_stream(
             if max_position_depth.is_some() {
                 flush_positions(conn, &position_batch, fast)?;
                 position_batch.clear();
+            }
+            // Byte-based progress when the caller knows the file size: a real %
+            // (and ETA) that tracks how far through the file we are. The message
+            // still carries the live game count. When the size is unknown
+            // (byte_total=0, e.g. the in-memory source path) fall back to the
+            // count with total=0 so the bar stays indeterminate rather than wrong.
+            if byte_total > 0 {
+                reporter.progress(
+                    bytes_read.load(Ordering::Relaxed).min(byte_total),
+                    byte_total,
+                    format!("Imported {total_games} games…"),
+                );
+            } else {
+                reporter.progress(
+                    total_games as u64,
+                    0,
+                    format!("Imported {total_games} games…"),
+                );
             }
         }
     }
@@ -1227,7 +1433,7 @@ fn import_summary(imported: usize, skipped_dups: usize, skipped_ns: usize, skipp
 /// Apply queued FIDE-ID back-fills: each (player_id, fide_id) pair updates
 /// `players.fide_id` for a player who previously had none. Runs in a single
 /// transaction. Sets `name_normalised = FALSE` so a future `players normalise`
-/// pass will reconcile the name spelling against ratings.fide.com.
+/// pass will canonicalise the name spelling from the local FIDE list.
 fn flush_player_fide_backfill(
     conn: &Connection,
     backfill: &[(u32, u32)],
@@ -1473,5 +1679,76 @@ mod sevenz_tests {
             "decompressed output is not PGN"
         );
         eprintln!("decoded {} bytes of PGN", out.len());
+    }
+}
+
+#[cfg(test)]
+mod compressed_input_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn read_all(mut r: Box<dyn Read>) -> Vec<u8> {
+        let mut v = Vec::new();
+        r.read_to_end(&mut v).unwrap();
+        v
+    }
+
+    /// `open_import_reader` transparently decompresses .zst / .zip / .7z back to
+    /// the original PGN bytes, and the temp guard removes any staged file/dir
+    /// once dropped.
+    #[test]
+    fn open_import_reader_handles_pgn_zst_zip_7z() {
+        let dir = std::env::temp_dir().join(format!("lpdo-cin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pgn: &[u8] = b"[Event \"T\"]\n[White \"A\"]\n[Black \"B\"]\n\n1. e4 e5 *\n";
+
+        // plain .pgn — streamed directly, no temp guard.
+        let p_pgn = dir.join("g.pgn");
+        std::fs::write(&p_pgn, pgn).unwrap();
+        let (r, guard, _, _) = open_import_reader(&p_pgn).unwrap();
+        assert_eq!(read_all(r), pgn);
+        assert!(guard.is_none());
+
+        // .zst — streamed through the decoder, no temp guard.
+        let p_zst = dir.join("g.pgn.zst");
+        std::fs::write(&p_zst, zstd::encode_all(pgn, 3).unwrap()).unwrap();
+        let (r, guard, _, _) = open_import_reader(&p_zst).unwrap();
+        assert_eq!(read_all(r), pgn);
+        assert!(guard.is_none());
+
+        // .zip — first .pgn entry staged to a sibling temp, removed on drop.
+        let p_zip = dir.join("g.zip");
+        {
+            let f = std::fs::File::create(&p_zip).unwrap();
+            let mut w = zip::ZipWriter::new(f);
+            w.start_file("inner.pgn", zip::write::SimpleFileOptions::default()).unwrap();
+            w.write_all(pgn).unwrap();
+            w.finish().unwrap();
+        }
+        let staged;
+        {
+            let (r, guard, _, _) = open_import_reader(&p_zip).unwrap();
+            assert_eq!(read_all(r), pgn);
+            let guard = guard.expect("zip stages a temp .pgn");
+            staged = guard.path.clone();
+            assert!(staged.exists(), "temp present while guard held");
+        }
+        assert!(!staged.exists(), "temp removed after guard dropped");
+
+        // .7z — extracted to a temp dir, removed on drop.
+        let p_7z = dir.join("g.7z");
+        sevenz_rust2::compress_to_path(&p_pgn, &p_7z).unwrap();
+        let staged_dir;
+        {
+            let (r, guard, _, _) = open_import_reader(&p_7z).unwrap();
+            assert_eq!(read_all(r), pgn);
+            let guard = guard.expect("7z stages a temp dir");
+            staged_dir = guard.path.clone();
+            assert!(staged_dir.exists());
+        }
+        assert!(!staged_dir.exists(), "temp dir removed after guard dropped");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

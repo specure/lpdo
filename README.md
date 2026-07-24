@@ -29,9 +29,9 @@ over large collections (hundreds of thousands of games).
 - **Import** games from PGN files into a local database.
 - **De-duplicate** a collection, with a readable log of exactly which games were
   removed and which copy was kept.
-- **Normalise player names** against FIDE, so the same player isn't split across
-  spelling variants. An optional shared cache service can make the first run much
-  faster (see [Name-normalisation cache](#name-normalisation-cache-optional)).
+- **Normalise player names** against the official FIDE player list, so the same
+  player isn't split across spelling variants — and assign FIDE IDs to players
+  from FIDE-less sources by name (see [Player-name normalisation](#player-name-normalisation)).
 - **Player profiles & statistics**, including a personalised home screen scoped to
   your own games.
 - **Backup** your private "My games" collection to a timestamped PGN file.
@@ -112,19 +112,24 @@ Longer-form design documents for planned or in-progress work live in
   Bundesliga, …) behind a common provider abstraction, using collections as
   provenance and the existing deduplication for cross-source consistency.
 
-## Name-normalisation cache (optional)
+## Player-name normalisation
 
-Normalising player names is the slowest first-time task, because it scrapes FIDE
-once per player. LPDO can optionally consult a small self-hosted **cache service**
-that returns pre-computed canonical names for a batch of FIDE IDs in a single
-request; only the misses fall back to per-player FIDE lookups.
+The same player often appears under slightly different spellings — accents,
+punctuation, `Lastname, F.` vs `Lastname, Firstname`. LPDO reconciles them against
+the **official FIDE player list**, which the server downloads and stores locally
+(~1.9M players) and refreshes periodically. It's all local: no per-player web
+scraping, and no external cache service.
 
-- The service lives in a **separate repository** and is **not** part of this repo.
-- The client reaches it only when an **API key** is provided at build time via the
-  `CHESSVAULT_NORMALISE_API_KEY` environment variable (see `.env.example`). The key
-  is never committed — it is read from the build environment.
-- A build **without** that key (e.g. a contributor's clone) simply uses the
-  standard FIDE-only normalisation. Nothing breaks.
+- **Forward** (`chess-db players normalise`) — for players that already carry a
+  FIDE ID, set the name to the FIDE-canonical spelling. A local join, instant.
+- **Reverse** (`chess-db players resolve-fide`) — for FIDE-less sources, assign a
+  FIDE ID by matching the name against the list. Only a **single exact match**
+  (after folding accents/punctuation) is accepted; ambiguous names are left alone
+  rather than guessed. Note the inherent limit: a source without FIDE IDs can only
+  identify players by name, so distinct people who share a name are treated as one.
+
+Run `chess-db fide refresh` to fetch or update the list; the server also does this
+as scheduled maintenance.
 
 ## Acknowledgements
 

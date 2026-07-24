@@ -1,10 +1,12 @@
 use axum::{
-    extract::{Path as AxumPath, Query, State},
+    body::Body,
+    extract::{DefaultBodyLimit, Path as AxumPath, Query, State},
     http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
     routing::{get, post},
     Json, Router,
 };
+use tokio::io::AsyncWriteExt;
 use duckdb::Connection;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
@@ -1002,8 +1004,135 @@ async fn create_job_handler(
     Ok(Json(serde_json::json!({ "job_id": id })))
 }
 
+#[derive(Deserialize)]
+struct ImportUploadQuery {
+    collection: Option<String>,
+    /// Original filename; only its extension is used (to preserve
+    /// .pgn/.zip/.zst/.7z so the importer decompresses correctly).
+    filename: Option<String>,
+    #[serde(default)]
+    private: bool,
+    #[serde(default)]
+    fast: bool,
+    on_duplicate: Option<String>,
+}
+
+/// Streamed PGN upload (#154). The client streams a (possibly compressed,
+/// multi-GB) file straight to the daemon; we spool it to a daemon-owned file in
+/// bounded memory — no body-size cap — and start an import job on it. The
+/// original extension is preserved so `import-pgn` decompresses .zip/.zst/.7z.
+/// Works when the daemon can't read the client's files (hardened system daemon)
+/// or is on a different machine. Returns the job id; the client follows
+/// `/jobs/{id}/events` as usual. `body` must be the final extractor.
+async fn import_upload_handler(
+    State(state): State<AppState>,
+    Query(q): Query<ImportUploadQuery>,
+    body: Body,
+) -> ApiResult<serde_json::Value> {
+    let dir = state
+        .db_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    // Never trust an arbitrary client extension — allow only the ingest types.
+    let ext = q
+        .filename
+        .as_deref()
+        .and_then(|f| std::path::Path::new(f).extension())
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .filter(|e| matches!(e.as_str(), "pgn" | "zip" | "zst" | "zstd" | "7z"))
+        .unwrap_or_else(|| "pgn".to_string());
+    let spool = dir.join(format!("upload-{stamp}.{ext}"));
+
+    // Stream the request body to the spool file (bounded memory).
+    let mut file = tokio::fs::File::create(&spool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("create upload spool: {e}")))?;
+    let mut stream = body.into_data_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => {
+                // Client aborted / network drop: don't leave a partial spool.
+                let _ = tokio::fs::remove_file(&spool).await;
+                return Err((StatusCode::BAD_REQUEST, format!("upload stream error: {e}")));
+            }
+        };
+        if let Err(e) = file.write_all(&chunk).await {
+            let _ = tokio::fs::remove_file(&spool).await;
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("write upload spool: {e}")));
+        }
+    }
+    file.flush()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("flush upload spool: {e}")))?;
+    drop(file);
+
+    // A large upload defers dedup to the background: skip inline dedup on the
+    // import (no per-game fingerprinting / growing in-memory fingerprint map to
+    // slow a multi-million-game load) and instead include one global dedup_games
+    // in the coalesced maintenance. A small upload dedups inline as before and
+    // needs no whole-DB dedup pass. Sized from the spooled bytes, matching the
+    // importer's own bulk-mode estimate (#154).
+    let bulk = tokio::fs::metadata(&spool)
+        .await
+        .map(|m| crate::importer::is_bulk_size(m.len()))
+        .unwrap_or(false);
+
+    // Import the uploaded file, then request post-import maintenance (#131),
+    // debounced + coalesced by the JobManager to run once after the whole import
+    // queue drains — so importing several files, or a file during the wizard's
+    // first-run, triggers a single tail pass instead of one per import, and later
+    // imports never miss it. Inline position indexing is skipped here (depth 0)
+    // so the coalesced index_positions job does that work and shows its progress.
+    let import_params = serde_json::json!({
+        "path": spool.to_string_lossy(),
+        "collection": q.collection.unwrap_or_else(|| "Manual".to_string()),
+        // Original filename (spool path is an opaque upload-<stamp>.<ext>), kept
+        // so the activity panel can show what's importing, not just where it lands.
+        "filename": q.filename,
+        "private": q.private,
+        "fast": q.fast,
+        "skip_dedup": bulk,
+        "on_duplicate": q.on_duplicate.unwrap_or_else(|| "skip".to_string()),
+        "max_position_depth": 0,
+        // Delete the spool once the import finishes (see jobs.rs import_pgn).
+        "cleanup": true,
+    });
+    let id = state.jobs.submit("import_pgn".to_string(), import_params);
+    // Owe a global dedup only when the import skipped inline dedup (bulk).
+    state.jobs.request_maintenance(bulk);
+    // The client follows the import job for the upload→import handoff; the
+    // coalesced maintenance jobs then appear and run on their own in the queue.
+    Ok(Json(serde_json::json!({ "job_id": id })))
+}
+
 async fn list_jobs_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
-    Json(serde_json::to_value(state.jobs.list()).unwrap_or_default())
+    let mut jobs = serde_json::to_value(state.jobs.list()).unwrap_or_else(|_| serde_json::json!([]));
+    // Coalesced maintenance (#131) isn't enqueued until the import queue drains,
+    // so while an import is in flight it would otherwise be invisible. Surface a
+    // synthetic "queued" pending row so the activity panel shows it's coming.
+    // Only here (not in JobManager::list, which the scheduler introspects).
+    if state.jobs.maintenance_owed() {
+        if let Some(arr) = jobs.as_array_mut() {
+            arr.push(serde_json::json!({
+                "id": "maintenance-pending",
+                "type": "maintenance_pending",
+                "status": "queued",
+                "value": 0,
+                "total": 0,
+                "message": "Runs after the import finishes",
+                "interruptible": false,
+                "params": {},
+            }));
+        }
+    }
+    Json(jobs)
 }
 
 async fn get_job_handler(
@@ -1152,9 +1281,15 @@ async fn setup_start_handler(State(state): State<AppState>) -> ApiResult<serde_j
         ));
         keys.push(s.key.to_string());
     }
-    ids.push(state.jobs.submit("dedup_games".into(), serde_json::json!({})));
-    ids.push(state.jobs.submit("index_positions".into(), serde_json::json!({ "fast": true })));
-    ids.push(state.jobs.submit("normalise".into(), serde_json::json!({})));
+    // Request the coalesced tail pass (#131) instead of enqueuing dedup/index/
+    // normalise at a fixed queue position: the first-run imports use skip_dedup,
+    // so a single global dedup is owed (needs_dedup = true), then index +
+    // normalise. Coalescing means a source enabled mid-wizard, or an own-PGN
+    // import, is covered by the same one pass that runs once every import drains
+    // — no maintenance stranded ahead of later imports. The setup watcher tracks
+    // only the import ids, so setup settles when imports finish and maintenance
+    // continues in the background (matching the Summary screen's copy).
+    state.jobs.request_maintenance(true);
 
     spawn_setup_watcher(state.clone(), ids.clone(), keys);
     Ok(Json(serde_json::json!({ "job_ids": ids })))
@@ -1498,6 +1633,9 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         .route("/position/moves",                      get(position_moves_handler))
         // Long-running mutation jobs with streamed progress.
         .route("/jobs",                                get(list_jobs_handler).post(create_job_handler))
+        // Streamed PGN upload (#154): disable the default body-size cap so a
+        // multi-GB file streams straight to a spool + import job.
+        .route("/import/upload", post(import_upload_handler).layer(DefaultBodyLimit::disable()))
         .route("/jobs/{id}",                           get(get_job_handler))
         .route("/jobs/{id}/events",                    get(job_events_handler))
         .route("/jobs/{id}/cancel",                    post(cancel_job_handler))
