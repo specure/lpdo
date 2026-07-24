@@ -8,6 +8,10 @@ interface Props {
   selectedIds?: number[];
   /** `additive` is true on Ctrl/Cmd-click — toggle into a multi-selection. */
   onSelect: (player: PlayerInfo, additive?: boolean) => void;
+  /** Selection handler for Recent rows. Recent players carry a persisted id that
+   *  a purge+reimport can invalidate, so App re-resolves them here before use.
+   *  Falls back to `onSelect` when omitted. */
+  onSelectRecent?: (player: PlayerInfo, additive?: boolean) => void;
   /** Optional external ref for the search input (so HomeEmptyState's
    *  "Search a player" card can focus it from above). */
   inputRef?: React.RefObject<HTMLInputElement | null>;
@@ -64,7 +68,7 @@ function PlayerRow({
   );
 }
 
-export default function PlayerList({ selectedId, selectedIds, onSelect, inputRef, recentPlayers, onRemoveRecent, reloadKey }: Props) {
+export default function PlayerList({ selectedId, selectedIds, onSelect, onSelectRecent, inputRef, recentPlayers, onRemoveRecent, reloadKey }: Props) {
   const selSet = selectedIds ?? (selectedId != null ? [selectedId] : []);
   const isSelected = (id: number) => selSet.includes(id);
   const [query, setQuery] = useState("");
@@ -145,7 +149,7 @@ export default function PlayerList({ selectedId, selectedIds, onSelect, inputRef
                 key={`r-${p.id}`}
                 player={p}
                 selected={isSelected(p.id)}
-                onClick={(additive) => onSelect(p, additive)}
+                onClick={(additive) => (onSelectRecent ?? onSelect)(p, additive)}
                 onRemove={onRemoveRecent ? () => onRemoveRecent(p.id) : undefined}
               />
             ))}

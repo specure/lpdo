@@ -160,6 +160,27 @@ function useRecentPlayers() {
   return { recent, add, remove };
 }
 
+/** Re-resolve a (possibly stale) player against the current DB by a STABLE key —
+ *  fide_id when known, else exact name. Recent players persist a surrogate `id`
+ *  that a purge+reimport invalidates (the same person gets a new id), so trusting
+ *  it would open a different player's games. Returns the current player row, or
+ *  null if that person is no longer in the database. */
+async function resolveCurrentPlayer(p: PlayerInfo): Promise<PlayerInfo | null> {
+  try {
+    const url = p.fide_id != null
+      ? `/api/players?fide_id=${p.fide_id}`
+      : `/api/players?name=${encodeURIComponent(p.name)}`;
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    const list = (await resp.json()) as PlayerInfo[];
+    return p.fide_id != null
+      ? (list[0] ?? null)
+      : (list.find((x) => x.name === p.name) ?? null);
+  } catch {
+    return null;
+  }
+}
+
 const RECENT_PGN_KEY = "recentPgnFiles";
 const RECENT_PGN_MAX = 8;
 
@@ -300,6 +321,19 @@ export default function App() {
     setPositionSelectedSan(null);
   }
 
+  // A recent player carries a persisted (possibly stale) id — re-resolve it to
+  // the current DB row before selecting, so a purge+reimport can't make it open a
+  // different player's games. Drops the entry if that person is gone.
+  async function handleSelectRecent(player: PlayerInfo, additive?: boolean) {
+    const fresh = await resolveCurrentPlayer(player);
+    if (!fresh) {
+      removeRecentPlayer(player.id);
+      return;
+    }
+    if (fresh.id !== player.id) removeRecentPlayer(player.id); // drop the stale entry; handleSelectPlayer re-adds the fresh one
+    handleSelectPlayer(fresh, additive);
+  }
+
   function handleSelectGame(game: GameSummary) {
     setSelectedGame(game);
     setLastSelectedGame(game);
@@ -354,7 +388,7 @@ export default function App() {
   // stays available for switching; skipped during a prep-context flow.
   useEffect(() => {
     if (mode === "players" && !prepContext && !selectedPlayer && recentPlayers.length > 0) {
-      handleSelectPlayer(recentPlayers[0]);
+      void handleSelectRecent(recentPlayers[0]);
     }
   }, [mode, prepContext, selectedPlayer, recentPlayers]);
 
@@ -621,6 +655,7 @@ export default function App() {
                   selectedId={selectedPlayer?.id ?? null}
                   selectedIds={selectedPlayer ? [selectedPlayer.id, ...selectedExtras.map((p) => p.id)] : []}
                   onSelect={handleSelectPlayer}
+                  onSelectRecent={handleSelectRecent}
                   inputRef={playerSearchRef}
                   recentPlayers={recentPlayers}
                   onRemoveRecent={removeRecentPlayer}
