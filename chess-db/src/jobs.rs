@@ -1201,7 +1201,10 @@ fn copy_file(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// was made; on any failure (e.g. low disk) it warns and returns false so the
 /// caller proceeds without a snapshot.
 fn make_safety_snapshot(conn: &Connection, db: &Path, reporter: &Reporter) -> bool {
-    reporter.log("Creating a safety snapshot of the database before rebuilding…");
+    // Copying the whole DB is slow and unmeasured. Use a progress event (total=0)
+    // so the panel shows a "working" indeterminate bar rather than leaving a prior
+    // phase's bar stale (e.g. stuck at 100% after the import step).
+    reporter.progress(0, 0, "Creating a safety snapshot of the database before rebuilding…");
     // Flush the WAL into the main file when possible; we also copy the WAL if it
     // remains, so the snapshot is consistent either way.
     let _ = conn.execute_batch("CHECKPOINT;");

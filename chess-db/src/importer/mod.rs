@@ -358,14 +358,17 @@ pub fn index_positions(
     reporter: &Reporter,
 ) -> Result<()> {
     if max_position_depth.is_none() {
-        reporter.log("Clearing positions table.");
+        // Unmeasured DELETE over a possibly-huge table — indeterminate bar.
+        reporter.progress(0, 0, "Clearing positions table…");
         conn.execute_batch("DELETE FROM positions;")?;
         reporter.done("Positions table cleared.");
         return Ok(());
     }
 
     if rebuild {
-        reporter.log("Rebuilding positions table from scratch...");
+        // Dropping the positions table is unmeasured; reset to an indeterminate
+        // bar until the measured indexing loop below starts reporting.
+        reporter.progress(0, 0, "Rebuilding positions table from scratch…");
         // No `REFERENCES games(id)`: DuckDB implements UPDATE as delete+insert,
         // so an incoming FK breaks `UPDATE games` at scale (player merge,
         // soft-delete). positions is derived data — referential integrity is
