@@ -256,12 +256,15 @@ export interface Job {
   id: string;
   /** Job kind, e.g. "sources_sync" | "update" | "index_positions" | "backup". */
   type: string;
-  status: "queued" | "running" | "done" | "error";
+  status: "queued" | "running" | "done" | "error" | "cancelled";
   value: number;
   total: number;
   message: string;
   /** False for appender (fast) writes that must not be interrupted. */
   interruptible: boolean;
+  /** True when a running job honours cooperative cancellation (stops on a
+   *  committed boundary). Drives whether the Cancel button is shown. */
+  cancellable?: boolean;
   path?: string;
   error?: string;
   /** Submission params, used to label a job by what it operates on. */

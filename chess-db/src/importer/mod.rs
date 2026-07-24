@@ -169,6 +169,7 @@ impl Drop for TempPgn {
 /// - `.zip`/`.7z` — the first `.pgn` entry is streamed out to a sibling temp
 ///   file first (archives don't offer a cheap owned streaming reader), then
 ///   that temp file is streamed; the guard removes it afterwards.
+///
 /// Wraps a reader and tallies the bytes pulled through it into a shared counter,
 /// so the importer can report byte-based progress (a real % + ETA) without the
 /// parser knowing about the job reporter. `open_import_reader` places it at the
@@ -188,10 +189,15 @@ impl<R: Read> Read for CountingReader<R> {
     }
 }
 
+/// What `open_import_reader` yields: the decompressing reader, an optional
+/// temp-file drop guard, the byte total the progress bar measures against, and
+/// the shared byte counter the caller passes to `process_pgn_stream`.
+type ImportReader = (Box<dyn Read>, Option<TempPgn>, u64, Arc<AtomicU64>);
+
 /// Returns the decompressing reader, an optional temp-file drop guard, the byte
 /// total the progress bar measures against, and the shared byte counter the
 /// caller passes to `process_pgn_stream` for a real progress bar.
-fn open_import_reader(path: &Path) -> Result<(Box<dyn Read>, Option<TempPgn>, u64, Arc<AtomicU64>)> {
+fn open_import_reader(path: &Path) -> Result<ImportReader> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -400,8 +406,12 @@ pub fn index_positions(
 
     let insert_result = fill_positions(conn, &pb, reporter, pending as u64, rebuild, max_position_depth, fast);
 
-    pb.finish_with_message("Indexing complete");
-    reporter.done(format!("Indexing complete. {} games indexed.", pending));
+    pb.finish_and_clear();
+    if insert_result.is_ok() && reporter.is_cancelled() {
+        reporter.cancelled("Position indexing cancelled — resumes on the next run.");
+    } else if insert_result.is_ok() {
+        reporter.done(format!("Indexing complete. {} games indexed.", pending));
+    }
     insert_result
 }
 
@@ -435,6 +445,13 @@ fn fill_positions(
             .collect();
 
         if rows.is_empty() {
+            break;
+        }
+
+        // Cooperative cancellation (#140): stop between read batches. Positions
+        // already flushed stay committed and are simply resumed on the next run
+        // (the WHERE-NOT-EXISTS filter skips indexed games).
+        if reporter.is_cancelled() {
             break;
         }
 
@@ -532,6 +549,9 @@ pub fn import(
     let total = issues.len() as u64;
     let pb = reporter.bar(total);
     let mut completed = 0u64;
+    // Grand totals across all issues, for a meaningful final `done` message
+    // (e.g. "12,748 games imported into Ajedrez OTB") instead of "Import complete".
+    let (mut tot_imported, mut tot_dups, mut tot_ns, mut tot_window) = (0usize, 0usize, 0usize, 0usize);
 
     let mut ctx = ImportContext::new(conn, skip_dedup)?;
     let collection_id = upsert_collection(conn, collection)?;
@@ -572,6 +592,7 @@ pub fn import(
                         duckdb::params![imported as i32, issue_id],
                     )?;
                     add_issue_to_collection(conn, *issue_id, collection_id)?;
+                    tot_imported += imported; tot_dups += skipped_dups; tot_ns += skipped_ns; tot_window += skipped_window;
                     let msg = format!("  Issue {}: {}", issue_id, import_summary(imported, skipped_dups, skipped_ns, skipped_window));
                     pb.println(&msg);
                     reporter.log(&msg);
@@ -620,8 +641,13 @@ pub fn import(
     pb.set_message("Updating player game counts…");
     crate::db::queries::recalculate_game_counts(conn)?;
 
-    pb.finish_with_message("Import complete");
-    reporter.done("Import complete");
+    pb.finish_and_clear();
+    let done_msg = format!(
+        "{} into {}.",
+        import_summary(tot_imported, tot_dups, tot_ns, tot_window),
+        collection,
+    );
+    reporter.done(&done_msg);
     import_result
 }
 
@@ -716,6 +742,8 @@ pub fn import_pgn(
         reporter.bar(total)
     };
     let mut completed = 0u64;
+    // Grand totals across all files, for the final `done` message.
+    let (mut tot_imported, mut tot_dups, mut tot_ns, mut tot_window) = (0usize, 0usize, 0usize, 0usize);
 
     // Allocate issue IDs above the TWIC range (TWIC issues are ~1–1500)
     let mut next_issue_id: i32 = {
@@ -805,6 +833,7 @@ pub fn import_pgn(
                         duckdb::params![imported as i32, issue_id],
                     )?;
                     add_issue_to_collection(conn, issue_id, collection_id)?;
+                    tot_imported += imported; tot_dups += skipped_dups; tot_ns += skipped_ns; tot_window += skipped_window;
                     let msg = format!("  {}: {}", filename, import_summary(imported, skipped_dups, skipped_ns, skipped_window));
                     pb.println(&msg);
                     reporter.log(&msg);
@@ -838,8 +867,13 @@ pub fn import_pgn(
     pb.set_message("Updating player game counts…");
     crate::db::queries::recalculate_game_counts(conn)?;
 
-    pb.finish_with_message("Import complete");
-    reporter.done("Import complete");
+    pb.finish_and_clear();
+    let done_msg = format!(
+        "{} into {}.",
+        import_summary(tot_imported, tot_dups, tot_ns, tot_window),
+        spec.collection,
+    );
+    reporter.done(&done_msg);
     import_result
 }
 
@@ -1337,6 +1371,12 @@ fn process_pgn_stream(
                     0,
                     format!("Imported {total_games} games…"),
                 );
+            }
+            // Cooperative cancellation (#157): break on a batch boundary. The
+            // batch above was just flushed/committed, so stopping here can't
+            // corrupt the appender mid-write; games imported so far are kept.
+            if reporter.is_cancelled() {
+                break;
             }
         }
     }

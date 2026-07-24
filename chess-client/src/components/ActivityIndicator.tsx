@@ -33,12 +33,14 @@ function jobLabel(j: Job): string {
     }
     case "sources_set_window": return `Set date range · ${src || "source"}`;
     case "update":             return "Scheduled update";
+    case "fide_refresh":       return "Update FIDE player list";
     case "index_positions":    return "Build position index";
     case "dedup_games":        return "Deduplicate games";
+    case "dedup_players":      return "Merge duplicate players";
     case "cleanup":            return "Clean up games";
     case "normalise":          return "Normalise player names";
     case "resolve_fide":       return "Fetch missing FIDE IDs";
-    case "import":             return "Import";
+    case "import":             return src ? `Import ${src}` : "Import";
     case "import_pgn": {
       // Prefer the original filename (what's importing); the collection (where it
       // lands) is the fallback for content/paste imports that have no file.
@@ -47,7 +49,7 @@ function jobLabel(j: Job): string {
       if (f) return c ? `Import ${f} → ${c}` : `Import ${f}`;
       return c ? `Import PGN → ${c}` : "Import PGN";
     }
-    case "maintenance_pending": return "Prepare database — dedup · index · normalise";
+    case "maintenance_pending": return "Prepare database — resolve · dedup · normalise · index";
     case "players_import":     return "Import players";
     case "players_export":     return "Export players";
     case "backup":             return p.collection ? `Backup ${p.collection}` : "Backup";
@@ -69,28 +71,34 @@ function formatEta(sec: number): string {
   return m ? `~${h}h ${m}m left` : `~${h}h left`;
 }
 
-function ActiveRow({ job, eta, onCancel }: { job: Job; eta?: string; onCancel: (id: string) => void }) {
+function ActiveRow({ job, eta, cancelling, onCancel }: { job: Job; eta?: string; cancelling: boolean; onCancel: (id: string) => void }) {
   const queued = job.status === "queued";
   const known = job.total > 0;
   return (
     <div className="px-4 py-3 space-y-1.5">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-body-sm text-on-surface truncate">{jobLabel(job)}</span>
-        {/* Cancel only running, interruptible jobs — an appender (fast) write
-            can corrupt the DB if killed mid-flight, so it isn't cancelable. */}
-        {job.status === "running" && job.interruptible && (
+      <div className="flex items-start justify-between gap-2">
+        <span className="text-body-sm text-on-surface line-clamp-2 break-words">{jobLabel(job)}</span>
+        {/* Queued jobs can always be cancelled (they haven't started). A running
+            job shows Cancel when it honours cooperative cancellation — it stops on
+            a committed boundary, so a fast import counts even though it can't be
+            killed mid-write (#157/#161). Cancellation is cooperative, so once
+            requested the button shows "Cancelling…" until the job stops. */}
+        {(queued || (job.status === "running" && job.cancellable)) && (
           <button
             onClick={() => onCancel(job.id)}
-            className="shrink-0 h-6 px-2 inline-flex items-center rounded-full text-error border border-outline text-label-sm hover:bg-error/8 transition-colors duration-short3 ease-standard"
+            disabled={cancelling}
+            className="shrink-0 h-6 px-2 inline-flex items-center rounded-full text-error border border-outline text-label-sm hover:bg-error/8 transition-colors duration-short3 ease-standard disabled:opacity-60 disabled:cursor-default disabled:hover:bg-transparent"
           >
-            Cancel
+            {cancelling ? "Cancelling…" : "Cancel"}
           </button>
         )}
       </div>
       {queued ? (
-        <div className="text-label-sm text-on-surface-variant">{job.message ? `Queued · ${job.message}` : "Queued"}</div>
+        <div className="text-label-sm text-on-surface-variant break-words">{job.message ? `Queued · ${job.message}` : "Queued"}</div>
       ) : (
         <>
+          {/* The live progress line updates ~1×/s; keep it single-line so it
+              doesn't reflow/jitter as the message and % change. */}
           <div className="flex items-center justify-between gap-2 text-label-sm text-on-surface-variant">
             <span className="truncate">{job.message || "Working…"}</span>
             {known && <span className="shrink-0">{Math.round(pct(job))}%{eta ? ` · ${eta}` : ""}</span>}
@@ -109,13 +117,20 @@ function ActiveRow({ job, eta, onCancel }: { job: Job; eta?: string; onCancel: (
 
 function RecentRow({ job }: { job: Job }) {
   const ok = job.status === "done";
+  const cancelled = job.status === "cancelled";
+  // ✓ done (green) · ⊘ cancelled (muted) · ✕ error (red)
+  const { icon, color } = ok
+    ? { icon: "✓", color: "text-success" }
+    : cancelled
+    ? { icon: "⊘", color: "text-on-surface-variant" }
+    : { icon: "✕", color: "text-error" };
   return (
     <div className="px-4 py-2 flex items-start gap-2">
-      <span className={`text-base leading-5 shrink-0 ${ok ? "text-success" : "text-error"}`}>{ok ? "✓" : "✕"}</span>
+      <span className={`text-base leading-5 shrink-0 ${color}`}>{icon}</span>
       <div className="min-w-0">
-        <div className="text-body-sm text-on-surface truncate">{jobLabel(job)}</div>
-        {!ok && job.error && <div className="text-label-sm text-error break-words">{job.error}</div>}
-        {ok && job.message && <div className="text-label-sm text-on-surface-variant truncate">{job.message}</div>}
+        <div className="text-body-sm text-on-surface line-clamp-2 break-words">{jobLabel(job)}</div>
+        {job.status === "error" && job.error && <div className="text-label-sm text-error break-words">{job.error}</div>}
+        {(ok || cancelled) && job.message && <div className="text-label-sm text-on-surface-variant line-clamp-2 break-words">{job.message}</div>}
       </div>
     </div>
   );
@@ -124,6 +139,10 @@ function RecentRow({ job }: { job: Job }) {
 export default function ActivityIndicator() {
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [etas, setEtas] = useState<Map<string, string>>(new Map());
+  // Ids the user has asked to cancel — the job keeps running until it reaches a
+  // committed boundary (cooperative cancel), so the button shows "Cancelling…"
+  // meanwhile. Cleared once the job is no longer active (see the poll below).
+  const [cancelling, setCancelling] = useState<Set<string>>(() => new Set());
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   // Per-job {time, value} anchor for a cumulative-rate ETA. Cumulative (since the
@@ -156,6 +175,18 @@ export default function ActivityIndicator() {
         }
         setJobs(j);
         setEtas(nextEtas);
+        // Drop "Cancelling…" markers for jobs that have left the active set
+        // (finished/cancelled), so a reused id can't stay stuck disabled.
+        setCancelling((prev) => {
+          if (prev.size === 0) return prev;
+          const stillActive = new Set(
+            j.filter((x) => x.status === "queued" || x.status === "running").map((x) => x.id),
+          );
+          let changed = false;
+          const next = new Set<string>();
+          for (const id of prev) { if (stillActive.has(id)) next.add(id); else changed = true; }
+          return changed ? next : prev;
+        });
       }).catch(() => { /* offline — leave last known */ });
     };
     poll();
@@ -177,10 +208,14 @@ export default function ActivityIndicator() {
   // Submission order (oldest→newest); active oldest-first reads as the pipeline,
   // recent newest-first so the latest finish is on top.
   const active = all.filter((j) => j.status === "running" || j.status === "queued");
-  const recent = all.filter((j) => j.status === "done" || j.status === "error").slice(-8).reverse();
+  const recent = all
+    .filter((j) => j.status === "done" || j.status === "error" || j.status === "cancelled")
+    .slice(-8)
+    .reverse();
   const busy = active.length > 0;
 
   function handleCancel(id: string) {
+    setCancelling((s) => new Set(s).add(id));
     void cancelJob(id);
   }
 
@@ -203,7 +238,7 @@ export default function ActivityIndicator() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-[22rem] max-h-[28rem] overflow-y-auto z-50 rounded-2xl border border-outline-variant bg-surface-container-high shadow-lg">
+        <div className="absolute right-0 top-full mt-2 w-[26rem] max-h-[28rem] overflow-y-auto z-50 rounded-2xl border border-outline-variant bg-surface-container-high shadow-lg">
           <div className="px-4 py-3 border-b border-outline-variant flex items-center justify-between">
             <span className="text-title-sm text-on-surface">Activity</span>
             <span className="text-label-sm text-on-surface-variant">
@@ -219,7 +254,7 @@ export default function ActivityIndicator() {
             <>
               {active.length > 0 && (
                 <div className="divide-y divide-outline-variant">
-                  {active.map((j) => <ActiveRow key={j.id} job={j} eta={etas.get(j.id)} onCancel={handleCancel} />)}
+                  {active.map((j) => <ActiveRow key={j.id} job={j} eta={etas.get(j.id)} cancelling={cancelling.has(j.id)} onCancel={handleCancel} />)}
                 </div>
               )}
               {recent.length > 0 && (

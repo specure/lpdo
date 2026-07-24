@@ -326,6 +326,11 @@ pub struct JobSnapshot {
     /// False for appender (fast) operations, which can corrupt the database if
     /// the process is killed mid-write — the UI uses this to guard app-close.
     pub interruptible: bool,
+    /// Whether a *running* job honours cooperative cancellation (its loop polls
+    /// is_cancelled and stops on a committed boundary). Distinct from
+    /// `interruptible`: a fast import can't be killed mid-write but CAN be asked
+    /// to stop between batches. The UI shows the Cancel button on this.
+    pub cancellable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -384,6 +389,7 @@ impl JobSlot {
             total: s.total,
             message: s.message.clone(),
             interruptible: self.interruptible,
+            cancellable: is_cancellable(&self.job_type),
             path: s.path.clone(),
             error: s.error.clone(),
             params: self.params.clone(),
@@ -421,24 +427,43 @@ pub struct JobManager {
     maintenance: Mutex<MaintenanceNeeds>,
 }
 
-/// What post-import maintenance is currently owed. `index_normalise` is the
-/// always-cheap incremental tail (only new games are indexed/normalised);
-/// `dedup` is set only by imports that deferred dedup (first-run `skip_dedup`),
-/// since ordinary imports dedup inline.
+/// What post-import maintenance is currently owed (#131, #167). `requested` marks
+/// that a coalesced pass should run once the import queue drains; `full` chooses
+/// the identity-first pipeline (first-run setup, large/bulk imports) over the
+/// light feed pass.
 #[derive(Default, Clone, Copy)]
 struct MaintenanceNeeds {
-    index_normalise: bool,
-    dedup: bool,
+    /// Any coalesced maintenance is owed.
+    requested: bool,
+    /// Run the full identity-first pipeline (resolve-fide → dedup_players →
+    /// normalise → dedup_games → index) rather than the light feed pass
+    /// (normalise → index). Set by first-run setup and large/bulk imports; feed
+    /// syncs request the light pass (#167).
+    full: bool,
 }
 
 /// Job types that must drain before a coalesced maintenance pass runs: any
 /// import-class job (would add games maintenance must then cover) or a
 /// maintenance job already in flight (don't stack a second pass).
+/// Job types whose long-running loop polls `is_cancelled` and can stop mid-run on
+/// a committed boundary (#157/#140). Short/atomic jobs (normalise, resolve_fide)
+/// and the FIDE download aren't cancellable mid-flight, so the UI doesn't offer a
+/// (dead) Cancel for them while running — but any queued job can still be cancelled
+/// before it starts.
+fn is_cancellable(job_type: &str) -> bool {
+    matches!(
+        job_type,
+        "import" | "import_pgn" | "sources_sync" | "update"
+            | "index_positions" | "dedup_games" | "dedup_players"
+    )
+}
+
 fn blocks_maintenance(job_type: &str) -> bool {
     matches!(
         job_type,
         "import" | "import_pgn" | "sources_sync" | "download" | "update"
-            | "dedup_games" | "index_positions" | "normalise"
+            | "fide_refresh" | "resolve_fide" | "dedup_players" | "dedup_games"
+            | "index_positions" | "normalise"
     )
 }
 
@@ -469,31 +494,42 @@ impl JobManager {
     /// row so the user can see maintenance is coming while an import is still in
     /// flight (#131).
     pub fn maintenance_owed(&self) -> bool {
-        self.maintenance.lock().unwrap().index_normalise
+        self.maintenance.lock().unwrap().requested
     }
 
     /// Request post-import maintenance (#131). Idempotent: sets the "owed" flags;
     /// the coalesced pass runs later, once the import queue has drained. Pass
     /// `needs_dedup = true` when the import deferred dedup (first-run
-    /// `skip_dedup`) so a single global `dedup_games` is included in the tail.
-    pub fn request_maintenance(&self, needs_dedup: bool) {
+    /// `full = true` runs the identity-first pipeline (first-run setup, large/bulk
+    /// imports); `false` requests the light feed pass (normalise → index). When a
+    /// pass is already owed, `full` is sticky (a full request wins over a light one).
+    pub fn request_maintenance(&self, full: bool) {
         let mut m = self.maintenance.lock().unwrap();
-        m.index_normalise = true;
-        m.dedup |= needs_dedup;
+        m.requested = true;
+        m.full |= full;
+    }
+
+    /// Cancel owed-but-not-yet-enqueued maintenance (the synthetic
+    /// "maintenance-pending" row). Clears the flags so the coalesced pass won't
+    /// start when the import queue drains. A later import can re-request it.
+    pub fn clear_maintenance(&self) {
+        *self.maintenance.lock().unwrap() = MaintenanceNeeds::default();
     }
 
     /// If maintenance is owed and nothing import- or maintenance-class is queued
-    /// or running, enqueue the coalesced pass ([dedup] → index → normalise) once
-    /// and clear the owed flags. If the queue hasn't drained yet, re-arm and wait
-    /// for a later call. Safe to call from any thread and as often as you like —
-    /// the flags are claimed atomically so two callers can't both submit (#131).
+    /// or running, enqueue the coalesced pass once and clear the owed flags. The
+    /// full pass is identity-first (#167): resolve-fide → dedup_players →
+    /// normalise → dedup_games → index; the light pass is normalise → index. If
+    /// the queue hasn't drained yet, re-arm and wait for a later call. Safe to
+    /// call from any thread and as often as you like — the flags are claimed
+    /// atomically so two callers can't both submit (#131).
     pub fn maybe_run_maintenance(self: &Arc<Self>) {
         // Atomically claim what's owed so a concurrent caller sees nothing.
         let needs = {
             let mut m = self.maintenance.lock().unwrap();
             std::mem::take(&mut *m)
         };
-        if !needs.index_normalise {
+        if !needs.requested {
             return;
         }
         let busy = self
@@ -503,15 +539,25 @@ impl JobManager {
         if busy {
             // Not drained yet — put back what we claimed and wait for a later call.
             let mut m = self.maintenance.lock().unwrap();
-            m.index_normalise = true;
-            m.dedup |= needs.dedup;
+            m.requested = true;
+            m.full |= needs.full;
             return;
         }
-        if needs.dedup {
+        // Identity-first (#167): consolidate players (fetch FIDE IDs, merge
+        // same-FIDE-ID rows, canonicalise names) BEFORE deduplicating games —
+        // dedup_games keys on player IDs — then index once the dust settles.
+        if needs.full {
+            // Ensure the FIDE list exists/current before it's used (no-op when
+            // fresh, so no re-download per import); then the identity steps.
+            self.submit("fide_refresh".to_string(), serde_json::json!({ "if_due": true }));
+            self.submit("resolve_fide".to_string(), serde_json::json!({}));
+            self.submit("dedup_players".to_string(), serde_json::json!({}));
+            self.submit("normalise".to_string(), serde_json::json!({}));
             self.submit("dedup_games".to_string(), serde_json::json!({}));
+        } else {
+            self.submit("normalise".to_string(), serde_json::json!({}));
         }
         self.submit("index_positions".to_string(), serde_json::json!({ "fast": true }));
-        self.submit("normalise".to_string(), serde_json::json!({}));
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<JobSlot>> {
@@ -534,10 +580,23 @@ impl JobManager {
     }
 
     /// Request cooperative cancellation. Returns false if the job is unknown.
+    ///
+    /// A job that hasn't started yet (still `queued`) is marked `cancelled`
+    /// immediately, so it leaves the visible queue at once (#161) instead of
+    /// appearing stuck until the writer thread reaches it — the writer then skips
+    /// it (the body's start-of-run cancellation check). A running job just gets
+    /// the flag; its loop stops at the next committed boundary.
     pub fn cancel(&self, id: &str) -> bool {
         match self.get(id) {
             Some(slot) => {
                 slot.cancel.store(true, Ordering::Relaxed);
+                {
+                    let mut s = slot.state.lock().unwrap();
+                    if s.status == "queued" {
+                        s.status = "cancelled".into();
+                        s.message = "Cancelled".into();
+                    }
+                }
                 true
             }
             None => false,
@@ -606,6 +665,9 @@ impl JobManager {
                             s.status = "error".into();
                             s.error = Some(ev.message.clone());
                         }
+                        "cancelled" => {
+                            s.status = "cancelled".into();
+                        }
                         _ => {
                             if s.status == "queued" {
                                 s.status = "running".into();
@@ -639,15 +701,20 @@ impl JobManager {
         // coalesced maintenance, #163) need the manager itself.
         let jm_run = Arc::clone(self);
         let body = move |conn: &Connection| {
+            let reporter = Reporter::channel(ev_tx, cancel);
+            // Check cancellation BEFORE flipping to "running": a job cancelled while
+            // queued (#161) is skipped cleanly and never shows a "running" blip.
+            if reporter.is_cancelled() {
+                reporter.cancelled("Cancelled before it started");
+                return;
+            }
             {
                 slot_run.state.lock().unwrap().status = "running".into();
             }
-            let reporter = Reporter::channel(ev_tx, cancel);
-            if reporter.is_cancelled() {
-                reporter.error("Cancelled before start");
-                return;
-            }
             match run_job(&slot_run.job_type, &params, conn, &reporter, &rt, &db_path, &jm_run) {
+                // A job that returns Ok after observing cancellation stopped
+                // cooperatively — report it as cancelled, not done (#157/#140).
+                Ok(()) if reporter.is_cancelled() => reporter.cancelled("Cancelled"),
                 // Empty message keeps the operation's own final message; this
                 // just guarantees a terminal "done" even if the op didn't emit one.
                 Ok(()) => reporter.done(""),
@@ -800,10 +867,14 @@ fn run_job(
                     // own visible jobs (#131).
                     crate::sources::record_run(conn, src.key, "ok")?;
                     reporter.done(format!(
-                        "{} imported — preparing (dedup, index, normalise) in the background.",
+                        "{} imported — preparing the database in the background.",
                         src.name
                     ));
-                    jm.request_maintenance(true);
+                    // A bulk/deep-history source (e.g. Ajedrez) gets the full
+                    // identity-first pipeline; an incremental feed (TWIC, Lichess)
+                    // gets the light pass (#167).
+                    let full = src.kind == crate::sources::SourceKind::Bulk;
+                    jm.request_maintenance(full);
                 }
                 Err(e) => {
                     let _ = crate::sources::record_run(conn, src.key, &format!("error: {e}"));
@@ -863,6 +934,9 @@ fn run_job(
         "dedup_games" => {
             dedup::dedup_games(conn, flag(p, "dry_run"), reporter)?;
         }
+        "dedup_players" => {
+            dedup::dedup_players(conn, reporter)?;
+        }
         "cleanup" => {
             dedup::cleanup_nonstandard(conn, flag(p, "non_standard"), flag(p, "dry_run"), reporter)?;
         }
@@ -899,21 +973,29 @@ fn run_job(
         // load it, or load a local `file` if one was given (the daemon can't read
         // the user's home dir, so the default path is a self-contained download).
         "fide_refresh" => {
-            match p.get("file").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
-                Some(path) => {
-                    crate::fide::load_from_file(conn, Path::new(path), reporter)?;
+            // `if_due` (set by the full maintenance pipeline, #167) makes this a
+            // no-op when the list is already current — so a large import ensures
+            // the FIDE list exists before resolve/normalise without re-downloading
+            // it on every import. A manual/scheduled refresh omits it and forces.
+            if flag(p, "if_due") && !crate::fide::refresh_due(conn)? {
+                reporter.done("FIDE list is current — no refresh needed.");
+            } else {
+                match p.get("file").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                    Some(path) => {
+                        crate::fide::load_from_file(conn, Path::new(path), reporter)?;
+                    }
+                    None => {
+                        let url = p
+                            .get("url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(crate::fide::FIDE_LIST_URL);
+                        crate::fide::download_and_load(conn, url, reporter)?;
+                    }
                 }
-                None => {
-                    let url = p
-                        .get("url")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(crate::fide::FIDE_LIST_URL);
-                    crate::fide::download_and_load(conn, url, reporter)?;
-                }
+                // Stamp the monthly clock so a manual refresh also defers the next
+                // scheduled one (#162).
+                crate::fide::record_refresh(conn)?;
             }
-            // Stamp the monthly clock so a manual refresh also defers the next
-            // scheduled one (#162).
-            crate::fide::record_refresh(conn)?;
         }
         "players_import" => {
             let path = path_param(p, "path")?;
