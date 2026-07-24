@@ -603,6 +603,13 @@ pub fn import(
     let mut failed: Vec<i32> = Vec::new();
     let import_result = (|| -> Result<()> {
         for (issue_id, filename) in &issues {
+            // Cooperative cancellation (#157): stop between issues. Each issue is
+            // committed on its own, so a partial run leaves a consistent database
+            // (imported issues stay marked; the rest re-import on the next sync).
+            if reporter.is_cancelled() {
+                reporter.log("Import cancelled.");
+                break;
+            }
             pb.set_message(format!("issue {}", issue_id));
 
             let zip_path = dir.join(filename);
