@@ -123,6 +123,27 @@ pub fn download_and_load(conn: &Connection, url: &str, reporter: &Reporter) -> R
     result
 }
 
+/// Forward normalise from the local FIDE list (#162 phase 4): set each player's
+/// name to the FIDE-canonical spelling for their fide_id — a local join, no
+/// network. Recomputes `name_normalized` to match and marks `name_normalised`.
+/// Players whose fide_id isn't in the list (e.g. FIDE-retired IDs) are left with
+/// their imported name. Returns rows updated. Replaces the per-player
+/// ratings.fide.com scraping when the list is loaded.
+pub fn normalise_from_local(conn: &Connection, reporter: &Reporter) -> Result<usize> {
+    let n = conn.execute(
+        "UPDATE players
+         SET name = fp.name,
+             name_normalized = trim(regexp_replace(lower(replace(fp.name, ',', ' ')), '\\s+', ' ', 'g')),
+             name_normalised = TRUE
+         FROM fide_players fp
+         WHERE players.fide_id = fp.fide_id
+           AND (players.name_normalised = FALSE OR players.name_normalised IS NULL)",
+        [],
+    )?;
+    reporter.log(format!("Normalised {n} player name(s) from the local FIDE list."));
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,6 +167,35 @@ mod tests {
         assert!(parse_line("ID Number      Name").is_none());
         assert!(parse_line("").is_none());
         assert!(parse_line("short").is_none());
+    }
+
+    #[test]
+    fn normalise_from_local_canonicalises_fide_tagged_players() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO fide_players (fide_id, name) VALUES (1503014, 'Carlsen, Magnus');
+             INSERT INTO players (id,name,name_normalized,fide_id,name_normalised) VALUES
+               (1,'carlsen,  magnus','carlsen magnus',1503014,FALSE), -- messy spelling, tagged
+               (2,'Doe, Jane','doe jane',777,FALSE),                  -- fide_id not in list
+               (3,'Nobody','nobody',NULL,FALSE);                      -- no fide_id",
+        )
+        .unwrap();
+
+        let n = normalise_from_local(&conn, &Reporter::silent()).unwrap();
+        assert_eq!(n, 1, "only the player whose fide_id is in the list is touched");
+
+        let row = |id: u32| -> (String, String, bool) {
+            conn.query_row(
+                "SELECT name, name_normalized, name_normalised FROM players WHERE id=?",
+                duckdb::params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(row(1), ("Carlsen, Magnus".into(), "carlsen magnus".into(), true));
+        assert_eq!(row(2).2, false, "fide_id absent from the list is left untouched");
+        assert_eq!(row(3).2, false, "no fide_id → untouched");
     }
 }
 

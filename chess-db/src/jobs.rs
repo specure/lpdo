@@ -635,6 +635,9 @@ impl JobManager {
         let writer = self.writer.clone();
         let reads = self.reads.clone();
         let reopening = self.reopening.clone();
+        // Jobs that fan out follow-up work (e.g. sources_sync requesting the
+        // coalesced maintenance, #163) need the manager itself.
+        let jm_run = Arc::clone(self);
         let body = move |conn: &Connection| {
             {
                 slot_run.state.lock().unwrap().status = "running".into();
@@ -644,7 +647,7 @@ impl JobManager {
                 reporter.error("Cancelled before start");
                 return;
             }
-            match run_job(&slot_run.job_type, &params, conn, &reporter, &rt, &db_path) {
+            match run_job(&slot_run.job_type, &params, conn, &reporter, &rt, &db_path, &jm_run) {
                 // Empty message keeps the operation's own final message; this
                 // just guarantees a terminal "done" even if the op didn't emit one.
                 Ok(()) => reporter.done(""),
@@ -697,6 +700,7 @@ fn run_job(
     reporter: &Reporter,
     rt: &Handle,
     db: &Path,
+    jm: &Arc<JobManager>,
 ) -> Result<()> {
     use crate::{dedup, importer, normalise, players};
 
@@ -768,43 +772,38 @@ fn run_job(
                 .ok_or_else(|| anyhow!("sources_sync: 'source' required"))?;
             let src = crate::sources::get(source_key)
                 .ok_or_else(|| anyhow!("unknown source '{}'", source_key))?;
-            let fast = flag(p, "fast");
-            let skip_dedup = flag(p, "skip_dedup");
-            // Absent (GUI/scheduler) → default depth 40; 0 disables indexing.
-            let depth = match p.get("max_position_depth").and_then(|v| v.as_u64()) {
-                Some(0) => None,
-                Some(d) => Some(d as i16),
-                None => Some(40),
-            };
             let dir = crate::source_dir(source_key);
             std::fs::create_dir_all(&dir)?;
+            // Phase 1 (download) + phase 2 (import, always --fast for these bulk
+            // feeds). Positions and dedup are deferred to phase 3 — the coalesced
+            // maintenance below — so they show as their own visible jobs instead
+            // of a hidden tail that leaves the bar stuck at 100% (#163/#147).
             let step = reporter.sub_step();
             let sync = (|| -> Result<()> {
                 reporter.log(format!("{}: download", src.name));
                 rt.block_on(crate::sources::download_feed(conn, src, None, None, &dir, &step))?;
                 if reporter.is_cancelled() { return Ok(()); }
-                reporter.log(format!("{}: import", src.name));
-                importer::import(conn, &dir, src.key, src.collection, depth, 10, fast, skip_dedup, &step)?;
-                // Complete the maintenance the import may have deferred, so a large
-                // (bulk) sync is immediately searchable instead of waiting for the
-                // next daily update (#145/#146).
-                run_post_import_maintenance(conn, db, depth, fast, &step, src.name)?;
+                reporter.log(format!("{}: import (fast)", src.name));
+                importer::import(conn, &dir, src.key, src.collection, None, 10, true, true, &step)?;
                 Ok(())
             })();
-            // Record the run's outcome so the enable→auto-sync scheduler doesn't
-            // re-fire a source that finished or failed (a still-NULL last_run is
-            // what marks a source as "never synced"). A user cancellation also
-            // records, so it isn't auto-restarted; only a crash/restart mid-sync
-            // leaves last_run NULL, so an interrupted sync resumes. Errors still
-            // propagate (via `?`) so a DuckDB invalidation triggers recovery (#82).
             if reporter.is_cancelled() {
                 let _ = crate::sources::record_run(conn, src.key, "cancelled");
                 return Ok(());
             }
             match sync {
                 Ok(()) => {
+                    // Record the run BEFORE maintenance: the import is committed and
+                    // the source marked synced, so an interrupted maintenance can't
+                    // leave the ledger unmarked (the items=0 inconsistency, #163).
+                    // Then request the coalesced dedup → index → normalise as their
+                    // own visible jobs (#131).
                     crate::sources::record_run(conn, src.key, "ok")?;
-                    reporter.done(format!("{} synced.", src.name));
+                    reporter.done(format!(
+                        "{} imported — preparing (dedup, index, normalise) in the background.",
+                        src.name
+                    ));
+                    jm.request_maintenance(true);
                 }
                 Err(e) => {
                     let _ = crate::sources::record_run(conn, src.key, &format!("error: {e}"));
@@ -868,12 +867,22 @@ fn run_job(
             dedup::cleanup_nonstandard(conn, flag(p, "non_standard"), flag(p, "dry_run"), reporter)?;
         }
         "normalise" => {
-            let limit = p.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
-            normalise::normalise_players(
-                conn, flag(p, "dry_run"),
-                1500, 100, 30_000, 3, 10, 7_200_000,
-                flag(p, "stop_on_errors"), limit, None, None, false, reporter,
-            )?;
+            // #162 phase 4: with the local FIDE list loaded, canonicalise names via
+            // a local join (instant, no network) instead of scraping ratings.fide.com
+            // per player. Only fall back to the legacy service/scrape path when no
+            // list is present (e.g. a fresh DB before the first `fide refresh`).
+            let fide_count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM fide_players", [], |r| r.get(0))?;
+            if fide_count > 0 {
+                crate::fide::normalise_from_local(conn, reporter)?;
+            } else {
+                let limit = p.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
+                normalise::normalise_players(
+                    conn, flag(p, "dry_run"),
+                    1500, 100, 30_000, 3, 10, 7_200_000,
+                    flag(p, "stop_on_errors"), limit, None, None, false, reporter,
+                )?;
+            }
         }
         // Reverse of `normalise` (#152): fetch missing FIDE IDs for named players
         // (local-DB inversion + shared cache). A distinct job from `normalise`.
@@ -1034,39 +1043,6 @@ const FAST_INDEX_SNAPSHOT_THRESHOLD: i64 = 200_000;
 /// Small incrementals skip it (cheap, and a killed appender only leaves a
 /// consistent partial to resume), as does first-run setup (the setup sentinel
 /// already protects a disposable DB).
-/// After an import, complete the maintenance the import may have deferred so the
-/// new games are immediately searchable and FIDE-normalised: build any positions
-/// the import skipped, then normalise new players. Both are incremental and
-/// idempotent (cheap no-ops when nothing is pending). Dedup runs inline during
-/// import. `reporter` must be a sub-step reporter — each step emits its own
-/// `done`, so only the caller's final `done` should terminate the job.
-fn run_post_import_maintenance(
-    conn: &Connection,
-    db: &Path,
-    depth: Option<i16>,
-    fast: bool,
-    reporter: &Reporter,
-    label: &str,
-) -> Result<()> {
-    if reporter.is_cancelled() {
-        return Ok(());
-    }
-    // Skip when indexing is disabled (depth 0/None) — passing None would *clear*
-    // the positions table rather than skip it (#144 + #145/#146).
-    if depth.is_some() {
-        reporter.log(format!("{label}: indexing positions"));
-        run_index_positions_guarded(conn, db, depth, false, fast, reporter)?;
-    }
-    if reporter.is_cancelled() {
-        return Ok(());
-    }
-    reporter.log(format!("{label}: normalising players"));
-    crate::normalise::normalise_players(
-        conn, false, 1500, 100, 30_000, 3, 10, 7_200_000, false, None, None, None, false, reporter,
-    )?;
-    Ok(())
-}
-
 pub fn run_index_positions_guarded(
     conn: &Connection,
     db: &Path,
