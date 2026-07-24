@@ -38,7 +38,14 @@ function jobLabel(j: Job): string {
     case "cleanup":            return "Clean up games";
     case "normalise":          return "Normalise player names";
     case "import":             return "Import";
-    case "import_pgn":         return p.collection ? `Import PGN → ${p.collection}` : "Import PGN";
+    case "import_pgn": {
+      // Prefer the original filename (what's importing); the collection (where it
+      // lands) is the fallback for content/paste imports that have no file.
+      const f = p.filename;
+      const c = p.collection;
+      if (f) return c ? `Import ${f} → ${c}` : `Import ${f}`;
+      return c ? `Import PGN → ${c}` : "Import PGN";
+    }
     case "maintenance_pending": return "Prepare database — dedup · index · normalise";
     case "players_import":     return "Import players";
     case "players_export":     return "Export players";
@@ -51,7 +58,17 @@ function pct(j: Job): number {
   return j.total > 0 ? Math.min(100, (j.value / j.total) * 100) : 0;
 }
 
-function ActiveRow({ job, onCancel }: { job: Job; onCancel: (id: string) => void }) {
+/** "~45s left" / "~12 min left" / "~1h 20m left" from a seconds estimate. */
+function formatEta(sec: number): string {
+  if (sec < 60) return `~${Math.round(sec)}s left`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `~${min} min left`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return m ? `~${h}h ${m}m left` : `~${h}h left`;
+}
+
+function ActiveRow({ job, eta, onCancel }: { job: Job; eta?: string; onCancel: (id: string) => void }) {
   const queued = job.status === "queued";
   const known = job.total > 0;
   return (
@@ -75,7 +92,7 @@ function ActiveRow({ job, onCancel }: { job: Job; onCancel: (id: string) => void
         <>
           <div className="flex items-center justify-between gap-2 text-label-sm text-on-surface-variant">
             <span className="truncate">{job.message || "Working…"}</span>
-            {known && <span className="shrink-0">{Math.round(pct(job))}%</span>}
+            {known && <span className="shrink-0">{Math.round(pct(job))}%{eta ? ` · ${eta}` : ""}</span>}
           </div>
           <div className="w-full bg-surface-container-highest rounded-full h-1.5 overflow-hidden">
             <div
@@ -105,14 +122,41 @@ function RecentRow({ job }: { job: Job }) {
 
 export default function ActivityIndicator() {
   const [jobs, setJobs] = useState<Job[] | null>(null);
+  const [etas, setEtas] = useState<Map<string, string>>(new Map());
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  // Per-job {time, value} anchor for a cumulative-rate ETA. Cumulative (since the
+  // job was first seen running) is stable for a monotonic byte counter, and the
+  // anchor resets if the value ever goes backwards (a new job reusing an id).
+  const anchorRef = useRef<Map<string, { t0: number; v0: number }>>(new Map());
 
   // Poll the pipeline. It's a cheap local read, and the daemon keeps working
   // even when this view is closed, so a steady poll keeps the badge honest.
   useEffect(() => {
     let stop = false;
-    const poll = () => { getJobs().then((j) => { if (!stop) setJobs(j); }).catch(() => { /* offline — leave last known */ }); };
+    const poll = () => {
+      getJobs().then((j) => {
+        if (stop) return;
+        const now = Date.now();
+        const anchors = anchorRef.current;
+        const live = new Set(j.map((x) => x.id));
+        for (const id of anchors.keys()) if (!live.has(id)) anchors.delete(id);
+        const nextEtas = new Map<string, string>();
+        for (const job of j) {
+          if (job.status !== "running" || !(job.total > 0)) continue;
+          let a = anchors.get(job.id);
+          if (!a || job.value < a.v0) { a = { t0: now, v0: job.value }; anchors.set(job.id, a); }
+          const dv = job.value - a.v0;
+          const dt = (now - a.t0) / 1000;
+          if (dv > 0 && dt >= 2) {
+            const remaining = ((job.total - job.value) / dv) * dt; // (total-value)/rate
+            if (isFinite(remaining) && remaining >= 0) nextEtas.set(job.id, formatEta(remaining));
+          }
+        }
+        setJobs(j);
+        setEtas(nextEtas);
+      }).catch(() => { /* offline — leave last known */ });
+    };
     poll();
     const id = setInterval(poll, POLL_MS);
     return () => { stop = true; clearInterval(id); };
@@ -174,7 +218,7 @@ export default function ActivityIndicator() {
             <>
               {active.length > 0 && (
                 <div className="divide-y divide-outline-variant">
-                  {active.map((j) => <ActiveRow key={j.id} job={j} onCancel={handleCancel} />)}
+                  {active.map((j) => <ActiveRow key={j.id} job={j} eta={etas.get(j.id)} onCancel={handleCancel} />)}
                 </div>
               )}
               {recent.length > 0 && (

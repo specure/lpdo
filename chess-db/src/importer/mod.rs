@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 const BATCH_SIZE: usize = 10_000;
 const INDEX_READ_BATCH: usize = 50_000;
@@ -167,26 +169,52 @@ impl Drop for TempPgn {
 /// - `.zip`/`.7z` — the first `.pgn` entry is streamed out to a sibling temp
 ///   file first (archives don't offer a cheap owned streaming reader), then
 ///   that temp file is streamed; the guard removes it afterwards.
-fn open_import_reader(path: &Path) -> Result<(Box<dyn Read>, Option<TempPgn>, u64)> {
+/// Wraps a reader and tallies the bytes pulled through it into a shared counter,
+/// so the importer can report byte-based progress (a real % + ETA) without the
+/// parser knowing about the job reporter. `open_import_reader` places it at the
+/// level whose size it returns as `prog_size` — the compressed file for `.zst`,
+/// the decompressed stream for `.pgn`/`.zip`/`.7z` — so `count / prog_size` is a
+/// valid 0..1 fraction in every case.
+struct CountingReader<R> {
+    inner: R,
+    count: Arc<AtomicU64>,
+}
+
+impl<R: Read> Read for CountingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.count.fetch_add(n as u64, Ordering::Relaxed);
+        Ok(n)
+    }
+}
+
+/// Returns the decompressing reader, an optional temp-file drop guard, the byte
+/// total the progress bar measures against, and the shared byte counter the
+/// caller passes to `process_pgn_stream` for a real progress bar.
+fn open_import_reader(path: &Path) -> Result<(Box<dyn Read>, Option<TempPgn>, u64, Arc<AtomicU64>)> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
+    let count = Arc::new(AtomicU64::new(0));
     match ext.as_str() {
         "pgn" | "" => {
             let f = std::fs::File::open(path)?;
             let sz = f.metadata().map(|m| m.len()).unwrap_or(0);
-            Ok((Box::new(std::io::BufReader::new(f)), None, sz))
+            let r = CountingReader { inner: std::io::BufReader::new(f), count: count.clone() };
+            Ok((Box::new(r), None, sz, count))
         }
         "zst" | "zstd" => {
             let f = std::fs::File::open(path)?;
             // Progress tracks compressed bytes consumed (uncompressed size is
-            // not cheaply known); an approximate bar is fine.
+            // not cheaply known): count the file *before* the decoder so the
+            // tally matches the compressed size reported here.
             let sz = f.metadata().map(|m| m.len()).unwrap_or(0);
-            let dec = zstd::stream::read::Decoder::new(std::io::BufReader::new(f))
+            let counted = CountingReader { inner: std::io::BufReader::new(f), count: count.clone() };
+            let dec = zstd::stream::read::Decoder::new(counted)
                 .map_err(|e| anyhow::anyhow!("zstd open {}: {}", path.display(), e))?;
-            Ok((Box::new(dec), None, sz))
+            Ok((Box::new(dec), None, sz, count))
         }
         "zip" => {
             let tmp = path.with_extension("import-tmp.pgn");
@@ -209,10 +237,12 @@ fn open_import_reader(path: &Path) -> Result<(Box<dyn Read>, Option<TempPgn>, u6
             }
             let f = std::fs::File::open(&tmp)?;
             let sz = f.metadata().map(|m| m.len()).unwrap_or(0);
+            let r = CountingReader { inner: std::io::BufReader::new(f), count: count.clone() };
             Ok((
-                Box::new(std::io::BufReader::new(f)),
+                Box::new(r),
                 Some(TempPgn { path: tmp, is_dir: false }),
                 sz,
+                count,
             ))
         }
         "7z" => {
@@ -225,10 +255,12 @@ fn open_import_reader(path: &Path) -> Result<(Box<dyn Read>, Option<TempPgn>, u6
                 .ok_or_else(|| anyhow::anyhow!("no .pgn file inside {}", path.display()))?;
             let f = std::fs::File::open(&pgn)?;
             let sz = f.metadata().map(|m| m.len()).unwrap_or(0);
+            let r = CountingReader { inner: std::io::BufReader::new(f), count: count.clone() };
             Ok((
-                Box::new(std::io::BufReader::new(f)),
+                Box::new(r),
                 Some(TempPgn { path: dir, is_dir: true }),
                 sz,
+                count,
             ))
         }
         other => anyhow::bail!("unsupported file type '.{}': {}", other, path.display()),
@@ -731,7 +763,7 @@ pub fn import_pgn(
             // decompressing .zip / .zst / .7z. `_tmp` (a staged temp .pgn for
             // archive inputs) is held for the rest of this iteration and removed
             // on drop, after the import below completes.
-            let (reader, _tmp, prog_size) = match open_import_reader(path) {
+            let (reader, _tmp, prog_size, bytes_read) = match open_import_reader(path) {
                 Ok(t) => t,
                 Err(e) => {
                     let msg = format!("  {}: read error: {}", filename, e);
@@ -766,7 +798,7 @@ pub fn import_pgn(
             let effective_depth = if bulk_mode { None } else { max_position_depth };
             // Manual PGN imports are not date-filtered (unbounded window).
             let manual_window = crate::sources::DateWindow::default();
-            match process_pgn_stream(conn, issue_id, collection_id, visibility, src, effective_depth, &mut ctx, fast, &manual_window, reporter) {
+            match process_pgn_stream(conn, issue_id, collection_id, visibility, src, effective_depth, &mut ctx, fast, &manual_window, prog_size, &bytes_read, reporter) {
                 Ok((imported, skipped_dups, skipped_ns, skipped_window)) => {
                     conn.execute(
                         "UPDATE source_items SET imported = TRUE, imported_at = NOW(), game_count = ? WHERE id = ?",
@@ -1006,8 +1038,11 @@ fn import_issue(
         ctx,
         fast,
         window,
-        // Silent: the bulk path reports per-issue progress; a per-game live count
-        // across many small issues would just be noise.
+        // In-memory source (whole issue already decompressed): no byte total, and
+        // a silent reporter anyway — the bulk path reports per-issue progress, so
+        // a per-game live count across many small issues would just be noise.
+        0,
+        &AtomicU64::new(0),
         &crate::reporter::Reporter::silent(),
     )
 }
@@ -1113,13 +1148,19 @@ fn process_pgn_stream(
     ctx: &mut ImportContext,
     fast: bool,
     window: &crate::sources::DateWindow,
+    // Byte-based progress: `byte_total` is the size the caller's CountingReader
+    // measures against (0 = unknown → fall back to a live game count), and
+    // `bytes_read` is that reader's shared counter. Lets the activity bar show a
+    // real % (and ETA) instead of a fixed indeterminate placeholder (#158).
+    byte_total: u64,
+    bytes_read: &AtomicU64,
     reporter: &Reporter,
 ) -> Result<(usize, usize, usize, usize)> {
     // Comments, NAGs and variations are preserved by the visitor (see
     // GameVisitor) and stored in the game's movetext, so the PGN is parsed
     // as-is — no pre-stripping. `src` is read game-by-game, so a multi-GB file
-    // never lands in memory (#95); any byte-progress wrapping is applied by the
-    // caller before the reader is handed in.
+    // never lands in memory (#95); the byte-progress CountingReader is applied by
+    // the caller (open_import_reader) before the reader is handed in.
     let mut visitor = GameVisitor::new(max_position_depth);
     let mut reader = Reader::new(LineCountingReader::new(src));
 
@@ -1279,14 +1320,24 @@ fn process_pgn_stream(
                 flush_positions(conn, &position_batch, fast)?;
                 position_batch.clear();
             }
-            // Live game-count so a single multi-GB file doesn't sit at 0% (the
-            // per-file bar is 0/1 until done). total=0 → the GUI shows the count
-            // message rather than a percent.
-            reporter.progress(
-                total_games as u64,
-                0,
-                format!("Imported {total_games} games…"),
-            );
+            // Byte-based progress when the caller knows the file size: a real %
+            // (and ETA) that tracks how far through the file we are. The message
+            // still carries the live game count. When the size is unknown
+            // (byte_total=0, e.g. the in-memory source path) fall back to the
+            // count with total=0 so the bar stays indeterminate rather than wrong.
+            if byte_total > 0 {
+                reporter.progress(
+                    bytes_read.load(Ordering::Relaxed).min(byte_total),
+                    byte_total,
+                    format!("Imported {total_games} games…"),
+                );
+            } else {
+                reporter.progress(
+                    total_games as u64,
+                    0,
+                    format!("Imported {total_games} games…"),
+                );
+            }
         }
     }
 
@@ -1655,14 +1706,14 @@ mod compressed_input_tests {
         // plain .pgn — streamed directly, no temp guard.
         let p_pgn = dir.join("g.pgn");
         std::fs::write(&p_pgn, pgn).unwrap();
-        let (r, guard, _) = open_import_reader(&p_pgn).unwrap();
+        let (r, guard, _, _) = open_import_reader(&p_pgn).unwrap();
         assert_eq!(read_all(r), pgn);
         assert!(guard.is_none());
 
         // .zst — streamed through the decoder, no temp guard.
         let p_zst = dir.join("g.pgn.zst");
         std::fs::write(&p_zst, zstd::encode_all(pgn, 3).unwrap()).unwrap();
-        let (r, guard, _) = open_import_reader(&p_zst).unwrap();
+        let (r, guard, _, _) = open_import_reader(&p_zst).unwrap();
         assert_eq!(read_all(r), pgn);
         assert!(guard.is_none());
 
@@ -1677,7 +1728,7 @@ mod compressed_input_tests {
         }
         let staged;
         {
-            let (r, guard, _) = open_import_reader(&p_zip).unwrap();
+            let (r, guard, _, _) = open_import_reader(&p_zip).unwrap();
             assert_eq!(read_all(r), pgn);
             let guard = guard.expect("zip stages a temp .pgn");
             staged = guard.path.clone();
@@ -1690,7 +1741,7 @@ mod compressed_input_tests {
         sevenz_rust2::compress_to_path(&p_pgn, &p_7z).unwrap();
         let staged_dir;
         {
-            let (r, guard, _) = open_import_reader(&p_7z).unwrap();
+            let (r, guard, _, _) = open_import_reader(&p_7z).unwrap();
             assert_eq!(read_all(r), pgn);
             let guard = guard.expect("7z stages a temp dir");
             staged_dir = guard.path.clone();

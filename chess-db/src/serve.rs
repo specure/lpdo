@@ -1093,6 +1093,9 @@ async fn import_upload_handler(
     let import_params = serde_json::json!({
         "path": spool.to_string_lossy(),
         "collection": q.collection.unwrap_or_else(|| "Manual".to_string()),
+        // Original filename (spool path is an opaque upload-<stamp>.<ext>), kept
+        // so the activity panel can show what's importing, not just where it lands.
+        "filename": q.filename,
         "private": q.private,
         "fast": q.fast,
         "skip_dedup": bulk,
