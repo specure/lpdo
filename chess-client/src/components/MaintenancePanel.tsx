@@ -511,8 +511,10 @@ function BackupSection() {
       setPct(total > 0 ? Math.min(100, (received / total) * 100) : null);
     });
     try {
-      await invoke("download_backup", { baseUrl: SIDECAR, collection, destPath: dest });
-      setSavedPath(dest);
+      // download_backup returns the resolved absolute path (leading `~/`
+      // expanded) — use it for Reveal, which needs a real path, not `~/…`.
+      const resolved = await invoke<string>("download_backup", { baseUrl: SIDECAR, collection, destPath: dest });
+      setSavedPath(resolved || dest);
       setPhase("done");
     } catch (e: unknown) {
       setError(String(e));

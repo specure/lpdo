@@ -185,7 +185,7 @@ pub async fn download_backup(
     base_url: String,
     collection: String,
     dest_path: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     use futures_util::StreamExt;
     use tauri::Emitter;
     use tokio::io::AsyncWriteExt;
@@ -247,7 +247,9 @@ pub async fn download_backup(
         "backup-download-progress",
         serde_json::json!({ "received": received, "total": total.max(received) }),
     );
-    Ok(())
+    // Return the resolved absolute path (with any leading `~/` expanded) so the
+    // GUI can reveal it — `revealItemInDir` needs a real path, not `~/…`.
+    Ok(dest_path)
 }
 
 const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024; // 100 MB
