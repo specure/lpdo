@@ -7,7 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-24
+
 ### Added
+- **Large PGN import (Megabase-scale)** — the GUI now streams big PGN uploads to
+  the daemon instead of failing at the 100 MB limit, accepts compressed
+  `.zip`/`.zst`/`.7z` inputs, and runs the import in the background behind a
+  non-blocking dialog. Large imports use the fast bulk path and defer duplicate
+  detection to a single background pass. (#154)
+- **Honest background progress** — the activity panel now shows a real
+  byte-based percentage, an estimated time remaining, and the importing filename
+  for long jobs, and shows queued work as "queued" with its position rather than
+  "Running… 0%". (#158, #128)
+- **Local FIDE-based name resolution** — player-name normalisation works from an
+  official FIDE player list that the server downloads and refreshes automatically
+  each month, entirely locally. Forward resolution canonicalises names for
+  FIDE-tagged players; reverse resolution (`chess-db players resolve-fide`)
+  assigns FIDE IDs to FIDE-less sources (e.g. Ajedrez) by single-exact name
+  match, leaving ambiguous names unresolved. Replaces the previous online cache
+  service and per-player scraping. (#162, #152)
+- **Clean-slate commands** — `chess-db reset [--caches]` deletes the database
+  (and, with `--caches`, downloaded source archives) for a fresh start, refusing
+  while the daemon holds the database; `chess-db serve --fresh` wipes before
+  serving.
 - **Reference-source overlap analysis (CLI)** — new read-only tooling to measure
   how much two reference sources duplicate each other, so an installed deep base
   (e.g. Ajedrez) can inform a date window for a weekly feed (e.g. TWIC). See
@@ -76,12 +98,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   auto-retried, while one interrupted by a restart resumes.
 
 ### Changed
+- **Phased source syncs** — a source sync now runs Download → Import (fast) →
+  visible maintenance (deduplicate, build position index, normalise), mirroring
+  the Megabase/upload flow, with each phase shown as its own job in the activity
+  panel instead of a hidden tail that left the bar stuck at 100%. Post-import
+  maintenance is coalesced to run once after all pending imports drain. (#163,
+  #147, #131)
 - **Backups are now zip-compressed** — `chess-db backup` (and the GUI's Backup
   action) write a timestamped `.pgn.zip` (a single deflated `.pgn` entry) instead
   of a plain `.pgn`. PGN is text, so this typically shrinks backups several-fold;
   `.zip` opens natively on every OS, and the file re-imports through the existing
   zip reader. Games are streamed straight into the archive rather than assembled
   in memory first.
+
+### Removed
+- **Name-normalisation cache service** — the optional self-hosted cache service,
+  its build-time API key (`CHESSVAULT_NORMALISE_API_KEY`), and per-player
+  `ratings.fide.com` scraping are removed. Normalisation is now fully local
+  against the downloaded FIDE list. (#162)
+
+### Fixed
+- Import/sync progress no longer appears "stuck at 100%": the deduplicate, index,
+  and normalise tail now runs as its own visible jobs. (#147)
+- An interrupted source sync no longer leaves the source recorded with zero
+  imported items. (#163)
 
 ## [0.4.0] - 2026-06-21
 
@@ -225,7 +265,8 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/specure/lpdo/compare/v0.5.2...v0.7.0
 [0.4.0]: https://github.com/specure/lpdo/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/specure/lpdo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/specure/lpdo/compare/v0.1.1...v0.2.0
