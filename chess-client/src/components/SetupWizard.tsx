@@ -120,12 +120,10 @@ function SourceRow({ source, checked, onChange }: { source: SourceStatus; checke
       {source.description && (
         <p className="text-label-sm text-on-surface-variant">{source.description}</p>
       )}
-      <p className="text-label-sm text-on-surface-variant">{source.credit}</p>
-      <label className="flex items-center gap-2 pt-0.5 cursor-pointer">
-        <input type="checkbox" className="shrink-0" checked={checked} onChange={(e) => onChange(e.target.checked)} />
-        <span className="text-label-sm text-on-surface">
-          I have read and agree to these terms — include this source
-        </span>
+      <p className="text-label-sm text-on-surface-variant italic">{source.credit}</p>
+      <label className="flex items-center gap-2 pt-1 mt-0.5 border-t border-outline-variant cursor-pointer">
+        <input type="checkbox" className="shrink-0 mt-2" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+        <span className="pt-2 text-label-md text-on-surface">Include — I accept these terms</span>
       </label>
     </div>
   );
@@ -176,11 +174,8 @@ const sourcesFilledBtn =
 
 // ── Step: Deep history (the historical base — chosen first) ───────────────────
 
-type History = "free" | "none";
-
 function DeepHistoryStep({ onComplete, onAdvance, onRunningChange }: { onComplete: () => void; onAdvance: () => void; onRunningChange: (r: boolean) => void }) {
   const { sources, loadError, reload } = useSourceCatalog();
-  const [history, setHistory] = useState<History>("free");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [enabling, setEnabling] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -207,9 +202,9 @@ function DeepHistoryStep({ onComplete, onAdvance, onRunningChange }: { onComplet
     setSubmitError(null);
     setEnabling(true);
     try {
-      // "free" enables the agreed archives; "none" enables nothing here (and
+      // Include the ticked archives; leaving them all unticked = no base (and
       // clears any previously-enabled archive on re-run).
-      await applySourceSelection(bulk, history === "free" ? selected : new Set());
+      await applySourceSelection(bulk, selected);
       onComplete();
       onAdvance();
     } catch (e: unknown) {
@@ -219,70 +214,40 @@ function DeepHistoryStep({ onComplete, onAdvance, onRunningChange }: { onComplet
     }
   }
 
-  // Bring-your-own (commercial Megabase) is intentionally NOT a wizard option: it
-  // needs export-to-PGN prep, so it's a power-user path — do it later from
-  // Add games. The free base is the one-click default.
-  const historyOptions: { value: History; label: string; hint: string }[] = [
-    { value: "free", label: "Free historical base", hint: bulk.map((s) => s.name).join(", ") || "A free public archive of older games." },
-    { value: "none", label: "None", hint: "Start without a historical base. Bringing your own (e.g. a ChessBase Megabase)? Pick this and import it later from Add games." },
-  ];
+  const any = selected.size > 0;
 
   return (
     <div className="space-y-5">
       <div className="flex items-start justify-between gap-3">
         <p className="text-on-surface text-body-md leading-relaxed">
-          Choose an optional historical base — a deep archive of older games beneath the live
-          feeds you'll pick next. Overlap is deduplicated automatically. You can change this
-          later under Maintenance → Sources.
+          Optionally start with a free deep-history base — a deep archive of older games beneath the
+          live feeds. Review its terms and tick to include it, or leave it unticked to start without
+          one. You can change this later under Maintenance → Sources.
         </p>
         <OptionalBadge />
       </div>
 
-      <div className="space-y-1.5">
-        {historyOptions.map((opt) => (
-          <label key={opt.value} className="flex items-start gap-3 cursor-pointer">
-            <input
-              type="radio"
-              name="deep-history"
-              className="mt-1 shrink-0"
-              checked={history === opt.value}
-              onChange={() => setHistory(opt.value)}
-            />
-            <span>
-              <span className="block text-body-md text-on-surface">{opt.label}</span>
-              <span className="block text-label-sm text-on-surface-variant">{opt.hint}</span>
-            </span>
-          </label>
-        ))}
-      </div>
-
-      {history === "free" && (
-        bulk.length > 0 ? (
-          <div className="space-y-2">
-            <p className="text-body-sm text-on-surface-variant">Review each archive's terms and tick to include it.</p>
-            {bulk.map((s) => (
-              <SourceRow key={s.key} source={s} checked={selected.has(s.key)} onChange={(v) => toggle(s.key, v)} />
-            ))}
-          </div>
-        ) : (
-          <p className="text-body-sm text-on-surface-variant">No free archive is available right now.</p>
-        )
+      {bulk.length > 0 ? (
+        <div className="space-y-2">
+          {bulk.map((s) => (
+            <SourceRow key={s.key} source={s} checked={selected.has(s.key)} onChange={(v) => toggle(s.key, v)} />
+          ))}
+        </div>
+      ) : (
+        <p className="text-body-sm text-on-surface-variant">No free archive is available right now.</p>
       )}
 
+      <p className="text-label-sm text-on-surface-variant">
+        Bringing your own database (e.g. a ChessBase Megabase)? Leave this unticked and import it
+        later from Add games.
+      </p>
+
       <div className="space-y-2">
-        <button
-          onClick={() => { void apply(); }}
-          disabled={enabling}
-          className={sourcesFilledBtn}
-        >
-          {enabling
-            ? "Saving…"
-            : history === "free" && selected.size > 0
-              ? "Add historical base"
-              : "Continue without a base"}
+        <button onClick={() => { void apply(); }} disabled={enabling} className={sourcesFilledBtn}>
+          {enabling ? "Saving…" : any ? "Add base & continue" : "Continue without a base"}
         </button>
         {submitError && <p className="text-label-sm text-error">{submitError}</p>}
-        {history === "free" && selected.size > 0 && (
+        {any && (
           <p className="text-label-sm text-on-surface-variant">
             ⓘ The archive imports on the daemon in the background — you can keep going.
           </p>
