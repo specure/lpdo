@@ -631,6 +631,11 @@ pub fn import(
     }
 
     if bulk_mode {
+        // These post-import steps are unmeasured and can run for a while on a
+        // large DB. Emit an indeterminate-progress event (total=0) so the activity
+        // panel shows "Rebuilding…"/"Updating…" with a working pulse instead of a
+        // frozen "100%" until the job finally emits `done` (#147-style).
+        reporter.progress(0, 0, "Rebuilding database indexes…".to_string());
         pb.set_message("Rebuilding indexes…");
         recreate_bulk_indexes(conn)?;
         let msg = "  Run:  chess-db index-positions  to build the positions index.";
@@ -638,6 +643,7 @@ pub fn import(
         reporter.log(msg);
     }
 
+    reporter.progress(0, 0, "Updating player game counts…".to_string());
     pb.set_message("Updating player game counts…");
     crate::db::queries::recalculate_game_counts(conn)?;
 
@@ -857,6 +863,11 @@ pub fn import_pgn(
     })();
 
     if bulk_mode {
+        // These post-import steps are unmeasured and can run for a while on a
+        // large DB. Emit an indeterminate-progress event (total=0) so the activity
+        // panel shows "Rebuilding…"/"Updating…" with a working pulse instead of a
+        // frozen "100%" until the job finally emits `done` (#147-style).
+        reporter.progress(0, 0, "Rebuilding database indexes…".to_string());
         pb.set_message("Rebuilding indexes…");
         recreate_bulk_indexes(conn)?;
         let msg = "  Run:  chess-db index-positions  to build the positions index.";
@@ -864,6 +875,7 @@ pub fn import_pgn(
         reporter.log(msg);
     }
 
+    reporter.progress(0, 0, "Updating player game counts…".to_string());
     pb.set_message("Updating player game counts…");
     crate::db::queries::recalculate_game_counts(conn)?;
 
