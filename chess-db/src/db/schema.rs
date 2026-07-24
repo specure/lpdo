@@ -503,8 +503,8 @@ mod migration_tests {
             "twic seeds a from-2013-01-01 window (the 2013 handoff, #148)"
         );
 
-        // Lichess Broadcasts is seeded from the catalog: disabled, live-tail
-        // window (from 2026-01-01).
+        // Lichess Broadcasts is seeded from the catalog: disabled, from its
+        // earliest available data (2020-01-01) as a live-tail complement (#148).
         let (lenabled, lfrom): (bool, Option<String>) = conn
             .query_row(
                 "SELECT enabled, CAST(from_date AS VARCHAR) FROM sources WHERE key = 'lichess-broadcasts'",
@@ -513,7 +513,7 @@ mod migration_tests {
             )
             .unwrap();
         assert!(!lenabled, "lichess should be seeded disabled");
-        assert_eq!(lfrom.as_deref(), Some("2026-01-01"));
+        assert_eq!(lfrom.as_deref(), Some("2020-01-01"));
 
         // Ajedrez OTB seeded from the catalog: disabled, bounded ABOVE at 2012-12-31
         // — pre-2013 deep history; TWIC takes 2013-01-01+ (the 2013 handoff, #148).

@@ -85,9 +85,11 @@ pub static CATALOG: &[CatalogSource] = &[
         homepage: "https://database.lichess.org/",
         credit: "Lichess Broadcasts — lichess.org, CC BY-SA 4.0.",
         collection: "Lichess Broadcasts",
-        // Off by default; live-tail role → from 2026-01-01 (its games only).
+        // Off by default. From its earliest available data (Jan 2020) onward —
+        // Lichess Broadcasts don't predate that, so this takes the whole feed as a
+        // live-tail complement to TWIC. Overlap with TWIC is auto-deduped (#148).
         default_enabled: false,
-        default_from: Some("2026-01-01"),
+        default_from: Some("2020-01-01"),
         default_to: None,
         default_exclude_undated: false,
     },
