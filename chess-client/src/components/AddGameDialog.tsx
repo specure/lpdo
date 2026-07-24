@@ -11,6 +11,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { SIDECAR } from "../api";
 import { Tag, buildBlock, defaultNewGameTags, rememberPgnSite } from "../lib/pgnEditor";
@@ -97,6 +98,21 @@ export default function AddGameDialog({
 
   const progress = useSidecarProgress();
   const importedFiredRef = useRef(false);
+  // Streaming-upload phase progress (#154): the file uploads to the daemon
+  // before the import job exists, so show that phase instead of a blank 0%.
+  const [uploadPct, setUploadPct] = useState<number | null>(null);
+
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    void listen<{ sent: number; total: number }>("import-upload-progress", (e) => {
+      const { sent, total } = e.payload;
+      setUploadPct(total > 0 ? Math.min(100, (sent / total) * 100) : 0);
+    }).then((u) => { un = u; });
+    return () => { un?.(); };
+  }, []);
+
+  // While uploading (upload started, not yet at 100%), show the upload phase.
+  const uploading = progress.running && uploadPct !== null && uploadPct < 100;
 
   useEffect(() => { onRunningChange?.(progress.running); }, [progress.running]);
 
@@ -163,6 +179,7 @@ export default function AddGameDialog({
         setPasteError("Choose a PGN file (.pgn/.zip/.zst/.7z) to import.");
         return;
       }
+      setUploadPct(0);
       progress.runJob(() =>
         invoke<string>("upload_pgn_file", {
           path: p,
@@ -212,7 +229,7 @@ export default function AddGameDialog({
   }
 
   function handleClose() {
-    if (progress.running && !window.confirm("An import is in progress. Close anyway?")) return;
+    if (progress.running && !window.confirm("The import keeps running in the background — you can watch it in the activity panel. Close this dialog?")) return;
     onClose();
   }
 
@@ -342,11 +359,13 @@ export default function AddGameDialog({
         <div className="space-y-2">
           <div className="flex justify-between text-label-md text-on-surface-variant">
             <span>
-              {progress.done ? "Complete" : (lastAction === "normalise" ? "Normalising players…" : "Adding…")}
+              {uploading
+                ? "Uploading…"
+                : progress.done ? "Complete" : (lastAction === "normalise" ? "Normalising players…" : "Adding…")}
             </span>
-            <span>{Math.round(progress.percent)}%</span>
+            <span>{Math.round(uploading ? uploadPct! : progress.percent)}%</span>
           </div>
-          <ProgressBar value={progress.percent} />
+          <ProgressBar value={uploading ? uploadPct! : progress.percent} />
           <LogBox lines={progress.log} />
           {progress.done && (
             <>
@@ -369,7 +388,7 @@ export default function AddGameDialog({
               )}
               <div className="flex justify-end">
                 <button
-                  onClick={() => { progress.reset(); importedFiredRef.current = false; setLastAction("import"); }}
+                  onClick={() => { progress.reset(); importedFiredRef.current = false; setLastAction("import"); setUploadPct(null); }}
                   className="h-7 px-3 inline-flex items-center rounded-full text-primary text-label-md hover:bg-primary/8 transition-colors duration-short3 ease-standard"
                 >
                   Add another

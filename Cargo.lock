@@ -893,6 +893,7 @@ dependencies = [
  "chess-results-client",
  "dunce",
  "fide-client",
+ "futures-util",
  "libc",
  "reqwest 0.12.28",
  "serde",

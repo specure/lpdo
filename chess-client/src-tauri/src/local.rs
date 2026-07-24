@@ -87,6 +87,7 @@ pub async fn list_directory(path: String) -> Result<DirectoryListing, String> {
 /// .zip/.zst/.7z. Returns the daemon job id; the caller follows /jobs/{id}/events.
 #[tauri::command]
 pub async fn upload_pgn_file(
+    app: tauri::AppHandle,
     path: String,
     base_url: String,
     collection: String,
@@ -95,11 +96,15 @@ pub async fn upload_pgn_file(
     private: bool,
     max_position_depth: Option<u16>,
 ) -> Result<String, String> {
+    use futures_util::StreamExt;
+    use tauri::Emitter;
+
     let p = PathBuf::from(&path);
     let meta = std::fs::metadata(&p).map_err(|e| format!("{path}: {e}"))?;
     if !meta.is_file() {
         return Err(format!("{path}: not a file"));
     }
+    let total = meta.len();
     let filename = p
         .file_name()
         .and_then(|n| n.to_str())
@@ -109,7 +114,26 @@ pub async fn upload_pgn_file(
     let file = tokio::fs::File::open(&p)
         .await
         .map_err(|e| format!("{path}: {e}"))?;
-    let stream = tokio_util::io::ReaderStream::new(file);
+
+    // Emit upload progress (~1% steps) so the GUI shows the streaming phase
+    // rather than a blank 0% while a multi-GB file uploads.
+    let app_ev = app.clone();
+    let step = (total / 100).max(1);
+    let mut sent: u64 = 0;
+    let mut next_emit: u64 = 0;
+    let stream = tokio_util::io::ReaderStream::new(file).map(move |chunk| {
+        if let Ok(ref bytes) = chunk {
+            sent += bytes.len() as u64;
+            if sent >= next_emit {
+                next_emit = sent + step;
+                let _ = app_ev.emit(
+                    "import-upload-progress",
+                    serde_json::json!({ "sent": sent, "total": total }),
+                );
+            }
+        }
+        chunk
+    });
     let body = reqwest::Body::wrap_stream(stream);
 
     let mut query: Vec<(&str, String)> = vec![
@@ -131,6 +155,13 @@ pub async fn upload_pgn_file(
         .send()
         .await
         .map_err(|e| format!("upload request failed: {e}"))?;
+
+    // Upload finished; signal 100% so the GUI switches from "uploading" to
+    // following the import job.
+    let _ = app.emit(
+        "import-upload-progress",
+        serde_json::json!({ "sent": total, "total": total }),
+    );
 
     if !resp.status().is_success() {
         let status = resp.status();
