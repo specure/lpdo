@@ -888,7 +888,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "chess-client"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "chess-results-client",
  "dunce",
@@ -909,7 +909,7 @@ dependencies = [
 
 [[package]]
 name = "chess-db"
-version = "0.5.7"
+version = "0.5.8"
 dependencies = [
  "anyhow",
  "axum",
