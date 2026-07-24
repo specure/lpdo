@@ -502,6 +502,28 @@ fn fill_positions(
 /// automatically from the total download size (`BULK_MODE_BYTES`), so the
 /// decision self-adjusts to a source's per-item volume instead of a raw item
 /// count (#145).
+/// Whether a pending source import will run in bulk mode (large enough that
+/// `import` drops indexes + uses the Appender). Mirrors the size logic below so
+/// the daemon can snapshot-guard a bulk import (#82) before calling `import`.
+/// `false` when nothing is pending.
+pub fn source_import_is_bulk(
+    conn: &Connection,
+    dir: &Path,
+    source_key: &str,
+    reindex_threshold: usize,
+) -> Result<bool> {
+    let mut stmt = conn.prepare(
+        "SELECT filename FROM source_items
+         WHERE source_key = ? AND downloaded = TRUE AND imported = FALSE",
+    )?;
+    let total_bytes: u64 = stmt
+        .query_map(duckdb::params![source_key], |r| r.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .map(|f| std::fs::metadata(dir.join(&f)).map(|m| m.len()).unwrap_or(0))
+        .sum();
+    Ok(bulk_mode_for_size(total_bytes, reindex_threshold))
+}
+
 pub fn import(
     conn: &Connection,
     dir: &Path,
