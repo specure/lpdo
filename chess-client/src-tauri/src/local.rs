@@ -79,6 +79,74 @@ pub async fn list_directory(path: String) -> Result<DirectoryListing, String> {
     })
 }
 
+/// Stream a PGN file (plain or compressed) straight to the daemon's
+/// `POST /import/upload` (#154), without reading it into memory — so a multi-GB
+/// import works, isn't subject to the read_pgn_file 100 MB cap, and can target a
+/// daemon on another machine (a client-local path is meaningless there). The
+/// original filename's extension is forwarded so the importer decompresses
+/// .zip/.zst/.7z. Returns the daemon job id; the caller follows /jobs/{id}/events.
+#[tauri::command]
+pub async fn upload_pgn_file(
+    path: String,
+    base_url: String,
+    collection: String,
+    on_duplicate: String,
+    fast: bool,
+    private: bool,
+    max_position_depth: Option<u16>,
+) -> Result<String, String> {
+    let p = PathBuf::from(&path);
+    let meta = std::fs::metadata(&p).map_err(|e| format!("{path}: {e}"))?;
+    if !meta.is_file() {
+        return Err(format!("{path}: not a file"));
+    }
+    let filename = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("upload.pgn")
+        .to_string();
+
+    let file = tokio::fs::File::open(&p)
+        .await
+        .map_err(|e| format!("{path}: {e}"))?;
+    let stream = tokio_util::io::ReaderStream::new(file);
+    let body = reqwest::Body::wrap_stream(stream);
+
+    let mut query: Vec<(&str, String)> = vec![
+        ("collection", collection),
+        ("filename", filename),
+        ("fast", fast.to_string()),
+        ("private", private.to_string()),
+        ("on_duplicate", on_duplicate),
+    ];
+    if let Some(d) = max_position_depth {
+        query.push(("max_position_depth", d.to_string()));
+    }
+
+    let url = format!("{}/import/upload", base_url.trim_end_matches('/'));
+    let resp = reqwest::Client::new()
+        .post(url)
+        .query(&query)
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| format!("upload request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("upload failed ({status}): {text}"));
+    }
+    let v: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("bad upload response: {e}"))?;
+    v.get("job_id")
+        .and_then(|j| j.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "upload response missing job_id".to_string())
+}
+
 const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024; // 100 MB
 
 #[tauri::command]

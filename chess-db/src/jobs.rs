@@ -745,6 +745,12 @@ fn run_job(
             let fast = flag(p, "fast");
             let visibility = if flag(p, "private") { "private" } else { "public" }.to_string();
             let spec = importer::ImportSpec { collection, visibility, on_duplicate };
+            // Absent → default depth 40; 0 disables position indexing (bulk loads).
+            let depth = match p.get("max_position_depth").and_then(|v| v.as_u64()) {
+                Some(0) => None,
+                Some(d) => Some(d as i16),
+                None => Some(40),
+            };
             // #121: the client may send PGN *content* instead of a path, because the
             // hardened system daemon (ProtectHome/PrivateTmp) can't read files in the
             // user's home or /tmp. Write it to a daemon-owned temp beside the DB
@@ -759,12 +765,12 @@ fn run_job(
                 let tmp = dir.join(format!("upload-{stamp}.pgn"));
                 std::fs::write(&tmp, content)
                     .with_context(|| format!("writing uploaded PGN to {}", tmp.display()))?;
-                let res = importer::import_pgn(conn, &tmp, Some(40), 10, fast, false, &spec, reporter);
+                let res = importer::import_pgn(conn, &tmp, depth, 10, fast, false, &spec, reporter);
                 let _ = std::fs::remove_file(&tmp);
                 res?;
             } else {
                 let path = path_param(p, "path")?;
-                let res = importer::import_pgn(conn, &path, Some(40), 10, fast, false, &spec, reporter);
+                let res = importer::import_pgn(conn, &path, depth, 10, fast, false, &spec, reporter);
                 // Streamed uploads (#154) spool to a daemon-owned file and set
                 // `cleanup` so it's removed once imported (success or failure).
                 if flag(p, "cleanup") {

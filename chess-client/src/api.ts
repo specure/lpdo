@@ -5,7 +5,10 @@
 // override in main.tsx rewrites it to http://127.0.0.1:7777. EventSource is NOT
 // covered by that override, so SSE URLs are built explicitly here.
 
-const SIDECAR = "http://127.0.0.1:7777";
+// The daemon's real origin. `apiUrl` fetches go through the "/api" proxy/override,
+// but native (Tauri) HTTP calls — e.g. the streamed import upload (#154) — must
+// hit the server directly, so expose it.
+export const SIDECAR = "http://127.0.0.1:7777";
 
 export function apiUrl(path: string): string {
   return "/api" + path;

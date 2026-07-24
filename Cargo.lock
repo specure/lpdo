@@ -894,6 +894,7 @@ dependencies = [
  "dunce",
  "fide-client",
  "libc",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tauri",
@@ -902,6 +903,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-shell",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

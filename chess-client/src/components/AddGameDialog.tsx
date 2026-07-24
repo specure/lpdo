@@ -12,6 +12,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { SIDECAR } from "../api";
 import { Tag, buildBlock, defaultNewGameTags, rememberPgnSite } from "../lib/pgnEditor";
 import { splitPgnFile } from "../lib/pgnSplitter";
 import { useSidecarProgress } from "../hooks/useSidecarProgress";
@@ -152,22 +153,42 @@ export default function AddGameDialog({
   async function run() {
     setLastAction("import");
     setPasteError(null);
+
+    if (mode === "file") {
+      // Stream the file straight to the daemon (#154): no size cap, bounded
+      // memory, works for multi-GB files and a remote daemon (a client-local
+      // path is meaningless there). The daemon decompresses .zip/.zst/.7z.
+      const p = path.trim();
+      if (!p) {
+        setPasteError("Choose a PGN file (.pgn/.zip/.zst/.7z) to import.");
+        return;
+      }
+      progress.runJob(() =>
+        invoke<string>("upload_pgn_file", {
+          path: p,
+          baseUrl: SIDECAR,
+          collection: collectionName.trim(),
+          onDuplicate: dedup,
+          fast: bulk,
+          private: !isPublic,
+          // Bulk loads skip position indexing here (the wizard's Index step
+          // rebuilds it afterwards); otherwise the daemon default (40) applies.
+          maxPositionDepth: bulk ? 0 : null,
+        }),
+      );
+      return;
+    }
+
+    // paste / scratch: small inline content, sent as before.
     let content: string;
     try {
-      if (mode === "file") {
-        // Read the file client-side — the app runs as the user, so it can read the
-        // home dir — and upload its content. The sandboxed system daemon can't open
-        // a path under $HOME or /tmp, so passing a path fails (#121).
-        content = await invoke<string>("read_pgn_file", { path: path.trim() });
-      } else {
-        if (mode === "scratch") {
-          // Persist the user's chosen Site as the default for future new games.
-          rememberPgnSite(tags.find((t) => t.name === "Site")?.value ?? "");
-        }
-        content = mode === "paste"
-          ? pasteText
-          : buildBlock(tags, tags.find((t) => t.name === "Result")?.value || "*");
+      if (mode === "scratch") {
+        // Persist the user's chosen Site as the default for future new games.
+        rememberPgnSite(tags.find((t) => t.name === "Site")?.value ?? "");
       }
+      content = mode === "paste"
+        ? pasteText
+        : buildBlock(tags, tags.find((t) => t.name === "Result")?.value || "*");
     } catch (e) {
       setPasteError(String(e));
       return;
@@ -179,9 +200,6 @@ export default function AddGameDialog({
       "--on-duplicate", dedup,
     ];
     if (bulk) {
-      // Fast bulk load for large databases (Megabase, Bundesliga): appender
-      // inserts, and skip position indexing here (--max-position-depth 0) since
-      // the wizard's Index step rebuilds the whole position index afterwards.
       args.push("--fast", "--max-position-depth", "0");
     }
     if (!isPublic) args.push("--private");

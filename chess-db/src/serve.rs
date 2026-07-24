@@ -1015,6 +1015,8 @@ struct ImportUploadQuery {
     #[serde(default)]
     fast: bool,
     on_duplicate: Option<String>,
+    /// Position-index depth; 0 disables indexing (bulk loads). Absent → 40.
+    max_position_depth: Option<u16>,
 }
 
 /// Streamed PGN upload (#154). The client streams a (possibly compressed,
@@ -1079,6 +1081,7 @@ async fn import_upload_handler(
         "private": q.private,
         "fast": q.fast,
         "on_duplicate": q.on_duplicate.unwrap_or_else(|| "skip".to_string()),
+        "max_position_depth": q.max_position_depth,
         // Delete the spool once the import finishes (see jobs.rs import_pgn).
         "cleanup": true,
     });

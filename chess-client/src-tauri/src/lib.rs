@@ -72,6 +72,7 @@ pub fn run() {
             prep::get_team_prep,
             local::list_directory,
             local::read_pgn_file,
+            local::upload_pgn_file,
             local::append_pgn_file,
             local::write_pgn_file,
             local::write_temp_pgn_file,
