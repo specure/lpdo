@@ -146,6 +146,12 @@ function planFromArgs(args: string[]): Plan {
         return { kind: "job", type: "normalise", params };
       }
       if (a1 === "dedup") return { kind: "job", type: "dedup_players", params: {} };
+      if (a1 === "resolve-fide") return { kind: "job", type: "resolve_fide", params: {} };
+      break;
+    }
+    case "fide": {
+      // Download + load the official FIDE player list (`fide refresh`).
+      if (a1 === "refresh") return { kind: "job", type: "fide_refresh", params: {} };
       break;
     }
     case "games": {
