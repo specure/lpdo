@@ -5,7 +5,7 @@
 //   myPlayer === null → SetupForm (name autocomplete + FIDE ID fallback)
 //   myPlayer set     → StatsView (ratings / activity / games in DB)
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FideActivity, FidePlayer, FideRecentGame, PlayerInfo, PlayerStats, StatusInfo } from "../types";
 import CountUp from "./CountUp";
@@ -204,20 +204,20 @@ export function ProfileSetupForm({ onSave }: { onSave: (p: PlayerInfo) => void }
 
 // ── Stats view ────────────────────────────────────────────────────────────────
 
-function StatsView({
-  player, onClear, countStartDelayMs = 0, status,
+// Memoised so a status poll during a long import (the `status` object changes
+// every tick) doesn't re-render — and thus re-animate — the FIDE stat tiles,
+// whose values don't actually change. Only `dbStatsAvailable` (a stable boolean
+// once the DB is non-empty) is passed instead of the whole status object.
+const StatsView = memo(function StatsView({
+  player, onClear, countStartDelayMs = 0, dbStatsAvailable,
 }: {
   player: PlayerInfo;
   onClear: () => void;
   countStartDelayMs?: number;
-  /** Server status. Used to gate the DB-stats fetch — when the server is
-   *  unreachable or the database is empty, hitting /api/players/:id/stats
-   *  will 500 (or not match) and surface a confusing red error. The
-   *  empty-database CTA on Home already explains that situation. */
-  status?: StatusInfo | null;
+  /** Whether DB stats are worth fetching (server up + DB non-empty). Gates the
+   *  /api/players/:id/stats call, which 500s on an empty/offline DB. */
+  dbStatsAvailable: boolean;
 }) {
-  // Skip DB stats when there's no DB to query — server offline or empty.
-  const dbStatsAvailable = !!status && status.games > 0;
   const [fidePlayer, setFidePlayer] = useState<FidePlayer | null>(null);
   const [fideActivity, setFideActivity] = useState<FideActivity | null>(null);
   const [fideGames, setFideGames] = useState<FideRecentGame[] | null>(null);
@@ -407,7 +407,7 @@ function StatsView({
       </div>
     </div>
   );
-}
+});
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
@@ -427,12 +427,17 @@ export default function MyStatsWidget({ countStartDelayMs, status }: MyStatsWidg
     setMyPlayer(player);
   }
 
-  function clear() {
+  // Stable identity so the memoised StatsView isn't re-rendered by a new closure.
+  const clear = useCallback(() => {
     localStorage.removeItem(MY_PLAYER_KEY);
     setMyPlayer(null);
-  }
+  }, []);
+
+  // Collapse the polling `status` object to the one stable boolean StatsView
+  // needs, so a status change during an import doesn't churn the memoised tiles.
+  const dbStatsAvailable = !!status && status.games > 0;
 
   return myPlayer
-    ? <StatsView player={myPlayer} onClear={clear} countStartDelayMs={countStartDelayMs} status={status} />
+    ? <StatsView player={myPlayer} onClear={clear} countStartDelayMs={countStartDelayMs} dbStatsAvailable={dbStatsAvailable} />
     : <ProfileSetupForm onSave={save} />;
 }
