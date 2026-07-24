@@ -1182,68 +1182,6 @@ async fn job_events_handler(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
-// ── Schedule (server-owned auto-update config) ────────────────────────────────
-
-async fn get_schedule_handler(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
-    state.reads.run(|conn| {
-        let (enabled, daily_minute, last_run, last_status): (bool, i32, Option<String>, Option<String>) =
-            conn.query_row(
-                "SELECT enabled, daily_minute, CAST(last_run AS VARCHAR), last_status
-                 FROM schedule WHERE id = 1",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            ).map_err(db_err)?;
-        // The next run is the next future occurrence of the chosen daily time.
-        let next_due = crate::scheduler::fmt_dt(crate::scheduler::next_due(daily_minute as i64));
-        Ok(Json(serde_json::json!({
-            "enabled": enabled,
-            "daily_minute": daily_minute,
-            "last_run": last_run,
-            "last_status": last_status,
-            "next_due": next_due,
-        })))
-    }).await
-}
-
-#[derive(Deserialize)]
-struct ScheduleUpdate {
-    enabled: Option<bool>,
-    /// Local clock time for the daily run, as minutes past midnight (0–1439).
-    daily_minute: Option<i32>,
-}
-
-async fn put_schedule_handler(
-    State(state): State<AppState>,
-    Json(body): Json<ScheduleUpdate>,
-) -> ApiResult<serde_json::Value> {
-    state.writer.run(move |conn| {
-        if let Some(e) = body.enabled {
-            conn.execute("UPDATE schedule SET enabled = ? WHERE id = 1", duckdb::params![e]).map_err(db_err)?;
-        }
-        if let Some(dm) = body.daily_minute {
-            let dm = dm.rem_euclid(1440); // clamp to a valid minute-of-day
-            conn.execute("UPDATE schedule SET daily_minute = ? WHERE id = 1", duckdb::params![dm]).map_err(db_err)?;
-        }
-        Ok(msg("Schedule updated.".into()))
-    }).await
-}
-
-/// Run the update now. Stamps the schedule as `running` (so the daily check
-/// treats today as done and the scheduler settles the terminal status), then
-/// submits the `update` job and returns its id for the client to stream. If an
-/// update is already in flight, returns that job's id instead of starting another.
-async fn run_schedule_now_handler(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
-    if let Some(j) = state.jobs.list().into_iter().find(|j| {
-        j.job_type == "update" && (j.status == "running" || j.status == "queued")
-    }) {
-        return Ok(Json(serde_json::json!({ "job_id": j.id })));
-    }
-    crate::scheduler::stamp_running(&state.writer).await;
-    let id = state.jobs.submit("update".into(), serde_json::json!({}));
-    crate::scheduler::spawn_settle_watcher(state.jobs.clone(), state.writer.clone(), id.clone());
-    Ok(Json(serde_json::json!({ "job_id": id })))
-}
-
 // ── First-run setup pipeline (#40 C4) ─────────────────────────────────────────
 
 /// Start the wizard's first-run pipeline. For each enabled source (deep-history
@@ -1596,7 +1534,7 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
     // Server-owned update scheduler: submits the `update` job when due, and skips
     // its work while a first-run setup is in progress (db_path lets it check the
     // sentinel).
-    crate::scheduler::spawn(jobs.clone(), reads.clone(), writer.clone(), db_path.clone());
+    crate::scheduler::spawn(jobs.clone(), reads.clone(), db_path.clone());
 
     // A leftover sentinel means a prior first-run setup didn't finish cleanly. The
     // unbootable case was already handled by the startup safety-net (which would
@@ -1631,8 +1569,6 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         .route("/games/{id}/headers",                  post(set_headers_handler))
         .route("/players/{id}/fide-id",                post(set_fide_id_handler))
         .route("/purge",                               post(purge_handler))
-        .route("/schedule",                            get(get_schedule_handler).put(put_schedule_handler))
-        .route("/schedule/run",                        post(run_schedule_now_handler))
         // First-run setup pipeline (#40 C4): start the fast import→prepare queue,
         // and reset to a clean empty DB if it was interrupted/failed.
         .route("/setup/start",                         post(setup_start_handler))

@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use chrono::{Duration as ChronoDuration, NaiveDateTime};
 
-use crate::jobs::{ConnActor, JobManager, ReadPool};
+use crate::jobs::{JobManager, ReadPool};
 
 /// How often the scheduler wakes to check the clock. One minute keeps the run
 /// close to the chosen time without meaningful cost (a single COUNT each tick).
@@ -29,9 +29,9 @@ const STARTUP_DELAY: Duration = Duration::from_secs(10);
 
 
 /// Spawn the scheduler loop onto the current Tokio runtime.
-pub fn spawn(jobs: Arc<JobManager>, reads: ReadPool, writer: ConnActor, db_path: PathBuf) {
-    // Test/debug escape hatch: skip the daily update entirely so the writer
-    // thread stays free (e.g. when exercising the #82 fault injector).
+pub fn spawn(jobs: Arc<JobManager>, reads: ReadPool, db_path: PathBuf) {
+    // Test/debug escape hatch: skip background work entirely so the writer thread
+    // stays free (e.g. when exercising the #82 fault injector).
     if std::env::var_os("LPDO_DISABLE_SCHEDULER").is_some() {
         eprintln!("Scheduler disabled (LPDO_DISABLE_SCHEDULER set).");
         return;
@@ -41,14 +41,14 @@ pub fn spawn(jobs: Arc<JobManager>, reads: ReadPool, writer: ConnActor, db_path:
         let mut ticker = tokio::time::interval(TICK);
         loop {
             ticker.tick().await;
-            if let Err(e) = tick(&jobs, &reads, &writer, &db_path).await {
+            if let Err(e) = tick(&jobs, &reads, &db_path).await {
                 eprintln!("scheduler: {e:#}");
             }
         }
     });
 }
 
-async fn tick(jobs: &Arc<JobManager>, reads: &ReadPool, _writer: &ConnActor, db_path: &Path) -> anyhow::Result<()> {
+async fn tick(jobs: &Arc<JobManager>, reads: &ReadPool, db_path: &Path) -> anyhow::Result<()> {
     // #131: fallback trigger for coalesced post-import maintenance. The job-
     // completion hook (jobs.rs) normally starts it the instant the queue drains;
     // this periodic call covers the case where maintenance was requested with an
@@ -103,30 +103,6 @@ async fn tick(jobs: &Arc<JobManager>, reads: &ReadPool, _writer: &ConnActor, db_
         }
     }
     Ok(())
-}
-
-/// Record an update's terminal status to the schedule as soon as the job
-/// finishes, rather than waiting for the next periodic tick — so a manual "run
-/// now" flips from `running` to `ok`/`error` promptly. The periodic tick stays
-/// as the fallback (e.g. when a restart kills this task mid-run).
-pub fn spawn_settle_watcher(jobs: Arc<JobManager>, writer: ConnActor, job_id: String) {
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            match jobs.snapshot(&job_id) {
-                Some(s) if s.status == "done" => {
-                    mark_status(&writer, "ok".into()).await;
-                    break;
-                }
-                Some(s) if s.status == "error" => {
-                    mark_status(&writer, format!("error: {}", s.error.unwrap_or_default())).await;
-                    break;
-                }
-                Some(_) => continue, // still running/queued
-                None => break,       // job gone — leave it for the tick fallback
-            }
-        }
-    });
 }
 
 /// Whether a job of `job_type` is currently queued or running.
@@ -184,19 +160,11 @@ fn most_recent_scheduled(daily_minute: i64) -> NaiveDateTime {
     if now >= today { today } else { today - ChronoDuration::days(1) }
 }
 
-/// The next future occurrence of the scheduled time, for display.
-pub fn next_due(daily_minute: i64) -> NaiveDateTime {
-    let now = chrono::Local::now().naive_local();
-    let (h, m) = hm(daily_minute);
-    let today = now.date().and_hms_opt(h, m, 0).unwrap_or(now);
-    if now < today { today } else { today + ChronoDuration::days(1) }
-}
-
-pub fn fmt_dt(dt: NaiveDateTime) -> String {
+/// Format a local datetime as the SQL-comparable string used for the per-source
+/// refresh threshold.
+fn fmt_dt(dt: NaiveDateTime) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
-
-// ── Schedule-row reads/writes ─────────────────────────────────────────────────
 
 /// The off-peak clock time (minutes past local midnight) that governs the daily
 /// per-source refresh cadence. Kept in the `schedule` table (default 240 = 04:00).
@@ -209,30 +177,4 @@ async fn read_daily_minute(reads: &ReadPool) -> anyhow::Result<i64> {
             .map_err(|e| anyhow::anyhow!(e))
         })
         .await
-}
-
-/// Record that a run has just started: stamp `last_run = now` (local wall clock,
-/// so it matches the due check) and `last_status = 'running'`. Shared by the
-/// scheduler's due path and the manual "run now" endpoint.
-pub async fn stamp_running(writer: &ConnActor) {
-    let now = fmt_dt(chrono::Local::now().naive_local());
-    let _ = writer
-        .run(move |conn| {
-            conn.execute(
-                "UPDATE schedule SET last_run = CAST(? AS TIMESTAMP), last_status = 'running' WHERE id = 1",
-                duckdb::params![now],
-            )
-        })
-        .await;
-}
-
-async fn mark_status(writer: &ConnActor, status: String) {
-    let _ = writer
-        .run(move |conn| {
-            conn.execute(
-                "UPDATE schedule SET last_status = ? WHERE id = 1",
-                duckdb::params![status],
-            )
-        })
-        .await;
 }

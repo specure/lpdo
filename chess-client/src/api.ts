@@ -67,39 +67,6 @@ export function getJobs(): Promise<Job[]> {
   return apiGet<Job[]>("/jobs");
 }
 
-// ── Schedule (server-owned auto-update) ──────────────────────────────────────
-
-export interface ScheduleInfo {
-  enabled: boolean;
-  /** Local clock time for the daily run, as minutes past midnight (0–1439). */
-  daily_minute: number;
-  last_run: string | null;
-  last_status: string | null;
-  next_due: string | null;
-}
-
-export function getSchedule(): Promise<ScheduleInfo> {
-  return apiGet<ScheduleInfo>("/schedule");
-}
-
-export async function updateSchedule(
-  body: Partial<Pick<ScheduleInfo, "enabled" | "daily_minute">>,
-): Promise<void> {
-  await ensureOk(
-    await fetch(apiUrl("/schedule"), {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-  );
-}
-
-/** Trigger the update now; returns the job id to stream progress from. */
-export async function runUpdateNow(): Promise<string> {
-  const res = await postJson<{ job_id: string }>("/schedule/run", {});
-  return res.job_id;
-}
-
 // ── Sources (multi-source import catalog, #40) ────────────────────────────────
 
 import type { SourceStatus, Job, StatusInfo } from "./types";
