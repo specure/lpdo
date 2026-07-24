@@ -40,7 +40,7 @@ function jobLabel(j: Job): string {
     case "cleanup":            return "Clean up games";
     case "normalise":          return "Normalise player names";
     case "resolve_fide":       return "Fetch missing FIDE IDs";
-    case "import":             return "Import";
+    case "import":             return src ? `Import ${src}` : "Import";
     case "import_pgn": {
       // Prefer the original filename (what's importing); the collection (where it
       // lands) is the fallback for content/paste imports that have no file.
@@ -76,8 +76,8 @@ function ActiveRow({ job, eta, cancelling, onCancel }: { job: Job; eta?: string;
   const known = job.total > 0;
   return (
     <div className="px-4 py-3 space-y-1.5">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-body-sm text-on-surface truncate">{jobLabel(job)}</span>
+      <div className="flex items-start justify-between gap-2">
+        <span className="text-body-sm text-on-surface line-clamp-2 break-words">{jobLabel(job)}</span>
         {/* Queued jobs can always be cancelled (they haven't started). A running
             job shows Cancel when it honours cooperative cancellation — it stops on
             a committed boundary, so a fast import counts even though it can't be
@@ -94,9 +94,11 @@ function ActiveRow({ job, eta, cancelling, onCancel }: { job: Job; eta?: string;
         )}
       </div>
       {queued ? (
-        <div className="text-label-sm text-on-surface-variant">{job.message ? `Queued · ${job.message}` : "Queued"}</div>
+        <div className="text-label-sm text-on-surface-variant break-words">{job.message ? `Queued · ${job.message}` : "Queued"}</div>
       ) : (
         <>
+          {/* The live progress line updates ~1×/s; keep it single-line so it
+              doesn't reflow/jitter as the message and % change. */}
           <div className="flex items-center justify-between gap-2 text-label-sm text-on-surface-variant">
             <span className="truncate">{job.message || "Working…"}</span>
             {known && <span className="shrink-0">{Math.round(pct(job))}%{eta ? ` · ${eta}` : ""}</span>}
@@ -126,9 +128,9 @@ function RecentRow({ job }: { job: Job }) {
     <div className="px-4 py-2 flex items-start gap-2">
       <span className={`text-base leading-5 shrink-0 ${color}`}>{icon}</span>
       <div className="min-w-0">
-        <div className="text-body-sm text-on-surface truncate">{jobLabel(job)}</div>
+        <div className="text-body-sm text-on-surface line-clamp-2 break-words">{jobLabel(job)}</div>
         {job.status === "error" && job.error && <div className="text-label-sm text-error break-words">{job.error}</div>}
-        {(ok || cancelled) && job.message && <div className="text-label-sm text-on-surface-variant truncate">{job.message}</div>}
+        {(ok || cancelled) && job.message && <div className="text-label-sm text-on-surface-variant line-clamp-2 break-words">{job.message}</div>}
       </div>
     </div>
   );
@@ -236,7 +238,7 @@ export default function ActivityIndicator() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-[22rem] max-h-[28rem] overflow-y-auto z-50 rounded-2xl border border-outline-variant bg-surface-container-high shadow-lg">
+        <div className="absolute right-0 top-full mt-2 w-[26rem] max-h-[28rem] overflow-y-auto z-50 rounded-2xl border border-outline-variant bg-surface-container-high shadow-lg">
           <div className="px-4 py-3 border-b border-outline-variant flex items-center justify-between">
             <span className="text-title-sm text-on-surface">Activity</span>
             <span className="text-label-sm text-on-surface-variant">

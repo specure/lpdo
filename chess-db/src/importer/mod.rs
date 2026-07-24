@@ -543,6 +543,9 @@ pub fn import(
     let total = issues.len() as u64;
     let pb = reporter.bar(total);
     let mut completed = 0u64;
+    // Grand totals across all issues, for a meaningful final `done` message
+    // (e.g. "12,748 games imported into Ajedrez OTB") instead of "Import complete".
+    let (mut tot_imported, mut tot_dups, mut tot_ns, mut tot_window) = (0usize, 0usize, 0usize, 0usize);
 
     let mut ctx = ImportContext::new(conn, skip_dedup)?;
     let collection_id = upsert_collection(conn, collection)?;
@@ -583,6 +586,7 @@ pub fn import(
                         duckdb::params![imported as i32, issue_id],
                     )?;
                     add_issue_to_collection(conn, *issue_id, collection_id)?;
+                    tot_imported += imported; tot_dups += skipped_dups; tot_ns += skipped_ns; tot_window += skipped_window;
                     let msg = format!("  Issue {}: {}", issue_id, import_summary(imported, skipped_dups, skipped_ns, skipped_window));
                     pb.println(&msg);
                     reporter.log(&msg);
@@ -631,8 +635,13 @@ pub fn import(
     pb.set_message("Updating player game counts…");
     crate::db::queries::recalculate_game_counts(conn)?;
 
-    pb.finish_with_message("Import complete");
-    reporter.done("Import complete");
+    pb.finish_and_clear();
+    let done_msg = format!(
+        "{} into {}.",
+        import_summary(tot_imported, tot_dups, tot_ns, tot_window),
+        collection,
+    );
+    reporter.done(&done_msg);
     import_result
 }
 
@@ -727,6 +736,8 @@ pub fn import_pgn(
         reporter.bar(total)
     };
     let mut completed = 0u64;
+    // Grand totals across all files, for the final `done` message.
+    let (mut tot_imported, mut tot_dups, mut tot_ns, mut tot_window) = (0usize, 0usize, 0usize, 0usize);
 
     // Allocate issue IDs above the TWIC range (TWIC issues are ~1–1500)
     let mut next_issue_id: i32 = {
@@ -816,6 +827,7 @@ pub fn import_pgn(
                         duckdb::params![imported as i32, issue_id],
                     )?;
                     add_issue_to_collection(conn, issue_id, collection_id)?;
+                    tot_imported += imported; tot_dups += skipped_dups; tot_ns += skipped_ns; tot_window += skipped_window;
                     let msg = format!("  {}: {}", filename, import_summary(imported, skipped_dups, skipped_ns, skipped_window));
                     pb.println(&msg);
                     reporter.log(&msg);
@@ -849,8 +861,13 @@ pub fn import_pgn(
     pb.set_message("Updating player game counts…");
     crate::db::queries::recalculate_game_counts(conn)?;
 
-    pb.finish_with_message("Import complete");
-    reporter.done("Import complete");
+    pb.finish_and_clear();
+    let done_msg = format!(
+        "{} into {}.",
+        import_summary(tot_imported, tot_dups, tot_ns, tot_window),
+        spec.collection,
+    );
+    reporter.done(&done_msg);
     import_result
 }
 
