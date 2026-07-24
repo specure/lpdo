@@ -98,8 +98,12 @@ export default function AddGameDialog({
 
   const progress = useSidecarProgress();
   const importedFiredRef = useRef(false);
-  // Streaming-upload phase progress (#154): the file uploads to the daemon
-  // before the import job exists, so show that phase instead of a blank 0%.
+  // Streaming-upload phase (#154): the file uploads to the daemon, then the
+  // import runs entirely on the daemon. The dialog follows only the *upload*;
+  // once it's done we hand off to the background (like the wizard's sources) and
+  // show a confirmation instead of blocking on the whole import.
+  //   idle → uploading → queued (import now running in the background)
+  const [uploadPhase, setUploadPhase] = useState<"idle" | "uploading" | "queued">("idle");
   const [uploadPct, setUploadPct] = useState<number | null>(null);
 
   useEffect(() => {
@@ -111,23 +115,26 @@ export default function AddGameDialog({
     return () => { un?.(); };
   }, []);
 
-  // While uploading (upload started, not yet at 100%), show the upload phase.
-  const uploading = progress.running && uploadPct !== null && uploadPct < 100;
+  const uploading = uploadPhase === "uploading";
 
-  useEffect(() => { onRunningChange?.(progress.running); }, [progress.running]);
+  // Keep the wizard's close-guard up while a paste/scratch import runs OR a file
+  // uploads (interrupting an in-flight upload would abort it).
+  useEffect(() => { onRunningChange?.(progress.running || uploading); }, [progress.running, uploading]);
 
   useEffect(() => {
     fetch("/api/collections").then((r) => r.ok ? r.json() : []).then(setCollections).catch(() => {});
   }, []);
 
   // Embedded callers (SetupWizard) have no Done button — fire onImported once
-  // when the import succeeds. Modal mode fires it from the explicit Done click.
+  // the operation is handed off: a paste/scratch import finishing, or a file
+  // upload being queued on the daemon (the import then runs in the background,
+  // just like the wizard's sources). Modal mode fires it from the Done click.
   useEffect(() => {
-    if (embedded && progress.done && !importedFiredRef.current) {
+    if (embedded && (progress.done || uploadPhase === "queued") && !importedFiredRef.current) {
       importedFiredRef.current = true;
       onImported?.();
     }
-  }, [embedded, progress.done]);
+  }, [embedded, progress.done, uploadPhase]);
 
   const pastePreview = useMemo(() => {
     if (mode !== "paste" || !pasteText.trim()) return [];
@@ -149,7 +156,8 @@ export default function AddGameDialog({
     inputValid &&
     !!collectionName.trim() &&
     !progress.running &&
-    !progress.done;
+    !progress.done &&
+    uploadPhase === "idle";
 
   function applyPreset(p: Preset) {
     if (p.collection) setCollectionName(p.collection);
@@ -180,19 +188,25 @@ export default function AddGameDialog({
         return;
       }
       setUploadPct(0);
-      progress.runJob(() =>
-        invoke<string>("upload_pgn_file", {
-          path: p,
-          baseUrl: SIDECAR,
-          collection: collectionName.trim(),
-          onDuplicate: dedup,
-          fast: bulk,
-          private: !isPublic,
-          // Bulk loads skip position indexing here (the wizard's Index step
-          // rebuilds it afterwards); otherwise the daemon default (40) applies.
-          maxPositionDepth: bulk ? 0 : null,
-        }),
-      );
+      setUploadPhase("uploading");
+      // Follow only the upload. When it resolves the daemon has queued the
+      // import job (which imports, then dedups/indexes/normalises on its own —
+      // see run_post_import_maintenance) so we hand off to the background rather
+      // than block the dialog on a multi-hour import.
+      invoke<string>("upload_pgn_file", {
+        path: p,
+        baseUrl: SIDECAR,
+        collection: collectionName.trim(),
+        onDuplicate: dedup,
+        fast: bulk,
+        private: !isPublic,
+        // Bulk loads (the wizard) skip per-import indexing — the wizard's
+        // startSetup rebuilds the whole index afterwards; otherwise the daemon
+        // default (40) applies and the import self-indexes.
+        maxPositionDepth: bulk ? 0 : null,
+      })
+        .then(() => { setUploadPhase("queued"); })
+        .catch((e) => { setUploadPhase("idle"); setUploadPct(null); setPasteError(String(e)); });
       return;
     }
 
@@ -229,7 +243,7 @@ export default function AddGameDialog({
   }
 
   function handleClose() {
-    if (progress.running && !window.confirm("The import keeps running in the background — you can watch it in the activity panel. Close this dialog?")) return;
+    if ((progress.running || uploading) && !window.confirm("The import keeps running in the background — you can watch it in the activity panel. Close this dialog?")) return;
     onClose();
   }
 
@@ -238,7 +252,7 @@ export default function AddGameDialog({
     onClose();
   }
 
-  const locked = progress.running || progress.done;
+  const locked = progress.running || progress.done || uploadPhase !== "idle";
 
   const body = (
     <div className="space-y-4">
@@ -334,7 +348,7 @@ export default function AddGameDialog({
       </div>
 
       {/* Run / progress */}
-      {!progress.running && !progress.done && (
+      {!progress.running && !progress.done && uploadPhase === "idle" && (
         <div className="space-y-2">
           {/* A failed submit (e.g. the daemon is unreachable) or a job error
               leaves running=false/done=false, so surface it here — otherwise the
@@ -355,7 +369,32 @@ export default function AddGameDialog({
         </div>
       )}
 
-      {(progress.running || progress.done) && (
+      {/* Upload handed off — the import now runs on the daemon. A "second screen"
+          confirming things are happening in the background (consistent with the
+          wizard), rather than blocking the dialog until the import finishes. */}
+      {uploadPhase === "queued" && (
+        <div className="bg-tertiary-container text-on-tertiary-container rounded-md p-3 space-y-1.5">
+          <div className="text-title-sm">✓ Import started</div>
+          <p className="text-body-sm opacity-90">
+            Your file finished uploading and the import is now running in the background —
+            it will deduplicate, build the position index and normalise player names on its
+            own. You can close this dialog{embedded ? " and continue" : ""}; follow progress any
+            time from the activity indicator in the header.
+          </p>
+          {!embedded && (
+            <div className="flex justify-end">
+              <button
+                onClick={() => { setUploadPhase("idle"); setUploadPct(null); setPasteError(null); }}
+                className="h-7 px-3 inline-flex items-center rounded-full text-on-tertiary-container text-label-md hover:bg-on-surface/8 transition-colors duration-short3 ease-standard"
+              >
+                Import another
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {(progress.running || progress.done || uploading) && (
         <div className="space-y-2">
           <div className="flex justify-between text-label-md text-on-surface-variant">
             <span>
@@ -366,7 +405,7 @@ export default function AddGameDialog({
             <span>{Math.round(uploading ? uploadPct! : progress.percent)}%</span>
           </div>
           <ProgressBar value={uploading ? uploadPct! : progress.percent} />
-          <LogBox lines={progress.log} />
+          {!uploading && <LogBox lines={progress.log} />}
           {progress.done && (
             <>
               <p className="text-success text-body-sm">✓ {progress.doneMessage}</p>
@@ -418,7 +457,7 @@ export default function AddGameDialog({
         </div>
         <div className="px-6 py-2 flex-1 overflow-y-auto">{body}</div>
         <div className="px-6 py-4 shrink-0 flex items-center justify-end gap-2">
-          {progress.done ? (
+          {(progress.done || uploadPhase === "queued") ? (
             /* Filled button — primary action */
             <button onClick={handleDone} className="h-9 px-4 inline-flex items-center rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard">
               Done
@@ -427,10 +466,10 @@ export default function AddGameDialog({
             /* Text button */
             <button
               onClick={handleClose}
-              disabled={progress.running}
+              disabled={progress.running || uploading}
               className="h-9 px-4 inline-flex items-center rounded-full text-primary text-label-lg hover:bg-primary/8 active:bg-primary/12 disabled:opacity-50 transition-colors duration-short3 ease-standard"
             >
-              {progress.running ? "Running…" : "Cancel"}
+              {(progress.running || uploading) ? "Running…" : "Cancel"}
             </button>
           )}
         </div>
@@ -529,7 +568,9 @@ function FileSection({ path, setPath, locked }: {
             const picked = await openDialog({
               multiple: false,
               directory: false,
-              filters: [{ name: "PGN", extensions: ["pgn"] }],
+              // The daemon decompresses these server-side (#154) — offer them in
+              // the picker so a ChessBase/Megabase .zip can be selected directly.
+              filters: [{ name: "Chess database", extensions: ["pgn", "zip", "zst", "zstd", "7z"] }],
             });
             if (typeof picked === "string") setPath(picked);
           }}
