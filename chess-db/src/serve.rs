@@ -1084,6 +1084,9 @@ async fn import_upload_handler(
         "max_position_depth": q.max_position_depth,
         // Delete the spool once the import finishes (see jobs.rs import_pgn).
         "cleanup": true,
+        // Chain index + normalise after the import so a streamed bulk import is
+        // self-completing (like a source sync), not left unindexed/unnormalised.
+        "maintain": true,
     });
     let id = state.jobs.submit("import_pgn".to_string(), params);
     Ok(Json(serde_json::json!({ "job_id": id })))

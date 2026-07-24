@@ -750,7 +750,7 @@ pub fn import_pgn(
             let effective_depth = if bulk_mode { None } else { max_position_depth };
             // Manual PGN imports are not date-filtered (unbounded window).
             let manual_window = crate::sources::DateWindow::default();
-            match process_pgn_stream(conn, issue_id, collection_id, visibility, src, effective_depth, &mut ctx, fast, &manual_window) {
+            match process_pgn_stream(conn, issue_id, collection_id, visibility, src, effective_depth, &mut ctx, fast, &manual_window, reporter) {
                 Ok((imported, skipped_dups, skipped_ns, skipped_window)) => {
                     conn.execute(
                         "UPDATE source_items SET imported = TRUE, imported_at = NOW(), game_count = ? WHERE id = ?",
@@ -984,6 +984,9 @@ fn import_issue(
         ctx,
         fast,
         window,
+        // Silent: the bulk path reports per-issue progress; a per-game live count
+        // across many small issues would just be noise.
+        &crate::reporter::Reporter::silent(),
     )
 }
 
@@ -1088,6 +1091,7 @@ fn process_pgn_stream(
     ctx: &mut ImportContext,
     fast: bool,
     window: &crate::sources::DateWindow,
+    reporter: &Reporter,
 ) -> Result<(usize, usize, usize, usize)> {
     // Comments, NAGs and variations are preserved by the visitor (see
     // GameVisitor) and stored in the game's movetext, so the PGN is parsed
@@ -1244,6 +1248,14 @@ fn process_pgn_stream(
                 flush_positions(conn, &position_batch, fast)?;
                 position_batch.clear();
             }
+            // Live game-count so a single multi-GB file doesn't sit at 0% (the
+            // per-file bar is 0/1 until done). total=0 → the GUI shows the count
+            // message rather than a percent.
+            reporter.progress(
+                total_games as u64,
+                0,
+                format!("Imported {total_games} games…"),
+            );
         }
     }
 

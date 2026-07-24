@@ -700,22 +700,8 @@ fn run_job(
                 importer::import(conn, &dir, src.key, src.collection, depth, 10, fast, skip_dedup, &step)?;
                 // Complete the maintenance the import may have deferred, so a large
                 // (bulk) sync is immediately searchable instead of waiting for the
-                // next daily update (#145/#146): build any positions the import
-                // skipped, then normalise new players. Both are incremental and
-                // idempotent — a cheap no-op when the import was small (indexed
-                // inline) and nothing is pending. (Dedup already ran inline.)
-                if reporter.is_cancelled() { return Ok(()); }
-                // Skip when indexing is disabled (depth 0/None) — passing None would
-                // *clear* the positions table rather than skip it (#144 + #145/#146).
-                if depth.is_some() {
-                    reporter.log(format!("{}: indexing positions", src.name));
-                    run_index_positions_guarded(conn, db, depth, false, fast, &step)?;
-                }
-                if reporter.is_cancelled() { return Ok(()); }
-                reporter.log(format!("{}: normalising players", src.name));
-                normalise::normalise_players(
-                    conn, false, 1500, 100, 30_000, 3, 10, 7_200_000, false, None, None, None, false, &step,
-                )?;
+                // next daily update (#145/#146).
+                run_post_import_maintenance(conn, db, depth, fast, &step, src.name)?;
                 Ok(())
             })();
             // Record the run's outcome so the enable→auto-sync scheduler doesn't
@@ -756,7 +742,14 @@ fn run_job(
             // user's home or /tmp. Write it to a daemon-owned temp beside the DB
             // (which the daemon can read/write), import, then clean up. A `path`
             // (a daemon-local file, or the `--local` CLI) still works unchanged.
-            if let Some(content) = p.get("content").and_then(|v| v.as_str()) {
+            // When asked to maintain (streamed uploads set it), chain
+            // index+normalise after the import and run everything under a
+            // sub-step so only the final `done` terminates the job.
+            let maintain = flag(p, "maintain");
+            let sub = maintain.then(|| reporter.sub_step());
+            let rep: &Reporter = sub.as_ref().unwrap_or(reporter);
+
+            let import_res = if let Some(content) = p.get("content").and_then(|v| v.as_str()) {
                 let dir = db.parent().unwrap_or_else(|| Path::new("."));
                 let stamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -765,18 +758,24 @@ fn run_job(
                 let tmp = dir.join(format!("upload-{stamp}.pgn"));
                 std::fs::write(&tmp, content)
                     .with_context(|| format!("writing uploaded PGN to {}", tmp.display()))?;
-                let res = importer::import_pgn(conn, &tmp, depth, 10, fast, false, &spec, reporter);
+                let res = importer::import_pgn(conn, &tmp, depth, 10, fast, false, &spec, rep);
                 let _ = std::fs::remove_file(&tmp);
-                res?;
+                res
             } else {
                 let path = path_param(p, "path")?;
-                let res = importer::import_pgn(conn, &path, depth, 10, fast, false, &spec, reporter);
+                let res = importer::import_pgn(conn, &path, depth, 10, fast, false, &spec, rep);
                 // Streamed uploads (#154) spool to a daemon-owned file and set
                 // `cleanup` so it's removed once imported (success or failure).
                 if flag(p, "cleanup") {
                     let _ = std::fs::remove_file(&path);
                 }
-                res?;
+                res
+            };
+            import_res?;
+
+            if maintain {
+                run_post_import_maintenance(conn, db, depth, fast, rep, "Import")?;
+                reporter.done("Import and maintenance complete.");
             }
         }
         "index_positions" => {
@@ -924,6 +923,39 @@ const FAST_INDEX_SNAPSHOT_THRESHOLD: i64 = 200_000;
 /// Small incrementals skip it (cheap, and a killed appender only leaves a
 /// consistent partial to resume), as does first-run setup (the setup sentinel
 /// already protects a disposable DB).
+/// After an import, complete the maintenance the import may have deferred so the
+/// new games are immediately searchable and FIDE-normalised: build any positions
+/// the import skipped, then normalise new players. Both are incremental and
+/// idempotent (cheap no-ops when nothing is pending). Dedup runs inline during
+/// import. `reporter` must be a sub-step reporter — each step emits its own
+/// `done`, so only the caller's final `done` should terminate the job.
+fn run_post_import_maintenance(
+    conn: &Connection,
+    db: &Path,
+    depth: Option<i16>,
+    fast: bool,
+    reporter: &Reporter,
+    label: &str,
+) -> Result<()> {
+    if reporter.is_cancelled() {
+        return Ok(());
+    }
+    // Skip when indexing is disabled (depth 0/None) — passing None would *clear*
+    // the positions table rather than skip it (#144 + #145/#146).
+    if depth.is_some() {
+        reporter.log(format!("{label}: indexing positions"));
+        run_index_positions_guarded(conn, db, depth, false, fast, reporter)?;
+    }
+    if reporter.is_cancelled() {
+        return Ok(());
+    }
+    reporter.log(format!("{label}: normalising players"));
+    crate::normalise::normalise_players(
+        conn, false, 1500, 100, 30_000, 3, 10, 7_200_000, false, None, None, None, false, reporter,
+    )?;
+    Ok(())
+}
+
 pub fn run_index_positions_guarded(
     conn: &Connection,
     db: &Path,
