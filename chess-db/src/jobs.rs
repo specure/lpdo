@@ -580,10 +580,23 @@ impl JobManager {
     }
 
     /// Request cooperative cancellation. Returns false if the job is unknown.
+    ///
+    /// A job that hasn't started yet (still `queued`) is marked `cancelled`
+    /// immediately, so it leaves the visible queue at once (#161) instead of
+    /// appearing stuck until the writer thread reaches it — the writer then skips
+    /// it (the body's start-of-run cancellation check). A running job just gets
+    /// the flag; its loop stops at the next committed boundary.
     pub fn cancel(&self, id: &str) -> bool {
         match self.get(id) {
             Some(slot) => {
                 slot.cancel.store(true, Ordering::Relaxed);
+                {
+                    let mut s = slot.state.lock().unwrap();
+                    if s.status == "queued" {
+                        s.status = "cancelled".into();
+                        s.message = "Cancelled".into();
+                    }
+                }
                 true
             }
             None => false,
@@ -688,15 +701,15 @@ impl JobManager {
         // coalesced maintenance, #163) need the manager itself.
         let jm_run = Arc::clone(self);
         let body = move |conn: &Connection| {
-            {
-                slot_run.state.lock().unwrap().status = "running".into();
-            }
             let reporter = Reporter::channel(ev_tx, cancel);
+            // Check cancellation BEFORE flipping to "running": a job cancelled while
+            // queued (#161) is skipped cleanly and never shows a "running" blip.
             if reporter.is_cancelled() {
-                // Cancelled while queued (#161): skip cleanly with a cancelled
-                // status rather than a spurious error.
                 reporter.cancelled("Cancelled before it started");
                 return;
+            }
+            {
+                slot_run.state.lock().unwrap().status = "running".into();
             }
             match run_job(&slot_run.job_type, &params, conn, &reporter, &rt, &db_path, &jm_run) {
                 // A job that returns Ok after observing cancellation stopped
