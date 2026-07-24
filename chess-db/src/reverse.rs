@@ -83,40 +83,78 @@ pub fn resolve_fide(
          GROUP BY nf HAVING COUNT(DISTINCT fide_id) = 1;"
     ))?;
 
+    // Proposed assignments at the player level, then the birth-year sanity gate.
+    // We can't prove two same-named people are the same person from a source
+    // without FIDE IDs, so we accept some false positives — but a game played
+    // BEFORE a candidate's FIDE birth year proves a different person, so those we
+    // reject outright. Rating is deliberately not used (it drifts over the years).
+    let fold_p = fold_expr("p.name");
+    conn.execute_batch(&format!(
+        "DROP TABLE IF EXISTS resolve_assign;
+         CREATE TEMP TABLE resolve_assign AS
+         SELECT p.id AS player_id, c.fide_id
+         FROM players p JOIN resolve_cand c ON {fold_p} = c.nf
+         WHERE p.fide_id IS NULL;
+
+         -- Earliest game year per candidate player (either colour).
+         DROP TABLE IF EXISTS resolve_firstyear;
+         CREATE TEMP TABLE resolve_firstyear AS
+         SELECT pid AS player_id, MIN(gy) AS first_year
+         FROM (
+           SELECT white_id AS pid, TRY_CAST(substr(date, 1, 4) AS INTEGER) AS gy FROM games
+           UNION ALL
+           SELECT black_id AS pid, TRY_CAST(substr(date, 1, 4) AS INTEGER) AS gy FROM games
+         ) t
+         WHERE pid IN (SELECT player_id FROM resolve_assign)
+           AND gy IS NOT NULL AND gy BETWEEN 1400 AND 2100
+         GROUP BY pid;
+
+         -- Reject a match whose earliest game predates the candidate's birth year.
+         DROP TABLE IF EXISTS resolve_reject;
+         CREATE TEMP TABLE resolve_reject AS
+         SELECT a.player_id
+         FROM resolve_assign a
+         JOIN resolve_firstyear fy ON fy.player_id = a.player_id
+         JOIN fide_players f ON f.fide_id = a.fide_id
+         WHERE f.birth_year IS NOT NULL AND fy.first_year < f.birth_year;"
+    ))?;
+
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM resolve_assign", [], |r| r.get(0))?;
+    let rejected: i64 = conn.query_row("SELECT COUNT(*) FROM resolve_reject", [], |r| r.get(0))?;
+
     let assigned_players = if dry_run {
-        let fold_p = fold_expr("p.name");
-        let n: i64 = conn.query_row(
-            &format!(
-                "SELECT COUNT(*) FROM players p JOIN resolve_cand c ON {fold_p} = c.nf
-                 WHERE p.fide_id IS NULL"
-            ),
-            [],
-            |r| r.get(0),
-        )?;
-        n as usize
+        (total - rejected).max(0) as usize
     } else {
         // name_normalised=FALSE so a subsequent forward `normalise` canonicalises
         // the newly-fide'd name from fide_players.
-        let fold_pl = fold_expr("players.name");
         conn.execute(
-            &format!(
-                "UPDATE players SET fide_id = c.fide_id, name_normalised = FALSE
-                 FROM resolve_cand c
-                 WHERE {fold_pl} = c.nf AND players.fide_id IS NULL"
-            ),
+            "UPDATE players SET fide_id = a.fide_id, name_normalised = FALSE
+             FROM resolve_assign a
+             WHERE players.id = a.player_id AND players.fide_id IS NULL
+               AND a.player_id NOT IN (SELECT player_id FROM resolve_reject)",
             [],
         )?
     };
-    conn.execute_batch("DROP TABLE IF EXISTS resolve_cand;")?;
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS resolve_cand;
+         DROP TABLE IF EXISTS resolve_assign;
+         DROP TABLE IF EXISTS resolve_firstyear;
+         DROP TABLE IF EXISTS resolve_reject;",
+    )?;
 
+    let gate = if rejected > 0 {
+        format!(" Birth-year gate rejected {rejected} impossible match(es) (game predates FIDE birth year).")
+    } else {
+        String::new()
+    };
     if dry_run {
         reporter.done(format!(
-            "Dry run — would assign a FIDE ID to {assigned_players} of {before} FIDE-less player(s)."
+            "Dry run — would assign a FIDE ID to {assigned_players} of {before} FIDE-less player(s).{gate}"
         ));
     } else {
         let after = pending_count(conn)?;
         reporter.done(format!(
-            "Resolved FIDE IDs: {assigned_players} player row(s) assigned ({before} → {after} still without one)."
+            "Resolved FIDE IDs: {assigned_players} player row(s) assigned ({before} → {after} still without one).{gate}"
         ));
     }
     Ok(assigned_players)
@@ -239,6 +277,32 @@ mod tests {
         assert_eq!(f(1), Some(100), "accented FIDE-less name folds to the ASCII FIDE entry");
         assert_eq!(f(2), None, "name shared by two FIDE IDs is never guessed");
         assert_eq!(f(3), None, "name not in FIDE stays unresolved");
+    }
+
+    #[test]
+    fn birth_year_gate_rejects_games_before_the_candidate_was_born() {
+        let conn = setup();
+        // fide namesakes: 100 is a junior (born 2010), 200 born 1975. Both local
+        // players have a 2005 game — impossible for the 2010 junior, fine for 1975.
+        conn.execute_batch(
+            "INSERT INTO fide_players (fide_id, name, birth_year) VALUES
+               (100, 'Young, Junior', 2010),
+               (200, 'Old, Master', 1975);
+             INSERT INTO players (id,name,name_normalized,fide_id,name_normalised) VALUES
+               (1,'Young, Junior','young junior',NULL,FALSE),
+               (2,'Old, Master','old master',NULL,FALSE);
+             INSERT INTO games (id, white_id, black_id, date) VALUES
+               (1, 1, 999, '2005-06-01'),
+               (2, 2, 998, '2005-06-01');",
+        )
+        .unwrap();
+
+        resolve_fide(&conn, false, None, None, false, &Reporter::silent()).unwrap();
+        let f = |id: u32| -> Option<u32> {
+            conn.query_row("SELECT fide_id FROM players WHERE id=?", duckdb::params![id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(f(1), None, "game predates the candidate's birth → rejected, not guessed");
+        assert_eq!(f(2), Some(200), "game after birth → assigned normally");
     }
 
     #[test]
