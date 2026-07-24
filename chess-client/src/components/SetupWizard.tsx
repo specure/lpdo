@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import AddGameDialog from "./AddGameDialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { getSources, setSourceEnabled, startSetup } from "../api";
 import { SourceStatus } from "../types";
 
@@ -106,22 +106,36 @@ function isNonCommercial(credit: string): boolean {
   return /non-?commercial|CC[\s-]?BY-NC|\bNC[\s-]?SA\b/i.test(credit);
 }
 
-/** One selectable source row: tick to include the source (which also accepts its
- *  attribution/licence). The credit line is shown right here so the tick is an
- *  informed acknowledgment. */
+/** One selectable source row (#130): the source's description + attribution/licence
+ *  are shown, then an EXPLICIT "I agree to these terms" checkbox that must be
+ *  ticked before the source is included — an informed agreement, not a passive
+ *  row-click. Mirrors the Maintenance → Sources acknowledgment gate. */
 function SourceRow({ source, checked, onChange }: { source: SourceStatus; checked: boolean; onChange: (v: boolean) => void }) {
   const nc = isNonCommercial(source.credit);
   return (
-    <label className="flex items-start gap-3 bg-surface-container-low rounded-lg px-3 py-2.5 cursor-pointer">
-      <input type="checkbox" className="mt-1 shrink-0" checked={checked} onChange={(e) => onChange(e.target.checked)} />
-      <span className="space-y-0.5">
-        <span className="flex items-center gap-2 text-body-sm text-on-surface">
-          {source.name}
-          {nc && <span className="text-label-sm text-warning">⚠ non-commercial</span>}
-        </span>
-        <span className="block text-label-sm text-on-surface-variant">{source.credit}</span>
-      </span>
-    </label>
+    <div className="bg-surface-container-low rounded-lg px-3 py-2.5 space-y-1.5">
+      <div className="flex items-center gap-2 text-body-sm text-on-surface">
+        {source.name}
+        {nc && <span className="text-label-sm text-warning">⚠ non-commercial</span>}
+      </div>
+      {source.description && (
+        <p className="text-label-sm text-on-surface-variant">{source.description}</p>
+      )}
+      <p className="text-label-sm text-on-surface-variant italic">{source.credit}</p>
+      {source.homepage && (
+        <button
+          type="button"
+          onClick={() => { void openUrl(source.homepage); }}
+          className="text-label-sm text-primary hover:underline"
+        >
+          About &amp; licence: {(() => { try { return new URL(source.homepage).host; } catch { return source.homepage; } })()} ↗
+        </button>
+      )}
+      <label className="flex items-center gap-2 pt-1 mt-0.5 border-t border-outline-variant cursor-pointer">
+        <input type="checkbox" className="shrink-0 mt-2" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+        <span className="pt-2 text-label-md text-on-surface">Include — I accept these terms</span>
+      </label>
+    </div>
   );
 }
 
@@ -168,22 +182,12 @@ async function applySourceSelection(scope: SourceStatus[], selected: Set<string>
 const sourcesFilledBtn =
   "w-full h-10 rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 disabled:opacity-40 transition-all duration-short3 ease-standard";
 
-// Secondary full-width variant: used for the commercial path's "continue without
-// importing" action, so it doesn't compete with AddGameDialog's primary
-// "Add to database" button (two identical primary buttons read as a bug).
-const sourcesTonalBtn =
-  "w-full h-10 rounded-full bg-secondary-container text-on-secondary-container text-label-lg hover:brightness-110 disabled:opacity-40 transition-all duration-short3 ease-standard";
-
 // ── Step: Deep history (the historical base — chosen first) ───────────────────
-
-type History = "free" | "commercial" | "none";
 
 function DeepHistoryStep({ onComplete, onAdvance, onRunningChange }: { onComplete: () => void; onAdvance: () => void; onRunningChange: (r: boolean) => void }) {
   const { sources, loadError, reload } = useSourceCatalog();
-  const [history, setHistory] = useState<History>("free");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [enabling, setEnabling] = useState(false);
-  const [importing, setImporting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   // Pre-select bulk archives already enabled (e.g. on re-run); compute the filter
@@ -193,10 +197,7 @@ function DeepHistoryStep({ onComplete, onAdvance, onRunningChange }: { onComplet
     setSelected(new Set(sources.filter((s) => s.kind === "bulk" && s.enabled).map((s) => s.key)));
   }, [sources]);
 
-  // Report combined busy state: the brief enable loop OR an in-progress
-  // commercial PGN import (reporting the OR keeps the close-guard up while a
-  // commercial import is still running).
-  useEffect(() => { onRunningChange(enabling || importing); }, [enabling, importing, onRunningChange]);
+  useEffect(() => { onRunningChange(enabling); }, [enabling, onRunningChange]);
 
   if (loadError !== null) return <SourcesLoadError error={loadError} onRetry={reload} />;
   if (sources === null) return <p className="text-body-sm text-on-surface-variant">Loading sources…</p>;
@@ -211,10 +212,9 @@ function DeepHistoryStep({ onComplete, onAdvance, onRunningChange }: { onComplet
     setSubmitError(null);
     setEnabling(true);
     try {
-      // Only the bulk archives are this step's concern. "free" enables the ticked
-      // archives; "commercial" (local PGN import below) and "none" enable nothing
-      // here — and clear any previously-enabled archive on re-run.
-      await applySourceSelection(bulk, history === "free" ? selected : new Set());
+      // Include the ticked archives; leaving them all unticked = no base (and
+      // clears any previously-enabled archive on re-run).
+      await applySourceSelection(bulk, selected);
       onComplete();
       onAdvance();
     } catch (e: unknown) {
@@ -224,88 +224,40 @@ function DeepHistoryStep({ onComplete, onAdvance, onRunningChange }: { onComplet
     }
   }
 
-  const historyOptions: { value: History; label: string; hint: string }[] = [
-    { value: "free", label: "Free historical base", hint: bulk.map((s) => s.name).join(", ") || "A free public archive of older games." },
-    { value: "commercial", label: "I own a commercial database", hint: "e.g. ChessBase Megabase — export to PGN and import it below." },
-    { value: "none", label: "None", hint: "Start without a historical base — just the live feeds you pick next." },
-  ];
+  const any = selected.size > 0;
 
   return (
     <div className="space-y-5">
       <div className="flex items-start justify-between gap-3">
         <p className="text-on-surface text-body-md leading-relaxed">
-          Choose an optional historical base — a deep archive of older games beneath the live
-          feeds you'll pick next. Overlap is deduplicated automatically. You can change this
-          later under Maintenance → Sources.
+          Optionally start with a free deep-history base — a deep archive of older games beneath the
+          live feeds. Review its terms and tick to include it, or leave it unticked to start without
+          one. You can change this later under Maintenance → Sources.
         </p>
         <OptionalBadge />
       </div>
 
-      <div className="space-y-1.5">
-        {historyOptions.map((opt) => (
-          <label key={opt.value} className="flex items-start gap-3 cursor-pointer">
-            <input
-              type="radio"
-              name="deep-history"
-              className="mt-1 shrink-0"
-              checked={history === opt.value}
-              onChange={() => setHistory(opt.value)}
-            />
-            <span>
-              <span className="block text-body-md text-on-surface">{opt.label}</span>
-              <span className="block text-label-sm text-on-surface-variant">{opt.hint}</span>
-            </span>
-          </label>
-        ))}
-      </div>
-
-      {history === "free" && (
-        bulk.length > 0 ? (
-          <div className="space-y-2">
-            <p className="text-body-sm text-on-surface-variant">Select the archives to include — ticking one accepts its source/licence.</p>
-            {bulk.map((s) => (
-              <SourceRow key={s.key} source={s} checked={selected.has(s.key)} onChange={(v) => toggle(s.key, v)} />
-            ))}
-          </div>
-        ) : (
-          <p className="text-body-sm text-on-surface-variant">No free archive is available right now.</p>
-        )
-      )}
-
-      {history === "commercial" && (
+      {bulk.length > 0 ? (
         <div className="space-y-2">
-          <p className="text-body-sm text-on-surface-variant">
-            Export your database to PGN, then import it here. You can also do this later, and cap the
-            live feeds to start after its cutoff under Maintenance → Sources.
-          </p>
-          <AddGameDialog
-            embedded
-            initialMode="file"
-            allowedModes={["file"]}
-            bulk
-            onClose={() => { /* wizard handles navigation */ }}
-            onImported={onComplete}
-            onRunningChange={setImporting}
-          />
+          {bulk.map((s) => (
+            <SourceRow key={s.key} source={s} checked={selected.has(s.key)} onChange={(v) => toggle(s.key, v)} />
+          ))}
         </div>
+      ) : (
+        <p className="text-body-sm text-on-surface-variant">No free archive is available right now.</p>
       )}
+
+      <p className="text-label-sm text-on-surface-variant">
+        Bringing your own database (e.g. a ChessBase Megabase)? Leave this unticked and import it
+        later from Add games.
+      </p>
 
       <div className="space-y-2">
-        <button
-          onClick={() => { void apply(); }}
-          disabled={enabling}
-          className={history === "commercial" ? sourcesTonalBtn : sourcesFilledBtn}
-        >
-          {enabling
-            ? "Saving…"
-            : history === "free" && selected.size > 0
-              ? "Add historical base"
-              : history === "commercial"
-                ? "Continue without importing"
-                : "Continue without a base"}
+        <button onClick={() => { void apply(); }} disabled={enabling} className={sourcesFilledBtn}>
+          {enabling ? "Saving…" : any ? "Add base & continue" : "Continue without a base"}
         </button>
         {submitError && <p className="text-label-sm text-error">{submitError}</p>}
-        {history === "free" && selected.size > 0 && (
+        {any && (
           <p className="text-label-sm text-on-surface-variant">
             ⓘ The archive imports on the daemon in the background — you can keep going.
           </p>
@@ -358,9 +310,10 @@ function FeedsStep({ onComplete, onAdvance, onRunningChange }: { onComplete: () 
     <div className="space-y-5">
       <div className="flex items-start justify-between gap-3">
         <p className="text-on-surface text-body-md leading-relaxed">
-          Choose which live tournament feeds to follow. They refresh automatically in the
-          background to keep recent games current. Ticking a feed accepts its source/licence.
-          You can change this later under Maintenance → Sources.
+          Optionally follow live tournament feeds. They refresh automatically in the background to
+          keep recent games current, starting where the free base leaves off — no date to set.
+          Review each feed's terms and tick to include it. You can change this later under
+          Maintenance → Sources.
         </p>
         <OptionalBadge />
       </div>

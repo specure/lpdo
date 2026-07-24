@@ -63,15 +63,17 @@ pub static CATALOG: &[CatalogSource] = &[
         // which made the daemon auto-import TWIC before onboarding — that guard is
         // `default_enabled: false`, NOT the window, so the window below is safe.
         default_enabled: false,
-        // Complement the Ajedrez deep-history base: by default TWIC contributes
-        // only games from 2024-08-01 onward — where Ajedrez's coverage ends — so a
-        // fresh install doesn't import ~30 years of games Ajedrez already has (#126).
+        // The 2013 quality handoff (#148): TWIC contributes games from 2013 onward,
+        // where it's ~99% FIDE-identified with clean full names — higher quality
+        // (and more volume) than Ajedrez there. Ajedrez covers the pre-2013 deep
+        // history; TWIC (+ Lichess) is the ≥2013 half. NOT a coverage horizon: the
+        // measured optimum is a two-sided quality crossover at ~2013, not "start
+        // where Ajedrez's data ends (~2024)". See the wiki page + #148 for the data.
         // (Files still download: TWIC items expose no coverage range, so they can't
         // be skipped by date — but only in-window games are imported/deduped/
         // indexed, which is the expensive part.) Seeds NEW rows only; existing
-        // installs keep whatever window they already have. The wizard may widen
-        // this when no deep-history base is chosen (see #127).
-        default_from: Some("2024-08-01"),
+        // installs keep whatever window they already have.
+        default_from: Some("2013-01-01"),
         default_to: None,
         default_exclude_undated: false,
     },
@@ -83,9 +85,11 @@ pub static CATALOG: &[CatalogSource] = &[
         homepage: "https://database.lichess.org/",
         credit: "Lichess Broadcasts — lichess.org, CC BY-SA 4.0.",
         collection: "Lichess Broadcasts",
-        // Off by default; live-tail role → from 2026-01-01 (its games only).
+        // Off by default. From its earliest available data (Jan 2020) onward —
+        // Lichess Broadcasts don't predate that, so this takes the whole feed as a
+        // live-tail complement to TWIC. Overlap with TWIC is auto-deduped (#148).
         default_enabled: false,
-        default_from: Some("2026-01-01"),
+        default_from: Some("2020-01-01"),
         default_to: None,
         default_exclude_undated: false,
     },
@@ -98,13 +102,13 @@ pub static CATALOG: &[CatalogSource] = &[
         credit: "Ajedrez Data (ajedrezdata.com) — public-domain game scores, distributed without annotations.",
         collection: "Ajedrez OTB",
         // Off by default. The deep-history base — open start (games go back to the
-        // 1990s), but bounded at its known coverage end (~2024-08-01, per the
-        // source's own note that it covers games played until August 2024) so TWIC
-        // can complement it from there without a large duplicate overlap (#126).
-        // Seeds NEW rows only; the partition cap is applied via the wizard/UI.
+        // 1990s), bounded ABOVE at 2012-12-31 for a clean 2013 quality handoff
+        // (#148): pre-2013 is where Ajedrez is the best available source; TWIC takes
+        // 2013-01-01 onward with more games at ~99% FIDE + clean names, so we hand
+        // off rather than import ~2.3M lower-quality overlapping games. NEW rows only.
         default_enabled: false,
         default_from: None,
-        default_to: Some("2024-08-01"),
+        default_to: Some("2012-12-31"),
         default_exclude_undated: false,
     },
 ];

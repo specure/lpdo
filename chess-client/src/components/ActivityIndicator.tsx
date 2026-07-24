@@ -40,6 +40,7 @@ function jobLabel(j: Job): string {
     case "cleanup":            return "Clean up games";
     case "normalise":          return "Normalise player names";
     case "resolve_fide":       return "Fetch missing FIDE IDs";
+    case "download":           return src ? `Download ${src}` : "Download";
     case "import":             return src ? `Import ${src}` : "Import";
     case "import_pgn": {
       // Prefer the original filename (what's importing); the collection (where it
@@ -142,7 +143,12 @@ function RecentRow({ job }: { job: Job }) {
   );
 }
 
-export default function ActivityIndicator() {
+// `onSettled` fires once each time a job newly reaches a terminal state
+// (done/error/cancelled). The host uses it to refresh views that a background
+// job may have changed — notably the collection list, which imports populate
+// long after the app first loaded it (#—: player-filter dropdown showed a stale
+// "TWIC 0" while imports built three collections in the background).
+export default function ActivityIndicator({ onSettled }: { onSettled?: () => void } = {}) {
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [etas, setEtas] = useState<Map<string, string>>(new Map());
   // Ids the user has asked to cancel — the job keeps running until it reaches a
@@ -155,6 +161,14 @@ export default function ActivityIndicator() {
   // job was first seen running) is stable for a monotonic byte counter, and the
   // anchor resets if the value ever goes backwards (a new job reusing an id).
   const anchorRef = useRef<Map<string, { t0: number; v0: number }>>(new Map());
+  // Latest onSettled, held in a ref so the poll effect (mounted once) always
+  // calls the current closure without re-subscribing.
+  const onSettledRef = useRef(onSettled);
+  onSettledRef.current = onSettled;
+  // Ids already observed in a terminal state, so each completion fires onSettled
+  // exactly once. Seeded on the first poll (below) so pre-existing history from
+  // before mount doesn't fire a spurious refresh.
+  const settledRef = useRef<Set<string> | null>(null);
 
   // Poll the pipeline. It's a cheap local read, and the daemon keeps working
   // even when this view is closed, so a steady poll keeps the badge honest.
@@ -163,6 +177,19 @@ export default function ActivityIndicator() {
     const poll = () => {
       getJobs().then((j) => {
         if (stop) return;
+        // Detect jobs that newly reached a terminal state and notify the host
+        // once each (imports create/populate collections in the background).
+        const terminalNow = j
+          .filter((x) => x.status === "done" || x.status === "error" || x.status === "cancelled")
+          .map((x) => x.id);
+        if (settledRef.current === null) {
+          settledRef.current = new Set(terminalNow); // seed: don't fire for old history
+        } else {
+          const seen = settledRef.current;
+          let fresh = false;
+          for (const id of terminalNow) if (!seen.has(id)) { seen.add(id); fresh = true; }
+          if (fresh) onSettledRef.current?.();
+        }
         const now = Date.now();
         const anchors = anchorRef.current;
         const live = new Set(j.map((x) => x.id));

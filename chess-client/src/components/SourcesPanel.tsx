@@ -1,10 +1,28 @@
 import { useState, useEffect, useCallback } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   getSources,
   setSourceEnabled,
   setSourceWindow,
 } from "../api";
 import type { SourceStatus } from "../types";
+
+/** Open a source's homepage (about / licence) in the OS browser. A plain
+ *  <a target="_blank"> doesn't reliably open externally from the Tauri webview,
+ *  so route through the opener plugin. */
+function SourceLink({ url }: { url: string }) {
+  let host = url;
+  try { host = new URL(url).host; } catch { /* keep raw */ }
+  return (
+    <button
+      type="button"
+      onClick={() => { void openUrl(url); }}
+      className="text-primary hover:underline"
+    >
+      {host} ↗
+    </button>
+  );
+}
 
 // ── Multi-source catalog screen (#40 Phase C1) ────────────────────────────────
 //
@@ -18,11 +36,16 @@ function cadenceLabel(s: SourceStatus): string {
   return s.kind === "feed" ? "↻ Auto-updating" : "⤓ One-time import · manual refresh";
 }
 
+// Plain-English date window (used as "games <label>"), e.g. "up to 2012-12-31",
+// "2013-01-01 onward", "2020-01-01 to 2024-08-01", "all dates". Mirrors the
+// backend DateWindow::describe(); avoids the cryptic "… → 2012-12-31" render.
 function windowLabel(s: SourceStatus): string {
-  if (!s.from_date && !s.to_date) return "all dates";
-  const from = s.from_date ?? "…";
-  const to = s.to_date ?? "now";
-  return `${from} → ${to}`;
+  const from = s.from_date;
+  const to = s.to_date;
+  if (!from && !to) return "all dates";
+  if (from && to) return `${from} to ${to}`;
+  if (from) return `${from} onward`;
+  return `up to ${to}`;
 }
 
 function statusLine(s: SourceStatus): { text: string; tone: "ok" | "muted" | "error" } {
@@ -58,20 +81,47 @@ function Toggle({ on, onClick, disabled }: { on: boolean; onClick: () => void; d
 
 // ── Coverage timeline (schematic, not to scale) ───────────────────────────────
 
+// Rough monotonic day index for ordering dates (not for exact math).
+function dayIndex(d: string): number {
+  const [y, m, day] = d.split("-").map(Number);
+  return (y || 0) * 366 + ((m || 1) - 1) * 31 + ((day || 1) - 1);
+}
+
 function CoverageTimeline({ sources }: { sources: SourceStatus[] }) {
   const shown = sources.filter((s) => s.enabled || s.items > 0);
   if (shown.length === 0) return null;
-  // A source with no `from` is "historical" (sits on the left); one with a `from`
-  // is the live/recent tail (sits on the right). Not to scale — the point is to
-  // show coverage + overlap, not exact spans.
+
+  // Schematic (not to scale), but ordered by start date: deep-history sources
+  // (no `from`) come first / on the left; feeds with a `from` are placed by that
+  // start date, so a later-starting feed (Lichess, 2026) visibly begins to the
+  // right of an earlier one (TWIC, 2013). A deep-history bar ends exactly where
+  // the earliest feed begins, so a sharp hand-off (Ajedrez → 2012-12-31, TWIC
+  // 2013-01-01 →) reads as contiguous, not overlapping.
+  const feedFroms = shown.filter((s) => s.from_date).map((s) => dayIndex(s.from_date!));
+  const hasFeeds = feedFroms.length > 0;
+  const minFrom = hasFeeds ? Math.min(...feedFroms) : 0;
+  const maxFrom = hasFeeds ? Math.max(...feedFroms) : 0;
+  const BAND_L = 40, BAND_R = 68, RIGHT = 97; // feed starts span [40%, 68%]; bars run to 97%
+  const feedLeft = (from: string) =>
+    feedFroms.length <= 1 || maxFrom === minFrom
+      ? BAND_L
+      : BAND_L + (BAND_R - BAND_L) * ((dayIndex(from) - minFrom) / (maxFrom - minFrom));
+
+  // Earliest coverage first (deep history on top, then feeds by start date).
+  const ordered = [...shown].sort(
+    (a, b) => (a.from_date ? dayIndex(a.from_date) : -Infinity) - (b.from_date ? dayIndex(b.from_date) : -Infinity),
+  );
+
   return (
     <div className="bg-surface-container-low rounded-xl border border-outline-variant p-4 space-y-2">
       <div className="text-label-sm text-on-surface-variant uppercase tracking-wide">Coverage</div>
       <div className="space-y-2">
-        {shown.map((s) => {
+        {ordered.map((s) => {
           const historical = !s.from_date;
-          const left = historical ? "1%" : "62%";
-          const width = historical ? "61%" : "37%";
+          const left = historical ? 1 : feedLeft(s.from_date!);
+          // Deep-history bars stop where the first feed starts (BAND_L) so a sharp
+          // hand-off touches rather than overlaps; if there are no feeds they run full.
+          const width = historical ? (hasFeeds ? BAND_L : RIGHT) - left : RIGHT - left;
           const disabled = !s.enabled;
           return (
             <div key={s.key} className="relative h-8 rounded-lg bg-surface-container-high overflow-hidden">
@@ -83,7 +133,7 @@ function CoverageTimeline({ sources }: { sources: SourceStatus[] }) {
                       ? "bg-tertiary-container text-on-tertiary-container"
                       : "bg-primary-container text-on-primary-container"
                 }`}
-                style={{ left, width }}
+                style={{ left: `${left}%`, width: `${width}%` }}
               >
                 <span className="truncate">{s.name}</span>
                 <span className="opacity-80 font-normal">{windowLabel(s)}</span>
@@ -94,7 +144,7 @@ function CoverageTimeline({ sources }: { sources: SourceStatus[] }) {
         })}
       </div>
       <div className="text-label-sm text-on-surface-variant">
-        Not to scale. Overlapping ranges are deduplicated automatically.
+        Not to scale — ordered by start date. Overlapping ranges are deduplicated automatically.
       </div>
     </div>
   );
@@ -194,9 +244,7 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
 
       <p className="text-body-sm text-on-surface-variant min-h-[2.4rem]">
         {source.description}{" "}
-        <a href={source.homepage} target="_blank" rel="noreferrer" className="text-primary">
-          {new URL(source.homepage).host} ↗
-        </a>
+        <SourceLink url={source.homepage} />
       </p>
 
       <div className="text-label-md text-on-surface-variant">{cadenceLabel(source)}</div>

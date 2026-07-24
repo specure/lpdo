@@ -446,14 +446,15 @@ struct MaintenanceNeeds {
 /// import-class job (would add games maintenance must then cover) or a
 /// maintenance job already in flight (don't stack a second pass).
 /// Job types whose long-running loop polls `is_cancelled` and can stop mid-run on
-/// a committed boundary (#157/#140). Short/atomic jobs (normalise, resolve_fide)
-/// and the FIDE download aren't cancellable mid-flight, so the UI doesn't offer a
-/// (dead) Cancel for them while running — but any queued job can still be cancelled
-/// before it starts.
+/// a committed boundary (#157/#140). A feed `download` stops between item files
+/// (download_feed checks is_cancelled per item). Short/atomic jobs (normalise,
+/// resolve_fide) and the single-stream FIDE-list download aren't cancellable
+/// mid-flight, so the UI doesn't offer a (dead) Cancel for them while running —
+/// but any queued job can still be cancelled before it starts.
 fn is_cancellable(job_type: &str) -> bool {
     matches!(
         job_type,
-        "import" | "import_pgn" | "sources_sync" | "update"
+        "import" | "import_pgn" | "sources_sync" | "update" | "download"
             | "index_positions" | "dedup_games" | "dedup_players"
     )
 }

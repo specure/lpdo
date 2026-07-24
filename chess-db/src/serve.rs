@@ -1024,6 +1024,75 @@ struct ImportUploadQuery {
 /// Works when the daemon can't read the client's files (hardened system daemon)
 /// or is on a different machine. Returns the job id; the client follows
 /// `/jobs/{id}/events` as usual. `body` must be the final extractor.
+#[derive(Deserialize)]
+struct BackupDownloadQuery {
+    collection: String,
+}
+
+/// Build a `.pgn.zip` backup of a collection and stream it to the client (#121).
+/// The hardened daemon can't write to the user's home (ProtectHome), so rather
+/// than save server-side (where the user can't reach or "reveal" it) it hands the
+/// bytes to the GUI, which saves them to a user-chosen, user-accessible path.
+/// Builds into a daemon-owned temp file, streams it, and deletes it once the
+/// response body is dropped (fully sent or the client disconnected).
+async fn backup_download_handler(
+    State(state): State<AppState>,
+    Query(q): Query<BackupDownloadQuery>,
+) -> std::result::Result<axum::response::Response, (StatusCode, String)> {
+    let base = crate::backup_base_name(&q.collection);
+    let entry_name = format!("{base}.pgn");
+    let filename = format!("{base}.pgn.zip");
+    let dir = state
+        .db_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let tmp = dir.join(format!(".backup-dl-{base}.pgn.zip"));
+
+    // Build on the read pool (read-only query + local file write).
+    let coll = q.collection.clone();
+    let tmp_build = tmp.clone();
+    let built = state
+        .reads
+        .run(move |conn| crate::build_backup_zip(conn, &coll, &entry_name, &tmp_build, |_, _| {}))
+        .await;
+    if let Err(e) = built {
+        let _ = std::fs::remove_file(&tmp);
+        return Err((StatusCode::BAD_REQUEST, format!("{e:#}")));
+    }
+
+    let file = tokio::fs::File::open(&tmp).await.map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("open backup: {e}"))
+    })?;
+    // Known size → the client shows a real % download progress.
+    let len = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+
+    // Delete the temp file once the stream is dropped: move a Drop guard into the
+    // stream adapter so it lives exactly as long as the response body.
+    struct TempCleanup(std::path::PathBuf);
+    impl Drop for TempCleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let cleanup = TempCleanup(tmp.clone());
+    let stream = tokio_util::io::ReaderStream::new(file).map(move |chunk| {
+        let _ = &cleanup;
+        chunk
+    });
+
+    axum::response::Response::builder()
+        .header(axum::http::header::CONTENT_TYPE, "application/zip")
+        .header(axum::http::header::CONTENT_LENGTH, len)
+        .header(
+            axum::http::header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{filename}\""),
+        )
+        .body(Body::from_stream(stream))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("response: {e}")))
+}
+
 async fn import_upload_handler(
     State(state): State<AppState>,
     Query(q): Query<ImportUploadQuery>,
@@ -1580,6 +1649,7 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         // Streamed PGN upload (#154): disable the default body-size cap so a
         // multi-GB file streams straight to a spool + import job.
         .route("/import/upload", post(import_upload_handler).layer(DefaultBodyLimit::disable()))
+        .route("/backup/download", get(backup_download_handler))
         .route("/jobs/{id}",                           get(get_job_handler))
         .route("/jobs/{id}/events",                    get(job_events_handler))
         .route("/jobs/{id}/cancel",                    post(cancel_job_handler))

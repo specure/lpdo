@@ -1,10 +1,13 @@
 import { useState, useEffect, useRef } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useSidecarProgress } from "../hooks/useSidecarProgress";
 import SourcesPanel from "./SourcesPanel";
 import MergePlayersDialog from "./MergePlayersDialog";
 import { StatusInfo } from "../types";
+import { SIDECAR } from "../api";
 
 interface Props {
   onRunWizard: () => void;
@@ -443,26 +446,31 @@ function NormaliseSection({ onMutated }: { onMutated?: () => void }) {
 
 // ── Backup section ────────────────────────────────────────────────────────────
 
-const BACKUP_DIR = "~/lpdo/backup";
-// Persist the chosen backup folder so a custom path survives reloads.
-const BACKUP_DIR_KEY = "backupDir";
 // Pre-selected when present — the private collection the wizard/AddGame flow
 // writes to. Falls back to the first available collection otherwise.
 const DEFAULT_COLLECTION = "My games";
 
 interface Collection { id: number; name: string; game_count: number }
 
+// Save a collection's backup where the USER chooses (#121). The hardened daemon
+// can't write to the user's home, so it builds the .pgn.zip and streams it here
+// via `download_backup`; the GUI writes it to a folder the user picks. The folder
+// is remembered (localStorage) so repeat backups don't re-prompt — the user can
+// type a path or pick one with Browse, and the filename is generated per backup.
+const BACKUP_DIR_KEY = "lpdo.backupDir";
+const DEFAULT_BACKUP_DIR = "~/lpdo/backup";
+
 function BackupSection() {
-  const [folder, setFolder] = useState(() => localStorage.getItem(BACKUP_DIR_KEY) || BACKUP_DIR);
   const [collections, setCollections] = useState<Collection[] | null>(null);
   const [collection, setCollection] = useState(DEFAULT_COLLECTION);
-  const progress = useSidecarProgress("maint-backup");
+  const [folder, setFolder] = useState<string>(
+    () => localStorage.getItem(BACKUP_DIR_KEY) || DEFAULT_BACKUP_DIR,
+  );
+  const [phase, setPhase] = useState<"idle" | "saving" | "done" | "error">("idle");
+  const [pct, setPct] = useState<number | null>(null);
+  const [savedPath, setSavedPath] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  // Remember the folder across sessions whenever the user edits it.
-  useEffect(() => { localStorage.setItem(BACKUP_DIR_KEY, folder); }, [folder]);
-
-  // Load the collection list so the user can back up any collection, not just
-  // "My games". Pick "My games" when present, else the largest collection.
   useEffect(() => {
     let cancelled = false;
     fetch("/api/collections")
@@ -480,10 +488,40 @@ function BackupSection() {
     return () => { cancelled = true; };
   }, []);
 
-  function run() {
-    // The folder is created server-side if missing; the filename gets a
-    // timestamp prefix derived from the selected collection name.
-    void progress.run(["backup", "--collection", collection, "--dir", folder.trim() || BACKUP_DIR]);
+  async function browse() {
+    const picked = await openDialog({ multiple: false, directory: true });
+    if (typeof picked === "string") {
+      setFolder(picked);
+      localStorage.setItem(BACKUP_DIR_KEY, picked);
+    }
+  }
+
+  async function run() {
+    setError(null);
+    const dir = folder.trim().replace(/\/+$/, "");
+    if (!dir) return;
+    localStorage.setItem(BACKUP_DIR_KEY, dir);
+    const date = new Date().toISOString().slice(0, 10);
+    const safe = collection.replace(/[^\w.-]+/g, "_");
+    const dest = `${dir}/${date}-${safe}.pgn.zip`;
+    setPhase("saving");
+    setPct(null);
+    const un = await listen<{ received: number; total: number }>("backup-download-progress", (e) => {
+      const { received, total } = e.payload;
+      setPct(total > 0 ? Math.min(100, (received / total) * 100) : null);
+    });
+    try {
+      // download_backup returns the resolved absolute path (leading `~/`
+      // expanded) — use it for Reveal, which needs a real path, not `~/…`.
+      const resolved = await invoke<string>("download_backup", { baseUrl: SIDECAR, collection, destPath: dest });
+      setSavedPath(resolved || dest);
+      setPhase("done");
+    } catch (e: unknown) {
+      setError(String(e));
+      setPhase("error");
+    } finally {
+      un();
+    }
   }
 
   const hasCollections = collections === null || collections.length > 0;
@@ -491,11 +529,11 @@ function BackupSection() {
   return (
     <SectionCard title="Backup">
       <p className="text-body-sm text-on-surface-variant">
-        Save a collection to a timestamped, zip-compressed PGN file — e.g.{" "}
-        <span className="font-mono text-on-surface-variant">20260603-084231-My_games.pgn.zip</span>.
-        The folder is created if it doesn’t exist.
+        Save a collection to a zip-compressed PGN file in the folder you choose. The folder is
+        remembered for next time; each backup is named by date and collection.
       </p>
-      {!progress.running && !progress.done && (
+
+      {phase === "idle" && (
         hasCollections ? (
           <div className="space-y-2">
             <select
@@ -514,32 +552,75 @@ function BackupSection() {
                 ))
               )}
             </select>
-            <input
-              type="text"
-              value={folder}
-              onChange={(e) => setFolder(e.target.value)}
-              placeholder={BACKUP_DIR}
-              className="w-full h-9 px-3 rounded-sm bg-transparent text-on-surface placeholder:text-on-surface-variant text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
-            />
-            <ActionButton onClick={run} disabled={collections === null || !collection}>Back up now</ActionButton>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={folder}
+                onChange={(e) => setFolder(e.target.value)}
+                placeholder={DEFAULT_BACKUP_DIR}
+                spellCheck={false}
+                className="flex-1 min-w-0 h-9 px-3 rounded-sm bg-transparent text-on-surface text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
+              />
+              <button
+                onClick={() => { void browse(); }}
+                className="h-9 px-3 shrink-0 inline-flex items-center rounded-sm border border-outline text-on-surface text-label-md hover:bg-on-surface/8 transition-colors duration-short3 ease-standard"
+              >
+                Browse…
+              </button>
+            </div>
+            <ActionButton onClick={() => { void run(); }} disabled={collections === null || !collection || !folder.trim()}>
+              Back up
+            </ActionButton>
           </div>
         ) : (
           <p className="text-body-sm text-on-surface-variant">No collections to back up yet.</p>
         )
       )}
-      {(progress.running || progress.done) && (
-        <ProgressSection
-          progress={progress}
-          label="Backing up…"
-          extra={progress.donePath && (
+
+      {phase === "saving" && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-label-sm text-on-surface-variant">
+            <span>Preparing &amp; saving backup…</span>
+            {pct != null && <span>{Math.round(pct)}%</span>}
+          </div>
+          <div className="relative w-full bg-surface-container-highest rounded-full h-1.5 overflow-hidden">
+            {pct != null ? (
+              <div className="bg-primary h-1.5 rounded-full transition-all duration-short3 ease-standard" style={{ width: `${pct}%` }} />
+            ) : (
+              <div className="lpdo-indeterminate bg-primary" />
+            )}
+          </div>
+        </div>
+      )}
+
+      {phase === "done" && (
+        <div className="space-y-2">
+          <p className="text-body-sm text-success">✓ Backup saved.</p>
+          {savedPath && <p className="text-label-sm text-on-surface-variant break-all font-mono">{savedPath}</p>}
+          <div className="flex gap-2">
+            {savedPath && (
+              <button
+                onClick={() => { void revealItemInDir(savedPath); }}
+                className="h-7 px-3 inline-flex items-center rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 transition-all duration-short3 ease-standard"
+              >
+                Reveal in file manager
+              </button>
+            )}
             <button
-              onClick={() => { void revealItemInDir(progress.donePath!); }}
-              className="h-7 px-3 inline-flex items-center rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 transition-all duration-short3 ease-standard"
+              onClick={() => { setPhase("idle"); setSavedPath(null); }}
+              className="h-7 px-3 inline-flex items-center rounded-full text-primary text-label-md hover:bg-primary/8 transition-colors duration-short3 ease-standard"
             >
-              Reveal in file manager
+              Back up another
             </button>
-          )}
-        />
+          </div>
+        </div>
+      )}
+
+      {phase === "error" && (
+        <div className="space-y-2">
+          <p className="text-label-sm text-error break-words">Backup failed: {error}</p>
+          <ActionButton onClick={() => { void run(); }}>Try again</ActionButton>
+        </div>
       )}
     </SectionCard>
   );

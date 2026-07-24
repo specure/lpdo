@@ -290,11 +290,14 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("scopeIncludeDeleted", scopeIncludeDeleted ? "1" : "0");
   }, [scopeIncludeDeleted]);
+  // Load the collection list (used by the player-filter dropdown and "My games").
+  // Stable identity so it can be a dep / an event handler.
+  const refreshCollections = useCallback(() => {
+    fetch("/api/collections").then((r) => r.ok ? r.json() : []).then(setCollectionsList).catch(() => {});
+  }, []);
   // Re-fetch on every game mutation so newly-created collections (added via
   // the DetailsPanel "+ Add to collection" chip) appear in the filter list.
-  useEffect(() => {
-    fetch("/api/collections").then((r) => r.ok ? r.json() : []).then(setCollectionsList).catch(() => {});
-  }, [gameMutationKey]);
+  useEffect(() => { refreshCollections(); }, [gameMutationKey, refreshCollections]);
 
 
   function handleSelectPlayer(player: PlayerInfo, additive?: boolean) {
@@ -482,7 +485,11 @@ export default function App() {
             title="Database maintenance"
           >Maintenance</button>
 
-          <ActivityIndicator />
+          {/* A background job finishing (e.g. an onboarding import) can create or
+              populate collections and change the game/player counts — refresh the
+              collection list and Home tiles so the player-filter dropdown and
+              stats don't sit stale until the next 30-min poll. */}
+          <ActivityIndicator onSettled={() => { refreshCollections(); refreshServerStatus(); }} />
           <StatusBadge status={status} />
         </div>
       </header>

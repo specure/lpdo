@@ -174,6 +174,84 @@ pub async fn upload_pgn_file(
         .ok_or_else(|| "upload response missing job_id".to_string())
 }
 
+/// Download a collection's backup from the daemon's `GET /backup/download` and
+/// write it to `dest_path` — a user-chosen, user-accessible location (#121). The
+/// hardened daemon can't write the backup to the user's home itself, so it builds
+/// it and streams the bytes here, where the GUI (running as the user) saves it.
+/// Emits `backup-download-progress` so the panel shows the transfer.
+#[tauri::command]
+pub async fn download_backup(
+    app: tauri::AppHandle,
+    base_url: String,
+    collection: String,
+    dest_path: String,
+) -> Result<String, String> {
+    use futures_util::StreamExt;
+    use tauri::Emitter;
+    use tokio::io::AsyncWriteExt;
+
+    let url = format!("{}/backup/download", base_url.trim_end_matches('/'));
+    let resp = reqwest::Client::new()
+        .get(url)
+        .query(&[("collection", collection)])
+        .send()
+        .await
+        .map_err(|e| format!("backup request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("backup failed ({status}): {text}"));
+    }
+
+    // The client writes the file as the user, so `~` here is the user's home
+    // (unlike the daemon, whose HOME is /var/lib/lpdo — that mismatch was #121).
+    let dest = if let Some(rest) = dest_path.strip_prefix("~/") {
+        let home = home_dir().ok_or_else(|| "Cannot determine home directory".to_string())?;
+        home.join(rest)
+    } else {
+        PathBuf::from(&dest_path)
+    };
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    let dest_path = dest.to_string_lossy().into_owned();
+
+    let total = resp.content_length().unwrap_or(0);
+    let mut file = tokio::fs::File::create(&dest)
+        .await
+        .map_err(|e| format!("{dest_path}: {e}"))?;
+
+    let mut stream = resp.bytes_stream();
+    let step = (total / 100).max(1);
+    let mut received: u64 = 0;
+    let mut next_emit: u64 = 0;
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|e| format!("backup stream error: {e}"))?;
+        file.write_all(&bytes)
+            .await
+            .map_err(|e| format!("write {dest_path}: {e}"))?;
+        received += bytes.len() as u64;
+        if received >= next_emit {
+            next_emit = received + step;
+            let _ = app.emit(
+                "backup-download-progress",
+                serde_json::json!({ "received": received, "total": total }),
+            );
+        }
+    }
+    file.flush().await.map_err(|e| format!("flush {dest_path}: {e}"))?;
+    let _ = app.emit(
+        "backup-download-progress",
+        serde_json::json!({ "received": received, "total": total.max(received) }),
+    );
+    // Return the resolved absolute path (with any leading `~/` expanded) so the
+    // GUI can reveal it — `revealItemInDir` needs a real path, not `~/…`.
+    Ok(dest_path)
+}
+
 const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024; // 100 MB
 
 #[tauri::command]

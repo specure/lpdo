@@ -76,6 +76,17 @@ impl Reporter {
         Self { sink: self.sink.clone(), cancel: self.cancel.clone(), mute_done: true }
     }
 
+    /// A reporter that discards all output but still observes this reporter's
+    /// cancel flag. Used inside a large single-file import (e.g. one giant Ajedrez
+    /// `.7z`) so the per-batch cancellation check can stop mid-file, while the
+    /// caller keeps ownership of the visible per-issue progress. Unlike
+    /// [`silent`](Self::silent), whose fresh cancel flag is never set, this shares
+    /// the parent's flag so a user cancel actually reaches the stream loop.
+    pub fn silent_cancellable(&self) -> Self {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        Self { sink: Sink::Channel(tx), cancel: self.cancel.clone(), mute_done: false }
+    }
+
     /// True when output is machine-consumed (JSON stdout or in-process channel)
     /// rather than an interactive terminal. Callers use this to suppress
     /// terminal-only UI such as `MultiProgress` bars.
@@ -218,5 +229,39 @@ impl Reporter {
         } else {
             ProgressBar::hidden()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression for #157: a large single-file import (one Ajedrez .7z is the
+    // whole database) hands `process_pgn_stream` a muted child reporter so the
+    // per-game count doesn't spam the stream. That child MUST still observe the
+    // parent's cancel flag, or the per-batch cancellation check never fires and
+    // the import runs to completion despite the user hitting Cancel.
+    #[test]
+    fn silent_cancellable_shares_parent_cancel_flag() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let parent = Reporter::channel(tx, cancel.clone());
+        let child = parent.silent_cancellable();
+
+        assert!(!child.is_cancelled());
+        cancel.store(true, Ordering::Relaxed);
+        assert!(child.is_cancelled(), "muted child must see the parent's cancel");
+    }
+
+    // `silent()` is intentionally detached — its fresh flag is never set. This
+    // pins the distinction that made the bug: it is NOT a cancellation-aware
+    // reporter, so it must never be used inside a cancellable loop.
+    #[test]
+    fn silent_is_detached_from_cancellation() {
+        let cancel = Arc::new(AtomicBool::new(true));
+        let parent = Reporter::channel(tokio::sync::mpsc::unbounded_channel().0, cancel);
+        let detached = Reporter::silent();
+        assert!(parent.is_cancelled());
+        assert!(!detached.is_cancelled());
     }
 }

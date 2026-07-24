@@ -603,6 +603,13 @@ pub fn import(
     let mut failed: Vec<i32> = Vec::new();
     let import_result = (|| -> Result<()> {
         for (issue_id, filename) in &issues {
+            // Cooperative cancellation (#157): stop between issues. Each issue is
+            // committed on its own, so a partial run leaves a consistent database
+            // (imported issues stay marked; the rest re-import on the next sync).
+            if reporter.is_cancelled() {
+                reporter.log("Import cancelled.");
+                break;
+            }
             pb.set_message(format!("issue {}", issue_id));
 
             let zip_path = dir.join(filename);
@@ -616,7 +623,19 @@ pub fn import(
             }
 
             let effective_depth = if bulk_mode { None } else { max_position_depth };
-            match import_issue(conn, *issue_id, collection_id, "public", &zip_path, effective_depth, &mut ctx, fast, &window) {
+            match import_issue(conn, *issue_id, collection_id, "public", &zip_path, effective_depth, &mut ctx, fast, &window, reporter) {
+                // A single huge issue (one Ajedrez .7z is the whole database) can be
+                // cancelled mid-stream — `import_issue` then returns partial counts.
+                // Do NOT mark it imported: leave imported=FALSE so a re-sync
+                // re-imports it, and its opening `DELETE FROM games WHERE issue_id`
+                // clears the partial rows. Marking it here would record a truncated
+                // import as complete (#157).
+                Ok(_) if reporter.is_cancelled() => {
+                    let msg = format!("  Issue {}: cancelled mid-import — left unimported, will re-import on next sync.", issue_id);
+                    pb.println(&msg);
+                    reporter.log(&msg);
+                    break;
+                }
                 Ok((imported, skipped_dups, skipped_ns, skipped_window)) => {
                     conn.execute(
                         "UPDATE source_items SET imported = TRUE, imported_at = NOW(), game_count = ? WHERE id = ?",
@@ -1099,6 +1118,7 @@ fn import_issue(
     ctx: &mut ImportContext,
     fast: bool,
     window: &crate::sources::DateWindow,
+    reporter: &Reporter,
 ) -> Result<(usize, usize, usize, usize)> {
     // Delete any games written during a previous interrupted run of this issue.
     conn.execute("DELETE FROM games WHERE issue_id = ?", duckdb::params![issue_id])?;
@@ -1115,12 +1135,17 @@ fn import_issue(
         ctx,
         fast,
         window,
-        // In-memory source (whole issue already decompressed): no byte total, and
-        // a silent reporter anyway — the bulk path reports per-issue progress, so
-        // a per-game live count across many small issues would just be noise.
+        // In-memory source (whole issue already decompressed): no byte total, so
+        // the stream reporter stays silent for progress — the bulk path reports
+        // per-issue progress, and a per-game live count across many small issues
+        // would just be noise. But it MUST share the parent's cancel flag: a
+        // single huge issue (one Ajedrez .7z is the whole database) would
+        // otherwise run to completion, since the between-issue check never fires
+        // again inside it (#157). `silent_cancellable` keeps output muted while
+        // letting the per-batch cancel check stop mid-file.
         0,
         &AtomicU64::new(0),
-        &crate::reporter::Reporter::silent(),
+        &reporter.silent_cancellable(),
     )
 }
 
