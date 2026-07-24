@@ -26,77 +26,115 @@ pub fn merge_collections(conn: &Connection, keep_id: u32, drop_id: u32) -> Resul
 }
 
 pub fn dedup_players(conn: &Connection, reporter: &Reporter) -> Result<()> {
-    // Find all fide_ids that have more than one player row
-    let dup_fide_ids: Vec<u32> = {
+    // Fetch every player row that shares a fide_id with another, plus that
+    // player's most recent game date (for the survivor tiebreaker) — all in ONE
+    // query. The per-player last-date is computed in a single pass over games
+    // rather than a whole-table scan per fide_id (the old approach's first cost).
+    let rows: Vec<(u32, u32, String, bool, Option<String>)> = {
         let mut stmt = conn.prepare(
-            "SELECT fide_id FROM players
-             WHERE fide_id IS NOT NULL
-             GROUP BY fide_id HAVING COUNT(*) > 1
-             ORDER BY fide_id",
+            "WITH dups AS (
+                 SELECT fide_id FROM players
+                 WHERE fide_id IS NOT NULL
+                 GROUP BY fide_id HAVING COUNT(*) > 1
+             ),
+             last AS (
+                 SELECT pid, MAX(date) AS last_date
+                 FROM (SELECT white_id AS pid, date FROM games
+                       UNION ALL
+                       SELECT black_id AS pid, date FROM games)
+                 WHERE pid IN (SELECT id FROM players WHERE fide_id IN (SELECT fide_id FROM dups))
+                 GROUP BY pid
+             )
+             SELECT p.fide_id, p.id, p.name, p.name_normalised, l.last_date
+             FROM players p
+             JOIN dups d ON d.fide_id = p.fide_id
+             LEFT JOIN last l ON l.pid = p.id
+             ORDER BY p.fide_id, p.id",
         )?;
-        stmt.query_map([], |r| r.get(0))?
-            .filter_map(|r| r.ok())
-            .collect()
+        stmt.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect()
     };
 
-    if dup_fide_ids.is_empty() {
+    if rows.is_empty() {
         reporter.done("No duplicate players found.");
         return Ok(());
     }
 
-    let total = dup_fide_ids.len() as u64;
-    reporter.log(format!("{total} FIDE ID(s) with duplicate player records — merging."));
-    let mut merged = 0usize;
-
-    for (i, fide_id) in dup_fide_ids.iter().enumerate() {
-        // Cooperative cancellation: stop between fide_ids (each merge is a
-        // committed unit, so a partial run leaves a consistent database).
-        if reporter.is_cancelled() {
-            reporter.done(format!(
-                "Cancelled — merged {merged} duplicate player row(s) before stopping."
-            ));
-            return Ok(());
+    // Group consecutive rows by fide_id (the query is ORDER BY fide_id), pick a
+    // survivor per group, and build a flat old_id → survivor_id reassignment map.
+    // Each player row has exactly one fide_id, so no old_id is another group's
+    // survivor — the map needs no chaining.
+    let mut mapping: Vec<(u32, u32)> = Vec::new();
+    let mut fide_ids = 0usize;
+    let mut group: Vec<(u32, String, bool, Option<String>)> = Vec::new();
+    let flush = |group: &mut Vec<(u32, String, bool, Option<String>)>,
+                     mapping: &mut Vec<(u32, u32)>,
+                     fide_ids: &mut usize| {
+        if group.len() >= 2 {
+            *fide_ids += 1;
+            let survivor_idx = pick_survivor(group);
+            let survivor_id = group[survivor_idx].0;
+            for (id, ..) in group.iter() {
+                if *id != survivor_id {
+                    mapping.push((*id, survivor_id));
+                }
+            }
         }
-        reporter.progress(i as u64, total, format!("Merging duplicate players ({i}/{total})"));
-        // Fetch all rows for this fide_id plus their most recent game date
-        let rows: Vec<(u32, String, bool, Option<String>)> = {
-            let mut stmt = conn.prepare(
-                "SELECT p.id, p.name, p.name_normalised, MAX(g.date) as last_date
-                 FROM players p
-                 LEFT JOIN games g ON (g.white_id = p.id OR g.black_id = p.id)
-                 WHERE p.fide_id = ?
-                 GROUP BY p.id, p.name, p.name_normalised
-                 ORDER BY p.id",
-            )?;
-            stmt.query_map(duckdb::params![fide_id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-            })?
-            .filter_map(|r| r.ok())
-            .collect()
-        };
+        group.clear();
+    };
 
-        if rows.len() < 2 {
-            continue;
+    let mut cur_fide: Option<u32> = None;
+    for (fide_id, id, name, normalised, last_date) in rows {
+        if cur_fide != Some(fide_id) {
+            flush(&mut group, &mut mapping, &mut fide_ids);
+            cur_fide = Some(fide_id);
         }
-
-        let survivor_idx = pick_survivor(&rows);
-        let (survivor_id, ..) = &rows[survivor_idx];
-
-        // Reassign games to the survivor, then delete the duplicate rows.
-        // Wrapped in a single batch transaction so DuckDB defers FK validation
-        // to commit time (avoids spurious positions→games FK sweep on UPDATE).
-        for (other_id, ..) in rows.iter().filter(|(id, ..)| id != survivor_id) {
-            conn.execute("UPDATE games SET white_id = ? WHERE white_id = ?", duckdb::params![survivor_id, other_id])?;
-            conn.execute("UPDATE games SET black_id = ? WHERE black_id = ?", duckdb::params![survivor_id, other_id])?;
-            conn.execute("DELETE FROM players WHERE id = ?", duckdb::params![other_id])?;
-            merged += 1;
-        }
+        group.push((id, name, normalised, last_date));
     }
+    flush(&mut group, &mut mapping, &mut fide_ids);
+
+    if mapping.is_empty() {
+        reporter.done("No duplicate players found.");
+        return Ok(());
+    }
+
+    if reporter.is_cancelled() {
+        reporter.done("Cancelled before merging.");
+        return Ok(());
+    }
+
+    // Apply the whole reassignment set-based: two passes over games (indexed on
+    // white_id/black_id) and one delete, instead of two UPDATEs per merged row.
+    // This is the fix for the O(duplicates × games) cost — columnar UPDATEs are
+    // expensive, so we do a bounded number of them regardless of duplicate count.
+    reporter.progress(0, 0, format!(
+        "Reassigning games for {} duplicate player row(s)…", mapping.len()
+    ));
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS merge_map;
+         CREATE TEMP TABLE merge_map (old_id INTEGER, new_id INTEGER);",
+    )?;
+    {
+        let mut app = conn.appender("merge_map")?;
+        for (old_id, new_id) in &mapping {
+            app.append_row(duckdb::params![old_id, new_id])?;
+        }
+        app.flush()?;
+    }
+    conn.execute_batch(
+        "UPDATE games SET white_id = m.new_id FROM merge_map m WHERE games.white_id = m.old_id;
+         UPDATE games SET black_id = m.new_id FROM merge_map m WHERE games.black_id = m.old_id;
+         DELETE FROM players WHERE id IN (SELECT old_id FROM merge_map);
+         DROP TABLE IF EXISTS merge_map;",
+    )?;
 
     reporter.done(format!(
         "Removed {} duplicate player record(s) across {} FIDE ID(s).",
-        merged,
-        dup_fide_ids.len()
+        mapping.len(),
+        fide_ids,
     ));
     Ok(())
 }
@@ -412,4 +450,66 @@ fn pick_survivor(rows: &[(u32, String, bool, Option<String>)]) -> usize {
         })
         .map(|(i, _)| i)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod dedup_players_tests {
+    use super::*;
+
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn merges_same_fide_id_rows_and_reassigns_games() {
+        let conn = setup();
+        // fide 100: id 1 is normalised (survivor), id 2 is not.
+        // fide 200: id 3 "Doe, John" (survivor), id 4 "Doe, J" (abbrev).
+        // fide 300: id 5 is a lone player — untouched.
+        conn.execute_batch(
+            "INSERT INTO players (id,name,name_normalized,fide_id,name_normalised) VALUES
+               (1,'Carlsen, Magnus','carlsen magnus',100,TRUE),
+               (2,'carlsen, m','carlsen m',100,FALSE),
+               (3,'Doe, John','doe john',200,FALSE),
+               (4,'Doe, J','doe j',200,FALSE),
+               (5,'Solo, Han','solo han',300,FALSE);
+             INSERT INTO games (id, white_id, black_id, date) VALUES
+               (1, 2, 3, '2020-01-01'),
+               (2, 4, 1, '2021-01-01');",
+        )
+        .unwrap();
+
+        dedup_players(&conn, &Reporter::silent()).unwrap();
+
+        // Non-survivors 2 and 4 are gone; 1, 3, 5 remain.
+        let remaining: Vec<u32> = {
+            let mut s = conn.prepare("SELECT id FROM players ORDER BY id").unwrap();
+            s.query_map([], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect()
+        };
+        assert_eq!(remaining, vec![1, 3, 5]);
+
+        // Games reassigned to survivors: game 1 white 2→1; game 2 white 4→3.
+        let g = |id: u32| -> (u32, u32) {
+            conn.query_row("SELECT white_id, black_id FROM games WHERE id=?", duckdb::params![id],
+                |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+        };
+        assert_eq!(g(1), (1, 3), "white 2→1 (survivor), black 3 already survivor");
+        assert_eq!(g(2), (3, 1), "white 4→3 (survivor), black 1 already survivor");
+    }
+
+    #[test]
+    fn no_duplicates_is_a_noop() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO players (id,name,name_normalized,fide_id,name_normalised) VALUES
+               (1,'A, B','a b',100,FALSE),
+               (2,'C, D','c d',200,FALSE);",
+        )
+        .unwrap();
+        dedup_players(&conn, &Reporter::silent()).unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM players", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+    }
 }
