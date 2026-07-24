@@ -1,10 +1,28 @@
 import { useState, useEffect, useCallback } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   getSources,
   setSourceEnabled,
   setSourceWindow,
 } from "../api";
 import type { SourceStatus } from "../types";
+
+/** Open a source's homepage (about / licence) in the OS browser. A plain
+ *  <a target="_blank"> doesn't reliably open externally from the Tauri webview,
+ *  so route through the opener plugin. */
+function SourceLink({ url }: { url: string }) {
+  let host = url;
+  try { host = new URL(url).host; } catch { /* keep raw */ }
+  return (
+    <button
+      type="button"
+      onClick={() => { void openUrl(url); }}
+      className="text-primary hover:underline"
+    >
+      {host} ↗
+    </button>
+  );
+}
 
 // ── Multi-source catalog screen (#40 Phase C1) ────────────────────────────────
 //
@@ -226,9 +244,7 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
 
       <p className="text-body-sm text-on-surface-variant min-h-[2.4rem]">
         {source.description}{" "}
-        <a href={source.homepage} target="_blank" rel="noreferrer" className="text-primary">
-          {new URL(source.homepage).host} ↗
-        </a>
+        <SourceLink url={source.homepage} />
       </p>
 
       <div className="text-label-md text-on-surface-variant">{cadenceLabel(source)}</div>

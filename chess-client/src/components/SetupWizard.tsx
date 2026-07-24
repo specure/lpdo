@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { getSources, setSourceEnabled, startSetup } from "../api";
 import { SourceStatus } from "../types";
 
@@ -121,6 +122,15 @@ function SourceRow({ source, checked, onChange }: { source: SourceStatus; checke
         <p className="text-label-sm text-on-surface-variant">{source.description}</p>
       )}
       <p className="text-label-sm text-on-surface-variant italic">{source.credit}</p>
+      {source.homepage && (
+        <button
+          type="button"
+          onClick={() => { void openUrl(source.homepage); }}
+          className="text-label-sm text-primary hover:underline"
+        >
+          About &amp; licence: {(() => { try { return new URL(source.homepage).host; } catch { return source.homepage; } })()} ↗
+        </button>
+      )}
       <label className="flex items-center gap-2 pt-1 mt-0.5 border-t border-outline-variant cursor-pointer">
         <input type="checkbox" className="shrink-0 mt-2" checked={checked} onChange={(e) => onChange(e.target.checked)} />
         <span className="pt-2 text-label-md text-on-surface">Include — I accept these terms</span>
