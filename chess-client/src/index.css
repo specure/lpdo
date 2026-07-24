@@ -279,6 +279,25 @@ html, body {
   }
 }
 
+/* Indeterminate progress: a segment sweeping across the track, for steps whose
+   duration we can't measure (post-import index rebuild, game-count update). Reads
+   unmistakably as "working" — unlike a static bar, which looks stuck at some %. */
+@keyframes lpdo-indeterminate {
+  0%   { left: -40%; width: 40%; }
+  60%  { left: 70%;  width: 55%; }
+  100% { left: 100%; width: 40%; }
+}
+.lpdo-indeterminate {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 9999px;
+  animation: lpdo-indeterminate 1.15s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lpdo-indeterminate { animation: none; left: 0; width: 40%; }
+}
+
 /* Legacy high-contrast helpers (zinc-based UI, pre-M3 migration) */
 .hc .text-zinc-400,
 .hc .text-zinc-500,

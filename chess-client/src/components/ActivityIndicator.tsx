@@ -103,11 +103,17 @@ function ActiveRow({ job, eta, cancelling, onCancel }: { job: Job; eta?: string;
             <span className="truncate">{job.message || "Working…"}</span>
             {known && <span className="shrink-0">{Math.round(pct(job))}%{eta ? ` · ${eta}` : ""}</span>}
           </div>
-          <div className="w-full bg-surface-container-highest rounded-full h-1.5 overflow-hidden">
-            <div
-              className={`bg-primary h-1.5 rounded-full ${known ? "transition-all duration-short3 ease-standard" : "w-1/3 animate-pulse"}`}
-              style={known ? { width: `${pct(job)}%` } : undefined}
-            />
+          <div className="relative w-full bg-surface-container-highest rounded-full h-1.5 overflow-hidden">
+            {known ? (
+              <div
+                className="bg-primary h-1.5 rounded-full transition-all duration-short3 ease-standard"
+                style={{ width: `${pct(job)}%` }}
+              />
+            ) : (
+              // Unmeasured step (total unknown): a sweeping segment that clearly
+              // reads as "working", not a bar stuck at some percentage.
+              <div className="lpdo-indeterminate bg-primary" />
+            )}
           </div>
         </>
       )}
