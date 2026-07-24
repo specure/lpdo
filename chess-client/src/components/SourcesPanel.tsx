@@ -18,11 +18,16 @@ function cadenceLabel(s: SourceStatus): string {
   return s.kind === "feed" ? "↻ Auto-updating" : "⤓ One-time import · manual refresh";
 }
 
+// Plain-English date window (used as "games <label>"), e.g. "up to 2012-12-31",
+// "2013-01-01 onward", "2020-01-01 to 2024-08-01", "all dates". Mirrors the
+// backend DateWindow::describe(); avoids the cryptic "… → 2012-12-31" render.
 function windowLabel(s: SourceStatus): string {
-  if (!s.from_date && !s.to_date) return "all dates";
-  const from = s.from_date ?? "…";
-  const to = s.to_date ?? "now";
-  return `${from} → ${to}`;
+  const from = s.from_date;
+  const to = s.to_date;
+  if (!from && !to) return "all dates";
+  if (from && to) return `${from} to ${to}`;
+  if (from) return `${from} onward`;
+  return `up to ${to}`;
 }
 
 function statusLine(s: SourceStatus): { text: string; tone: "ok" | "muted" | "error" } {
