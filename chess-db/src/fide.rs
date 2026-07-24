@@ -20,28 +20,9 @@ use crate::reporter::Reporter;
 /// Official FIDE combined player list (a zip of the fixed-width `players_list_foa.txt`).
 pub const FIDE_LIST_URL: &str = "https://ratings.fide.com/download/players_list.zip";
 
-/// A parsed FIDE list row: the id + name we key on, plus the birth year used as a
-/// resolve-fide sanity gate. (The list also carries ratings/federation/titles in
-/// later fixed-width columns, which we deliberately don't load — ratings drift
-/// over the years and aren't a reliable identity signal.)
-struct FideRow {
-    fide_id: u32,
-    name: String,
-    birth_year: Option<i16>,
-}
-
-/// Fixed-width byte offsets (0-based) in `players_list_foa.txt`, verified against
-/// the current FIDE download. Name ends at 76; numeric tail fields are constant
-/// width because names are truncated to fit, so these never shift.
-const NAME_END: usize = 76;
-const BDAY_START: usize = 152;
-const BDAY_END: usize = 158;
-
-/// Parse one line of the fixed-width FIDE list. Returns None for the header,
-/// blanks, or an unparseable id.
-fn parse_line(line: &str) -> Option<FideRow> {
-    // CRLF line endings: strip a trailing CR so it can't leak into tail fields.
-    let line = line.strip_suffix('\r').unwrap_or(line);
+/// Parse one line of the fixed-width FIDE list into (fide_id, name). Returns None
+/// for the header, blanks, or unparseable ids.
+fn parse_line(line: &str) -> Option<(u32, String)> {
     if line.len() < 16 {
         return None;
     }
@@ -50,20 +31,12 @@ fn parse_line(line: &str) -> Option<FideRow> {
     // Name occupies cols 16..76; byte-slice is safe at 15 (ASCII id region) and we
     // clamp the end, decoding lossily in case of stray non-UTF-8 bytes.
     let bytes = line.as_bytes();
-    let name_end = bytes.len().min(NAME_END);
-    let name = String::from_utf8_lossy(&bytes[15..name_end]).trim().to_string();
+    let end = bytes.len().min(76);
+    let name = String::from_utf8_lossy(&bytes[15..end]).trim().to_string();
     if name.is_empty() {
         return None;
     }
-    // Birth year (B-day column). Present only for many, not all, players; validate
-    // to a plausible range so a mis-parsed field becomes NULL rather than garbage.
-    let birth_year = bytes
-        .get(BDAY_START..bytes.len().min(BDAY_END))
-        .and_then(|b| std::str::from_utf8(b).ok())
-        .and_then(|s| s.trim().parse::<i16>().ok())
-        .filter(|&y| (1900..=2025).contains(&y));
-
-    Some(FideRow { fide_id, name, birth_year })
+    Some((fide_id, name))
 }
 
 /// Replace `fide_players` with the fixed-width FIDE list read from `reader`.
@@ -82,8 +55,8 @@ pub fn load_from_reader<R: BufRead>(conn: &Connection, reader: R, source: &str, 
             if i == 0 {
                 continue; // header
             }
-            if let Some(row) = parse_line(&line) {
-                app.append_row(duckdb::params![row.fide_id, row.name, row.birth_year])?;
+            if let Some((fide_id, name)) = parse_line(&line) {
+                app.append_row(duckdb::params![fide_id, name])?;
                 count += 1;
                 if count % 200_000 == 0 {
                     reporter.progress(count as u64, 0, format!("Loaded {count} FIDE players…"));
@@ -191,23 +164,16 @@ mod tests {
 
     #[test]
     fn parses_id_and_name_from_fixed_width() {
-        // Short line (no tail columns): id + name parse, birth year absent.
+        // cols:      1.............15|16..............
         let line = "40132986       -Moonen, Bas                                                 NED M";
-        let r = parse_line(line).unwrap();
-        assert_eq!(r.fide_id, 40132986);
-        assert_eq!(r.name, "-Moonen, Bas");
-        assert_eq!(r.birth_year, None);
-    }
+        let (id, name) = parse_line(line).unwrap();
+        assert_eq!(id, 40132986);
+        assert_eq!(name, "-Moonen, Bas");
 
-    #[test]
-    fn parses_birth_year_from_full_width_row() {
-        // A full row straight from players_list_foa.txt (verified offsets), with a
-        // trailing CR to exercise the CRLF strip. B-day 1990 sits at cols 153..158.
-        let line = "1503014        Carlsen, Magnus                                              NOR M   GM                           2823  10  10 2803  8   10 2860  19  10 1990      \r";
-        let r = parse_line(line).unwrap();
-        assert_eq!(r.fide_id, 1503014);
-        assert_eq!(r.name, "Carlsen, Magnus");
-        assert_eq!(r.birth_year, Some(1990));
+        let line2 = "1503014        Carlsen, Magnus                                              NOR M  GM";
+        let (id2, name2) = parse_line(line2).unwrap();
+        assert_eq!(id2, 1503014);
+        assert_eq!(name2, "Carlsen, Magnus");
     }
 
     #[test]

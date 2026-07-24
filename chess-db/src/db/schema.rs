@@ -56,13 +56,8 @@ pub fn init(conn: &Connection) -> Result<()> {
         -- and reverse resolve-fide (name → fide_id) as local joins, replacing the
         -- normalise service + per-player scraping. ~1.9M rows.
         CREATE TABLE IF NOT EXISTS fide_players (
-            fide_id     INTEGER PRIMARY KEY,
-            name        VARCHAR NOT NULL,
-            -- Year of birth from the FIDE list's B-day column (NULL when the list
-            -- omits it, common for older players). Used as a hard sanity gate in
-            -- reverse resolve-fide: a game that predates a candidate's birth proves
-            -- it's a different person (#152).
-            birth_year  SMALLINT
+            fide_id  INTEGER PRIMARY KEY,
+            name     VARCHAR NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS games (
@@ -153,10 +148,7 @@ pub fn init(conn: &Connection) -> Result<()> {
          ALTER TABLE source_items ADD COLUMN IF NOT EXISTS published_at DATE;
          -- Multi-source columns (#40).
          ALTER TABLE source_items ADD COLUMN IF NOT EXISTS source_key VARCHAR;
-         ALTER TABLE source_items ADD COLUMN IF NOT EXISTS external_id VARCHAR;
-         -- FIDE birth year for the resolve-fide sanity gate (#152); backfilled on
-         -- the next `fide refresh` (the loader repopulates the whole table).
-         ALTER TABLE fide_players ADD COLUMN IF NOT EXISTS birth_year SMALLINT;",
+         ALTER TABLE source_items ADD COLUMN IF NOT EXISTS external_id VARCHAR;",
     )?;
     // Backfill provenance on migrated/legacy rows: TWIC used natural issue
     // numbers (<1e6); local PGN imports were allocated ids >=1e6 → 'manual'.

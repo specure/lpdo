@@ -125,9 +125,8 @@ scraping, and no external cache service.
 - **Reverse** (`chess-db players resolve-fide`) — for FIDE-less sources, assign a
   FIDE ID by matching the name against the list. Only a **single exact match**
   (after folding accents/punctuation) is accepted; ambiguous names are left alone
-  rather than guessed. As an extra safeguard, a match is rejected when the player
-  has a game that predates the candidate's FIDE **birth year** — that would be a
-  different person.
+  rather than guessed. Note the inherent limit: a source without FIDE IDs can only
+  identify players by name, so distinct people who share a name are treated as one.
 
 Run `chess-db fide refresh` to fetch or update the list; the server also does this
 as scheduled maintenance.
