@@ -73,27 +73,37 @@ function CoverageTimeline({ sources }: { sources: SourceStatus[] }) {
   const shown = sources.filter((s) => s.enabled || s.items > 0);
   if (shown.length === 0) return null;
 
-  // Schematic (not to scale), but ordered by start date: a source with no `from`
-  // is deep history (sits on the left); feeds with a `from` are placed by that
+  // Schematic (not to scale), but ordered by start date: deep-history sources
+  // (no `from`) come first / on the left; feeds with a `from` are placed by that
   // start date, so a later-starting feed (Lichess, 2026) visibly begins to the
-  // right of an earlier one (TWIC, 2013) instead of sharing one right-side slot.
+  // right of an earlier one (TWIC, 2013). A deep-history bar ends exactly where
+  // the earliest feed begins, so a sharp hand-off (Ajedrez → 2012-12-31, TWIC
+  // 2013-01-01 →) reads as contiguous, not overlapping.
   const feedFroms = shown.filter((s) => s.from_date).map((s) => dayIndex(s.from_date!));
-  const minFrom = feedFroms.length ? Math.min(...feedFroms) : 0;
-  const maxFrom = feedFroms.length ? Math.max(...feedFroms) : 0;
+  const hasFeeds = feedFroms.length > 0;
+  const minFrom = hasFeeds ? Math.min(...feedFroms) : 0;
+  const maxFrom = hasFeeds ? Math.max(...feedFroms) : 0;
   const BAND_L = 40, BAND_R = 68, RIGHT = 97; // feed starts span [40%, 68%]; bars run to 97%
   const feedLeft = (from: string) =>
     feedFroms.length <= 1 || maxFrom === minFrom
       ? BAND_L
       : BAND_L + (BAND_R - BAND_L) * ((dayIndex(from) - minFrom) / (maxFrom - minFrom));
 
+  // Earliest coverage first (deep history on top, then feeds by start date).
+  const ordered = [...shown].sort(
+    (a, b) => (a.from_date ? dayIndex(a.from_date) : -Infinity) - (b.from_date ? dayIndex(b.from_date) : -Infinity),
+  );
+
   return (
     <div className="bg-surface-container-low rounded-xl border border-outline-variant p-4 space-y-2">
       <div className="text-label-sm text-on-surface-variant uppercase tracking-wide">Coverage</div>
       <div className="space-y-2">
-        {shown.map((s) => {
+        {ordered.map((s) => {
           const historical = !s.from_date;
           const left = historical ? 1 : feedLeft(s.from_date!);
-          const width = historical ? 44 : RIGHT - left;
+          // Deep-history bars stop where the first feed starts (BAND_L) so a sharp
+          // hand-off touches rather than overlaps; if there are no feeds they run full.
+          const width = historical ? (hasFeeds ? BAND_L : RIGHT) - left : RIGHT - left;
           const disabled = !s.enabled;
           return (
             <div key={s.key} className="relative h-8 rounded-lg bg-surface-container-high overflow-hidden">
