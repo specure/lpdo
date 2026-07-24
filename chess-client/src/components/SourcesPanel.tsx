@@ -63,20 +63,37 @@ function Toggle({ on, onClick, disabled }: { on: boolean; onClick: () => void; d
 
 // ── Coverage timeline (schematic, not to scale) ───────────────────────────────
 
+// Rough monotonic day index for ordering dates (not for exact math).
+function dayIndex(d: string): number {
+  const [y, m, day] = d.split("-").map(Number);
+  return (y || 0) * 366 + ((m || 1) - 1) * 31 + ((day || 1) - 1);
+}
+
 function CoverageTimeline({ sources }: { sources: SourceStatus[] }) {
   const shown = sources.filter((s) => s.enabled || s.items > 0);
   if (shown.length === 0) return null;
-  // A source with no `from` is "historical" (sits on the left); one with a `from`
-  // is the live/recent tail (sits on the right). Not to scale — the point is to
-  // show coverage + overlap, not exact spans.
+
+  // Schematic (not to scale), but ordered by start date: a source with no `from`
+  // is deep history (sits on the left); feeds with a `from` are placed by that
+  // start date, so a later-starting feed (Lichess, 2026) visibly begins to the
+  // right of an earlier one (TWIC, 2013) instead of sharing one right-side slot.
+  const feedFroms = shown.filter((s) => s.from_date).map((s) => dayIndex(s.from_date!));
+  const minFrom = feedFroms.length ? Math.min(...feedFroms) : 0;
+  const maxFrom = feedFroms.length ? Math.max(...feedFroms) : 0;
+  const BAND_L = 40, BAND_R = 68, RIGHT = 97; // feed starts span [40%, 68%]; bars run to 97%
+  const feedLeft = (from: string) =>
+    feedFroms.length <= 1 || maxFrom === minFrom
+      ? BAND_L
+      : BAND_L + (BAND_R - BAND_L) * ((dayIndex(from) - minFrom) / (maxFrom - minFrom));
+
   return (
     <div className="bg-surface-container-low rounded-xl border border-outline-variant p-4 space-y-2">
       <div className="text-label-sm text-on-surface-variant uppercase tracking-wide">Coverage</div>
       <div className="space-y-2">
         {shown.map((s) => {
           const historical = !s.from_date;
-          const left = historical ? "1%" : "62%";
-          const width = historical ? "61%" : "37%";
+          const left = historical ? 1 : feedLeft(s.from_date!);
+          const width = historical ? 44 : RIGHT - left;
           const disabled = !s.enabled;
           return (
             <div key={s.key} className="relative h-8 rounded-lg bg-surface-container-high overflow-hidden">
@@ -88,7 +105,7 @@ function CoverageTimeline({ sources }: { sources: SourceStatus[] }) {
                       ? "bg-tertiary-container text-on-tertiary-container"
                       : "bg-primary-container text-on-primary-container"
                 }`}
-                style={{ left, width }}
+                style={{ left: `${left}%`, width: `${width}%` }}
               >
                 <span className="truncate">{s.name}</span>
                 <span className="opacity-80 font-normal">{windowLabel(s)}</span>
@@ -99,7 +116,7 @@ function CoverageTimeline({ sources }: { sources: SourceStatus[] }) {
         })}
       </div>
       <div className="text-label-sm text-on-surface-variant">
-        Not to scale. Overlapping ranges are deduplicated automatically.
+        Not to scale — ordered by start date. Overlapping ranges are deduplicated automatically.
       </div>
     </div>
   );
