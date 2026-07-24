@@ -479,6 +479,26 @@ impl DateWindow {
         self.from.is_none() && self.to.is_none() && !self.exclude_undated
     }
 
+    /// A plain-English one-liner for progress logs, or None when unbounded. Avoids
+    /// the cryptic `…..2024-08-01` an open-ended `{from}..{to}` render produced.
+    pub fn describe(&self) -> Option<String> {
+        if self.is_unbounded() {
+            return None;
+        }
+        let range = match (self.from.as_deref(), self.to.as_deref()) {
+            (Some(f), Some(t)) => format!("games dated {f} to {t}"),
+            (Some(f), None) => format!("games dated {f} onward"),
+            (None, Some(t)) => format!("games dated up to {t}"),
+            // Only reachable via exclude_undated (else is_unbounded caught it).
+            (None, None) => "dated games".to_string(),
+        };
+        Some(if self.exclude_undated {
+            format!("{range} (undated games excluded)")
+        } else {
+            range
+        })
+    }
+
     /// Whether the inclusive ISO date range `[start, end]` overlaps this window
     /// at all — used to decide if a whole file is worth downloading.
     pub fn overlaps_range(&self, start: &str, end: &str) -> bool {
@@ -580,6 +600,20 @@ pub fn set_window(
 #[cfg(test)]
 mod window_tests {
     use super::*;
+
+    fn win(from: Option<&str>, to: Option<&str>, excl: bool) -> DateWindow {
+        DateWindow { from: from.map(String::from), to: to.map(String::from), exclude_undated: excl }
+    }
+
+    #[test]
+    fn describe_reads_as_plain_english() {
+        assert_eq!(win(None, None, false).describe(), None); // unbounded → nothing
+        assert_eq!(win(None, Some("2024-08-01"), false).describe().as_deref(), Some("games dated up to 2024-08-01"));
+        assert_eq!(win(Some("2020-01-01"), None, false).describe().as_deref(), Some("games dated 2020-01-01 onward"));
+        assert_eq!(win(Some("2020-01-01"), Some("2024-08-01"), false).describe().as_deref(), Some("games dated 2020-01-01 to 2024-08-01"));
+        assert_eq!(win(None, Some("2024-08-01"), true).describe().as_deref(), Some("games dated up to 2024-08-01 (undated games excluded)"));
+        assert_eq!(win(None, None, true).describe().as_deref(), Some("dated games (undated games excluded)"));
+    }
 
     #[test]
     fn date_key_handles_full_partial_and_undated() {
