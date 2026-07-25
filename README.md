@@ -18,7 +18,7 @@
 
 ---
 
-LPDO is built around two things a competitive player actually does:
+LPDO is built around two things a competitive player does:
 
 1. **Manage your own database of your own games** — import your PGNs, keep them
    clean and de-duplicated, normalise player names against the official FIDE
