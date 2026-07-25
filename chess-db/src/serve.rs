@@ -704,8 +704,18 @@ async fn set_source_enabled_handler(
                 && j.params.get("source").and_then(|v| v.as_str()) == Some(key.as_str())
                 && (j.status == "queued" || j.status == "running")
         });
-        if is_feed && !already_syncing {
-            state.jobs.submit("sources_sync".into(), serde_json::json!({ "source": key }));
+        if is_feed {
+            if !already_syncing {
+                state.jobs.submit("sources_sync".into(), serde_json::json!({ "source": key }));
+            }
+            // Pin the coalesced maintenance the moment a feed is enabled, so the
+            // "Prepare database" row appears at the tail of the queue right away —
+            // matching the wizard, which requests it up front. It's idempotent and
+            // sticky: toggling feeds on/off keeps exactly one pending pass at the
+            // end (each sync re-requests it too), and it only runs once the sync
+            // queue drains. Placed AFTER submit so a concurrent maybe_run reads the
+            // just-queued sync as busy and can't start maintenance early.
+            state.jobs.request_maintenance();
         }
     }
 
