@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/screenshot-games.png" alt="LPDO showing a player's games, an interactive board and the game score" width="100%">
+  <img src="docs/images/screenshot-home.png" alt="LPDO home screen with its main entry points, database totals and the latest source update" width="100%">
 </p>
 
 ---
@@ -27,8 +27,7 @@ LPDO is built around two things a competitive player actually does:
    recent games, and study what you will be facing.
 
 Around those two pillars it keeps a **reference database** current from public
-sources, so the opponent you look up tomorrow already has last week's games in
-it. Everything runs locally: your data stays on your machine.
+sources. Everything runs locally: your data stays on your machine.
 
 > **Status:** active development. Linux is the primary supported platform today.
 > Grab the newest build from the
@@ -38,6 +37,10 @@ it. Everything runs locally: your data stays on your machine.
 ## Highlights
 
 ### Browse games on a real board
+
+<p align="center">
+  <img src="docs/images/screenshot-games.png" alt="A player's games, an interactive board and the game score side by side" width="100%">
+</p>
 
 Search a player, filter their games, and step through any of them with the
 score alongside the board. Edit headers, fix a game, or export it back out as
@@ -56,23 +59,14 @@ and the game list underneath narrows to exactly the games that reached that
 position. This is the tournament-prep loop: pick your opponent, follow their
 repertoire, find the branch they are least comfortable in.
 
-### Four ways in, and a database that stays current
+### A reference database that keeps itself current
 
-<p align="center">
-  <img src="docs/images/screenshot-home.png" alt="LPDO home screen with four entry points, database totals and the latest source update" width="100%">
-</p>
-
-The home screen puts the four things you actually open the app for one click
-away — your own games, preparation for your next round, a player lookup, and
-browsing PGN files straight off disk without touching the database. Underneath
-it, the current size of your database and what came in most recently.
-
-That "latest updates" line is the reference database keeping itself fed. LPDO
-pulls from several public sources — **The Week in Chess**, **Lichess
-Broadcasts** and **Ajedrez Data (OTB)** — each behind its own switch, checks
-them on a schedule you choose, de-duplicates the overlap between them
-automatically, and reports progress on long syncs without blocking the rest of
-the app.
+Your opponent's games from last weekend should already be there when you sit
+down to prepare. LPDO pulls from several public archives — **The Week in
+Chess**, **Lichess Broadcasts** and **Ajedrez Data (OTB)** — each behind its own
+switch. It checks them on a schedule you choose, de-duplicates the overlap
+between them automatically, and reports progress on long syncs without blocking
+the rest of the app. The home screen shows what came in and when.
 
 ## Features
 
