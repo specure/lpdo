@@ -594,6 +594,14 @@ impl JobManager {
             self.submit("normalise".to_string(), serde_json::json!({}));
             self.submit("dedup_games".to_string(), serde_json::json!({}));
         } else {
+            // Light pass (incremental feed updates). Game dedup already happened
+            // inline during the small import, so the O(all-games) batch dedup_games
+            // stays full-only. The identity steps ARE run, though: they're bounded
+            // by player count (cheap), so feed players get FIDE IDs matched by name
+            // (for the ~1% without a PGN tag) and any duplicate player rows merge —
+            // rather than being deferred until a full pass.
+            self.submit("resolve_fide".to_string(), serde_json::json!({}));
+            self.submit("dedup_players".to_string(), serde_json::json!({}));
             self.submit("normalise".to_string(), serde_json::json!({}));
         }
         self.submit("index_positions".to_string(), serde_json::json!({ "fast": true }));
@@ -885,25 +893,34 @@ fn run_job(
             // maintenance below — so they show as their own visible jobs instead
             // of a hidden tail that leaves the bar stuck at 100% (#163/#147).
             let step = reporter.sub_step();
-            let sync = (|| -> Result<()> {
+            // Returns whether this was a bulk-sized import (known only after the
+            // download decides how much is pending), which drives BOTH the dedup
+            // strategy and the maintenance level so they stay consistent.
+            let sync = (|| -> Result<bool> {
                 reporter.log(format!("{}: download", src.name));
                 rt.block_on(crate::sources::download_feed(conn, src, None, None, &dir, &step))?;
-                if reporter.is_cancelled() { return Ok(()); }
+                if reporter.is_cancelled() { return Ok(false); }
                 reporter.log(format!("{}: import (fast)", src.name));
                 // Snapshot-guard a bulk source import (e.g. Ajedrez) so a fatal
                 // appender fault rolls back cleanly instead of half-importing (#82).
                 let bulk = importer::source_import_is_bulk(conn, &dir, src.key, 10)?;
+                // Dedup strategy by size: a small (incremental) feed update dedups
+                // games INLINE (skip_dedup=false) so cross-feed/repeat duplicates
+                // never accumulate on the daily path; a bulk run (Ajedrez, or a
+                // large first-run) inserts everything and leaves game dedup to the
+                // single batch dedup_games in the full maintenance pass — inline
+                // fingerprinting millions of games would be far too slow.
                 run_import_guarded(conn, db, bulk, &step, || {
-                    importer::import(conn, &dir, src.key, src.collection, None, 10, true, true, &step)
+                    importer::import(conn, &dir, src.key, src.collection, None, 10, true, bulk, &step)
                 })?;
-                Ok(())
+                Ok(bulk)
             })();
             if reporter.is_cancelled() {
                 let _ = crate::sources::record_run(conn, src.key, "cancelled");
                 return Ok(());
             }
             match sync {
-                Ok(()) => {
+                Ok(bulk) => {
                     // Record the run BEFORE maintenance: the import is committed and
                     // the source marked synced, so an interrupted maintenance can't
                     // leave the ledger unmarked (the items=0 inconsistency, #163).
@@ -914,11 +931,11 @@ fn run_job(
                         "{} imported — preparing the database in the background.",
                         src.name
                     ));
-                    // A bulk/deep-history source (e.g. Ajedrez) gets the full
-                    // identity-first pipeline; an incremental feed (TWIC, Lichess)
-                    // gets the light pass (#167).
-                    let full = src.kind == crate::sources::SourceKind::Bulk;
-                    jm.request_maintenance(full);
+                    // Maintenance level matches the dedup strategy (size-based): a
+                    // bulk-sized import skipped inline dedup, so it needs the full
+                    // pass (batch dedup_games); a small feed update deduped inline
+                    // and only needs the light pass. (#167)
+                    jm.request_maintenance(bulk);
                 }
                 Err(e) => {
                     let _ = crate::sources::record_run(conn, src.key, &format!("error: {e}"));
