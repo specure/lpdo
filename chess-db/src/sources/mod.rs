@@ -350,6 +350,23 @@ pub struct SourceStatus {
     pub last_status: Option<String>,
     /// Items imported for this source.
     pub items: i64,
+    /// The most recently imported item for this source — the TWIC issue / Lichess
+    /// month / Ajedrez part last ingested, with its date and how many games it
+    /// brought. Drives the per-source "latest update" home tile (#176).
+    pub last_import: Option<LastImport>,
+}
+
+/// Summary of the most recent imported item for a source.
+#[derive(serde::Serialize)]
+pub struct LastImport {
+    /// Source-native id: a TWIC issue number, a Lichess `YYYY-MM`, an Ajedrez part.
+    pub external_id: String,
+    /// The item's own publication date, if the feed exposes one (ISO).
+    pub published_at: Option<String>,
+    /// When we ingested it (ISO timestamp).
+    pub imported_at: Option<String>,
+    /// Games this item contributed.
+    pub game_count: i64,
 }
 
 /// Enabled catalog sources that have a download driver, in catalog order — the
@@ -459,6 +476,26 @@ pub fn list_status(conn: &Connection) -> Result<Vec<SourceStatus>> {
                 |r| r.get(0),
             )
             .unwrap_or(0);
+        // Most recently imported item — newest by import time, id as a tiebreak.
+        let last_import: Option<LastImport> = conn
+            .query_row(
+                "SELECT external_id, CAST(published_at AS VARCHAR), CAST(imported_at AS VARCHAR),
+                        COALESCE(game_count, 0)
+                 FROM source_items
+                 WHERE source_key = ? AND imported = TRUE
+                 ORDER BY imported_at DESC NULLS LAST, id DESC
+                 LIMIT 1",
+                duckdb::params![s.key],
+                |r| {
+                    Ok(LastImport {
+                        external_id: r.get(0)?,
+                        published_at: r.get(1)?,
+                        imported_at: r.get(2)?,
+                        game_count: r.get(3)?,
+                    })
+                },
+            )
+            .ok();
         let (enabled, credit_acked, last_run, last_status) =
             row.unwrap_or((false, false, None, None));
         out.push(SourceStatus {
@@ -477,6 +514,7 @@ pub fn list_status(conn: &Connection) -> Result<Vec<SourceStatus>> {
             last_run,
             last_status,
             items,
+            last_import,
         });
     }
     Ok(out)
@@ -727,6 +765,29 @@ mod register_tests {
             )
             .unwrap();
         assert_eq!(rows, 1, "the same bulk file must register exactly once across re-syncs");
+    }
+
+    // #176: list_status surfaces the most recently imported item per source, with
+    // its game count — the data the per-source "latest update" home tile shows.
+    #[test]
+    fn list_status_reports_the_latest_imported_item() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        set_enabled(&conn, "twic", true).unwrap();
+        conn.execute_batch(
+            "INSERT INTO source_items (id, source_key, external_id, imported, game_count, imported_at, published_at) VALUES
+               (1, 'twic', '1648', TRUE,  100, TIMESTAMP '2026-06-08 10:00:00', DATE '2026-06-08'),
+               (2, 'twic', '1649', TRUE,  200, TIMESTAMP '2026-06-15 10:00:00', DATE '2026-06-15'),
+               (3, 'twic', '1650', FALSE, 0,   NULL, NULL);",
+        )
+        .unwrap();
+
+        let twic = list_status(&conn).unwrap().into_iter().find(|s| s.key == "twic").unwrap();
+        assert_eq!(twic.items, 2, "only imported items count");
+        let li = twic.last_import.expect("has a last import");
+        assert_eq!(li.external_id, "1649", "newest imported item by import time");
+        assert_eq!(li.game_count, 200);
+        assert_eq!(li.published_at.as_deref(), Some("2026-06-15"));
     }
 }
 

@@ -247,6 +247,20 @@ export interface SourceStatus {
   last_status: string | null;
   /** Items (issues/files) imported for this source. */
   items: number;
+  /** The most recently imported item — TWIC issue / Lichess month / Ajedrez part
+   *  last ingested, with its date and game count (#176). Null if none yet. */
+  last_import: LastImport | null;
+}
+
+export interface LastImport {
+  /** Source-native id: a TWIC issue number, a Lichess `YYYY-MM`, an Ajedrez part. */
+  external_id: string;
+  /** The item's own publication date (ISO), if the feed exposes one. */
+  published_at: string | null;
+  /** When it was ingested (ISO timestamp). */
+  imported_at: string | null;
+  /** Games this item contributed. */
+  game_count: number;
 }
 
 // ── Background jobs (the daemon's job pipeline, #40 C3) ────────────────────────
