@@ -440,13 +440,20 @@ export default function App() {
             >{scheme === "dark" ? "☀" : "☾"}</button>
             <button
               onClick={toggleHc}
-              className={`w-8 h-8 inline-flex items-center justify-center rounded-full text-label-md transition-colors duration-short3 ease-standard ${
+              className={`w-8 h-8 inline-flex items-center justify-center rounded-full transition-colors duration-short3 ease-standard ${
                 hc
                   ? "bg-primary text-on-primary"
                   : "text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12"
               }`}
               title="Toggle high contrast"
-            >◑</button>
+            >
+              {/* Half-filled circle — the standard "contrast" glyph, as a crisp
+                  SVG so it's legible at this size (the ◑ character rendered tiny). */}
+              <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2" />
+                <path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" />
+              </svg>
+            </button>
           </div>
 
           {/* Segmented mode switcher — outlined pill */}

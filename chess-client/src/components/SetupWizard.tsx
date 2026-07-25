@@ -174,8 +174,11 @@ function useSourceCatalog() {
 async function applySourceSelection(scope: SourceStatus[], selected: Set<string>): Promise<void> {
   for (const s of scope) {
     const want = selected.has(s.key);
-    if (want && (!s.enabled || !s.credit_acked)) await setSourceEnabled(s.key, true, true);
-    else if (!want && s.enabled) await setSourceEnabled(s.key, false);
+    // sync=false: the wizard's own first-run pipeline (startSetup) does the
+    // download+import, so enabling here must NOT also trigger an immediate sync
+    // (#195) — that would double-import.
+    if (want && (!s.enabled || !s.credit_acked)) await setSourceEnabled(s.key, true, true, false);
+    else if (!want && s.enabled) await setSourceEnabled(s.key, false, false, false);
   }
 }
 

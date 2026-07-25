@@ -617,7 +617,12 @@ struct SetEnabledBody {
     /// Record the attribution acknowledgment in the same step (sent when enabling).
     #[serde(default)]
     credit_acked: bool,
+    /// Kick off an immediate download+import for a feed on enable (#195). The
+    /// wizard sends `false` — its own first-run pipeline handles the initial load.
+    #[serde(default = "default_true")]
+    sync: bool,
 }
+fn default_true() -> bool { true }
 
 /// Enable or disable a source synchronously (#191). This is a quick mutation, not
 /// a queued job, so it never piles up "Disable X" cards in the activity panel and
@@ -642,18 +647,155 @@ async fn set_source_enabled_handler(
             }
         }
     }
-    let key2 = key.clone();
+
+    // The state write is tiny but serializes behind any running import on the
+    // single writer. On the interactive (Maintenance) path we fire it and don't
+    // block the HTTP response — so the toggle never sits greyed for the duration
+    // of *another* source's import; the GUI reflects the choice optimistically.
+    // On the wizard path (sync=false) the writer is idle and the caller reads the
+    // enabled set immediately afterward (startSetup), so we AWAIT to guarantee the
+    // write is committed first.
+    //
+    // Apply this BEFORE dispatching the sync below: `submit` enqueues the sync
+    // body on the SAME single writer (JobManager::submit → writer.spawn_fn), so a
+    // sync dispatched first would make this tiny flag write wait behind the whole
+    // (for a fresh TWIC enable, ~1500-issue) import — leaving the source reading
+    // as *disabled* until the sync drained. Writing first lands the flag in
+    // milliseconds, then the sync runs behind it. Still fire-and-forget, so the
+    // HTTP response never blocks behind another source's in-flight import.
+    let enabled = body.enabled;
+    let acked = body.credit_acked;
+    if body.sync {
+        let key_w = key.clone();
+        state.writer.spawn_fn(move |conn| {
+            if acked {
+                let _ = crate::sources::acknowledge(conn, &key_w);
+            }
+            let _ = crate::sources::set_enabled(conn, &key_w, enabled);
+        });
+    } else {
+        let key_w = key.clone();
+        state
+            .writer
+            .run(move |conn| {
+                if acked {
+                    let _ = crate::sources::acknowledge(conn, &key_w);
+                }
+                let _ = crate::sources::set_enabled(conn, &key_w, enabled);
+            })
+            .await;
+    }
+
+    // #195: enabling a *feed* kicks off an immediate sync so the user doesn't wait
+    // for the scheduler's next tick. Dispatched AFTER the enable write above so the
+    // flag is persisted first (see the note there). Skipped for bulk sources
+    // (Ajedrez has its own one-shot action, #196), and if a sync is already in
+    // flight. NOT gated on the setup sentinel: the wizard's own enables pass
+    // sync=false, so an interactive re-enable during first-run (e.g. after
+    // disabling a feed mid-onboarding) must still queue a sync — the scheduler is
+    // held off during first-run, so this is the only thing that would. On success
+    // the sync requests the coalesced maintenance pass, which runs once it drains.
+    if body.enabled && body.sync {
+        let is_feed = crate::sources::get(&key)
+            .map(|s| s.kind == crate::sources::SourceKind::Feed)
+            .unwrap_or(false);
+        let already_syncing = state.jobs.list().iter().any(|j| {
+            j.job_type == "sources_sync"
+                && j.params.get("source").and_then(|v| v.as_str()) == Some(key.as_str())
+                && (j.status == "queued" || j.status == "running")
+        });
+        if is_feed {
+            if !already_syncing {
+                state.jobs.submit("sources_sync".into(), serde_json::json!({ "source": key }));
+            }
+            // Pin the coalesced maintenance the moment a feed is enabled, so the
+            // "Prepare database" row appears at the tail of the queue right away —
+            // matching the wizard, which requests it up front. It's idempotent and
+            // sticky: toggling feeds on/off keeps exactly one pending pass at the
+            // end (each sync re-requests it too), and it only runs once the sync
+            // queue drains. Placed AFTER submit so a concurrent maybe_run reads the
+            // just-queued sync as busy and can't start maintenance early.
+            state.jobs.request_maintenance();
+        }
+    }
+
+    Ok(msg(format!(
+        "Source '{}' {}.",
+        key,
+        if enabled { "enabled" } else { "disabled" }
+    )))
+}
+
+// ── Update schedule (#194) ────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct ScheduleInfo {
+    /// Off-peak daily check time, minutes past local midnight (0–1439).
+    daily_minute: i64,
+    /// Next occurrence of that time (local ISO) — when feeds are next checked.
+    next_check: String,
+    /// When the local FIDE player list was last refreshed (ISO), or null.
+    fide_last_refreshed: Option<String>,
+    /// Whether a FIDE-list refresh is currently due (monthly cadence).
+    fide_due: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct SetScheduleBody {
+    /// Minutes past local midnight for the daily check (wrapped into 0–1439).
+    daily_minute: i64,
+}
+
+/// The daily update-check time + next run + FIDE-list refresh status (#194).
+async fn get_schedule_handler(State(state): State<AppState>) -> ApiResult<ScheduleInfo> {
+    let (daily_minute, fide_last_refreshed, fide_due) = state
+        .reads
+        .run(|conn| {
+            let dm: i64 = conn
+                .query_row("SELECT daily_minute FROM schedule WHERE id = 1", [], |r| {
+                    Ok(r.get::<_, i32>(0)? as i64)
+                })
+                .unwrap_or(240);
+            let fide: Option<String> = conn
+                .query_row(
+                    "SELECT CAST(fide_refreshed_at AS VARCHAR) FROM schedule WHERE id = 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .ok()
+                .flatten();
+            let due = crate::fide::refresh_due(conn).unwrap_or(false);
+            Ok::<_, (StatusCode, String)>((dm, fide, due))
+        })
+        .await?;
+    Ok(Json(ScheduleInfo {
+        daily_minute,
+        next_check: crate::scheduler::next_scheduled(daily_minute)
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string(),
+        fide_last_refreshed,
+        fide_due,
+    }))
+}
+
+/// Set the daily update-check time (#194).
+async fn set_schedule_handler(
+    State(state): State<AppState>,
+    Json(body): Json<SetScheduleBody>,
+) -> ApiResult<serde_json::Value> {
+    let dm = body.daily_minute.rem_euclid(1440);
     state
         .writer
         .run(move |conn| {
-            if body.credit_acked {
-                crate::sources::acknowledge(conn, &key2).map_err(db_err)?;
-            }
-            crate::sources::set_enabled(conn, &key2, body.enabled).map_err(db_err)?;
+            conn.execute(
+                "UPDATE schedule SET daily_minute = ? WHERE id = 1",
+                duckdb::params![dm as i32],
+            )
+            .map_err(db_err)?;
             Ok(msg(format!(
-                "Source '{}' {}.",
-                key2,
-                if body.enabled { "enabled" } else { "disabled" }
+                "Daily update check set to {:02}:{:02}.",
+                dm / 60,
+                dm % 60
             )))
         })
         .await
@@ -1222,9 +1364,10 @@ async fn import_upload_handler(
         "cleanup": true,
     });
     let id = state.jobs.submit("import_pgn".to_string(), import_params);
-    // A bulk (large/BYO) upload gets the full identity-first pipeline; a small
-    // upload gets the light pass (#167).
-    state.jobs.request_maintenance(bulk);
+    // One coalesced identity-first pass regardless of upload size — `dedup_games`
+    // is incremental (#—). A bulk upload still sets `skip_dedup` above so its
+    // games are deduped by that single pass rather than inline during import.
+    state.jobs.request_maintenance();
     // The client follows the import job for the upload→import handoff; the
     // coalesced maintenance jobs then appear and run on their own in the queue.
     Ok(Json(serde_json::json!({ "job_id": id })))
@@ -1360,14 +1503,16 @@ fn spawn_first_run_pipeline(
     let mut ids: Vec<String> = Vec::new();
     let mut keys: Vec<String> = Vec::new();
     for s in sources {
-        ids.push(state.jobs.submit("download".into(), serde_json::json!({ "source": s.key })));
-        ids.push(state.jobs.submit(
-            "import".into(),
-            serde_json::json!({ "source": s.key, "fast": true, "skip_dedup": true }),
-        ));
+        // One `sources_sync` per source — the SAME job the Sources page uses when
+        // a feed is enabled, so onboarding shows a single "Sync <source>" entry
+        // rather than a separate "Download …" + "Import …" pair (#195 follow-up).
+        ids.push(state.jobs.submit("sources_sync".into(), serde_json::json!({ "source": s.key })));
         keys.push(s.key.to_string());
     }
-    state.jobs.request_maintenance(true);
+    // First-run requests the one identity-first maintenance pass, coalesced with
+    // each sync's own request. There's a single pass now that `dedup_games` is
+    // incremental (#—) — no light/full distinction to force here.
+    state.jobs.request_maintenance();
     spawn_setup_watcher(state.clone(), ids.clone(), keys);
     ids
 }
@@ -1800,6 +1945,7 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         .route("/collections",                         get(collections_handler))
         .route("/sources",                             get(sources_handler))
         .route("/sources/{key}/enabled",               post(set_source_enabled_handler))
+        .route("/schedule",                            get(get_schedule_handler).post(set_schedule_handler))
         .route("/players",                             get(players_handler))
         .route("/players/{id}/stats",                  get(player_stats_handler))
         .route("/players/{keep_id}/merge/{drop_id}",   post(merge_players_handler))

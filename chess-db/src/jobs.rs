@@ -466,18 +466,14 @@ pub struct JobManager {
 }
 
 /// What post-import maintenance is currently owed (#131, #167). `requested` marks
-/// that a coalesced pass should run once the import queue drains; `full` chooses
-/// the identity-first pipeline (first-run setup, large/bulk imports) over the
-/// light feed pass.
+/// that a coalesced pass should run once the import queue drains. There is a
+/// single pass now that `dedup_games` is incremental (#—): the identity-first
+/// pipeline is cheap enough to run after every sync, so there's no longer a
+/// separate light/full distinction.
 #[derive(Default, Clone, Copy)]
 struct MaintenanceNeeds {
     /// Any coalesced maintenance is owed.
     requested: bool,
-    /// Run the full identity-first pipeline (resolve-fide → dedup_players →
-    /// normalise → dedup_games → index) rather than the light feed pass
-    /// (normalise → index). Set by first-run setup and large/bulk imports; feed
-    /// syncs request the light pass (#167).
-    full: bool,
 }
 
 /// Job types that must drain before a coalesced maintenance pass runs: any
@@ -536,16 +532,13 @@ impl JobManager {
         self.maintenance.lock().unwrap().requested
     }
 
-    /// Request post-import maintenance (#131). Idempotent: sets the "owed" flags;
-    /// the coalesced pass runs later, once the import queue has drained. Pass
-    /// `needs_dedup = true` when the import deferred dedup (first-run
-    /// `full = true` runs the identity-first pipeline (first-run setup, large/bulk
-    /// imports); `false` requests the light feed pass (normalise → index). When a
-    /// pass is already owed, `full` is sticky (a full request wins over a light one).
-    pub fn request_maintenance(&self, full: bool) {
-        let mut m = self.maintenance.lock().unwrap();
-        m.requested = true;
-        m.full |= full;
+    /// Request post-import maintenance (#131). Idempotent: sets the "owed" flag;
+    /// the coalesced pass runs later, once the import queue has drained. Every
+    /// caller (feed sync, first-run setup, bulk import) requests the same
+    /// identity-first pass — `dedup_games` is incremental (#—), so there is no
+    /// longer a light-vs-full choice.
+    pub fn request_maintenance(&self) {
+        self.maintenance.lock().unwrap().requested = true;
     }
 
     /// Cancel owed-but-not-yet-enqueued maintenance (the synthetic
@@ -556,11 +549,12 @@ impl JobManager {
     }
 
     /// If maintenance is owed and nothing import- or maintenance-class is queued
-    /// or running, enqueue the coalesced pass once and clear the owed flags. The
-    /// full pass is identity-first (#167): resolve-fide → dedup_players →
-    /// normalise → dedup_games → index; the light pass is normalise → index. If
+    /// or running, enqueue the coalesced pass once and clear the owed flag. The
+    /// single identity-first pass (#167) is resolve-fide → dedup_players →
+    /// normalise → dedup_games → index; `dedup_games` is incremental (#—), so
+    /// it's affordable after every sync and there's no longer a light variant. If
     /// the queue hasn't drained yet, re-arm and wait for a later call. Safe to
-    /// call from any thread and as often as you like — the flags are claimed
+    /// call from any thread and as often as you like — the flag is claimed
     /// atomically so two callers can't both submit (#131).
     pub fn maybe_run_maintenance(self: &Arc<Self>) {
         // Atomically claim what's owed so a concurrent caller sees nothing.
@@ -577,25 +571,22 @@ impl JobManager {
             .any(|j| (j.status == "queued" || j.status == "running") && blocks_maintenance(&j.job_type));
         if busy {
             // Not drained yet — put back what we claimed and wait for a later call.
-            let mut m = self.maintenance.lock().unwrap();
-            m.requested = true;
-            m.full |= needs.full;
+            self.maintenance.lock().unwrap().requested = true;
             return;
         }
         // Identity-first (#167): consolidate players (fetch FIDE IDs, merge
         // same-FIDE-ID rows, canonicalise names) BEFORE deduplicating games —
         // dedup_games keys on player IDs — then index once the dust settles.
-        if needs.full {
-            // Ensure the FIDE list exists/current before it's used (no-op when
-            // fresh, so no re-download per import); then the identity steps.
-            self.submit("fide_refresh".to_string(), serde_json::json!({ "if_due": true }));
-            self.submit("resolve_fide".to_string(), serde_json::json!({}));
-            self.submit("dedup_players".to_string(), serde_json::json!({}));
-            self.submit("normalise".to_string(), serde_json::json!({}));
-            self.submit("dedup_games".to_string(), serde_json::json!({}));
-        } else {
-            self.submit("normalise".to_string(), serde_json::json!({}));
-        }
+        // `dedup_games` is incremental (#—) so it's cheap to run every time; the
+        // former light pass (normalise → index only) is gone.
+        //
+        // Ensure the FIDE list exists/current before it's used (no-op when
+        // fresh, so no re-download per import); then the identity steps.
+        self.submit("fide_refresh".to_string(), serde_json::json!({ "if_due": true }));
+        self.submit("resolve_fide".to_string(), serde_json::json!({}));
+        self.submit("dedup_players".to_string(), serde_json::json!({}));
+        self.submit("normalise".to_string(), serde_json::json!({}));
+        self.submit("dedup_games".to_string(), serde_json::json!({}));
         self.submit("index_positions".to_string(), serde_json::json!({ "fast": true }));
     }
 
@@ -914,11 +905,10 @@ fn run_job(
                         "{} imported — preparing the database in the background.",
                         src.name
                     ));
-                    // A bulk/deep-history source (e.g. Ajedrez) gets the full
-                    // identity-first pipeline; an incremental feed (TWIC, Lichess)
-                    // gets the light pass (#167).
-                    let full = src.kind == crate::sources::SourceKind::Bulk;
-                    jm.request_maintenance(full);
+                    // One coalesced identity-first pass for every source — bulk or
+                    // feed. `dedup_games` is incremental (#—) so the pass is cheap
+                    // to run after each sync; the old light/full split is gone.
+                    jm.request_maintenance();
                 }
                 Err(e) => {
                     let _ = crate::sources::record_run(conn, src.key, &format!("error: {e}"));

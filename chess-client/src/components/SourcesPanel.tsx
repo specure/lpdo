@@ -1,11 +1,102 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useSyncExternalStore } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   getSources,
+  getJobs,
+  submitJob,
+  getSchedule,
+  setScheduleTime,
   setSourceEnabled,
   setSourceWindow,
 } from "../api";
-import type { SourceStatus } from "../types";
+import type { SourceStatus, ScheduleInfo } from "../types";
+
+// ── Pending toggle intents (survives page switches) ───────────────────────────
+//
+// Enabling/disabling a source is a tiny write that serializes on the single
+// writer, so during another source's long import it can land minutes later — the
+// GUI must show the *chosen* state meanwhile, not the stale persisted one. That
+// optimistic state can't live in the card component: switching to Home unmounts
+// the panel and would drop it, so on return the toggle snapped back. Keep it in a
+// module-level store instead (outlives mount/unmount) and clear each intent once
+// the server state catches up to it. Full app reload still starts clean, which is
+// fine — by then the writer has long drained.
+const pendingIntents = new Map<string, boolean>();
+let intentsVersion = 0;
+const intentListeners = new Set<() => void>();
+function setIntent(key: string, val: boolean | null) {
+  if (val === null) pendingIntents.delete(key);
+  else pendingIntents.set(key, val);
+  intentsVersion++;
+  intentListeners.forEach((l) => l());
+}
+function subscribeIntents(l: () => void) {
+  intentListeners.add(l);
+  return () => { intentListeners.delete(l); };
+}
+/** Re-renders the caller whenever any intent changes; returns the intent for
+ *  `key` (or undefined). */
+function usePendingIntent(key: string): boolean | undefined {
+  useSyncExternalStore(subscribeIntents, () => intentsVersion);
+  return pendingIntents.get(key);
+}
+
+// ── Update schedule control (#194) ────────────────────────────────────────────
+
+function minutesToHHMM(m: number): string {
+  const h = Math.floor(m / 60), mm = m % 60;
+  return `${String(h).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+function hhmmToMinutes(s: string): number | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(s.trim());
+  if (!m) return null;
+  const h = +m[1], mm = +m[2];
+  return h > 23 || mm > 59 ? null : h * 60 + mm;
+}
+function relativeWhen(localIso: string): string {
+  const diffMin = Math.max(0, Math.round((new Date(localIso).getTime() - Date.now()) / 60000));
+  if (diffMin < 60) return `in ${diffMin} min`;
+  const h = Math.round(diffMin / 60);
+  return h < 24 ? `in ${h}h` : `in ${Math.round(h / 24)}d`;
+}
+
+// Feeds are checked once a day at a user-chosen off-peak time; a missed check
+// (machine off) runs at the next start. This exposes and edits that time (#194).
+function ScheduleControl() {
+  const [sched, setSched] = useState<ScheduleInfo | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(() => { getSchedule().then(setSched).catch(() => {}); }, []);
+  useEffect(() => { load(); }, [load]);
+
+  if (!sched) return null;
+
+  async function onTimeChange(v: string) {
+    const mins = hhmmToMinutes(v);
+    if (mins == null || mins === sched!.daily_minute) return;
+    setSaving(true);
+    try { await setScheduleTime(mins); load(); } finally { setSaving(false); }
+  }
+
+  return (
+    <div className="bg-surface-container-low rounded-xl border border-outline-variant p-4 flex flex-wrap items-center gap-x-4 gap-y-1">
+      <label className="text-body-sm text-on-surface flex items-center gap-2">
+        Check feeds for updates daily at
+        <input
+          key={sched.daily_minute}
+          type="time"
+          defaultValue={minutesToHHMM(sched.daily_minute)}
+          onBlur={(e) => void onTimeChange(e.target.value)}
+          disabled={saving}
+          className="h-8 px-2 rounded-sm bg-surface-container text-on-surface font-mono border border-outline focus:outline-none focus:border-primary disabled:opacity-40"
+        />
+      </label>
+      <div className="text-label-sm text-on-surface-variant">
+        Next check {relativeWhen(sched.next_check)} · a missed check (machine off) runs at the next start.
+      </div>
+    </div>
+  );
+}
 
 /** Open a source's homepage (about / licence) in the OS browser. A plain
  *  <a target="_blank"> doesn't reliably open externally from the Tauri webview,
@@ -210,18 +301,97 @@ function WindowEditor({
   );
 }
 
+// One-shot import action for a bulk source (Ajedrez) — a deep-history base, not
+// a subscription (#196). Replaces the enable/disable toggle: a single button that
+// downloads + imports and runs full maintenance. Idempotent — re-running fetches
+// only parts not yet imported (finishing a partial import) — so it doubles as a
+// "resume"/"check". Not part of the recurring scheduler.
+function BulkImportAction({ source, onChanged }: { source: SourceStatus; onChanged: () => void }) {
+  const acked = source.credit_acked || source.items > 0;
+  const [ackChecked, setAckChecked] = useState(acked);
+  const [busy, setBusy] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+
+  // Reflect an in-flight import for this source (poll the job pipeline) so the
+  // button reads "Importing…" and can't be fired twice.
+  useEffect(() => {
+    let stop = false;
+    const check = () =>
+      getJobs()
+        .then((js) => {
+          if (stop) return;
+          setSyncing(js.some((j) =>
+            (j.status === "running" || j.status === "queued") &&
+            j.type === "sources_sync" &&
+            (j.params?.source as string | undefined) === source.key,
+          ));
+        })
+        .catch(() => { /* offline — leave last known */ });
+    check();
+    const id = setInterval(check, 2500);
+    return () => { stop = true; clearInterval(id); };
+  }, [source.key]);
+
+  async function run() {
+    setBusy(true);
+    try {
+      // Enable (so it counts toward coverage) + record the ack, idempotently,
+      // then the actual download+import+full-maintenance job.
+      await setSourceEnabled(source.key, true, true);
+      await submitJob({ type: "sources_sync", params: { source: source.key } });
+      setSyncing(true);
+      onChanged();
+    } catch {
+      /* failure surfaces in the activity panel */
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const imported = source.items > 0;
+  const disabled = busy || syncing || (!acked && !ackChecked);
+  const label = syncing ? "Importing…" : imported ? "Re-run import" : "Download & import";
+
+  return (
+    <div className="mt-auto pt-1 space-y-2">
+      {!acked && (
+        <label className="flex items-start gap-2 text-body-sm text-on-surface bg-surface-container-low rounded-lg border border-primary-container p-3">
+          <input type="checkbox" className="mt-1 shrink-0" checked={ackChecked} onChange={(e) => setAckChecked(e.target.checked)} />
+          <span>{source.credit}</span>
+        </label>
+      )}
+      <button
+        onClick={() => void run()}
+        disabled={disabled}
+        className="h-9 px-4 inline-flex items-center rounded-full bg-primary text-on-primary text-label-md hover:brightness-110 disabled:opacity-40 transition-all duration-short3 ease-standard"
+      >
+        {label}
+      </button>
+      <div className="text-label-sm text-on-surface-variant">
+        {imported
+          ? "One-time deep-history import. Re-running fetches only new or missing parts, then re-prepares the database."
+          : "Downloads the historical base and imports it, then prepares the database. Not a subscription — no recurring updates."}
+      </div>
+    </div>
+  );
+}
+
 // ── Source card ───────────────────────────────────────────────────────────────
 
-function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: () => void }) {
+function SourceCard({ source, hasActiveSync, onChanged }: { source: SourceStatus; hasActiveSync: boolean; onChanged: () => void }) {
+  const isFeed = source.kind === "feed";
   const [editing, setEditing] = useState(false);
   const [ackChecked, setAckChecked] = useState(source.credit_acked);
   const [busy, setBusy] = useState(false);
-  // Optimistic enabled state while the toggle is in flight (#191): the write
-  // serializes on the writer, so during a long import of another source it may
-  // land a bit later — show the chosen state immediately rather than snapping
-  // back. Cleared once the refetched source reflects the change.
-  const [pendingEnabled, setPendingEnabled] = useState<boolean | null>(null);
-  const shownEnabled = pendingEnabled ?? source.enabled;
+  // Optimistic enabled state while the toggle's write is in flight (#191). It
+  // serializes on the single writer, so during another source's long import it
+  // can land minutes later — show the chosen state meanwhile. The intent lives in
+  // a module-level store (see top of file) so it survives a switch to Home and
+  // back. If there's no pending intent, a source with an active sync still reads
+  // as enabled (that job exists only because it was enabled), which also survives
+  // navigation since it's derived from the polled job list.
+  const pendingEnabled = usePendingIntent(source.key);
+  const shownEnabled = pendingEnabled ?? (source.enabled || hasActiveSync);
 
   // Show the acknowledgment gate only when turning on a source that has never
   // been acknowledged AND never imported anything — i.e. a genuine first enable.
@@ -229,29 +399,35 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
   // an older build that left credit_acked false) must re-enable straight from the
   // toggle; otherwise the toggle sits disabled behind the ack panel and clicking
   // it does nothing. Enabling always re-records the ack anyway.
-  const needsAck = !shownEnabled && !source.credit_acked && source.items === 0;
+  const needsAck = isFeed && !shownEnabled && !source.credit_acked && source.items === 0;
 
   async function toggleEnabled() {
     const next = !shownEnabled;
-    setPendingEnabled(next);   // optimistic — reflect the choice at once
-    setBusy(true);             // and lock the toggle so it can't be re-fired
+    setIntent(source.key, next);  // optimistic — reflect the choice at once
+    setBusy(true);                // and lock the toggle so it can't be re-fired
     try {
       // credit_acked only matters when enabling (records the attribution ack).
       await setSourceEnabled(source.key, next, next);
       onChanged();
     } catch {
-      setPendingEnabled(null); // revert the optimistic flip on failure
+      setIntent(source.key, null); // revert the optimistic flip on failure
     } finally {
       setBusy(false);
     }
   }
 
-  // Once the refetched source matches our optimistic choice, drop the override.
+  // Drop the optimistic intent once the derived server state matches it. Uses the
+  // same (enabled || hasActiveSync) signal as `shownEnabled`, so: an ENABLE
+  // clears as soon as the sync shows active (well before its flag lands), while a
+  // DISABLE holds until BOTH the flag is off AND the cancelled sync has left the
+  // job list — so disabling TWIC mid-Lichess-import keeps reading "off" (even
+  // after a page switch) until that write actually lands.
   useEffect(() => {
-    if (pendingEnabled !== null && source.enabled === pendingEnabled) {
-      setPendingEnabled(null);
+    const serverShown = source.enabled || hasActiveSync;
+    if (pendingEnabled !== undefined && serverShown === pendingEnabled) {
+      setIntent(source.key, null);
     }
-  }, [source.enabled, pendingEnabled]);
+  }, [source.key, source.enabled, hasActiveSync, pendingEnabled]);
 
   const st = statusLine(source);
   const toneCls = st.tone === "ok" ? "text-success" : st.tone === "error" ? "text-error" : "text-on-surface-variant";
@@ -260,7 +436,13 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
     <div className="bg-surface-container rounded-2xl border border-outline-variant p-5 space-y-3 flex flex-col">
       <div className="flex items-start justify-between gap-3">
         <h3 className="text-title-lg text-on-surface">{source.name}</h3>
-        <Toggle on={shownEnabled} onClick={toggleEnabled} disabled={busy || needsAck} />
+        {isFeed ? (
+          <Toggle on={shownEnabled} onClick={toggleEnabled} disabled={busy || needsAck} />
+        ) : (
+          <span className="text-label-sm text-on-surface-variant border border-outline px-2 h-6 inline-flex items-center rounded-full shrink-0">
+            one-time
+          </span>
+        )}
       </div>
 
       <p className="text-body-sm text-on-surface-variant min-h-[2.4rem]">
@@ -270,6 +452,24 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
 
       <div className="text-label-md text-on-surface-variant">{cadenceLabel(source)}</div>
       <div className={`text-label-md ${toneCls}`}>{st.text}</div>
+
+      {/* Per-source update metrics (#197): latest item + date and games
+          imported, shown here in the card rather than an aggregated block. */}
+      {source.last_import && (
+        <div className="flex items-baseline justify-between gap-2 text-label-sm bg-surface-container-high rounded-lg px-3 py-1.5">
+          <span className="text-on-surface-variant font-mono">
+            Latest {source.key === "twic" ? "#" : ""}{source.last_import.external_id}
+            {(() => {
+              const d = (source.last_import.published_at ?? source.last_import.imported_at)?.slice(0, 10);
+              return d ? ` · ${d}` : "";
+            })()}
+          </span>
+          <span className="text-on-surface font-mono shrink-0">
+            {source.imported_games.toLocaleString()}
+            <span className="text-on-surface-variant font-sans ml-1">games</span>
+          </span>
+        </div>
+      )}
 
       {/* Date window summary + edit */}
       <div className="flex items-center gap-2 bg-surface-container-high rounded-lg px-3 py-2 text-body-sm text-on-surface-variant">
@@ -305,10 +505,9 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
         </div>
       )}
 
-      {/* Enabled sources import automatically in the background (the daemon's
-          scheduler picks them up; progress shows in the header activity queue).
-          There's no manual "Sync now" — enabling is the trigger. */}
-      {shownEnabled && (
+      {/* Feeds: enabling is the trigger and imports run automatically. Bulk
+          (Ajedrez): a one-shot Download & import action instead (#196). */}
+      {isFeed && shownEnabled && (
         <div className="mt-auto pt-1 space-y-2">
           <div className="text-label-sm text-on-surface-variant opacity-85">
             ⓘ Imports run automatically in the background — follow progress from the activity indicator in the header.
@@ -318,6 +517,7 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
           </div>
         </div>
       )}
+      {!isFeed && <BulkImportAction source={source} onChanged={onChanged} />}
 
       <div className="text-label-sm text-on-surface-variant pt-1">{source.credit}</div>
     </div>
@@ -329,6 +529,14 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
 export default function SourcesPanel({ onMutated }: { onMutated?: () => void }) {
   const [sources, setSources] = useState<SourceStatus[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Source keys with a queued/running sync. A `sources_sync` job exists only
+  // because the source was enabled (the enable handler submits it), so an active
+  // sync is strong evidence the source is on — even before the tiny enabled-flag
+  // write lands. That write serializes on the single writer behind any running
+  // import, so enabling a second source while the first is importing can leave
+  // its flag unpersisted for minutes; deriving "enabled" from the job list (not
+  // local component state) keeps the toggle correct across navigation meanwhile.
+  const [syncingKeys, setSyncingKeys] = useState<Set<string>>(new Set());
 
   const refresh = useCallback(() => {
     getSources()
@@ -337,6 +545,33 @@ export default function SourcesPanel({ onMutated }: { onMutated?: () => void }) 
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // Poll the job pipeline for active syncs (same cadence as the bulk-import
+  // button's own poll). Refresh sources when the active-sync set changes, so a
+  // finished sync's landed flag / imported counts show without a manual reload.
+  useEffect(() => {
+    let stop = false;
+    const check = () =>
+      getJobs()
+        .then((js) => {
+          if (stop) return;
+          const keys = new Set(
+            js
+              .filter((j) => (j.status === "running" || j.status === "queued") && j.type === "sources_sync")
+              .map((j) => j.params?.source as string | undefined)
+              .filter((k): k is string => !!k),
+          );
+          setSyncingKeys((prev) => {
+            const same = prev.size === keys.size && [...prev].every((k) => keys.has(k));
+            if (!same) refresh();
+            return same ? prev : keys;
+          });
+        })
+        .catch(() => { /* offline — leave last known */ });
+    check();
+    const id = setInterval(check, 2500);
+    return () => { stop = true; clearInterval(id); };
+  }, [refresh]);
 
   function onChanged() {
     refresh();
@@ -352,10 +587,11 @@ export default function SourcesPanel({ onMutated }: { onMutated?: () => void }) 
 
   return (
     <div className="space-y-4">
+      <ScheduleControl />
       <CoverageTimeline sources={sources} />
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
         {sources.map((s) => (
-          <SourceCard key={s.key} source={s} onChanged={onChanged} />
+          <SourceCard key={s.key} source={s} hasActiveSync={syncingKeys.has(s.key)} onChanged={onChanged} />
         ))}
       </div>
     </div>
