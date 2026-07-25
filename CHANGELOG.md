@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-07-25
+
+### Added
+- **First-run setup resumes after a restart** — if the machine is shut down
+  while the initial database load is still running (the deep-history Ajedrez
+  download is large), the daemon now continues where it left off on the next
+  start instead of dead-ending and forcing a full re-download. A progress-aware
+  cap stops a genuinely stuck load from retrying forever. (#134)
+- **Per-source update metrics** — the Home screen shows a "Latest updates" list
+  (each enabled source's most recent item, date, and games), and the Maintenance
+  page groups the same numbers per source under "By source". Replaces the
+  TWIC-only "latest issue" readout. (#176)
+
+### Changed
+- **Enabling/disabling a source is immediate** — it's applied at once instead of
+  queuing behind a running import, so it no longer piles up duplicate entries in
+  the activity panel. Disabling a source also cancels its in-flight sync, and the
+  coverage timeline updates the moment a source is turned off. (#191)
+- **Ajedrez import shows real progress** — one continuous bar across all files
+  with a "file N of M" label and a cumulative game count, instead of a frozen
+  indeterminate spinner. (#189)
+- **The Home profile picker is disabled until the database is ready** — on a
+  fresh or still-importing database it shows a short explanation rather than a
+  name search that can't match anyone yet. (#122)
+
+### Fixed
+- **Re-syncing Ajedrez no longer duplicates imported parts** — stopping and
+  restarting the import used to multiply the "issues" to import (2 files × 3 runs
+  = 6) and re-import the same games; registration is now idempotent. (#191)
+- **Re-enabling a previously-used source works from the toggle** — it no longer
+  sits disabled behind the acknowledgment gate. (#191)
+- **A stale first-run marker on a populated database is safe** — it no longer
+  skips the pre-operation safety snapshot or risks an auto-delete; the daemon
+  clears it on startup. (#143)
+
+### Security
+- Updated `quinn-proto` to 0.11.16 (fixes a high-severity remote memory-
+  exhaustion advisory) and `serde_with` to 3.21.0 (fixes a serialization panic).
+  Also bumped `tauri` to 2.11.5, TypeScript to 7, and the GitHub Actions group.
+
 ## [0.9.0] - 2026-07-25
 
 ### Added
