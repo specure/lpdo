@@ -647,31 +647,15 @@ async fn set_source_enabled_handler(
             }
         }
     }
-    let key2 = key.clone();
-    let result = state
-        .writer
-        .run(move |conn| {
-            if body.credit_acked {
-                crate::sources::acknowledge(conn, &key2).map_err(db_err)?;
-            }
-            crate::sources::set_enabled(conn, &key2, body.enabled).map_err(db_err)?;
-            Ok(msg(format!(
-                "Source '{}' {}.",
-                key2,
-                if body.enabled { "enabled" } else { "disabled" }
-            )))
-        })
-        .await;
 
     // #195: enabling a *feed* kicks off an immediate sync so the user doesn't wait
-    // for the scheduler's next tick ("I enabled it, nothing happened"). Skipped
-    // for bulk sources — Ajedrez has its own one-shot action (#196) — and while a
-    // first-run pipeline owns the database (the wizard runs its own load and sends
-    // sync=false; the sentinel covers a resume too). Match-import-size maintenance
-    // is handled inside `sources_sync` (full for bulk, light for a feed).
+    // for the scheduler's next tick. Submit it BEFORE the enable write, so a second
+    // feed enabled while the first is still importing queues right away instead of
+    // waiting behind that import on the single writer. Skipped for bulk sources
+    // (Ajedrez has its own one-shot action, #196), during first-run (the sentinel;
+    // the wizard also sends sync=false), and if a sync is already in flight.
     if body.enabled
         && body.sync
-        && result.is_ok()
         && !crate::jobs::setup_sentinel_present(&state.db_path)
     {
         let is_feed = crate::sources::get(&key)
@@ -686,7 +670,42 @@ async fn set_source_enabled_handler(
             state.jobs.submit("sources_sync".into(), serde_json::json!({ "source": key }));
         }
     }
-    result
+
+    // The state write is tiny but serializes behind any running import on the
+    // single writer. On the interactive (Maintenance) path we fire it and don't
+    // block the HTTP response — so the toggle never sits greyed for the duration
+    // of *another* source's import; the GUI reflects the choice optimistically.
+    // On the wizard path (sync=false) the writer is idle and the caller reads the
+    // enabled set immediately afterward (startSetup), so we AWAIT to guarantee the
+    // write is committed first.
+    let enabled = body.enabled;
+    let acked = body.credit_acked;
+    if body.sync {
+        let key_w = key.clone();
+        state.writer.spawn_fn(move |conn| {
+            if acked {
+                let _ = crate::sources::acknowledge(conn, &key_w);
+            }
+            let _ = crate::sources::set_enabled(conn, &key_w, enabled);
+        });
+    } else {
+        let key_w = key.clone();
+        state
+            .writer
+            .run(move |conn| {
+                if acked {
+                    let _ = crate::sources::acknowledge(conn, &key_w);
+                }
+                let _ = crate::sources::set_enabled(conn, &key_w, enabled);
+            })
+            .await;
+    }
+
+    Ok(msg(format!(
+        "Source '{}' {}.",
+        key,
+        if enabled { "enabled" } else { "disabled" }
+    )))
 }
 
 async fn status_handler(State(state): State<AppState>) -> ApiResult<StatusInfo> {
@@ -1390,13 +1409,15 @@ fn spawn_first_run_pipeline(
     let mut ids: Vec<String> = Vec::new();
     let mut keys: Vec<String> = Vec::new();
     for s in sources {
-        ids.push(state.jobs.submit("download".into(), serde_json::json!({ "source": s.key })));
-        ids.push(state.jobs.submit(
-            "import".into(),
-            serde_json::json!({ "source": s.key, "fast": true, "skip_dedup": true }),
-        ));
+        // One `sources_sync` per source — the SAME job the Sources page uses when
+        // a feed is enabled, so onboarding shows a single "Sync <source>" entry
+        // rather than a separate "Download …" + "Import …" pair (#195 follow-up).
+        ids.push(state.jobs.submit("sources_sync".into(), serde_json::json!({ "source": s.key })));
         keys.push(s.key.to_string());
     }
+    // First-run always gets the FULL identity-first maintenance pass, regardless
+    // of the enabled sources' kinds (a feeds-only setup would otherwise coalesce
+    // to the light pass). Coalesced with each sync's own request.
     state.jobs.request_maintenance(true);
     spawn_setup_watcher(state.clone(), ids.clone(), keys);
     ids
