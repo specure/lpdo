@@ -88,7 +88,10 @@ function dayIndex(d: string): number {
 }
 
 function CoverageTimeline({ sources }: { sources: SourceStatus[] }) {
-  const shown = sources.filter((s) => s.enabled || s.items > 0);
+  // The timeline is the *active coverage plan*, so it tracks the enabled set:
+  // disabling a source drops its band right away (previously an imported-but-
+  // disabled source lingered via an `items > 0` clause).
+  const shown = sources.filter((s) => s.enabled);
   if (shown.length === 0) return null;
 
   // Schematic (not to scale), but ordered by start date: deep-history sources
@@ -213,24 +216,42 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
   const [editing, setEditing] = useState(false);
   const [ackChecked, setAckChecked] = useState(source.credit_acked);
   const [busy, setBusy] = useState(false);
+  // Optimistic enabled state while the toggle is in flight (#191): the write
+  // serializes on the writer, so during a long import of another source it may
+  // land a bit later — show the chosen state immediately rather than snapping
+  // back. Cleared once the refetched source reflects the change.
+  const [pendingEnabled, setPendingEnabled] = useState<boolean | null>(null);
+  const shownEnabled = pendingEnabled ?? source.enabled;
 
-  // Show the acknowledgment gate when turning a not-yet-acknowledged source on.
-  const needsAck = !source.enabled && !source.credit_acked;
+  // Show the acknowledgment gate only when turning on a source that has never
+  // been acknowledged AND never imported anything — i.e. a genuine first enable.
+  // A source that's been used before (items > 0, possibly enabled via the CLI or
+  // an older build that left credit_acked false) must re-enable straight from the
+  // toggle; otherwise the toggle sits disabled behind the ack panel and clicking
+  // it does nothing. Enabling always re-records the ack anyway.
+  const needsAck = !shownEnabled && !source.credit_acked && source.items === 0;
 
   async function toggleEnabled() {
-    setBusy(true);
+    const next = !shownEnabled;
+    setPendingEnabled(next);   // optimistic — reflect the choice at once
+    setBusy(true);             // and lock the toggle so it can't be re-fired
     try {
-      if (!source.enabled) {
-        // Enabling: record the acknowledgment in the same step.
-        await setSourceEnabled(source.key, true, true);
-      } else {
-        await setSourceEnabled(source.key, false);
-      }
+      // credit_acked only matters when enabling (records the attribution ack).
+      await setSourceEnabled(source.key, next, next);
       onChanged();
+    } catch {
+      setPendingEnabled(null); // revert the optimistic flip on failure
     } finally {
       setBusy(false);
     }
   }
+
+  // Once the refetched source matches our optimistic choice, drop the override.
+  useEffect(() => {
+    if (pendingEnabled !== null && source.enabled === pendingEnabled) {
+      setPendingEnabled(null);
+    }
+  }, [source.enabled, pendingEnabled]);
 
   const st = statusLine(source);
   const toneCls = st.tone === "ok" ? "text-success" : st.tone === "error" ? "text-error" : "text-on-surface-variant";
@@ -239,7 +260,7 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
     <div className="bg-surface-container rounded-2xl border border-outline-variant p-5 space-y-3 flex flex-col">
       <div className="flex items-start justify-between gap-3">
         <h3 className="text-title-lg text-on-surface">{source.name}</h3>
-        <Toggle on={source.enabled} onClick={toggleEnabled} disabled={busy || needsAck} />
+        <Toggle on={shownEnabled} onClick={toggleEnabled} disabled={busy || needsAck} />
       </div>
 
       <p className="text-body-sm text-on-surface-variant min-h-[2.4rem]">
@@ -287,7 +308,7 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
       {/* Enabled sources import automatically in the background (the daemon's
           scheduler picks them up; progress shows in the header activity queue).
           There's no manual "Sync now" — enabling is the trigger. */}
-      {source.enabled && (
+      {shownEnabled && (
         <div className="mt-auto pt-1 space-y-2">
           <div className="text-label-sm text-on-surface-variant opacity-85">
             ⓘ Imports run automatically in the background — follow progress from the activity indicator in the header.
