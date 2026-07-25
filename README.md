@@ -36,7 +36,7 @@ sources. Everything runs locally: your data stays on your machine.
 
 ## Highlights
 
-### Browse games on a real board
+### Browse games
 
 <p align="center">
   <img src="docs/images/screenshot-games.png" alt="A player's games, an interactive board and the game score side by side" width="100%">
@@ -47,7 +47,7 @@ score alongside the board. Edit headers, fix a game, or export it back out as
 PGN. Light and dark themes, adjustable text size, and a board that keeps up
 with fast clicking through hundreds of moves.
 
-### See what an opponent actually plays
+### See what your potential opponents play
 
 <p align="center">
   <img src="docs/images/screenshot-openings.png" alt="Opening tree: candidate moves with game counts, score percentages and performance, with arrows drawn on the board" width="100%">
