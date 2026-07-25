@@ -617,7 +617,12 @@ struct SetEnabledBody {
     /// Record the attribution acknowledgment in the same step (sent when enabling).
     #[serde(default)]
     credit_acked: bool,
+    /// Kick off an immediate download+import for a feed on enable (#195). The
+    /// wizard sends `false` — its own first-run pipeline handles the initial load.
+    #[serde(default = "default_true")]
+    sync: bool,
 }
+fn default_true() -> bool { true }
 
 /// Enable or disable a source synchronously (#191). This is a quick mutation, not
 /// a queued job, so it never piles up "Disable X" cards in the activity panel and
@@ -643,7 +648,7 @@ async fn set_source_enabled_handler(
         }
     }
     let key2 = key.clone();
-    state
+    let result = state
         .writer
         .run(move |conn| {
             if body.credit_acked {
@@ -656,7 +661,32 @@ async fn set_source_enabled_handler(
                 if body.enabled { "enabled" } else { "disabled" }
             )))
         })
-        .await
+        .await;
+
+    // #195: enabling a *feed* kicks off an immediate sync so the user doesn't wait
+    // for the scheduler's next tick ("I enabled it, nothing happened"). Skipped
+    // for bulk sources — Ajedrez has its own one-shot action (#196) — and while a
+    // first-run pipeline owns the database (the wizard runs its own load and sends
+    // sync=false; the sentinel covers a resume too). Match-import-size maintenance
+    // is handled inside `sources_sync` (full for bulk, light for a feed).
+    if body.enabled
+        && body.sync
+        && result.is_ok()
+        && !crate::jobs::setup_sentinel_present(&state.db_path)
+    {
+        let is_feed = crate::sources::get(&key)
+            .map(|s| s.kind == crate::sources::SourceKind::Feed)
+            .unwrap_or(false);
+        let already_syncing = state.jobs.list().iter().any(|j| {
+            j.job_type == "sources_sync"
+                && j.params.get("source").and_then(|v| v.as_str()) == Some(key.as_str())
+                && (j.status == "queued" || j.status == "running")
+        });
+        if is_feed && !already_syncing {
+            state.jobs.submit("sources_sync".into(), serde_json::json!({ "source": key }));
+        }
+    }
+    result
 }
 
 async fn status_handler(State(state): State<AppState>) -> ApiResult<StatusInfo> {

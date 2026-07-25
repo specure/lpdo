@@ -102,10 +102,14 @@ export async function setSourceEnabled(
   key: string,
   enabled: boolean,
   creditAcked = false,
+  /** Kick off an immediate download+import for a feed on enable (#195). The
+   *  wizard passes false — its own first-run pipeline handles the initial load. */
+  sync = true,
 ): Promise<void> {
   await postJson(`/sources/${encodeURIComponent(key)}/enabled`, {
     enabled,
     credit_acked: creditAcked,
+    sync,
   });
 }
 
