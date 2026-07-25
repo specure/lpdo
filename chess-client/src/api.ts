@@ -93,16 +93,19 @@ export async function resetSetup(): Promise<void> {
   await postJson("/setup/reset");
 }
 
-/** Enable/disable a source. When enabling for the first time, pass
- *  `creditAcked` to record the attribution acknowledgment in the same step. */
+/** Enable/disable a source. Synchronous quick mutation (#191) — not a queued job,
+ *  so it doesn't pile up "Disable X" cards in the activity panel and applies the
+ *  moment the writer is free. Disabling also cancels that source's in-flight sync.
+ *  When enabling for the first time, pass `creditAcked` to record the attribution
+ *  acknowledgment in the same step. */
 export async function setSourceEnabled(
   key: string,
   enabled: boolean,
   creditAcked = false,
 ): Promise<void> {
-  await submitJob({
-    type: "sources_set_enabled",
-    params: { source: key, enabled, credit_acked: creditAcked },
+  await postJson(`/sources/${encodeURIComponent(key)}/enabled`, {
+    enabled,
+    credit_acked: creditAcked,
   });
 }
 

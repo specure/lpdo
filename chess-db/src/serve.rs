@@ -611,6 +611,54 @@ async fn sources_handler(State(state): State<AppState>) -> ApiResult<Vec<crate::
     }).await
 }
 
+#[derive(serde::Deserialize)]
+struct SetEnabledBody {
+    enabled: bool,
+    /// Record the attribution acknowledgment in the same step (sent when enabling).
+    #[serde(default)]
+    credit_acked: bool,
+}
+
+/// Enable or disable a source synchronously (#191). This is a quick mutation, not
+/// a queued job, so it never piles up "Disable X" cards in the activity panel and
+/// applies the moment the writer is free (instant when idle). Disabling also
+/// cancels that source's in-flight sync/download/import right away — done before
+/// the state write so the source actually stops instead of running on behind the
+/// writer. The write still serializes on the single writer, so during a long
+/// import of *another* source the persisted flag lands once that import drains;
+/// the GUI reflects the choice optimistically in the meantime.
+async fn set_source_enabled_handler(
+    State(state): State<AppState>,
+    AxumPath(key): AxumPath<String>,
+    Json(body): Json<SetEnabledBody>,
+) -> ApiResult<serde_json::Value> {
+    if !body.enabled {
+        for j in state.jobs.list() {
+            let touches_this = j.params.get("source").and_then(|v| v.as_str()) == Some(key.as_str());
+            let is_sync = matches!(j.job_type.as_str(), "sources_sync" | "download" | "import");
+            let active = j.status == "queued" || j.status == "running";
+            if touches_this && is_sync && active {
+                state.jobs.cancel(&j.id);
+            }
+        }
+    }
+    let key2 = key.clone();
+    state
+        .writer
+        .run(move |conn| {
+            if body.credit_acked {
+                crate::sources::acknowledge(conn, &key2).map_err(db_err)?;
+            }
+            crate::sources::set_enabled(conn, &key2, body.enabled).map_err(db_err)?;
+            Ok(msg(format!(
+                "Source '{}' {}.",
+                key2,
+                if body.enabled { "enabled" } else { "disabled" }
+            )))
+        })
+        .await
+}
+
 async fn status_handler(State(state): State<AppState>) -> ApiResult<StatusInfo> {
     let db_path = state.db_path.display().to_string();
     let data_dir = state
@@ -1457,8 +1505,11 @@ fn spawn_setup_watcher(state: AppState, ids: Vec<String>, source_keys: Vec<Strin
             if snaps.iter().any(Option::is_none) {
                 break;
             }
-            // All done → success.
-            if snaps.iter().all(|s| matches!(s, Some(sn) if sn.status == "done")) {
+            // All jobs terminal → success. A `cancelled` job (e.g. the user
+            // disabled that source mid-setup, #191) counts as done-enough: setup
+            // settles for the sources that remain instead of spinning forever
+            // waiting for a job that will never reach `done`.
+            if snaps.iter().all(|s| matches!(s, Some(sn) if sn.status == "done" || sn.status == "cancelled")) {
                 let keys = source_keys.clone();
                 state.writer.run(move |conn| {
                     for k in &keys {
@@ -1748,6 +1799,7 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         .route("/status",                              get(status_handler))
         .route("/collections",                         get(collections_handler))
         .route("/sources",                             get(sources_handler))
+        .route("/sources/{key}/enabled",               post(set_source_enabled_handler))
         .route("/players",                             get(players_handler))
         .route("/players/{id}/stats",                  get(player_stats_handler))
         .route("/players/{keep_id}/merge/{drop_id}",   post(merge_players_handler))
