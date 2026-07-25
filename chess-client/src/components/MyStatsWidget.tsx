@@ -409,6 +409,30 @@ const StatsView = memo(function StatsView({
   );
 });
 
+// Disabled stand-in for the profile picker while the database isn't ready yet
+// (#122). The picker matches your name against existing player rows, which don't
+// exist until an import populates them — so on an empty/preparing database a live
+// search dead-ends with no explanation. Show why, and what unlocks it, instead.
+function ProfileUnavailable({ preparing }: { preparing: boolean }) {
+  return (
+    <div className="bg-surface-container-highest rounded-2xl p-6 opacity-60">
+      <div className="flex items-start gap-4">
+        <div className="w-12 h-12 shrink-0 inline-flex items-center justify-center rounded-2xl bg-primary-container/60 text-on-primary-container text-xl">
+          ♟
+        </div>
+        <div>
+          <h2 className="text-title-lg text-on-surface">My profile</h2>
+          <p className="text-body-md text-on-surface-variant mt-1">
+            {preparing
+              ? "Available once your games finish importing — your profile links to a player in the database."
+              : "Available once your database has games — your profile links to a player in the database. Run the setup wizard or import games to get started."}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 interface MyStatsWidgetProps {
@@ -417,9 +441,15 @@ interface MyStatsWidgetProps {
   /** Server status — used to suppress the DB-stats fetch (and section) when
    *  there's nothing to query (server offline or empty database). */
   status?: StatusInfo | null;
+  /** Whether the database is fully initialised (has player rows to match a
+   *  profile against). When false, the profile picker is replaced by a disabled
+   *  placeholder so a name search can't dead-end on an empty/preparing DB (#122).
+   *  Defaults to true so other callers are unaffected. An already-set profile
+   *  still shows its stats regardless. */
+  dbReady?: boolean;
 }
 
-export default function MyStatsWidget({ countStartDelayMs, status }: MyStatsWidgetProps = {}) {
+export default function MyStatsWidget({ countStartDelayMs, status, dbReady = true }: MyStatsWidgetProps = {}) {
   const [myPlayer, setMyPlayer] = useState<PlayerInfo | null>(loadMyPlayer);
 
   function save(player: PlayerInfo) {
@@ -437,7 +467,10 @@ export default function MyStatsWidget({ countStartDelayMs, status }: MyStatsWidg
   // needs, so a status change during an import doesn't churn the memoised tiles.
   const dbStatsAvailable = !!status && status.games > 0;
 
-  return myPlayer
-    ? <StatsView player={myPlayer} onClear={clear} countStartDelayMs={countStartDelayMs} dbStatsAvailable={dbStatsAvailable} />
-    : <ProfileSetupForm onSave={save} />;
+  if (myPlayer) {
+    return <StatsView player={myPlayer} onClear={clear} countStartDelayMs={countStartDelayMs} dbStatsAvailable={dbStatsAvailable} />;
+  }
+  return dbReady
+    ? <ProfileSetupForm onSave={save} />
+    : <ProfileUnavailable preparing={status?.setup_status === "preparing"} />;
 }
