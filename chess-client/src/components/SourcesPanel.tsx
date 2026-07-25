@@ -88,7 +88,10 @@ function dayIndex(d: string): number {
 }
 
 function CoverageTimeline({ sources }: { sources: SourceStatus[] }) {
-  const shown = sources.filter((s) => s.enabled || s.items > 0);
+  // The timeline is the *active coverage plan*, so it tracks the enabled set:
+  // disabling a source drops its band right away (previously an imported-but-
+  // disabled source lingered via an `items > 0` clause).
+  const shown = sources.filter((s) => s.enabled);
   if (shown.length === 0) return null;
 
   // Schematic (not to scale), but ordered by start date: deep-history sources
@@ -220,8 +223,13 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
   const [pendingEnabled, setPendingEnabled] = useState<boolean | null>(null);
   const shownEnabled = pendingEnabled ?? source.enabled;
 
-  // Show the acknowledgment gate when turning a not-yet-acknowledged source on.
-  const needsAck = !shownEnabled && !source.credit_acked;
+  // Show the acknowledgment gate only when turning on a source that has never
+  // been acknowledged AND never imported anything — i.e. a genuine first enable.
+  // A source that's been used before (items > 0, possibly enabled via the CLI or
+  // an older build that left credit_acked false) must re-enable straight from the
+  // toggle; otherwise the toggle sits disabled behind the ack panel and clicking
+  // it does nothing. Enabling always re-records the ack anyway.
+  const needsAck = !shownEnabled && !source.credit_acked && source.items === 0;
 
   async function toggleEnabled() {
     const next = !shownEnabled;
