@@ -1364,6 +1364,42 @@ async fn resume_interrupted_setup(state: &AppState) {
         return;
     }
 
+    // Stale-sentinel self-heal (#143). If the DB already holds games and no enabled
+    // source still owes work — every one has a recorded run and nothing downloaded
+    // is left unimported — the first-run finished and this sentinel is stale (a
+    // wizard that didn't clear it, or a DB populated out-of-band). Clear it and go
+    // Idle rather than resuming (which would needlessly re-import) or showing
+    // "preparing" on a healthy populated database. This also un-arms the startup
+    // auto-delete and restores the snapshot guard's fast path for this DB.
+    let owed: i64 = state
+        .reads
+        .run(|c| {
+            c.query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM sources WHERE enabled = TRUE AND last_run IS NULL)
+                  + (SELECT COUNT(*) FROM source_items si JOIN sources s ON s.key = si.source_key
+                     WHERE s.enabled = TRUE AND si.downloaded = TRUE AND si.imported = FALSE)",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map_err(|e| anyhow::anyhow!(e))
+        })
+        .await
+        .unwrap_or(0);
+    let has_games: bool = state
+        .reads
+        .run(|c| -> anyhow::Result<bool> {
+            Ok(c.query_row("SELECT 1 FROM games LIMIT 1", [], |_| Ok(())).is_ok())
+        })
+        .await
+        .unwrap_or(false);
+    if has_games && owed == 0 {
+        crate::jobs::remove_setup_sentinel(&state.db_path);
+        *state.setup.lock().unwrap() = SetupPhase::Idle;
+        eprintln!("First-run setup already complete (populated database, nothing pending) — cleared a stale setup marker.");
+        return;
+    }
+
     let imported_now: u64 = state
         .reads
         .run(|c| {

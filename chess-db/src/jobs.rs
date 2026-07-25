@@ -324,6 +324,22 @@ pub fn read_setup_sentinel(db: &Path) -> (u32, u64) {
 pub fn remove_setup_sentinel(db: &Path) { let _ = std::fs::remove_file(setup_sentinel_path(db)); }
 pub fn setup_sentinel_present(db: &Path) -> bool { setup_sentinel_path(db).exists() }
 
+/// Whether the database holds at least one game. Cheap (LIMIT 1, no full scan).
+fn db_has_games(conn: &Connection) -> bool {
+    conn.query_row("SELECT 1 FROM games LIMIT 1", [], |_| Ok(())).is_ok()
+}
+
+/// A first-run load is *disposable* — safe to skip the pre-op safety snapshot and
+/// to let the startup safety-net wipe the DB on an open failure — only while the
+/// setup sentinel is present AND the database is still empty. Once it holds games
+/// (a genuine partial load, or a STALE sentinel left on a populated DB, #143) the
+/// data must be protected: take the snapshot regardless of the sentinel. Because
+/// `serve` restores a snapshot before opening, a populated DB then always has a
+/// restore point, so a corrupting op recovers instead of being auto-deleted.
+fn setup_load_is_disposable(conn: &Connection, db: &Path) -> bool {
+    setup_sentinel_present(db) && !db_has_games(conn)
+}
+
 /// Delete the database and every sidecar file (WAL, any safety snapshot, and the
 /// setup sentinel) — used by the reset path and the startup safety-net to start
 /// from a clean slate. Best-effort per file.
@@ -1200,7 +1216,7 @@ fn run_import_guarded(
     run: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
     let snapshotted =
-        bulk && !setup_sentinel_present(db) && make_safety_snapshot(conn, db, reporter);
+        bulk && !setup_load_is_disposable(conn, db) && make_safety_snapshot(conn, db, reporter);
     let res = run();
     if snapshotted {
         match &res {
@@ -1228,7 +1244,7 @@ pub fn run_index_positions_guarded(
     let pending = crate::importer::pending_position_count(conn, rebuild).unwrap_or(0);
     let snapshotted = fast
         && (rebuild || pending >= FAST_INDEX_SNAPSHOT_THRESHOLD)
-        && !setup_sentinel_present(db)
+        && !setup_load_is_disposable(conn, db)
         && make_safety_snapshot(conn, db, reporter);
     let res = crate::importer::index_positions(conn, depth, rebuild, fast, reporter);
     if snapshotted {
@@ -1365,6 +1381,27 @@ mod setup_sentinel_tests {
         let db = tmp_db("legacy");
         std::fs::write(setup_sentinel_path(&db), b"1").unwrap();
         assert_eq!(read_setup_sentinel(&db), (1, 0));
+    }
+
+    // #143: the snapshot guard must NOT treat a populated database as a disposable
+    // first-run load just because a (possibly stale) sentinel is present.
+    #[test]
+    fn populated_db_is_not_a_disposable_load_even_with_sentinel() {
+        let db = tmp_db("disposable");
+        let conn = crate::db::open(&db).unwrap();
+        crate::db::schema::init(&conn).unwrap();
+
+        // No sentinel → never disposable (always snapshot).
+        assert!(!setup_load_is_disposable(&conn, &db));
+
+        // Sentinel + empty DB → disposable: a genuine fresh first-run load.
+        write_setup_sentinel(&db);
+        assert!(setup_load_is_disposable(&conn, &db));
+
+        // Sentinel + games present → NOT disposable: real data must be protected.
+        conn.execute_batch("INSERT INTO games (id, date, pgn) VALUES (1, '2020-01-01', 'x');")
+            .unwrap();
+        assert!(!setup_load_is_disposable(&conn, &db));
     }
 }
 
