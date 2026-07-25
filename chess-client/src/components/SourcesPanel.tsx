@@ -2,10 +2,69 @@ import { useState, useEffect, useCallback } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   getSources,
+  getSchedule,
+  setScheduleTime,
   setSourceEnabled,
   setSourceWindow,
 } from "../api";
-import type { SourceStatus } from "../types";
+import type { SourceStatus, ScheduleInfo } from "../types";
+
+// ── Update schedule control (#194) ────────────────────────────────────────────
+
+function minutesToHHMM(m: number): string {
+  const h = Math.floor(m / 60), mm = m % 60;
+  return `${String(h).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+function hhmmToMinutes(s: string): number | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(s.trim());
+  if (!m) return null;
+  const h = +m[1], mm = +m[2];
+  return h > 23 || mm > 59 ? null : h * 60 + mm;
+}
+function relativeWhen(localIso: string): string {
+  const diffMin = Math.max(0, Math.round((new Date(localIso).getTime() - Date.now()) / 60000));
+  if (diffMin < 60) return `in ${diffMin} min`;
+  const h = Math.round(diffMin / 60);
+  return h < 24 ? `in ${h}h` : `in ${Math.round(h / 24)}d`;
+}
+
+// Feeds are checked once a day at a user-chosen off-peak time; a missed check
+// (machine off) runs at the next start. This exposes and edits that time (#194).
+function ScheduleControl() {
+  const [sched, setSched] = useState<ScheduleInfo | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(() => { getSchedule().then(setSched).catch(() => {}); }, []);
+  useEffect(() => { load(); }, [load]);
+
+  if (!sched) return null;
+
+  async function onTimeChange(v: string) {
+    const mins = hhmmToMinutes(v);
+    if (mins == null || mins === sched!.daily_minute) return;
+    setSaving(true);
+    try { await setScheduleTime(mins); load(); } finally { setSaving(false); }
+  }
+
+  return (
+    <div className="bg-surface-container-low rounded-xl border border-outline-variant p-4 flex flex-wrap items-center gap-x-4 gap-y-1">
+      <label className="text-body-sm text-on-surface flex items-center gap-2">
+        Check feeds for updates daily at
+        <input
+          key={sched.daily_minute}
+          type="time"
+          defaultValue={minutesToHHMM(sched.daily_minute)}
+          onBlur={(e) => void onTimeChange(e.target.value)}
+          disabled={saving}
+          className="h-8 px-2 rounded-sm bg-surface-container text-on-surface font-mono border border-outline focus:outline-none focus:border-primary disabled:opacity-40"
+        />
+      </label>
+      <div className="text-label-sm text-on-surface-variant">
+        Next check {relativeWhen(sched.next_check)} · a missed check (machine off) runs at the next start.
+      </div>
+    </div>
+  );
+}
 
 /** Open a source's homepage (about / licence) in the OS browser. A plain
  *  <a target="_blank"> doesn't reliably open externally from the Tauri webview,
@@ -352,6 +411,7 @@ export default function SourcesPanel({ onMutated }: { onMutated?: () => void }) 
 
   return (
     <div className="space-y-4">
+      <ScheduleControl />
       <CoverageTimeline sources={sources} />
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
         {sources.map((s) => (

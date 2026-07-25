@@ -254,6 +254,18 @@ export interface SourceStatus {
   last_import: LastImport | null;
 }
 
+/** The update-check schedule + FIDE-list refresh status (#194). */
+export interface ScheduleInfo {
+  /** Off-peak daily check time, minutes past local midnight (0–1439). */
+  daily_minute: number;
+  /** Next occurrence of that time (local ISO) — when feeds are next checked. */
+  next_check: string;
+  /** When the local FIDE list was last refreshed (ISO), or null. */
+  fide_last_refreshed: string | null;
+  /** Whether a FIDE-list refresh is currently due (monthly cadence). */
+  fide_due: boolean;
+}
+
 export interface LastImport {
   /** Source-native id: a TWIC issue number, a Lichess `YYYY-MM`, an Ajedrez part. */
   external_id: string;

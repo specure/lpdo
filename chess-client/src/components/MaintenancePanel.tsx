@@ -6,8 +6,8 @@ import { listen } from "@tauri-apps/api/event";
 import { useSidecarProgress } from "../hooks/useSidecarProgress";
 import SourcesPanel from "./SourcesPanel";
 import MergePlayersDialog from "./MergePlayersDialog";
-import { StatusInfo, SourceStatus } from "../types";
-import { SIDECAR } from "../api";
+import { StatusInfo, SourceStatus, ScheduleInfo } from "../types";
+import { SIDECAR, getSchedule } from "../api";
 
 interface Props {
   onRunWizard: () => void;
@@ -379,12 +379,28 @@ function DedupPlayersSection({ onMutated }: { onMutated?: () => void }) {
 
 function FideRefreshSection() {
   const progress = useSidecarProgress("maint-fide-refresh");
+  // Last-refreshed + due status (#194): the FIDE list is scheduled housekeeping
+  // like the feeds, so surface when it last updated and whether one's due.
+  const [sched, setSched] = useState<ScheduleInfo | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getSchedule().then((s) => { if (!cancelled) setSched(s); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [progress.done]);
+  const lastRefreshed = sched?.fide_last_refreshed?.slice(0, 10) ?? null;
+
   return (
     <SectionCard title="FIDE player list">
       <p className="text-body-sm text-on-surface-variant">
         Download the latest official FIDE player list. It also refreshes automatically about once a
         month; use this to update it now (it powers name normalisation and FIDE-ID matching).
       </p>
+      {sched && (
+        <p className="text-label-sm text-on-surface-variant">
+          {lastRefreshed ? `Last refreshed ${lastRefreshed}` : "Never refreshed"}
+          {sched.fide_due && <span className="text-warning"> · update due</span>}
+        </p>
+      )}
       {!progress.running && !progress.done && (
         <ActionButton onClick={() => void progress.run(["fide", "refresh"])}>
           Update FIDE list
