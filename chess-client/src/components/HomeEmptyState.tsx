@@ -9,6 +9,7 @@
 
 import { useState, useEffect } from "react";
 import DatabaseStats from "./DatabaseStats";
+import SourceUpdates from "./SourceUpdates";
 import MyStatsWidget from "./MyStatsWidget";
 import { StatusInfo, Job } from "../types";
 import { getStatus, getJobs, resetSetup } from "../api";
@@ -379,7 +380,11 @@ export default function HomeEmptyState({
             style={{ animationDelay: "320ms" }}
           >
             <h2 className="text-title-md text-on-surface mb-4">Database</h2>
-            <DatabaseStats status={live} prominent countStartDelayMs={320} />
+            {/* Games + Players tiles; the per-source "Latest updates" list below
+                replaces the old TWIC-only tile so it covers every enabled feed
+                (TWIC, Lichess Broadcasts, …) with its last item + games (#176). */}
+            <DatabaseStats status={live} prominent countStartDelayMs={320} showFeedTile={false} />
+            <SourceUpdates reloadKey={live?.games} />
           </div>
         )}
 

@@ -12,10 +12,13 @@ interface Props {
   prominent?: boolean;
   /** Delay number animations to align with a parent rise-in. */
   countStartDelayMs?: number;
+  /** Show the hardcoded "Latest TWIC issue" tile. Off on the Home screen, where
+   *  the per-source SourceUpdates list covers all feeds instead (#176). */
+  showFeedTile?: boolean;
 }
 
 export default function DatabaseStats({
-  status, prominent = false, countStartDelayMs = 0,
+  status, prominent = false, countStartDelayMs = 0, showFeedTile = true,
 }: Props) {
   if (!status) {
     return <p className="text-body-sm text-on-surface-variant">Server offline — statistics unavailable.</p>;
@@ -42,7 +45,7 @@ export default function DatabaseStats({
   const twicTile   = `${tileBase} hover:bg-secondary-container/40`;
 
   return (
-    <div className="grid grid-cols-3 gap-2">
+    <div className={`grid gap-2 ${showFeedTile ? "grid-cols-3" : "grid-cols-2"}`}>
       <div className={gamesTile}>
         <div className="text-label-sm text-on-surface-variant uppercase tracking-wider">Games</div>
         <div className={numberClass}><CountUp value={status.games} startDelayMs={countStartDelayMs} /></div>
@@ -51,23 +54,25 @@ export default function DatabaseStats({
         <div className="text-label-sm text-on-surface-variant uppercase tracking-wider">Players</div>
         <div className={numberClass}><CountUp value={status.players} startDelayMs={countStartDelayMs} /></div>
       </div>
-      <div className={twicTile}>
-        <div className="text-label-sm text-on-surface-variant uppercase tracking-wider">Latest TWIC issue</div>
-        <div className={numberClass}>
-          {status.last_twic_issue != null ? (
-            <>
-              {/* An issue number is an identifier, not a tally — fade it in
-                  plainly (no thousands separator, no count-up from zero). */}
-              #<CountUp value={status.last_twic_issue} plain mode="fade" startDelayMs={countStartDelayMs} />
-              {lastImported && (
-                <span className="text-label-sm text-on-surface-variant font-sans ml-2">({lastImported})</span>
-              )}
-            </>
-          ) : (
-            <span className="text-on-surface-variant">—</span>
-          )}
+      {showFeedTile && (
+        <div className={twicTile}>
+          <div className="text-label-sm text-on-surface-variant uppercase tracking-wider">Latest TWIC issue</div>
+          <div className={numberClass}>
+            {status.last_twic_issue != null ? (
+              <>
+                {/* An issue number is an identifier, not a tally — fade it in
+                    plainly (no thousands separator, no count-up from zero). */}
+                #<CountUp value={status.last_twic_issue} plain mode="fade" startDelayMs={countStartDelayMs} />
+                {lastImported && (
+                  <span className="text-label-sm text-on-surface-variant font-sans ml-2">({lastImported})</span>
+                )}
+              </>
+            ) : (
+              <span className="text-on-surface-variant">—</span>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
