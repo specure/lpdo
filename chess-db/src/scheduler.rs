@@ -166,6 +166,16 @@ fn fmt_dt(dt: NaiveDateTime) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
+/// The next occurrence of the daily scheduled time from now (today's if it's
+/// still ahead, otherwise tomorrow's). Powers the "next check" readout on the
+/// Sources page (#194).
+pub fn next_scheduled(daily_minute: i64) -> NaiveDateTime {
+    let now = chrono::Local::now().naive_local();
+    let (h, m) = hm(daily_minute);
+    let today = now.date().and_hms_opt(h, m, 0).unwrap_or(now);
+    if now < today { today } else { today + ChronoDuration::days(1) }
+}
+
 /// The off-peak clock time (minutes past local midnight) that governs the daily
 /// per-source refresh cadence. Kept in the `schedule` table (default 240 = 04:00).
 async fn read_daily_minute(reads: &ReadPool) -> anyhow::Result<i64> {
@@ -177,4 +187,24 @@ async fn read_daily_minute(reads: &ReadPool) -> anyhow::Result<i64> {
             .map_err(|e| anyhow::anyhow!(e))
         })
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Timelike;
+
+    #[test]
+    fn next_scheduled_uses_the_clock_time_and_is_in_the_future() {
+        let n = next_scheduled(4 * 60 + 30); // 04:30
+        assert_eq!((n.hour(), n.minute()), (4, 30), "keeps the configured clock time");
+        assert!(n > chrono::Local::now().naive_local(), "always the next occurrence, never past");
+    }
+
+    #[test]
+    fn daily_minute_wraps_into_a_valid_clock_time() {
+        assert_eq!(hm(240), (4, 0));
+        assert_eq!(hm(1439), (23, 59));
+        assert_eq!(hm(1440), (0, 0)); // wraps
+    }
 }

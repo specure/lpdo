@@ -69,11 +69,21 @@ export function getJobs(): Promise<Job[]> {
 
 // ── Sources (multi-source import catalog, #40) ────────────────────────────────
 
-import type { SourceStatus, Job, StatusInfo } from "./types";
+import type { SourceStatus, Job, StatusInfo, ScheduleInfo } from "./types";
 
 /** The curated source catalog + this database's state for each. */
 export function getSources(): Promise<SourceStatus[]> {
   return apiGet<SourceStatus[]>("/sources");
+}
+
+/** The update-check schedule + FIDE-list refresh status (#194). */
+export function getSchedule(): Promise<ScheduleInfo> {
+  return apiGet<ScheduleInfo>("/schedule");
+}
+
+/** Set the daily update-check time (minutes past local midnight). */
+export async function setScheduleTime(dailyMinute: number): Promise<void> {
+  await postJson("/schedule", { daily_minute: dailyMinute });
 }
 
 /** Server status, including `setup_status` (the first-run readiness state). */

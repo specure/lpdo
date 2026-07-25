@@ -708,6 +708,81 @@ async fn set_source_enabled_handler(
     )))
 }
 
+// ── Update schedule (#194) ────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct ScheduleInfo {
+    /// Off-peak daily check time, minutes past local midnight (0–1439).
+    daily_minute: i64,
+    /// Next occurrence of that time (local ISO) — when feeds are next checked.
+    next_check: String,
+    /// When the local FIDE player list was last refreshed (ISO), or null.
+    fide_last_refreshed: Option<String>,
+    /// Whether a FIDE-list refresh is currently due (monthly cadence).
+    fide_due: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct SetScheduleBody {
+    /// Minutes past local midnight for the daily check (wrapped into 0–1439).
+    daily_minute: i64,
+}
+
+/// The daily update-check time + next run + FIDE-list refresh status (#194).
+async fn get_schedule_handler(State(state): State<AppState>) -> ApiResult<ScheduleInfo> {
+    let (daily_minute, fide_last_refreshed, fide_due) = state
+        .reads
+        .run(|conn| {
+            let dm: i64 = conn
+                .query_row("SELECT daily_minute FROM schedule WHERE id = 1", [], |r| {
+                    Ok(r.get::<_, i32>(0)? as i64)
+                })
+                .unwrap_or(240);
+            let fide: Option<String> = conn
+                .query_row(
+                    "SELECT CAST(fide_refreshed_at AS VARCHAR) FROM schedule WHERE id = 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .ok()
+                .flatten();
+            let due = crate::fide::refresh_due(conn).unwrap_or(false);
+            Ok::<_, (StatusCode, String)>((dm, fide, due))
+        })
+        .await?;
+    Ok(Json(ScheduleInfo {
+        daily_minute,
+        next_check: crate::scheduler::next_scheduled(daily_minute)
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string(),
+        fide_last_refreshed,
+        fide_due,
+    }))
+}
+
+/// Set the daily update-check time (#194).
+async fn set_schedule_handler(
+    State(state): State<AppState>,
+    Json(body): Json<SetScheduleBody>,
+) -> ApiResult<serde_json::Value> {
+    let dm = body.daily_minute.rem_euclid(1440);
+    state
+        .writer
+        .run(move |conn| {
+            conn.execute(
+                "UPDATE schedule SET daily_minute = ? WHERE id = 1",
+                duckdb::params![dm as i32],
+            )
+            .map_err(db_err)?;
+            Ok(msg(format!(
+                "Daily update check set to {:02}:{:02}.",
+                dm / 60,
+                dm % 60
+            )))
+        })
+        .await
+}
+
 async fn status_handler(State(state): State<AppState>) -> ApiResult<StatusInfo> {
     let db_path = state.db_path.display().to_string();
     let data_dir = state
@@ -1851,6 +1926,7 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         .route("/collections",                         get(collections_handler))
         .route("/sources",                             get(sources_handler))
         .route("/sources/{key}/enabled",               post(set_source_enabled_handler))
+        .route("/schedule",                            get(get_schedule_handler).post(set_schedule_handler))
         .route("/players",                             get(players_handler))
         .route("/players/{id}/stats",                  get(player_stats_handler))
         .route("/players/{keep_id}/merge/{drop_id}",   post(merge_players_handler))
