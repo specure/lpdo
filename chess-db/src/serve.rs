@@ -1346,9 +1346,10 @@ async fn import_upload_handler(
         "cleanup": true,
     });
     let id = state.jobs.submit("import_pgn".to_string(), import_params);
-    // A bulk (large/BYO) upload gets the full identity-first pipeline; a small
-    // upload gets the light pass (#167).
-    state.jobs.request_maintenance(bulk);
+    // One coalesced identity-first pass regardless of upload size — `dedup_games`
+    // is incremental (#—). A bulk upload still sets `skip_dedup` above so its
+    // games are deduped by that single pass rather than inline during import.
+    state.jobs.request_maintenance();
     // The client follows the import job for the upload→import handoff; the
     // coalesced maintenance jobs then appear and run on their own in the queue.
     Ok(Json(serde_json::json!({ "job_id": id })))
@@ -1490,10 +1491,10 @@ fn spawn_first_run_pipeline(
         ids.push(state.jobs.submit("sources_sync".into(), serde_json::json!({ "source": s.key })));
         keys.push(s.key.to_string());
     }
-    // First-run always gets the FULL identity-first maintenance pass, regardless
-    // of the enabled sources' kinds (a feeds-only setup would otherwise coalesce
-    // to the light pass). Coalesced with each sync's own request.
-    state.jobs.request_maintenance(true);
+    // First-run requests the one identity-first maintenance pass, coalesced with
+    // each sync's own request. There's a single pass now that `dedup_games` is
+    // incremental (#—) — no light/full distinction to force here.
+    state.jobs.request_maintenance();
     spawn_setup_watcher(state.clone(), ids.clone(), keys);
     ids
 }

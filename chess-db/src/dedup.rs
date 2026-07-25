@@ -242,6 +242,16 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, reporter: &Reporter) -> Res
     // Phase 1: find candidate pairs via SQL.
     // Candidates share (white_id, black_id, date) and their opening_lines
     // are equal or one is a proper prefix of the other.
+    //
+    // Incremental: `dedup_games` runs after every daily sync, but the self-join
+    // is O(N) over the whole table. `deduped` lets us skip pairs where BOTH
+    // sides were already vetted on a prior pass — a pair is a candidate only
+    // when at least one side is still unvetted (`IS NOT TRUE` covers FALSE and
+    // any stray NULL). Survivors are flipped to TRUE once the pass completes, so
+    // a subsequent daily run only re-examines games that arrived since. This is
+    // robust to id reuse: a new game (always written FALSE) paired with an old
+    // vetted game (TRUE) still satisfies the OR, so new duplicates of old games
+    // are caught regardless of which side gets the lower id.
     let spinner = reporter.spinner();
     spinner.set_message("Scanning for candidate duplicate pairs...");
     if reporter.is_json() { reporter.log("Scanning for candidate duplicate pairs..."); }
@@ -257,6 +267,7 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, reporter: &Reporter) -> Res
               AND g1.date = g2.date
               AND g1.result IS NOT DISTINCT FROM g2.result
               AND g1.id < g2.id
+              AND (g1.deduped IS NOT TRUE OR g2.deduped IS NOT TRUE)
              WHERE g1.opening_line = g2.opening_line
                 OR g2.opening_line LIKE g1.opening_line || ' %'
                 OR g1.opening_line LIKE g2.opening_line || ' %'",
@@ -278,6 +289,10 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, reporter: &Reporter) -> Res
     spinner.finish_and_clear();
 
     if candidates.is_empty() {
+        // No pairs to check, but the games examined this pass (any still-unvetted
+        // rows) are now vetted — mark them so future runs skip them. Without this
+        // a table of all-unique games would be rescanned in full every sync.
+        mark_vetted(conn, dry_run, reporter)?;
         reporter.done("No candidate duplicate pairs found.");
         return Ok(());
     }
@@ -351,6 +366,13 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, reporter: &Reporter) -> Res
 
     pb.finish_and_clear();
 
+    // A complete pass vetted every remaining unvetted game (survivors of a pair
+    // and games that had no candidate). Mark them so the next daily run only
+    // re-examines newly imported games. Reached only when the loop ran to the
+    // end — the cancel path above returns early without marking, so the next run
+    // re-checks the games it didn't reach.
+    mark_vetted(conn, dry_run, reporter)?;
+
     let summary = if dry_run {
         format!(
             "Dry run: {} would be deleted, {} pairs skipped (diverging moves).",
@@ -363,6 +385,22 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, reporter: &Reporter) -> Res
         )
     };
     reporter.done(&summary);
+    Ok(())
+}
+
+/// Flip every still-unvetted game to `deduped = TRUE` after a complete
+/// `dedup_games` pass. No-op on a dry run (a preview must not mutate state). On
+/// first run / upgrade this touches many rows (a one-time full rewrite); on
+/// daily runs only the games imported since the last pass are unvetted, so it's
+/// cheap.
+fn mark_vetted(conn: &Connection, dry_run: bool, reporter: &Reporter) -> Result<()> {
+    if dry_run {
+        return Ok(());
+    }
+    let spinner = reporter.spinner();
+    spinner.set_message("Marking games as deduplicated...");
+    conn.execute("UPDATE games SET deduped = TRUE WHERE deduped IS NOT TRUE", [])?;
+    spinner.finish_and_clear();
     Ok(())
 }
 
@@ -486,6 +524,87 @@ fn pick_survivor(rows: &[(u32, String, bool, Option<String>)]) -> usize {
         })
         .map(|(i, _)| i)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod dedup_games_tests {
+    use super::*;
+
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        conn
+    }
+
+    /// A game inserted as unvetted, dated, with the same players/opening as a
+    /// twin. `pgn` is a minimal tag section + movetext so extract_moves works.
+    fn insert_game(conn: &Connection, id: u32, moves: &str, deduped: bool) {
+        conn.execute(
+            "INSERT INTO games (id, white_id, black_id, date, result, opening_line, move_count, pgn, deduped)
+             VALUES (?, 1, 2, '2020-01-01', '1-0', 'e4', ?, ?, ?)",
+            duckdb::params![id, moves.split_whitespace().count() as i16,
+                format!("[White \"A\"]\n[Black \"B\"]\n\n{moves} 1-0"), deduped],
+        ).unwrap();
+    }
+
+    fn count_games(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM games", [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn removes_prefix_duplicate_and_marks_survivors_vetted() {
+        let conn = setup();
+        insert_game(&conn, 1, "e4 e5 Nf3", false);
+        insert_game(&conn, 2, "e4 e5 Nf3 Nc6", false); // extends game 1 → dup
+
+        dedup_games(&conn, false, &Reporter::silent()).unwrap();
+
+        assert_eq!(count_games(&conn), 1, "the shorter prefix game is removed");
+        // Every remaining game is now vetted.
+        let unvetted: i64 = conn
+            .query_row("SELECT COUNT(*) FROM games WHERE deduped IS NOT TRUE", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(unvetted, 0, "survivor is marked deduped after a complete pass");
+    }
+
+    #[test]
+    fn second_pass_only_rechecks_new_games() {
+        let conn = setup();
+        // First pass: two distinct games (different openings won't pair; use
+        // diverging moves so nothing is deleted but both get vetted).
+        insert_game(&conn, 1, "e4 e5 Nf3 Nc6", false);
+        insert_game(&conn, 2, "e4 e5 Nf3 d6", false);
+        dedup_games(&conn, false, &Reporter::silent()).unwrap();
+        assert_eq!(count_games(&conn), 2, "diverging games are both kept");
+
+        // A newly imported duplicate of game 1 (unvetted). The old games are now
+        // vetted; the pair (old vetted, new unvetted) must still be a candidate —
+        // proving the OR filter catches new dups of already-vetted games.
+        insert_game(&conn, 3, "e4 e5 Nf3 Nc6 Bb5", false); // extends game 1
+        dedup_games(&conn, false, &Reporter::silent()).unwrap();
+
+        // Game 1 (shorter) is removed as a prefix of game 3.
+        let ids: Vec<u32> = {
+            let mut s = conn.prepare("SELECT id FROM games ORDER BY id").unwrap();
+            s.query_map([], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect()
+        };
+        assert_eq!(ids, vec![2, 3], "new dup of an old vetted game is still caught");
+    }
+
+    #[test]
+    fn dry_run_does_not_mark_or_delete() {
+        let conn = setup();
+        insert_game(&conn, 1, "e4 e5 Nf3", false);
+        insert_game(&conn, 2, "e4 e5 Nf3 Nc6", false);
+
+        dedup_games(&conn, true, &Reporter::silent()).unwrap();
+
+        assert_eq!(count_games(&conn), 2, "dry run deletes nothing");
+        let unvetted: i64 = conn
+            .query_row("SELECT COUNT(*) FROM games WHERE deduped IS NOT TRUE", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(unvetted, 2, "dry run leaves games unvetted");
+    }
 }
 
 #[cfg(test)]
