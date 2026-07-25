@@ -247,6 +247,8 @@ export interface SourceStatus {
   last_status: string | null;
   /** Items (issues/files) imported for this source. */
   items: number;
+  /** Total games imported from this source across all items (pre-dedup, #176). */
+  imported_games: number;
   /** The most recently imported item — TWIC issue / Lichess month / Ajedrez part
    *  last ingested, with its date and game count (#176). Null if none yet. */
   last_import: LastImport | null;

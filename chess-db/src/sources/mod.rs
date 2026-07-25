@@ -350,6 +350,9 @@ pub struct SourceStatus {
     pub last_status: Option<String>,
     /// Items imported for this source.
     pub items: i64,
+    /// Total games imported from this source across all its items (sum of the
+    /// per-item counts; pre-dedup). Drives the per-source games metric (#176).
+    pub imported_games: i64,
     /// The most recently imported item for this source — the TWIC issue / Lichess
     /// month / Ajedrez part last ingested, with its date and how many games it
     /// brought. Drives the per-source "latest update" home tile (#176).
@@ -469,13 +472,14 @@ pub fn list_status(conn: &Connection) -> Result<Vec<SourceStatus>> {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .ok();
-        let items: i64 = conn
+        let (items, imported_games): (i64, i64) = conn
             .query_row(
-                "SELECT COUNT(*) FROM source_items WHERE source_key = ? AND imported = TRUE",
+                "SELECT COUNT(*), COALESCE(SUM(game_count), 0)
+                 FROM source_items WHERE source_key = ? AND imported = TRUE",
                 duckdb::params![s.key],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .unwrap_or(0);
+            .unwrap_or((0, 0));
         // Most recently imported item — newest by import time, id as a tiebreak.
         let last_import: Option<LastImport> = conn
             .query_row(
@@ -514,6 +518,7 @@ pub fn list_status(conn: &Connection) -> Result<Vec<SourceStatus>> {
             last_run,
             last_status,
             items,
+            imported_games,
             last_import,
         });
     }
@@ -784,6 +789,7 @@ mod register_tests {
 
         let twic = list_status(&conn).unwrap().into_iter().find(|s| s.key == "twic").unwrap();
         assert_eq!(twic.items, 2, "only imported items count");
+        assert_eq!(twic.imported_games, 300, "sum of imported items' game counts");
         let li = twic.last_import.expect("has a last import");
         assert_eq!(li.external_id, "1649", "newest imported item by import time");
         assert_eq!(li.game_count, 200);
