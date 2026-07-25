@@ -414,6 +414,24 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
       <div className="text-label-md text-on-surface-variant">{cadenceLabel(source)}</div>
       <div className={`text-label-md ${toneCls}`}>{st.text}</div>
 
+      {/* Per-source update metrics (#197): latest item + date and games
+          imported, shown here in the card rather than an aggregated block. */}
+      {source.last_import && (
+        <div className="flex items-baseline justify-between gap-2 text-label-sm bg-surface-container-high rounded-lg px-3 py-1.5">
+          <span className="text-on-surface-variant font-mono">
+            Latest {source.key === "twic" ? "#" : ""}{source.last_import.external_id}
+            {(() => {
+              const d = (source.last_import.published_at ?? source.last_import.imported_at)?.slice(0, 10);
+              return d ? ` · ${d}` : "";
+            })()}
+          </span>
+          <span className="text-on-surface font-mono shrink-0">
+            {source.imported_games.toLocaleString()}
+            <span className="text-on-surface-variant font-sans ml-1">games</span>
+          </span>
+        </div>
+      )}
+
       {/* Date window summary + edit */}
       <div className="flex items-center gap-2 bg-surface-container-high rounded-lg px-3 py-2 text-body-sm text-on-surface-variant">
         <span>games {windowLabel(source)}</span>

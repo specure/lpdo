@@ -6,7 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useSidecarProgress } from "../hooks/useSidecarProgress";
 import SourcesPanel from "./SourcesPanel";
 import MergePlayersDialog from "./MergePlayersDialog";
-import { StatusInfo, SourceStatus, ScheduleInfo } from "../types";
+import { StatusInfo, ScheduleInfo } from "../types";
 import { SIDECAR, getSchedule } from "../api";
 
 interface Props {
@@ -127,90 +127,25 @@ function DatabaseInfo({ status }: { status: StatusInfo | null }) {
         )}
       </div>
       {status ? (
-        <>
-          {/* Database-wide totals. Per-source metrics (TWIC/Lichess/…) moved to the
-              "By source" block below so related numbers sit together (#176). */}
-          <div className="grid grid-cols-3 gap-2">
-            {([
-              ["Games",     fmt(status.games)],
-              ["Players",   fmt(status.players)],
-              ["Positions", fmt(status.positions)],
-            ] as [string, string][]).map(([label, value]) => (
-              <div key={label} className="bg-surface-container rounded-sm px-3 py-2">
-                <div className="text-label-sm text-on-surface-variant uppercase tracking-wider">{label}</div>
-                <div className="text-body-md font-mono text-on-surface mt-0.5">{value}</div>
-              </div>
-            ))}
-          </div>
-          <SourceMetrics localImports={status.local_imports ?? 0} />
-        </>
+        // Database-wide totals. Per-source metrics live in each source's card on
+        // the Sources tab now (#197), not an aggregated block here.
+        <div className="grid grid-cols-2 gap-2">
+          {([
+            ["Games",         fmt(status.games)],
+            ["Players",       fmt(status.players)],
+            ["Positions",     fmt(status.positions)],
+            ["Local imports", fmt(status.local_imports ?? 0)],
+          ] as [string, string][]).map(([label, value]) => (
+            <div key={label} className="bg-surface-container rounded-sm px-3 py-2">
+              <div className="text-label-sm text-on-surface-variant uppercase tracking-wider">{label}</div>
+              <div className="text-body-md font-mono text-on-surface mt-0.5">{value}</div>
+            </div>
+          ))}
+        </div>
       ) : (
         <p className="text-body-sm text-on-surface-variant">Server offline — statistics unavailable.</p>
       )}
     </SectionCard>
-  );
-}
-
-// Per-source update metrics for the (technical) Maintenance page (#176): each
-// applicable source's latest item + date, item count, and games imported —
-// always visible, TWIC and Lichess Broadcasts grouped together instead of the
-// old TWIC-only tiles. A trailing row covers local (manual) PGN imports.
-function SourceMetrics({ localImports }: { localImports: number }) {
-  const [sources, setSources] = useState<SourceStatus[] | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/sources")
-      .then((r) => (r.ok ? r.json() : []))
-      .then((s: SourceStatus[]) => { if (!cancelled) setSources(s); })
-      .catch(() => { if (!cancelled) setSources([]); });
-    return () => { cancelled = true; };
-  }, []);
-
-  // Applicable = enabled or has imported data; feeds (recurring) before bulk.
-  const rows = (sources ?? [])
-    .filter((s) => s.enabled || s.items > 0)
-    .sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "feed" ? -1 : 1));
-  if (rows.length === 0 && localImports === 0) return null;
-
-  const itemNoun = (s: SourceStatus) =>
-    s.kind !== "feed" ? "files" : s.key === "twic" ? "issues" : "months";
-  const latest = (s: SourceStatus) => {
-    if (!s.last_import) return "—";
-    const id = s.key === "twic" ? `#${s.last_import.external_id}` : s.last_import.external_id;
-    const date = (s.last_import.published_at ?? s.last_import.imported_at)?.slice(0, 10);
-    return date ? `${id} · ${date}` : id;
-  };
-
-  return (
-    <div className="mt-4 space-y-1.5">
-      <div className="text-label-sm text-on-surface-variant uppercase tracking-wider">By source</div>
-      <div className="space-y-1">
-        {rows.map((s) => (
-          <div key={s.key} className="flex items-baseline justify-between gap-3 bg-surface-container rounded-sm px-3 py-2">
-            <div className="min-w-0">
-              <div className="text-body-sm text-on-surface truncate">
-                {s.name}
-                {!s.enabled && <span className="ml-2 text-label-sm text-on-surface-variant">(off)</span>}
-              </div>
-              <div className="text-label-sm text-on-surface-variant font-mono">{latest(s)}</div>
-            </div>
-            <div className="text-right shrink-0">
-              <div className="text-body-sm font-mono text-on-surface">
-                {s.imported_games.toLocaleString()}
-                <span className="text-label-sm text-on-surface-variant font-sans ml-1">games</span>
-              </div>
-              <div className="text-label-sm text-on-surface-variant">{s.items.toLocaleString()} {itemNoun(s)}</div>
-            </div>
-          </div>
-        ))}
-        {localImports > 0 && (
-          <div className="flex items-baseline justify-between gap-3 bg-surface-container rounded-sm px-3 py-2">
-            <div className="text-body-sm text-on-surface">Local imports</div>
-            <div className="text-label-sm text-on-surface-variant">{localImports.toLocaleString()} files</div>
-          </div>
-        )}
-      </div>
-    </div>
   );
 }
 
