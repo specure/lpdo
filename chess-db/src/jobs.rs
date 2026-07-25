@@ -296,9 +296,31 @@ pub(crate) fn reset_connections(writer: &ConnActor, reads: &ReadPool, db_path: P
 // imports can leave the database unopenable if interrupted, its presence lets the
 // daemon recognise a disposable, mid-initial-setup database and recover cleanly
 // (see the startup safety-net in `main.rs`) — never touching a populated DB.
+//
+// The file content is two integers — `"<resume_attempts> <imported_issue_count>"`
+// — used to auto-resume an interrupted first-run load on the next start (#134)
+// while capping a poison-job crash loop: the count is the durable progress
+// yardstick (imported issues only grow), so a resume that makes progress resets
+// the attempt counter and only a run that makes *no* progress across
+// `SETUP_RESUME_CAP` restarts gives up. A legacy `"1"` parses as (1, 0).
 
 pub fn setup_sentinel_path(db: &Path) -> PathBuf { with_suffix(db, ".setup-in-progress") }
-pub fn write_setup_sentinel(db: &Path) { let _ = std::fs::write(setup_sentinel_path(db), b"1"); }
+pub fn write_setup_sentinel(db: &Path) { set_setup_sentinel(db, 0, 0); }
+pub fn set_setup_sentinel(db: &Path, attempts: u32, imported: u64) {
+    let _ = std::fs::write(setup_sentinel_path(db), format!("{attempts} {imported}"));
+}
+/// `(resume_attempts, imported_issue_count)` recorded in the sentinel; `(0, 0)`
+/// if it's absent or unparseable.
+pub fn read_setup_sentinel(db: &Path) -> (u32, u64) {
+    let s = match std::fs::read_to_string(setup_sentinel_path(db)) {
+        Ok(s) => s,
+        Err(_) => return (0, 0),
+    };
+    let mut it = s.split_whitespace();
+    let attempts = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+    let imported = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+    (attempts, imported)
+}
 pub fn remove_setup_sentinel(db: &Path) { let _ = std::fs::remove_file(setup_sentinel_path(db)); }
 pub fn setup_sentinel_present(db: &Path) -> bool { setup_sentinel_path(db).exists() }
 
@@ -1306,6 +1328,44 @@ pub fn restore_snapshot_if_present(db: &Path) -> Result<()> {
     }
     eprintln!("Database restored from snapshot.");
     Ok(())
+}
+
+#[cfg(test)]
+mod setup_sentinel_tests {
+    use super::*;
+
+    fn tmp_db(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("lpdo-sentinel-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("t.db")
+    }
+
+    #[test]
+    fn round_trips_attempts_and_imported_count() {
+        let db = tmp_db("rt");
+        assert!(!setup_sentinel_present(&db));
+        assert_eq!(read_setup_sentinel(&db), (0, 0), "absent sentinel reads as (0, 0)");
+
+        write_setup_sentinel(&db); // fresh first-run: 0 attempts, 0 imported
+        assert!(setup_sentinel_present(&db));
+        assert_eq!(read_setup_sentinel(&db), (0, 0));
+
+        set_setup_sentinel(&db, 2, 12_345);
+        assert_eq!(read_setup_sentinel(&db), (2, 12_345));
+
+        remove_setup_sentinel(&db);
+        assert!(!setup_sentinel_present(&db));
+    }
+
+    #[test]
+    fn legacy_single_value_sentinel_parses() {
+        // Pre-#134 sentinels held just "1"; treat as 1 attempt, 0 imported so the
+        // first resume after an upgrade still evaluates progress correctly.
+        let db = tmp_db("legacy");
+        std::fs::write(setup_sentinel_path(&db), b"1").unwrap();
+        assert_eq!(read_setup_sentinel(&db), (1, 0));
+    }
 }
 
 #[cfg(test)]

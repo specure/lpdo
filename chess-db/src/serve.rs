@@ -1286,9 +1286,32 @@ async fn setup_start_handler(State(state): State<AppState>) -> ApiResult<serde_j
     crate::jobs::write_setup_sentinel(&state.db_path);
     *state.setup.lock().unwrap() = SetupPhase::Running;
 
+    let ids = spawn_first_run_pipeline(&state, &sources);
+    Ok(Json(serde_json::json!({ "job_ids": ids })))
+}
+
+/// Enqueue the first-run pipeline — a `download` + fast `import` per enabled
+/// source (deep-history first) — then request the coalesced identity-first
+/// maintenance tail and spawn the watcher that settles the setup phase. Returns
+/// the job ids.
+///
+/// Shared by the wizard's `/setup/start` and the startup resume (#134). Safe to
+/// re-run: imports are idempotent (the ledger skips already-imported issues), so
+/// a resumed pipeline continues a partly-loaded source instead of restarting it.
+///
+/// The coalesced tail (#131/#167) is requested rather than enqueued at a fixed
+/// position: first-run is a large import, so it gets the FULL identity-first
+/// pipeline (resolve-fide → dedup_players → normalise → dedup_games → index).
+/// Coalescing means a source enabled mid-wizard, or an own-PGN import, is covered
+/// by the same one pass that runs once every import drains — no maintenance
+/// stranded ahead of later imports.
+fn spawn_first_run_pipeline(
+    state: &AppState,
+    sources: &[&'static crate::sources::CatalogSource],
+) -> Vec<String> {
     let mut ids: Vec<String> = Vec::new();
     let mut keys: Vec<String> = Vec::new();
-    for s in &sources {
+    for s in sources {
         ids.push(state.jobs.submit("download".into(), serde_json::json!({ "source": s.key })));
         ids.push(state.jobs.submit(
             "import".into(),
@@ -1296,18 +1319,84 @@ async fn setup_start_handler(State(state): State<AppState>) -> ApiResult<serde_j
         ));
         keys.push(s.key.to_string());
     }
-    // Request the coalesced tail pass (#131/#167) instead of enqueuing the steps
-    // at a fixed queue position: first-run is a large import, so it gets the FULL
-    // identity-first pipeline (resolve-fide → dedup_players → normalise →
-    // dedup_games → index). Coalescing means a source enabled mid-wizard, or an
-    // own-PGN import, is covered by the same one pass that runs once every import
-    // drains — no maintenance stranded ahead of later imports. The setup watcher
-    // tracks only the import ids, so setup settles when imports finish and
-    // maintenance continues in the background (matching the Summary screen's copy).
     state.jobs.request_maintenance(true);
-
     spawn_setup_watcher(state.clone(), ids.clone(), keys);
-    Ok(Json(serde_json::json!({ "job_ids": ids })))
+    ids
+}
+
+/// A first-run load makes no forward progress across this many restarts before we
+/// stop auto-resuming it and fall back to `Failed` (offer a Reset) — a backstop
+/// against a job that panics mid-load on every boot (#134). "Progress" is the
+/// imported-issue count growing, so ordinary multi-session resumes (a user who
+/// closes the laptop night after night) never trip it; only a genuinely stuck
+/// load does.
+const SETUP_RESUME_CAP: u32 = 3;
+
+/// The attempt number for a resume, given the `(attempts, imported)` recorded on
+/// the last boot and the imported count observed now: forward progress resets the
+/// counter to 0, no progress increments it. A return `>= SETUP_RESUME_CAP` means
+/// give up (see [`resume_interrupted_setup`]).
+fn next_setup_attempt(prev_attempts: u32, prev_imported: u64, imported_now: u64) -> u32 {
+    if imported_now > prev_imported { 0 } else { prev_attempts + 1 }
+}
+
+/// Resume an interrupted first-run load (#134). The wizard sets `setup_completed`
+/// up front and marks the load with a sentinel that it clears on success; booting
+/// with the sentinel still present means the pipeline died mid-load. Rather than
+/// dead-end at `Failed` (whose only offered action is a destructive Reset that
+/// re-downloads everything), re-derive the remaining work from the durable ledger
+/// and resume it. A progress-aware attempt cap (`SETUP_RESUME_CAP`) prevents a
+/// poison job from boot→crash→boot forever.
+///
+/// Runs once at startup, before the HTTP server accepts requests. The unopenable-
+/// database case is already handled earlier (the `main.rs` safety-net wipes it and
+/// clears the sentinel); reaching here means the DB opened, so a resume is safe.
+async fn resume_interrupted_setup(state: &AppState) {
+    let sources = state
+        .reads
+        .run(crate::sources::enabled_sources_ordered)
+        .await
+        .unwrap_or_default();
+    if sources.is_empty() {
+        // Nothing enabled to resume (e.g. an "empty database" setup that should
+        // never have left a sentinel) — clear it and carry on idle.
+        crate::jobs::remove_setup_sentinel(&state.db_path);
+        return;
+    }
+
+    let imported_now: u64 = state
+        .reads
+        .run(|c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM source_items WHERE imported = TRUE",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n as u64)
+            .map_err(|e| anyhow::anyhow!(e))
+        })
+        .await
+        .unwrap_or(0);
+
+    let (prev_attempts, prev_imported) = crate::jobs::read_setup_sentinel(&state.db_path);
+    let attempts = next_setup_attempt(prev_attempts, prev_imported, imported_now);
+
+    if attempts >= SETUP_RESUME_CAP {
+        eprintln!(
+            "First-run setup has not progressed across {SETUP_RESUME_CAP} restarts \
+             ({imported_now} issue(s) imported) — not auto-resuming. Reset from the app to retry."
+        );
+        *state.setup.lock().unwrap() = SetupPhase::Failed;
+        return;
+    }
+
+    crate::jobs::set_setup_sentinel(&state.db_path, attempts, imported_now);
+    eprintln!(
+        "Resuming interrupted first-run setup ({} issue(s) imported so far).",
+        imported_now
+    );
+    *state.setup.lock().unwrap() = SetupPhase::Running;
+    let _ = spawn_first_run_pipeline(state, &sources);
 }
 
 /// Watch the first-run pipeline and settle the setup phase: on success, record
@@ -1605,20 +1694,19 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
     // sentinel).
     crate::scheduler::spawn(jobs.clone(), reads.clone(), db_path.clone());
 
-    // A leftover sentinel means a prior first-run setup didn't finish cleanly. The
-    // unbootable case was already handled by the startup safety-net (which would
-    // have reset + cleared it); reaching here with the sentinel present means the
-    // DB opened but the load was interrupted → present it as Failed so the user
-    // can reset.
-    let setup = Arc::new(std::sync::Mutex::new(
-        if crate::jobs::setup_sentinel_present(&db_path) {
-            SetupPhase::Failed
-        } else {
-            SetupPhase::Idle
-        },
-    ));
-
+    let setup = Arc::new(std::sync::Mutex::new(SetupPhase::Idle));
     let state = AppState { reads, writer, jobs, db_path, setup };
+
+    // A leftover sentinel means a prior first-run setup didn't finish cleanly. The
+    // unbootable case was already handled by the startup safety-net (which wipes +
+    // clears it); reaching here with the sentinel present means the DB opened but
+    // the load was interrupted. Resume it from the durable ledger (#134) rather
+    // than dead-ending at Failed — deep-history sources (Ajedrez) that were still
+    // downloading when the machine shut down continue instead of vanishing. The
+    // resume caps repeated no-progress attempts and falls back to Failed itself.
+    if crate::jobs::setup_sentinel_present(&state.db_path) {
+        resume_interrupted_setup(&state).await;
+    }
 
     let app = Router::new()
         .route("/status",                              get(status_handler))
@@ -1664,4 +1752,28 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
     println!("chess-db server listening on http://{}", addr);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod setup_resume_tests {
+    use super::{next_setup_attempt, SETUP_RESUME_CAP};
+
+    // Forward progress (more issues imported than last boot) resets the counter,
+    // so a user resuming a big load across several sessions never trips the cap.
+    #[test]
+    fn progress_resets_the_attempt_counter() {
+        assert_eq!(next_setup_attempt(2, 100, 250), 0);
+        assert_eq!(next_setup_attempt(0, 0, 1), 0);
+    }
+
+    // No new issues imported → increment; enough no-progress boots reach the cap.
+    #[test]
+    fn no_progress_climbs_to_the_cap() {
+        assert_eq!(next_setup_attempt(0, 100, 100), 1);
+        assert_eq!(next_setup_attempt(1, 100, 100), 2);
+        // A fresh count lower than recorded (e.g. a wipe) is not progress.
+        assert_eq!(next_setup_attempt(1, 100, 50), 2);
+        // Give-up boundary.
+        assert!(next_setup_attempt(SETUP_RESUME_CAP - 1, 100, 100) >= SETUP_RESUME_CAP);
+    }
 }
