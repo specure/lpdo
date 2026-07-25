@@ -652,12 +652,12 @@ async fn set_source_enabled_handler(
     // for the scheduler's next tick. Submit it BEFORE the enable write, so a second
     // feed enabled while the first is still importing queues right away instead of
     // waiting behind that import on the single writer. Skipped for bulk sources
-    // (Ajedrez has its own one-shot action, #196), during first-run (the sentinel;
-    // the wizard also sends sync=false), and if a sync is already in flight.
-    if body.enabled
-        && body.sync
-        && !crate::jobs::setup_sentinel_present(&state.db_path)
-    {
+    // (Ajedrez has its own one-shot action, #196), and if a sync is already in
+    // flight. NOT gated on the setup sentinel: the wizard's own enables pass
+    // sync=false, so an interactive re-enable during first-run (e.g. after
+    // disabling a feed mid-onboarding) must still queue a sync — the scheduler is
+    // held off during first-run, so this is the only thing that would.
+    if body.enabled && body.sync {
         let is_feed = crate::sources::get(&key)
             .map(|s| s.kind == crate::sources::SourceKind::Feed)
             .unwrap_or(false);
