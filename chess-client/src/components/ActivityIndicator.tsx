@@ -50,7 +50,12 @@ function jobLabel(j: Job): string {
       if (f) return c ? `Import ${f} → ${c}` : `Import ${f}`;
       return c ? `Import PGN → ${c}` : "Import PGN";
     }
-    case "maintenance_pending": return "Prepare database — resolve · dedup · normalise · index";
+    case "maintenance_pending": {
+      const full = (j.params as Record<string, unknown> | undefined)?.full === true;
+      return full
+        ? "Full maintenance — resolve FIDE · dedup players · normalise · dedup games · index"
+        : "Light maintenance — resolve FIDE · dedup players · normalise · index";
+    }
     case "players_import":     return "Import players";
     case "players_export":     return "Export players";
     case "backup":             return p.collection ? `Backup ${p.collection}` : "Backup";

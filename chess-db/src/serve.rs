@@ -1236,7 +1236,7 @@ async fn list_jobs_handler(State(state): State<AppState>) -> Json<serde_json::Va
     // so while an import is in flight it would otherwise be invisible. Surface a
     // synthetic "queued" pending row so the activity panel shows it's coming.
     // Only here (not in JobManager::list, which the scheduler introspects).
-    if state.jobs.maintenance_owed() {
+    if let Some(full) = state.jobs.maintenance_pending_level() {
         if let Some(arr) = jobs.as_array_mut() {
             arr.push(serde_json::json!({
                 "id": "maintenance-pending",
@@ -1247,7 +1247,9 @@ async fn list_jobs_handler(State(state): State<AppState>) -> Json<serde_json::Va
                 "message": "Runs after the import finishes",
                 "interruptible": false,
                 "cancellable": false,
-                "params": {},
+                // full → the identity+dedup pass; false → the light pass. Lets the
+                // activity panel name it clearly (#—).
+                "params": { "full": full },
             }));
         }
     }

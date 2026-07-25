@@ -532,8 +532,11 @@ impl JobManager {
     /// once the import queue drains). Surfaced in the activity panel as a pending
     /// row so the user can see maintenance is coming while an import is still in
     /// flight (#131).
-    pub fn maintenance_owed(&self) -> bool {
-        self.maintenance.lock().unwrap().requested
+    /// The owed maintenance level for the pending-row display: `Some(full)` when a
+    /// pass is queued (`true` = full identity+dedup, `false` = light), else `None`.
+    pub fn maintenance_pending_level(&self) -> Option<bool> {
+        let m = self.maintenance.lock().unwrap();
+        if m.requested { Some(m.full) } else { None }
     }
 
     /// Request post-import maintenance (#131). Idempotent: sets the "owed" flags;
