@@ -27,6 +27,29 @@ const LARGE_FILE_THRESHOLD: u64 = 100 * 1024 * 1024; // 100 MB
 /// bar freezing between per-file steps.
 const PROGRESS_UNITS_PER_ISSUE: u64 = 10_000;
 
+/// Context for the live progress *message* during a multi-file import: which file
+/// of how many is importing, and how many games earlier files already imported —
+/// so the message reads "File 1 of 2 — N games imported…" with a *cumulative*
+/// count that doesn't reset at each file boundary. A single-file import passes
+/// `{ file_index: 1, file_count: 1, games_base: 0 }` and reads "Imported N games…".
+#[derive(Clone, Copy)]
+struct ProgressLabel {
+    file_index: usize,
+    file_count: usize,
+    games_base: u64,
+}
+
+impl ProgressLabel {
+    fn message(&self, games_this_file: usize) -> String {
+        let total = self.games_base + games_this_file as u64;
+        if self.file_count > 1 {
+            format!("File {} of {} — {} games imported…", self.file_index, self.file_count, total)
+        } else {
+            format!("Imported {total} games…")
+        }
+    }
+}
+
 /// Total download size above which an import switches to *bulk mode* (drop the
 /// games indexes, defer position indexing to a single pass) instead of indexing
 /// inline per game. Sizing on bytes (≈ games) makes the decision self-adjust
@@ -632,7 +655,14 @@ pub fn import(
 
             let effective_depth = if bulk_mode { None } else { max_position_depth };
             let progress_base = completed * PROGRESS_UNITS_PER_ISSUE;
-            match import_issue(conn, *issue_id, collection_id, "public", &zip_path, effective_depth, &mut ctx, fast, &window, progress_base, total_units, reporter) {
+            // "File i of n" (1-based) with the games from earlier files as the
+            // base, so the live count is cumulative across files, not per-file.
+            let label = ProgressLabel {
+                file_index: completed as usize + 1,
+                file_count: issues.len(),
+                games_base: tot_imported as u64,
+            };
+            match import_issue(conn, *issue_id, collection_id, "public", &zip_path, effective_depth, &mut ctx, fast, &window, progress_base, total_units, label, reporter) {
                 // A single huge issue (one Ajedrez .7z is the whole database) can be
                 // cancelled mid-stream — `import_issue` then returns partial counts.
                 // Do NOT mark it imported: leave imported=FALSE so a re-sync
@@ -674,8 +704,15 @@ pub fn import(
             pb.inc(1);
             completed += 1;
             // Report on the same units frame as the within-issue byte progress so
-            // the bar stays monotonic across the issue boundary.
-            reporter.progress(completed * PROGRESS_UNITS_PER_ISSUE, total_units, format!("Imported {} / {} issues", completed, total));
+            // the bar stays monotonic, and reuse the same message style (cumulative
+            // count, "file i of n") so the boundary doesn't flip to a different
+            // format for a frame.
+            let boundary = ProgressLabel {
+                file_index: completed as usize,
+                file_count: total as usize,
+                games_base: tot_imported as u64,
+            };
+            reporter.progress(completed * PROGRESS_UNITS_PER_ISSUE, total_units, boundary.message(0));
         }
         Ok(())
     })();
@@ -893,7 +930,8 @@ pub fn import_pgn(
             let effective_depth = if bulk_mode { None } else { max_position_depth };
             // Manual PGN imports are not date-filtered (unbounded window).
             let manual_window = crate::sources::DateWindow::default();
-            match process_pgn_stream(conn, issue_id, collection_id, visibility, src, effective_depth, &mut ctx, fast, &manual_window, prog_size, &bytes_read, 0, PROGRESS_UNITS_PER_ISSUE, reporter) {
+            let label = ProgressLabel { file_index: 1, file_count: 1, games_base: 0 };
+            match process_pgn_stream(conn, issue_id, collection_id, visibility, src, effective_depth, &mut ctx, fast, &manual_window, prog_size, &bytes_read, 0, PROGRESS_UNITS_PER_ISSUE, label, reporter) {
                 Ok((imported, skipped_dups, skipped_ns, skipped_window)) => {
                     conn.execute(
                         "UPDATE source_items SET imported = TRUE, imported_at = NOW(), game_count = ? WHERE id = ?",
@@ -1132,6 +1170,7 @@ fn import_issue(
     // This issue's slice of the overall progress bar (see PROGRESS_UNITS_PER_ISSUE).
     progress_base: u64,
     progress_total: u64,
+    label: ProgressLabel,
     reporter: &Reporter,
 ) -> Result<(usize, usize, usize, usize)> {
     // Delete any games written during a previous interrupted run of this issue.
@@ -1158,6 +1197,7 @@ fn import_issue(
         &counter,
         progress_base,
         progress_total,
+        label,
         // `sub_step` shares the parent's sink (so progress flows to the activity
         // bar) and its cancel flag (so the per-batch cancel check can still stop a
         // huge single-file import mid-stream, #157), while muting terminal `done`.
@@ -1280,6 +1320,8 @@ fn process_pgn_stream(
     // byte fraction, unchanged from before the frame existed.
     progress_base: u64,
     progress_total: u64,
+    // Cumulative-count + "file X of Y" context for the progress message.
+    label: ProgressLabel,
     reporter: &Reporter,
 ) -> Result<(usize, usize, usize, usize)> {
     // Comments, NAGs and variations are preserved by the visitor (see
@@ -1460,14 +1502,10 @@ fn process_pgn_stream(
                 reporter.progress(
                     progress_base + frac as u64,
                     progress_total,
-                    format!("Imported {total_games} games…"),
+                    label.message(total_games),
                 );
             } else {
-                reporter.progress(
-                    total_games as u64,
-                    0,
-                    format!("Imported {total_games} games…"),
-                );
+                reporter.progress(total_games as u64, 0, label.message(total_games));
             }
             // Cooperative cancellation (#157): break on a batch boundary. The
             // batch above was just flushed/committed, so stopping here can't
@@ -1779,6 +1817,25 @@ fn extract_pgn_from_zip(zip_path: &Path) -> Result<Vec<u8>> {
     }
 
     anyhow::bail!("No PGN file found in zip: {}", zip_path.display())
+}
+
+#[cfg(test)]
+mod progress_label_tests {
+    use super::*;
+
+    #[test]
+    fn multi_file_shows_file_position_and_cumulative_count() {
+        // File 2 of 2, with 2_780_000 games already imported by file 1: the count
+        // continues from there rather than resetting.
+        let label = ProgressLabel { file_index: 2, file_count: 2, games_base: 2_780_000 };
+        assert_eq!(label.message(15_000), "File 2 of 2 — 2795000 games imported…");
+    }
+
+    #[test]
+    fn single_file_keeps_the_plain_message() {
+        let label = ProgressLabel { file_index: 1, file_count: 1, games_base: 0 };
+        assert_eq!(label.message(42), "Imported 42 games…");
+    }
 }
 
 #[cfg(test)]
