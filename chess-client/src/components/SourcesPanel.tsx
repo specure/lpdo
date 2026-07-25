@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useSyncExternalStore } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   getSources,
@@ -10,6 +10,36 @@ import {
   setSourceWindow,
 } from "../api";
 import type { SourceStatus, ScheduleInfo } from "../types";
+
+// ── Pending toggle intents (survives page switches) ───────────────────────────
+//
+// Enabling/disabling a source is a tiny write that serializes on the single
+// writer, so during another source's long import it can land minutes later — the
+// GUI must show the *chosen* state meanwhile, not the stale persisted one. That
+// optimistic state can't live in the card component: switching to Home unmounts
+// the panel and would drop it, so on return the toggle snapped back. Keep it in a
+// module-level store instead (outlives mount/unmount) and clear each intent once
+// the server state catches up to it. Full app reload still starts clean, which is
+// fine — by then the writer has long drained.
+const pendingIntents = new Map<string, boolean>();
+let intentsVersion = 0;
+const intentListeners = new Set<() => void>();
+function setIntent(key: string, val: boolean | null) {
+  if (val === null) pendingIntents.delete(key);
+  else pendingIntents.set(key, val);
+  intentsVersion++;
+  intentListeners.forEach((l) => l());
+}
+function subscribeIntents(l: () => void) {
+  intentListeners.add(l);
+  return () => { intentListeners.delete(l); };
+}
+/** Re-renders the caller whenever any intent changes; returns the intent for
+ *  `key` (or undefined). */
+function usePendingIntent(key: string): boolean | undefined {
+  useSyncExternalStore(subscribeIntents, () => intentsVersion);
+  return pendingIntents.get(key);
+}
 
 // ── Update schedule control (#194) ────────────────────────────────────────────
 
@@ -353,15 +383,14 @@ function SourceCard({ source, hasActiveSync, onChanged }: { source: SourceStatus
   const [editing, setEditing] = useState(false);
   const [ackChecked, setAckChecked] = useState(source.credit_acked);
   const [busy, setBusy] = useState(false);
-  // Optimistic enabled state while the toggle is in flight (#191): the write
-  // serializes on the writer, so during a long import of another source it may
-  // land a bit later — show the chosen state immediately rather than snapping
-  // back. Cleared once the refetched source reflects the change.
-  //
-  // A live click's `pendingEnabled` wins; otherwise a source with an active sync
-  // reads as enabled even before its flag write lands (see `syncingKeys` in the
-  // panel), so navigating away and back doesn't show a syncing source as off.
-  const [pendingEnabled, setPendingEnabled] = useState<boolean | null>(null);
+  // Optimistic enabled state while the toggle's write is in flight (#191). It
+  // serializes on the single writer, so during another source's long import it
+  // can land minutes later — show the chosen state meanwhile. The intent lives in
+  // a module-level store (see top of file) so it survives a switch to Home and
+  // back. If there's no pending intent, a source with an active sync still reads
+  // as enabled (that job exists only because it was enabled), which also survives
+  // navigation since it's derived from the polled job list.
+  const pendingEnabled = usePendingIntent(source.key);
   const shownEnabled = pendingEnabled ?? (source.enabled || hasActiveSync);
 
   // Show the acknowledgment gate only when turning on a source that has never
@@ -374,30 +403,31 @@ function SourceCard({ source, hasActiveSync, onChanged }: { source: SourceStatus
 
   async function toggleEnabled() {
     const next = !shownEnabled;
-    setPendingEnabled(next);   // optimistic — reflect the choice at once
-    setBusy(true);             // and lock the toggle so it can't be re-fired
+    setIntent(source.key, next);  // optimistic — reflect the choice at once
+    setBusy(true);                // and lock the toggle so it can't be re-fired
     try {
       // credit_acked only matters when enabling (records the attribution ack).
       await setSourceEnabled(source.key, next, next);
       onChanged();
     } catch {
-      setPendingEnabled(null); // revert the optimistic flip on failure
+      setIntent(source.key, null); // revert the optimistic flip on failure
     } finally {
       setBusy(false);
     }
   }
 
-  // Drop the optimistic override once the derived server state matches it. Uses
-  // the same (enabled || hasActiveSync) signal as `shownEnabled`, so: an ENABLE
+  // Drop the optimistic intent once the derived server state matches it. Uses the
+  // same (enabled || hasActiveSync) signal as `shownEnabled`, so: an ENABLE
   // clears as soon as the sync shows active (well before its flag lands), while a
   // DISABLE holds until BOTH the flag is off AND the cancelled sync has left the
-  // job list — avoiding a flip back to "on" during the ~poll-interval cancel gap.
+  // job list — so disabling TWIC mid-Lichess-import keeps reading "off" (even
+  // after a page switch) until that write actually lands.
   useEffect(() => {
     const serverShown = source.enabled || hasActiveSync;
-    if (pendingEnabled !== null && serverShown === pendingEnabled) {
-      setPendingEnabled(null);
+    if (pendingEnabled !== undefined && serverShown === pendingEnabled) {
+      setIntent(source.key, null);
     }
-  }, [source.enabled, hasActiveSync, pendingEnabled]);
+  }, [source.key, source.enabled, hasActiveSync, pendingEnabled]);
 
   const st = statusLine(source);
   const toneCls = st.tone === "ok" ? "text-success" : st.tone === "error" ? "text-error" : "text-on-surface-variant";
