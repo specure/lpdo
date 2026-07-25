@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   getSources,
+  getJobs,
+  submitJob,
   setSourceEnabled,
   setSourceWindow,
 } from "../api";
@@ -210,9 +212,85 @@ function WindowEditor({
   );
 }
 
+// One-shot import action for a bulk source (Ajedrez) — a deep-history base, not
+// a subscription (#196). Replaces the enable/disable toggle: a single button that
+// downloads + imports and runs full maintenance. Idempotent — re-running fetches
+// only parts not yet imported (finishing a partial import) — so it doubles as a
+// "resume"/"check". Not part of the recurring scheduler.
+function BulkImportAction({ source, onChanged }: { source: SourceStatus; onChanged: () => void }) {
+  const acked = source.credit_acked || source.items > 0;
+  const [ackChecked, setAckChecked] = useState(acked);
+  const [busy, setBusy] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+
+  // Reflect an in-flight import for this source (poll the job pipeline) so the
+  // button reads "Importing…" and can't be fired twice.
+  useEffect(() => {
+    let stop = false;
+    const check = () =>
+      getJobs()
+        .then((js) => {
+          if (stop) return;
+          setSyncing(js.some((j) =>
+            (j.status === "running" || j.status === "queued") &&
+            j.type === "sources_sync" &&
+            (j.params?.source as string | undefined) === source.key,
+          ));
+        })
+        .catch(() => { /* offline — leave last known */ });
+    check();
+    const id = setInterval(check, 2500);
+    return () => { stop = true; clearInterval(id); };
+  }, [source.key]);
+
+  async function run() {
+    setBusy(true);
+    try {
+      // Enable (so it counts toward coverage) + record the ack, idempotently,
+      // then the actual download+import+full-maintenance job.
+      await setSourceEnabled(source.key, true, true);
+      await submitJob({ type: "sources_sync", params: { source: source.key } });
+      setSyncing(true);
+      onChanged();
+    } catch {
+      /* failure surfaces in the activity panel */
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const imported = source.items > 0;
+  const disabled = busy || syncing || (!acked && !ackChecked);
+  const label = syncing ? "Importing…" : imported ? "Re-run import" : "Download & import";
+
+  return (
+    <div className="mt-auto pt-1 space-y-2">
+      {!acked && (
+        <label className="flex items-start gap-2 text-body-sm text-on-surface bg-surface-container-low rounded-lg border border-primary-container p-3">
+          <input type="checkbox" className="mt-1 shrink-0" checked={ackChecked} onChange={(e) => setAckChecked(e.target.checked)} />
+          <span>{source.credit}</span>
+        </label>
+      )}
+      <button
+        onClick={() => void run()}
+        disabled={disabled}
+        className="h-9 px-4 inline-flex items-center rounded-full bg-primary text-on-primary text-label-md hover:brightness-110 disabled:opacity-40 transition-all duration-short3 ease-standard"
+      >
+        {label}
+      </button>
+      <div className="text-label-sm text-on-surface-variant">
+        {imported
+          ? "One-time deep-history import. Re-running fetches only new or missing parts, then re-prepares the database."
+          : "Downloads the historical base and imports it, then prepares the database. Not a subscription — no recurring updates."}
+      </div>
+    </div>
+  );
+}
+
 // ── Source card ───────────────────────────────────────────────────────────────
 
 function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: () => void }) {
+  const isFeed = source.kind === "feed";
   const [editing, setEditing] = useState(false);
   const [ackChecked, setAckChecked] = useState(source.credit_acked);
   const [busy, setBusy] = useState(false);
@@ -229,7 +307,7 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
   // an older build that left credit_acked false) must re-enable straight from the
   // toggle; otherwise the toggle sits disabled behind the ack panel and clicking
   // it does nothing. Enabling always re-records the ack anyway.
-  const needsAck = !shownEnabled && !source.credit_acked && source.items === 0;
+  const needsAck = isFeed && !shownEnabled && !source.credit_acked && source.items === 0;
 
   async function toggleEnabled() {
     const next = !shownEnabled;
@@ -260,7 +338,13 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
     <div className="bg-surface-container rounded-2xl border border-outline-variant p-5 space-y-3 flex flex-col">
       <div className="flex items-start justify-between gap-3">
         <h3 className="text-title-lg text-on-surface">{source.name}</h3>
-        <Toggle on={shownEnabled} onClick={toggleEnabled} disabled={busy || needsAck} />
+        {isFeed ? (
+          <Toggle on={shownEnabled} onClick={toggleEnabled} disabled={busy || needsAck} />
+        ) : (
+          <span className="text-label-sm text-on-surface-variant border border-outline px-2 h-6 inline-flex items-center rounded-full shrink-0">
+            one-time
+          </span>
+        )}
       </div>
 
       <p className="text-body-sm text-on-surface-variant min-h-[2.4rem]">
@@ -305,10 +389,9 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
         </div>
       )}
 
-      {/* Enabled sources import automatically in the background (the daemon's
-          scheduler picks them up; progress shows in the header activity queue).
-          There's no manual "Sync now" — enabling is the trigger. */}
-      {shownEnabled && (
+      {/* Feeds: enabling is the trigger and imports run automatically. Bulk
+          (Ajedrez): a one-shot Download & import action instead (#196). */}
+      {isFeed && shownEnabled && (
         <div className="mt-auto pt-1 space-y-2">
           <div className="text-label-sm text-on-surface-variant opacity-85">
             ⓘ Imports run automatically in the background — follow progress from the activity indicator in the header.
@@ -318,6 +401,7 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
           </div>
         </div>
       )}
+      {!isFeed && <BulkImportAction source={source} onChanged={onChanged} />}
 
       <div className="text-label-sm text-on-surface-variant pt-1">{source.credit}</div>
     </div>

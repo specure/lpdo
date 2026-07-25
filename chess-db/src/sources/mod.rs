@@ -416,9 +416,12 @@ pub fn feeds_due_for_resync(conn: &Connection, threshold: &str) -> Result<Vec<&'
             .filter_map(|r| r.ok())
             .collect()
     };
+    // Feed-kind only: bulk sources (Ajedrez) are a one-time deep-history import
+    // with their own on-demand action (#196), never a recurring subscription, so
+    // they must not be picked up by the daily scheduler.
     Ok(CATALOG
         .iter()
-        .filter(|s| due.contains(s.key) && Feed::for_key(s.key).is_some())
+        .filter(|s| due.contains(s.key) && s.kind == SourceKind::Feed && Feed::for_key(s.key).is_some())
         .collect())
 }
 
@@ -804,6 +807,23 @@ mod auto_sync_tests {
 
     fn keys(conn: &Connection, threshold: &str) -> Vec<&'static str> {
         feeds_due_for_resync(conn, threshold).unwrap().iter().map(|s| s.key).collect()
+    }
+
+    // #196: a bulk source (Ajedrez) is a one-shot deep-history import, never a
+    // recurring subscription — the daily scheduler must never pick it up, even
+    // enabled and never synced.
+    #[test]
+    fn bulk_sources_are_never_auto_synced() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let future = "2999-01-01 00:00:00";
+
+        set_enabled(&conn, "ajedrez-otb", true).unwrap();
+        assert!(keys(&conn, future).is_empty(), "bulk Ajedrez is not a scheduler candidate");
+
+        // A feed enabled alongside it still is.
+        set_enabled(&conn, "twic", true).unwrap();
+        assert_eq!(keys(&conn, future), vec!["twic"], "feeds still auto-sync; bulk stays excluded");
     }
 
     #[test]
