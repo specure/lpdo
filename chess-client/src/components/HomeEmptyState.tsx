@@ -287,6 +287,11 @@ export default function HomeEmptyState({
     : setupStatus === "failed" ? "failed"
     : live !== null && (setupStatus === "empty" || live.games === 0) ? "empty"
     : "stats";
+  // The DB is ready for a profile only when it's populated and not mid-load —
+  // i.e. the stats view (excludes preparing/failed/empty and the offline case
+  // where `live` is null). Gates the profile picker so it can't dead-end on a
+  // name search with no players to match (#122).
+  const dbReady = view === "stats" && live !== null;
   // Atmospheric radial glow sourced near the logo's position. Sits on the
   // bg-surface base; the gradient adds a soft primary-tinted halo that the
   // logo emerges from. Subtle enough to feel like ambient lighting.
@@ -382,7 +387,7 @@ export default function HomeEmptyState({
             two bottom sections don't appear simultaneously). Wrapped so the
             rise-in lives on the outer element, not inside MyStatsWidget. */}
         <div className="lpdo-rise-in" style={{ animationDelay: "520ms" }}>
-          <MyStatsWidget countStartDelayMs={520} status={status} />
+          <MyStatsWidget countStartDelayMs={520} status={live} dbReady={dbReady} />
         </div>
 
       </div>
