@@ -648,29 +648,6 @@ async fn set_source_enabled_handler(
         }
     }
 
-    // #195: enabling a *feed* kicks off an immediate sync so the user doesn't wait
-    // for the scheduler's next tick. Submit it BEFORE the enable write, so a second
-    // feed enabled while the first is still importing queues right away instead of
-    // waiting behind that import on the single writer. Skipped for bulk sources
-    // (Ajedrez has its own one-shot action, #196), and if a sync is already in
-    // flight. NOT gated on the setup sentinel: the wizard's own enables pass
-    // sync=false, so an interactive re-enable during first-run (e.g. after
-    // disabling a feed mid-onboarding) must still queue a sync — the scheduler is
-    // held off during first-run, so this is the only thing that would.
-    if body.enabled && body.sync {
-        let is_feed = crate::sources::get(&key)
-            .map(|s| s.kind == crate::sources::SourceKind::Feed)
-            .unwrap_or(false);
-        let already_syncing = state.jobs.list().iter().any(|j| {
-            j.job_type == "sources_sync"
-                && j.params.get("source").and_then(|v| v.as_str()) == Some(key.as_str())
-                && (j.status == "queued" || j.status == "running")
-        });
-        if is_feed && !already_syncing {
-            state.jobs.submit("sources_sync".into(), serde_json::json!({ "source": key }));
-        }
-    }
-
     // The state write is tiny but serializes behind any running import on the
     // single writer. On the interactive (Maintenance) path we fire it and don't
     // block the HTTP response — so the toggle never sits greyed for the duration
@@ -678,6 +655,14 @@ async fn set_source_enabled_handler(
     // On the wizard path (sync=false) the writer is idle and the caller reads the
     // enabled set immediately afterward (startSetup), so we AWAIT to guarantee the
     // write is committed first.
+    //
+    // Apply this BEFORE dispatching the sync below: `submit` enqueues the sync
+    // body on the SAME single writer (JobManager::submit → writer.spawn_fn), so a
+    // sync dispatched first would make this tiny flag write wait behind the whole
+    // (for a fresh TWIC enable, ~1500-issue) import — leaving the source reading
+    // as *disabled* until the sync drained. Writing first lands the flag in
+    // milliseconds, then the sync runs behind it. Still fire-and-forget, so the
+    // HTTP response never blocks behind another source's in-flight import.
     let enabled = body.enabled;
     let acked = body.credit_acked;
     if body.sync {
@@ -699,6 +684,29 @@ async fn set_source_enabled_handler(
                 let _ = crate::sources::set_enabled(conn, &key_w, enabled);
             })
             .await;
+    }
+
+    // #195: enabling a *feed* kicks off an immediate sync so the user doesn't wait
+    // for the scheduler's next tick. Dispatched AFTER the enable write above so the
+    // flag is persisted first (see the note there). Skipped for bulk sources
+    // (Ajedrez has its own one-shot action, #196), and if a sync is already in
+    // flight. NOT gated on the setup sentinel: the wizard's own enables pass
+    // sync=false, so an interactive re-enable during first-run (e.g. after
+    // disabling a feed mid-onboarding) must still queue a sync — the scheduler is
+    // held off during first-run, so this is the only thing that would. On success
+    // the sync requests the coalesced maintenance pass, which runs once it drains.
+    if body.enabled && body.sync {
+        let is_feed = crate::sources::get(&key)
+            .map(|s| s.kind == crate::sources::SourceKind::Feed)
+            .unwrap_or(false);
+        let already_syncing = state.jobs.list().iter().any(|j| {
+            j.job_type == "sources_sync"
+                && j.params.get("source").and_then(|v| v.as_str()) == Some(key.as_str())
+                && (j.status == "queued" || j.status == "running")
+        });
+        if is_feed && !already_syncing {
+            state.jobs.submit("sources_sync".into(), serde_json::json!({ "source": key }));
+        }
     }
 
     Ok(msg(format!(

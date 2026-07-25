@@ -604,6 +604,12 @@ pub fn import(
     let fast = fast || bulk_mode;
 
     reporter.log(format!("Importing {} issue(s)...", issues.len()));
+    // The init below (dropping indexes on a large DB, opening/decompressing a bulk
+    // archive) runs before the first byte-progress arrives. Without this the bar
+    // would sit at the previous stage's final value — e.g. a download that ended
+    // at 100% — reading as "stuck at 100%". Emitting total=0 switches the GUI to
+    // its indeterminate (animated) bar until real progress starts (#—).
+    reporter.progress(0, 0, format!("Preparing to import {} file(s)…", issues.len()));
     if bulk_mode {
         reporter.log("Bulk mode: indexes dropped for faster import. Positions skipped.");
         drop_bulk_indexes(conn)?;
