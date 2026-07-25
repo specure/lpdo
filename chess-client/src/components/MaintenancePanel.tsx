@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -7,7 +7,7 @@ import { useSidecarProgress } from "../hooks/useSidecarProgress";
 import SourcesPanel from "./SourcesPanel";
 import MergePlayersDialog from "./MergePlayersDialog";
 import { StatusInfo, ScheduleInfo } from "../types";
-import { SIDECAR, getSchedule } from "../api";
+import { SIDECAR, getSchedule, getJobs } from "../api";
 
 interface Props {
   onRunWizard: () => void;
@@ -317,11 +317,32 @@ function FideRefreshSection() {
   // Last-refreshed + due status (#194): the FIDE list is scheduled housekeeping
   // like the feeds, so surface when it last updated and whether one's due.
   const [sched, setSched] = useState<ScheduleInfo | null>(null);
+  const loadSched = useCallback(() => { getSchedule().then(setSched).catch(() => {}); }, []);
+  // Refetch on mount and when a MANUAL (sidecar) refresh finishes.
+  useEffect(() => { loadSched(); }, [loadSched, progress.done]);
+  // Also pick up BACKGROUND refreshes — the monthly scheduler run and the
+  // post-sync maintenance pipeline run `fide_refresh` as a daemon job, which the
+  // sidecar `progress` hook never sees. Poll the job list and re-load the
+  // schedule whenever a fide_refresh job finishes, so "last refreshed / update
+  // due" reflects it without a manual page reload.
   useEffect(() => {
-    let cancelled = false;
-    getSchedule().then((s) => { if (!cancelled) setSched(s); }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [progress.done]);
+    let stop = false;
+    let prevActive = false;
+    const check = () =>
+      getJobs()
+        .then((js) => {
+          if (stop) return;
+          const active = js.some(
+            (j) => j.type === "fide_refresh" && (j.status === "running" || j.status === "queued"),
+          );
+          if (prevActive && !active) loadSched(); // one just finished
+          prevActive = active;
+        })
+        .catch(() => { /* offline — leave last known */ });
+    check();
+    const id = setInterval(check, 3000);
+    return () => { stop = true; clearInterval(id); };
+  }, [loadSched]);
   const lastRefreshed = sched?.fide_last_refreshed?.slice(0, 10) ?? null;
 
   return (
