@@ -263,6 +263,29 @@ pub fn init(conn: &Connection) -> Result<()> {
         println!("Done.");
     }
 
+    // Incremental-dedup marker (#—). `dedup_games` is a self-join that is O(N)
+    // over the whole table; re-running it after every daily sync re-checked
+    // millions of already-deduplicated games. `deduped` lets it skip pairs where
+    // both sides were already vetted: a pair is a candidate only when at least
+    // one side is still FALSE. New games are always written FALSE (see the games
+    // appender / INSERT); `dedup_games` flips survivors to TRUE once vetted.
+    //
+    // Nullable, no default, so pre-existing rows read NULL — the one-time
+    // backfill below marks them TRUE (they were already vetted by the prior full
+    // pass). Using NULL as the "pre-existing" sentinel keeps the backfill
+    // idempotent: freshly imported games are FALSE, never NULL, so re-running
+    // this never re-marks them.
+    conn.execute_batch("ALTER TABLE games ADD COLUMN IF NOT EXISTS deduped BOOLEAN;")?;
+    let needs_deduped_backfill: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM games WHERE deduped IS NULL LIMIT 1)",
+        [], |r| r.get(0),
+    )?;
+    if needs_deduped_backfill {
+        println!("Marking existing games as deduplicated (one-time migration)…");
+        conn.execute_batch("UPDATE games SET deduped = TRUE WHERE deduped IS NULL;")?;
+        println!("Done.");
+    }
+
     // Phase 2 cleanup: the sources table and games.source_id column are no
     // longer referenced by any code path. Drop them. Idempotent via IF EXISTS.
     //
@@ -526,6 +549,31 @@ mod migration_tests {
             .unwrap();
         assert!(!aenabled, "ajedrez-otb should be seeded disabled");
         assert_eq!(ato.as_deref(), Some("2012-12-31"), "ajedrez seeds a to-2012-12-31 window (the 2013 handoff, #148)");
+    }
+
+    #[test]
+    fn deduped_backfill_marks_preexisting_true_but_spares_new_false() {
+        let conn = Connection::open_in_memory().unwrap();
+        init(&conn).unwrap();
+
+        // Simulate a pre-migration row: `deduped` unset (NULL), as if it existed
+        // before the column was added.
+        conn.execute("INSERT INTO games (id, visibility, deduped) VALUES (1, 'public', NULL)", []).unwrap();
+        // Re-run init: the one-time backfill sees a NULL and marks it TRUE.
+        init(&conn).unwrap();
+        let d1: Option<bool> = conn
+            .query_row("SELECT deduped FROM games WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(d1, Some(true), "pre-existing (NULL) games are backfilled to deduped=TRUE");
+
+        // A freshly imported game is written FALSE (awaiting dedup). A subsequent
+        // init must NOT re-mark it — the backfill only touches NULLs.
+        conn.execute("INSERT INTO games (id, visibility, deduped) VALUES (2, 'public', FALSE)", []).unwrap();
+        init(&conn).unwrap();
+        let d2: Option<bool> = conn
+            .query_row("SELECT deduped FROM games WHERE id = 2", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(d2, Some(false), "an unvetted new game survives a re-init unchanged");
     }
 
     #[test]
