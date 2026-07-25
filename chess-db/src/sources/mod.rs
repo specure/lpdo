@@ -177,20 +177,34 @@ impl Feed {
 
 /// Register an item in the ledger if absent, and keep its publication date current.
 fn register_item(conn: &Connection, source_key: &str, item: &FeedItem, next_synth: &mut i32) -> Result<()> {
-    let id = match item.db_id {
-        Some(id) => id,
-        None => {
-            let id = *next_synth;
-            *next_synth += 1;
-            id
-        }
-    };
-    conn.execute(
-        "INSERT INTO source_items (id, source_key, external_id, filename, published_at)
-         VALUES (?, ?, ?, ?, CAST(? AS DATE))
-         ON CONFLICT (id) DO NOTHING",
-        duckdb::params![id, source_key, item.external_id, item.filename, item.published],
+    // Dedupe on the STABLE (source_key, external_id), not the surrogate id.
+    // Bulk sources (e.g. Ajedrez) have no natural db_id, so each run allocates a
+    // fresh synthetic id — an `ON CONFLICT (id)` guard never fires, and every
+    // re-sync would insert a DUPLICATE row for the same file. Stopping and
+    // re-running an import a few times then multiplied the "issues to import"
+    // (2 files × 3 runs = 6) and re-imported the same games. Skip a file already
+    // registered; only allocate an id for a genuinely new one.
+    let already: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM source_items WHERE source_key = ? AND external_id = ?",
+        duckdb::params![source_key, item.external_id],
+        |r| r.get(0),
     )?;
+    if already == 0 {
+        let id = match item.db_id {
+            Some(id) => id,
+            None => {
+                let id = *next_synth;
+                *next_synth += 1;
+                id
+            }
+        };
+        conn.execute(
+            "INSERT INTO source_items (id, source_key, external_id, filename, published_at)
+             VALUES (?, ?, ?, ?, CAST(? AS DATE))
+             ON CONFLICT (id) DO NOTHING",
+            duckdb::params![id, source_key, item.external_id, item.filename, item.published],
+        )?;
+    }
     if item.published.is_some() {
         conn.execute(
             "UPDATE source_items SET published_at = CAST(? AS DATE)
@@ -663,6 +677,56 @@ mod window_tests {
         assert!(w.is_unbounded());
         assert!(w.admits(Some("1500-01-01")));
         assert!(w.admits(None));
+    }
+}
+
+#[cfg(test)]
+mod register_tests {
+    use super::*;
+    use duckdb::Connection;
+
+    fn bulk_item(ext: &str) -> FeedItem {
+        FeedItem {
+            external_id: ext.to_string(),
+            published: None,
+            url: format!("https://example.test/{ext}.7z"),
+            filename: format!("{ext}.7z"),
+            db_id: None, // bulk source: synthetic id allocated per run
+            covers: None,
+        }
+    }
+
+    // Re-syncing a bulk source (no natural db_id) must NOT create duplicate
+    // source_items rows for the same file. Each run allocated a fresh synthetic
+    // id, so the old `ON CONFLICT (id)` guard never fired and stopping/restarting
+    // an import multiplied the ledger (2 files × 3 runs = 6) and re-imported the
+    // same games.
+    #[test]
+    fn reregistering_a_bulk_item_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let item = bulk_item("AJ-OTB-PGN-000");
+
+        // Three download passes, each seeding next_synth from MAX(id)+1 like the
+        // real runner does.
+        for _ in 0..3 {
+            let mut next_synth: i32 = {
+                let max_id: Option<i64> = conn
+                    .query_row("SELECT MAX(id) FROM source_items", [], |r| r.get(0))
+                    .unwrap_or(None);
+                (max_id.unwrap_or(0) as i32).max(1_000_000) + 1
+            };
+            register_item(&conn, "ajedrez-otb", &item, &mut next_synth).unwrap();
+        }
+
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM source_items WHERE source_key = 'ajedrez-otb' AND external_id = 'AJ-OTB-PGN-000'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1, "the same bulk file must register exactly once across re-syncs");
     }
 }
 
