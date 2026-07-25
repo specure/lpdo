@@ -348,7 +348,7 @@ function BulkImportAction({ source, onChanged }: { source: SourceStatus; onChang
 
 // ── Source card ───────────────────────────────────────────────────────────────
 
-function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: () => void }) {
+function SourceCard({ source, hasActiveSync, onChanged }: { source: SourceStatus; hasActiveSync: boolean; onChanged: () => void }) {
   const isFeed = source.kind === "feed";
   const [editing, setEditing] = useState(false);
   const [ackChecked, setAckChecked] = useState(source.credit_acked);
@@ -357,8 +357,12 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
   // serializes on the writer, so during a long import of another source it may
   // land a bit later — show the chosen state immediately rather than snapping
   // back. Cleared once the refetched source reflects the change.
+  //
+  // A live click's `pendingEnabled` wins; otherwise a source with an active sync
+  // reads as enabled even before its flag write lands (see `syncingKeys` in the
+  // panel), so navigating away and back doesn't show a syncing source as off.
   const [pendingEnabled, setPendingEnabled] = useState<boolean | null>(null);
-  const shownEnabled = pendingEnabled ?? source.enabled;
+  const shownEnabled = pendingEnabled ?? (source.enabled || hasActiveSync);
 
   // Show the acknowledgment gate only when turning on a source that has never
   // been acknowledged AND never imported anything — i.e. a genuine first enable.
@@ -383,12 +387,17 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
     }
   }
 
-  // Once the refetched source matches our optimistic choice, drop the override.
+  // Drop the optimistic override once the derived server state matches it. Uses
+  // the same (enabled || hasActiveSync) signal as `shownEnabled`, so: an ENABLE
+  // clears as soon as the sync shows active (well before its flag lands), while a
+  // DISABLE holds until BOTH the flag is off AND the cancelled sync has left the
+  // job list — avoiding a flip back to "on" during the ~poll-interval cancel gap.
   useEffect(() => {
-    if (pendingEnabled !== null && source.enabled === pendingEnabled) {
+    const serverShown = source.enabled || hasActiveSync;
+    if (pendingEnabled !== null && serverShown === pendingEnabled) {
       setPendingEnabled(null);
     }
-  }, [source.enabled, pendingEnabled]);
+  }, [source.enabled, hasActiveSync, pendingEnabled]);
 
   const st = statusLine(source);
   const toneCls = st.tone === "ok" ? "text-success" : st.tone === "error" ? "text-error" : "text-on-surface-variant";
@@ -490,6 +499,14 @@ function SourceCard({ source, onChanged }: { source: SourceStatus; onChanged: ()
 export default function SourcesPanel({ onMutated }: { onMutated?: () => void }) {
   const [sources, setSources] = useState<SourceStatus[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Source keys with a queued/running sync. A `sources_sync` job exists only
+  // because the source was enabled (the enable handler submits it), so an active
+  // sync is strong evidence the source is on — even before the tiny enabled-flag
+  // write lands. That write serializes on the single writer behind any running
+  // import, so enabling a second source while the first is importing can leave
+  // its flag unpersisted for minutes; deriving "enabled" from the job list (not
+  // local component state) keeps the toggle correct across navigation meanwhile.
+  const [syncingKeys, setSyncingKeys] = useState<Set<string>>(new Set());
 
   const refresh = useCallback(() => {
     getSources()
@@ -498,6 +515,33 @@ export default function SourcesPanel({ onMutated }: { onMutated?: () => void }) 
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // Poll the job pipeline for active syncs (same cadence as the bulk-import
+  // button's own poll). Refresh sources when the active-sync set changes, so a
+  // finished sync's landed flag / imported counts show without a manual reload.
+  useEffect(() => {
+    let stop = false;
+    const check = () =>
+      getJobs()
+        .then((js) => {
+          if (stop) return;
+          const keys = new Set(
+            js
+              .filter((j) => (j.status === "running" || j.status === "queued") && j.type === "sources_sync")
+              .map((j) => j.params?.source as string | undefined)
+              .filter((k): k is string => !!k),
+          );
+          setSyncingKeys((prev) => {
+            const same = prev.size === keys.size && [...prev].every((k) => keys.has(k));
+            if (!same) refresh();
+            return same ? prev : keys;
+          });
+        })
+        .catch(() => { /* offline — leave last known */ });
+    check();
+    const id = setInterval(check, 2500);
+    return () => { stop = true; clearInterval(id); };
+  }, [refresh]);
 
   function onChanged() {
     refresh();
@@ -517,7 +561,7 @@ export default function SourcesPanel({ onMutated }: { onMutated?: () => void }) 
       <CoverageTimeline sources={sources} />
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
         {sources.map((s) => (
-          <SourceCard key={s.key} source={s} onChanged={onChanged} />
+          <SourceCard key={s.key} source={s} hasActiveSync={syncingKeys.has(s.key)} onChanged={onChanged} />
         ))}
       </div>
     </div>
