@@ -1904,7 +1904,10 @@ async fn main() -> Result<()> {
         }
         Commands::Games { subcommand } => match subcommand {
             GameCommands::Dedup { dry_run } => {
-                dedup::dedup_games(&conn, dry_run, &reporter)?;
+                // A manual dedup is a full re-check (re-examines already-vetted
+                // pairs), so it cleans duplicates an earlier incremental pass
+                // missed — e.g. the same game from TWIC and a Lichess broadcast.
+                dedup::dedup_games(&conn, dry_run, true, &reporter)?;
             }
             GameCommands::Cleanup { non_standard, dry_run } => {
                 dedup::cleanup_nonstandard(&conn, non_standard, dry_run, &reporter)?;
