@@ -497,6 +497,12 @@ pub struct JobManager {
     /// after the import queue drains, so later imports never miss maintenance and
     /// two passes never stack for one drain cycle.
     maintenance: Mutex<MaintenanceNeeds>,
+    /// Network jobs held behind an offline "leader" (the one job showing
+    /// "waiting"), in submission order (#206). While the machine is offline only
+    /// the leader retries; the rest stay `queued` and are re-dispatched here in
+    /// order once connectivity returns (a network job succeeds) — so the queue
+    /// reads as one paused job with the rest queued behind it, not N paused jobs.
+    held: Mutex<Vec<Arc<JobSlot>>>,
 }
 
 /// What post-import maintenance is currently owed (#131, #167). `requested` marks
@@ -565,6 +571,31 @@ impl JobManager {
             counter: AtomicU64::new(1),
             reopening: Arc::new(AtomicBool::new(false)),
             maintenance: Mutex::new(MaintenanceNeeds::default()),
+            held: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Whether some OTHER network job is currently paused `"waiting"` — i.e. we
+    /// appear to be offline, so a network job about to run should hold instead
+    /// (#206). Excludes `self_id` (a leader re-running from its retry timer).
+    fn offline_pending(&self, self_id: &str) -> bool {
+        self.jobs.lock().unwrap().values().any(|s| {
+            s.id != self_id
+                && job_uses_network(&s.job_type)
+                && s.state.lock().unwrap().status == "waiting"
+        })
+    }
+
+    /// Re-dispatch every held job in submission order — called when connectivity
+    /// returns (a network job succeeds) or the leader is cancelled (#206). The
+    /// first one to run again becomes the new leader if we're still offline.
+    fn release_held(self: &Arc<Self>) {
+        let held: Vec<Arc<JobSlot>> = std::mem::take(&mut *self.held.lock().unwrap());
+        for slot in held {
+            if slot.cancel.load(Ordering::Relaxed) {
+                continue; // cancelled while held — drop it
+            }
+            self.dispatch(slot);
         }
     }
 
@@ -662,22 +693,29 @@ impl JobManager {
     /// appearing stuck until the writer thread reaches it — the writer then skips
     /// it (the body's start-of-run cancellation check). A running job just gets
     /// the flag; its loop stops at the next committed boundary.
-    pub fn cancel(&self, id: &str) -> bool {
+    pub fn cancel(self: &Arc<Self>, id: &str) -> bool {
         match self.get(id) {
             Some(slot) => {
                 slot.cancel.store(true, Ordering::Relaxed);
                 // Invalidate any pending offline-retry timer so it fires as a no-op.
                 slot.retry_gen.fetch_add(1, Ordering::SeqCst);
+                let was_leader;
                 {
                     let mut s = slot.state.lock().unwrap();
-                    // Queued (never ran) or waiting (paused for network, #206):
-                    // terminate now. A running job just gets the flag + stops.
+                    // Waiting = the offline "leader" (#206). Cancelling it must free
+                    // the jobs held behind it, so one of them can take over.
+                    was_leader = s.status == "waiting";
+                    // Queued (never ran) or waiting (paused for network): terminate
+                    // now. A running job just gets the flag + stops on a boundary.
                     if s.status == "queued" || s.status == "waiting" {
                         s.status = "cancelled".into();
                         s.message = "Cancelled".into();
                         s.ended_at = Some(now_ms());
                         s.retry_at = None;
                     }
+                }
+                if was_leader {
+                    self.release_held();
                 }
                 true
             }
@@ -816,6 +854,22 @@ impl JobManager {
                 reporter.cancelled("Cancelled before it started");
                 return;
             }
+            // Offline gate (#206): if another network job is already paused waiting
+            // for a connection, don't run this one and pause it too — hold it
+            // QUEUED behind the leader so the queue reads as one paused job with
+            // the rest queued. release_held re-dispatches it when connectivity
+            // returns. (The serial writer guarantees the leader has already flipped
+            // to "waiting" by the time we get here.)
+            if job_uses_network(&slot_run.job_type) && jm_run.offline_pending(&slot_run.id) {
+                {
+                    let mut s = slot_run.state.lock().unwrap();
+                    s.status = "queued".into();
+                    s.message = "Waiting for the network to return".into();
+                    s.retry_at = None;
+                }
+                jm_run.held.lock().unwrap().push(slot_run.clone());
+                return;
+            }
             {
                 // Each attempt (re)stamps its start, so "took" reflects the last
                 // run, not the accumulated offline waits (#170/#206).
@@ -830,7 +884,14 @@ impl JobManager {
                 Ok(()) if reporter.is_cancelled() => reporter.cancelled("Cancelled"),
                 // Empty message keeps the operation's own final message; this
                 // just guarantees a terminal "done" even if the op didn't emit one.
-                Ok(()) => reporter.done(""),
+                Ok(()) => {
+                    reporter.done("");
+                    // A network job succeeding proves we're back online — release
+                    // any jobs held behind an offline leader so they run now (#206).
+                    if job_uses_network(&slot_run.job_type) {
+                        jm_run.release_held();
+                    }
+                }
                 // A network job that lost connectivity pauses and retries instead
                 // of failing (#206): same row, no terminal state, re-dispatched by
                 // schedule_retry. A genuine (non-connectivity) error still fails.

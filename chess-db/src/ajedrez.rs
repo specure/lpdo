@@ -33,14 +33,20 @@ pub async fn list_items(_from: Option<u32>, _to: Option<u32>) -> Result<Vec<Feed
     let mut items = Vec::new();
     for n in 0..MAX_PARTS {
         let url = otb_url(n);
-        let exists = client
-            .head(&url)
-            .send()
-            .await
-            .map(|r| r.status().is_success())
-            .unwrap_or(false);
-        if !exists {
-            break; // first missing part ends the series
+        match client.head(&url).send().await {
+            Ok(r) if r.status().is_success() => {} // part exists — fall through to push it
+            // A real HTTP response that isn't 2xx (e.g. 404) → the series ended.
+            Ok(_) => break,
+            // Connectivity failure → we're OFFLINE. Propagate rather than treating
+            // it as "no more parts" (which would return an empty list and make the
+            // sync silently "succeed" with nothing) so the job runner pauses and
+            // retries (#206).
+            Err(e) if crate::net::is_offline_reqwest(&e) => {
+                return Err(anyhow::Error::from(e)
+                    .context("checking for Ajedrez parts — no network connection"));
+            }
+            // Any other transient error → stop the series (conservative, as before).
+            Err(_) => break,
         }
         let id = format!("AJ-OTB-PGN-{n:03}");
         items.push(FeedItem {
