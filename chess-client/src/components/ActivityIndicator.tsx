@@ -72,6 +72,28 @@ function formatEta(sec: number): string {
   return m ? `~${h}h ${m}m left` : `~${h}h left`;
 }
 
+/** "just now" / "5 min ago" / "2h ago" / "3d ago" from an epoch-ms timestamp. */
+function formatAgo(ms: number): string {
+  const sec = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (sec < 45) return "just now";
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min} min ago`;
+  const h = Math.round(min / 60);
+  return h < 24 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
+}
+
+/** "30s" / "2 min" / "1h 5m" from a duration in ms (how long a job ran). */
+function formatDuration(ms: number): string {
+  const sec = Math.max(0, Math.round(ms / 1000));
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (min < 60) return s ? `${min}m ${s}s` : `${min} min`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
 function ActiveRow({ job, eta, cancelling, onCancel }: { job: Job; eta?: string; cancelling: boolean; onCancel: (id: string) => void }) {
   const queued = job.status === "queued";
   const known = job.total > 0;
@@ -102,7 +124,14 @@ function ActiveRow({ job, eta, cancelling, onCancel }: { job: Job; eta?: string;
               doesn't reflow/jitter as the message and % change. */}
           <div className="flex items-center justify-between gap-2 text-label-sm text-on-surface-variant">
             <span className="truncate">{job.message || "Working…"}</span>
-            {known && <span className="shrink-0">{Math.round(pct(job))}%{eta ? ` · ${eta}` : ""}</span>}
+            {known ? (
+              <span className="shrink-0">{Math.round(pct(job))}%{eta ? ` · ${eta}` : ""}</span>
+            ) : (
+              // Unmeasured running job: no % to show, so surface elapsed time (#170).
+              job.status === "running" && job.started_at != null && (
+                <span className="shrink-0">{formatDuration(Date.now() - job.started_at)}</span>
+              )
+            )}
           </div>
           <div className="relative w-full bg-surface-container-highest rounded-full h-1.5 overflow-hidden">
             {known ? (
@@ -138,6 +167,14 @@ function RecentRow({ job }: { job: Job }) {
         <div className="text-body-sm text-on-surface line-clamp-2 break-words">{jobLabel(job)}</div>
         {job.status === "error" && job.error && <div className="text-label-sm text-error break-words">{job.error}</div>}
         {(ok || cancelled) && job.message && <div className="text-label-sm text-on-surface-variant line-clamp-2 break-words">{job.message}</div>}
+        {/* When it finished and, for a job that actually ran, how long it took
+            (#170). Live-session only — timestamps reset on daemon restart. */}
+        {job.ended_at && (
+          <div className="text-label-sm text-on-surface-variant">
+            {formatAgo(job.ended_at)}
+            {job.started_at ? ` · took ${formatDuration(job.ended_at - job.started_at)}` : ""}
+          </div>
+        )}
       </div>
     </div>
   );

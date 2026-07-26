@@ -373,6 +373,12 @@ pub struct JobSnapshot {
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Epoch-ms when the job started running / reached a terminal state (#170).
+    /// Live-session only (the registry is cleared on restart).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<u64>,
     /// The submission params, so the UI can label a job by what it touches (e.g.
     /// which source/collection) and the scheduler can de-dupe by it.
     pub params: serde_json::Value,
@@ -393,6 +399,16 @@ fn uses_appender(job_type: &str, params: &serde_json::Value) -> bool {
     }
 }
 
+/// Wall-clock epoch milliseconds — for job started/ended timestamps (#170). The
+/// job registry is in-memory (cleared on restart), so these are live-session
+/// only, not a durable history.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 struct JobState {
     status: String,
     value: u64,
@@ -400,6 +416,11 @@ struct JobState {
     message: String,
     path: Option<String>,
     error: Option<String>,
+    /// Epoch-ms when the job first flipped to `running`, and when it reached a
+    /// terminal state (done/error/cancelled). Drive the activity panel's
+    /// "5 min ago · took 30s" (#170). None until each transition happens.
+    started_at: Option<u64>,
+    ended_at: Option<u64>,
 }
 
 pub struct JobSlot {
@@ -430,6 +451,8 @@ impl JobSlot {
             cancellable: is_cancellable(&self.job_type),
             path: s.path.clone(),
             error: s.error.clone(),
+            started_at: s.started_at,
+            ended_at: s.ended_at,
             params: self.params.clone(),
         }
     }
@@ -625,6 +648,7 @@ impl JobManager {
                     if s.status == "queued" {
                         s.status = "cancelled".into();
                         s.message = "Cancelled".into();
+                        s.ended_at = Some(now_ms());
                     }
                 }
                 true
@@ -650,6 +674,8 @@ impl JobManager {
                 message: String::new(),
                 path: None,
                 error: None,
+                started_at: None,
+                ended_at: None,
             }),
             events: events_tx,
             buffer: Mutex::new(Vec::new()),
@@ -687,20 +713,28 @@ impl JobManager {
                     match ev.kind.as_str() {
                         "done" => {
                             s.status = "done".into();
+                            s.ended_at = Some(now_ms());
                             if ev.path.is_some() {
                                 s.path = ev.path.clone();
                             }
                         }
                         "error" => {
                             s.status = "error".into();
+                            s.ended_at = Some(now_ms());
                             s.error = Some(ev.message.clone());
                         }
                         "cancelled" => {
                             s.status = "cancelled".into();
+                            s.ended_at = Some(now_ms());
                         }
                         _ => {
                             if s.status == "queued" {
                                 s.status = "running".into();
+                            }
+                            // First progress/log while running: stamp the start if
+                            // the body's flip below hasn't (belt-and-suspenders).
+                            if s.started_at.is_none() {
+                                s.started_at = Some(now_ms());
                             }
                         }
                     }
@@ -739,7 +773,9 @@ impl JobManager {
                 return;
             }
             {
-                slot_run.state.lock().unwrap().status = "running".into();
+                let mut s = slot_run.state.lock().unwrap();
+                s.status = "running".into();
+                s.started_at = Some(now_ms());
             }
             match run_job(&slot_run.job_type, &params, conn, &reporter, &rt, &db_path, &jm_run) {
                 // A job that returns Ok after observing cancellation stopped
