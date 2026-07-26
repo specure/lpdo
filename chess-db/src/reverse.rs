@@ -56,7 +56,7 @@ pub fn resolve_fide(
     let fide_count: i64 = conn.query_row("SELECT COUNT(*) FROM fide_players", [], |r| r.get(0))?;
     if fide_count == 0 {
         reporter.done(
-            "No FIDE list loaded — run `chess-db fide refresh --file <FIDE players list>` first.",
+            "No FIDE list loaded yet — skipping FIDE ID matching (nothing to do).",
         );
         return Ok(0);
     }

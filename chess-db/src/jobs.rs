@@ -858,13 +858,16 @@ impl JobManager {
                 reporter.cancelled("Cancelled before it started");
                 return;
             }
-            // Offline gate (#206): if another network job is already the offline
-            // leader, hold this one QUEUED behind it rather than running and
-            // pausing it too — so the queue reads as one paused job with the rest
-            // queued. The signal is the synchronous `offline_leader` id (NOT the
-            // async "waiting" status), so the very next job sees it immediately.
-            // release_held re-dispatches it once the leader reconnects/finishes.
-            if job_uses_network(&slot_run.job_type) && jm_run.gate_should_hold(&slot_run.id) {
+            // Offline gate (#206): if a network job is already the offline leader,
+            // hold this one QUEUED behind it rather than letting it jump the queue.
+            // This applies to EVERY job type, not just network ones — the queue is
+            // FIFO and the paused leader is still at its head, so a later job (e.g.
+            // the resolve/dedup/normalise/index maintenance chain, some of which
+            // depend on the leader's download) must wait its turn. The signal is
+            // the synchronous `offline_leader` id (NOT the async "waiting" status),
+            // so the very next job sees it immediately. release_held re-dispatches
+            // in submission order once the leader reconnects/finishes.
+            if jm_run.gate_should_hold(&slot_run.id) {
                 {
                     let mut s = slot_run.state.lock().unwrap();
                     s.status = "queued".into();
@@ -1220,7 +1223,7 @@ fn run_job(
                 conn.query_row("SELECT COUNT(*) FROM fide_players", [], |r| r.get(0))?;
             if fide_count == 0 {
                 reporter.done(
-                    "No FIDE list loaded — run `chess-db fide refresh` first; nothing to normalise.",
+                    "No FIDE list loaded yet — skipping name normalisation (nothing to do).",
                 );
             } else {
                 crate::fide::normalise_from_local(conn, flag(p, "dry_run"), reporter)?;
