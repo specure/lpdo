@@ -908,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "chess-client"
-version = "0.9.2"
+version = "0.9.3"
 dependencies = [
  "chess-results-client",
  "dunce",
@@ -929,7 +929,7 @@ dependencies = [
 
 [[package]]
 name = "chess-db"
-version = "0.9.2"
+version = "0.9.3"
 dependencies = [
  "anyhow",
  "axum",
