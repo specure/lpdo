@@ -7,7 +7,7 @@
 // M3 Expressive moves: tonal containers per action role, larger 28px/32px
 // corners, display-scale typography, asymmetric icon emphasis.
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import DatabaseStats from "./DatabaseStats";
 import MyStatsWidget from "./MyStatsWidget";
 import { StatusInfo, Job } from "../types";
@@ -112,7 +112,18 @@ function useReadiness(initial: StatusInfo | null) {
 function PreparingBanner({ jobs, delayMs }: { jobs: Job[]; delayMs: number }) {
   const running = jobs.find((j) => j.status === "running");
   const label = running ? (PIPELINE_LABELS[running.type] ?? "Working") : "Preparing";
-  const pct = running && running.total > 0 ? Math.round((100 * running.value) / running.total) : null;
+
+  // Aggregate progress across the WHOLE pipeline, not just the current job: each
+  // task is an equal slice, so with 4 tasks the first finishing takes the bar to
+  // 25%, the second to 50%, and so on. Finished tasks drop out of `jobs`, so we
+  // track the peak count seen to keep the denominator stable — otherwise the bar
+  // would reset to 0 each time a task completes and the active count shrank.
+  const peak = useRef(0);
+  peak.current = jobs.length === 0 ? 0 : Math.max(peak.current, jobs.length);
+  const total = peak.current || 1;
+  const completed = total - jobs.length; // tasks that have left the active set
+  const runningFrac = running && running.total > 0 ? running.value / running.total : 0;
+  const pct = jobs.length > 0 ? Math.round((100 * (completed + runningFrac)) / total) : null;
   return (
     <div
       className="bg-secondary-container text-on-secondary-container rounded-2xl p-6 lpdo-rise-in"
