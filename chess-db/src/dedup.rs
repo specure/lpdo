@@ -386,8 +386,10 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
                 conn.execute("DELETE FROM games WHERE id = ?", duckdb::params![*drop_id])?;
                 dropped.insert(*drop_id);
             }
+            // Per-deletion detail goes to the terminal bar only. The daemon/GUI
+            // gets a running summary via progress() below, not a line per game —
+            // otherwise the Activity panel scrolls thousands of "Deleted …" lines.
             pb.println(&msg);
-            if reporter.is_json() { reporter.log(&msg); }
             deleted += 1;
         } else {
             // Same opening, different game — not a duplicate. Counted for the
@@ -395,8 +397,13 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
             diverged += 1;
         }
 
-        // Advance the progress bar without emitting a per-pair log line.
-        reporter.progress(checked, total, "");
+        // Drive the bar with a rolling summary (candidates checked + removed so
+        // far) rather than a per-pair line, so the Activity panel stays legible.
+        reporter.progress(
+            checked,
+            total,
+            format!("Checked {checked}/{total} candidate pairs · {deleted} duplicate(s) removed"),
+        );
     }
 
     pb.finish_and_clear();
