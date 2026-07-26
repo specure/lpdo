@@ -326,7 +326,7 @@ function BulkImportAction({ source, onChanged }: { source: SourceStatus; onChang
         .then((js) => {
           if (stop) return;
           setSyncing(js.some((j) =>
-            (j.status === "running" || j.status === "queued") &&
+            (j.status === "running" || j.status === "queued" || j.status === "waiting") &&
             j.type === "sources_sync" &&
             (j.params?.source as string | undefined) === source.key,
           ));
@@ -562,7 +562,7 @@ export default function SourcesPanel({ onMutated }: { onMutated?: () => void }) 
           if (stop) return;
           const keys = new Set(
             js
-              .filter((j) => (j.status === "running" || j.status === "queued") && j.type === "sources_sync")
+              .filter((j) => (j.status === "running" || j.status === "queued" || j.status === "waiting") && j.type === "sources_sync")
               .map((j) => j.params?.source as string | undefined)
               .filter((k): k is string => !!k),
           );

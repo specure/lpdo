@@ -61,6 +61,12 @@ export async function cancelJob(jobId: string): Promise<void> {
   await fetch(apiUrl(`/jobs/${encodeURIComponent(jobId)}/cancel`), { method: "POST" });
 }
 
+/** Retry a job paused waiting for the network right now, instead of waiting out
+ *  its retry timer (#206). */
+export async function retryJob(jobId: string): Promise<void> {
+  await fetch(apiUrl(`/jobs/${encodeURIComponent(jobId)}/retry`), { method: "POST" });
+}
+
 /** The daemon's whole job pipeline (active + queued + finished), newest last —
  *  what the global Activity view reads. */
 export function getJobs(): Promise<Job[]> {

@@ -109,7 +109,9 @@ async fn tick(jobs: &Arc<JobManager>, reads: &ReadPool, db_path: &Path) -> anyho
 fn job_in_flight(jobs: &Arc<JobManager>, job_type: &str) -> bool {
     jobs.list()
         .iter()
-        .any(|j| j.job_type == job_type && (j.status == "running" || j.status == "queued"))
+        // "waiting" (offline-paused, #206) counts as in-flight so we don't stack a
+        // duplicate each tick while the machine is offline.
+        .any(|j| j.job_type == job_type && matches!(j.status.as_str(), "running" | "queued" | "waiting"))
 }
 
 /// Whether background imports may run (#40 C4): only after first-run setup has
@@ -137,7 +139,7 @@ async fn setup_gate_open(reads: &ReadPool) -> anyhow::Result<bool> {
 fn sources_sync_in_flight(jobs: &Arc<JobManager>) -> std::collections::HashSet<String> {
     jobs.list()
         .into_iter()
-        .filter(|j| j.job_type == "sources_sync" && (j.status == "queued" || j.status == "running"))
+        .filter(|j| j.job_type == "sources_sync" && matches!(j.status.as_str(), "queued" | "running" | "waiting"))
         .filter_map(|j| j.params.get("source").and_then(|v| v.as_str()).map(str::to_owned))
         .collect()
 }

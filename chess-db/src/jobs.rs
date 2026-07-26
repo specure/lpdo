@@ -379,6 +379,10 @@ pub struct JobSnapshot {
     pub started_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<u64>,
+    /// Epoch-ms of the next auto-retry while the job is `"waiting"` for a network
+    /// connection (#206). Drives the panel's "retry in ~X min" countdown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<u64>,
     /// The submission params, so the UI can label a job by what it touches (e.g.
     /// which source/collection) and the scheduler can de-dupe by it.
     pub params: serde_json::Value,
@@ -421,6 +425,9 @@ struct JobState {
     /// "5 min ago · took 30s" (#170). None until each transition happens.
     started_at: Option<u64>,
     ended_at: Option<u64>,
+    /// Epoch-ms of the next automatic retry while `status == "waiting"` — a
+    /// network job paused because the machine is offline (#206). None otherwise.
+    retry_at: Option<u64>,
 }
 
 pub struct JobSlot {
@@ -435,6 +442,9 @@ pub struct JobSlot {
     events: broadcast::Sender<JobEvent>,
     buffer: Mutex<Vec<JobEvent>>,
     cancel: Arc<AtomicBool>,
+    /// Bumped on every (re)schedule of an offline retry so a superseded timer —
+    /// e.g. after a manual "Retry now" or a cancel — fires as a no-op (#206).
+    retry_gen: AtomicU64,
 }
 
 impl JobSlot {
@@ -453,6 +463,7 @@ impl JobSlot {
             error: s.error.clone(),
             started_at: s.started_at,
             ended_at: s.ended_at,
+            retry_at: s.retry_at,
             params: self.params.clone(),
         }
     }
@@ -514,6 +525,16 @@ fn is_cancellable(job_type: &str) -> bool {
         "import" | "import_pgn" | "sources_sync" | "update" | "download"
             | "index_positions" | "dedup_games" | "dedup_players"
     )
+}
+
+/// How long a network job pauses before retrying while the machine is offline
+/// (#206). Fixed interval; a connectivity probe (Phase 2) would resume sooner.
+const OFFLINE_RETRY_MS: u64 = 15 * 60 * 1000;
+
+/// Job types that make network requests, so a connectivity failure should pause
+/// and retry rather than fail (#206). Local jobs (import/dedup/index/…) never do.
+fn job_uses_network(job_type: &str) -> bool {
+    matches!(job_type, "download" | "sources_sync" | "update" | "fide_refresh")
 }
 
 fn blocks_maintenance(job_type: &str) -> bool {
@@ -588,10 +609,12 @@ impl JobManager {
         if !needs.requested {
             return;
         }
-        let busy = self
-            .list()
-            .iter()
-            .any(|j| (j.status == "queued" || j.status == "running") && blocks_maintenance(&j.job_type));
+        let busy = self.list().iter().any(|j| {
+            // "waiting" (offline-paused, #206) counts as in-flight: don't run
+            // maintenance until the paused sync has actually imported.
+            matches!(j.status.as_str(), "queued" | "running" | "waiting")
+                && blocks_maintenance(&j.job_type)
+        });
         if busy {
             // Not drained yet — put back what we claimed and wait for a later call.
             self.maintenance.lock().unwrap().requested = true;
@@ -643,12 +666,17 @@ impl JobManager {
         match self.get(id) {
             Some(slot) => {
                 slot.cancel.store(true, Ordering::Relaxed);
+                // Invalidate any pending offline-retry timer so it fires as a no-op.
+                slot.retry_gen.fetch_add(1, Ordering::SeqCst);
                 {
                     let mut s = slot.state.lock().unwrap();
-                    if s.status == "queued" {
+                    // Queued (never ran) or waiting (paused for network, #206):
+                    // terminate now. A running job just gets the flag + stops.
+                    if s.status == "queued" || s.status == "waiting" {
                         s.status = "cancelled".into();
                         s.message = "Cancelled".into();
                         s.ended_at = Some(now_ms());
+                        s.retry_at = None;
                     }
                 }
                 true
@@ -662,11 +690,12 @@ impl JobManager {
     pub fn submit(self: &Arc<Self>, job_type: String, params: serde_json::Value) -> String {
         let id = format!("job-{}", self.counter.fetch_add(1, Ordering::Relaxed));
         let (events_tx, _keep) = broadcast::channel::<JobEvent>(256);
+        let interruptible = !uses_appender(&job_type, &params);
         let slot = Arc::new(JobSlot {
             id: id.clone(),
-            job_type: job_type.clone(),
-            params: params.clone(),
-            interruptible: !uses_appender(&job_type, &params),
+            job_type,
+            params,
+            interruptible,
             state: Mutex::new(JobState {
                 status: "queued".into(),
                 value: 0,
@@ -676,26 +705,34 @@ impl JobManager {
                 error: None,
                 started_at: None,
                 ended_at: None,
+                retry_at: None,
             }),
             events: events_tx,
             buffer: Mutex::new(Vec::new()),
             cancel: Arc::new(AtomicBool::new(false)),
+            retry_gen: AtomicU64::new(0),
         });
         {
             self.jobs.lock().unwrap().insert(id.clone(), slot.clone());
             self.order.lock().unwrap().push(id.clone());
         }
+        self.dispatch(slot);
+        id
+    }
 
+    /// (Re)run a job's body: wire up a fresh event pipeline and spawn the body on
+    /// the writer (or read pool). Called for the initial submit and again for each
+    /// offline retry (#206), so the same slot re-runs under the same id.
+    fn dispatch(self: &Arc<Self>, slot: Arc<JobSlot>) {
         // Event pipeline: drain the reporter's channel, update the snapshot and
         // ring buffer, and fan out to SSE subscribers. Ends when the reporter
-        // (and thus its sender) is dropped at job completion.
+        // (and thus its sender) is dropped at the end of this attempt.
         let (ev_tx, mut ev_rx) = tokio::sync::mpsc::unbounded_channel::<JobEvent>();
         let slot_ev = slot.clone();
-        // Trigger a coalesced-maintenance drain check the instant this job ends
-        // (the loop below exits when the reporter's sender drops at completion),
-        // so maintenance starts right after the queue drains rather than waiting
-        // for the scheduler's periodic tick. No-op unless maintenance is owed and
-        // the queue is empty (#131).
+        // Trigger a coalesced-maintenance drain check the instant this attempt
+        // ends (the loop below exits when the reporter's sender drops), so
+        // maintenance starts right after the queue drains rather than waiting for
+        // the scheduler's periodic tick. No-op unless owed and the queue is empty.
         let jm = Arc::clone(self);
         self.rt.spawn(async move {
             while let Some(ev) = ev_rx.recv().await {
@@ -727,6 +764,11 @@ impl JobManager {
                             s.status = "cancelled".into();
                             s.ended_at = Some(now_ms());
                         }
+                        // Offline pause (#206): NOT terminal (no ended_at) — the
+                        // retry timer re-dispatches this same slot.
+                        "waiting" => {
+                            s.status = "waiting".into();
+                        }
                         _ => {
                             if s.status == "queued" {
                                 s.status = "running".into();
@@ -756,11 +798,13 @@ impl JobManager {
         // other writes).
         let slot_run = slot.clone();
         let cancel = slot.cancel.clone();
+        let params = slot.params.clone();
         let rt = self.rt.clone();
         let db_path = self.db_path.clone();
         let writer = self.writer.clone();
         let reads = self.reads.clone();
         let reopening = self.reopening.clone();
+        let read_only = is_read_only(&slot.job_type);
         // Jobs that fan out follow-up work (e.g. sources_sync requesting the
         // coalesced maintenance, #163) need the manager itself.
         let jm_run = Arc::clone(self);
@@ -773,9 +817,12 @@ impl JobManager {
                 return;
             }
             {
+                // Each attempt (re)stamps its start, so "took" reflects the last
+                // run, not the accumulated offline waits (#170/#206).
                 let mut s = slot_run.state.lock().unwrap();
                 s.status = "running".into();
                 s.started_at = Some(now_ms());
+                s.retry_at = None;
             }
             match run_job(&slot_run.job_type, &params, conn, &reporter, &rt, &db_path, &jm_run) {
                 // A job that returns Ok after observing cancellation stopped
@@ -784,6 +831,17 @@ impl JobManager {
                 // Empty message keeps the operation's own final message; this
                 // just guarantees a terminal "done" even if the op didn't emit one.
                 Ok(()) => reporter.done(""),
+                // A network job that lost connectivity pauses and retries instead
+                // of failing (#206): same row, no terminal state, re-dispatched by
+                // schedule_retry. A genuine (non-connectivity) error still fails.
+                Err(e)
+                    if job_uses_network(&slot_run.job_type)
+                        && crate::net::is_offline_error(&e)
+                        && !reporter.is_cancelled() =>
+                {
+                    reporter.waiting("Offline — waiting for a connection; will retry");
+                    jm_run.schedule_retry(&slot_run.id, OFFLINE_RETRY_MS);
+                }
                 Err(e) => {
                     let msg = format!("{:#}", e);
                     // A whole-instance DuckDB invalidation poisons every shared
@@ -814,13 +872,53 @@ impl JobManager {
                 }
             }
         };
-        if is_read_only(&job_type) {
+        if read_only {
             self.reads.spawn_fn(body);
         } else {
             self.writer.spawn_fn(body);
         }
+    }
 
-        id
+    /// Schedule an offline retry of a paused (`"waiting"`) job (#206): stamp
+    /// `retry_at` and spawn a timer that re-dispatches the same slot after
+    /// `delay_ms`. A `retry_gen` bump invalidates the timer if a manual "Retry
+    /// now" or a cancel happens first.
+    fn schedule_retry(self: &Arc<Self>, id: &str, delay_ms: u64) {
+        let Some(slot) = self.get(id) else { return };
+        let gen = slot.retry_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        slot.state.lock().unwrap().retry_at = Some(now_ms() + delay_ms);
+        let jm = Arc::clone(self);
+        self.rt.spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            // Superseded (retry-now / cancel), or no longer waiting → do nothing.
+            if slot.retry_gen.load(Ordering::SeqCst) != gen || slot.cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            {
+                let mut s = slot.state.lock().unwrap();
+                if s.status != "waiting" {
+                    return;
+                }
+                s.retry_at = None;
+            }
+            jm.dispatch(slot);
+        });
+    }
+
+    /// Retry a paused job immediately (the "Retry now" button, #206). Invalidates
+    /// its pending timer and re-dispatches at once. No-op unless it's waiting.
+    pub fn retry_now(self: &Arc<Self>, id: &str) -> bool {
+        let Some(slot) = self.get(id) else { return false };
+        {
+            let mut s = slot.state.lock().unwrap();
+            if s.status != "waiting" {
+                return false;
+            }
+            s.retry_at = None;
+        }
+        slot.retry_gen.fetch_add(1, Ordering::SeqCst); // kill the pending timer
+        self.dispatch(slot);
+        true
     }
 }
 
