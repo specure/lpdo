@@ -1,4 +1,5 @@
 mod local;
+mod pgn_index;
 mod prep;
 mod shortlist;
 
@@ -55,6 +56,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .manage(pgn_index::PgnSessions::default())
         .invoke_handler(tauri::generate_handler![
             fide_player,
             fide_activity,
@@ -77,6 +79,10 @@ pub fn run() {
             local::append_pgn_file,
             local::write_pgn_file,
             local::write_temp_pgn_file,
+            pgn_index::pgn_open,
+            pgn_index::pgn_query,
+            pgn_index::pgn_game,
+            pgn_index::pgn_close,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

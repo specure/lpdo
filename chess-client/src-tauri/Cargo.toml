@@ -38,6 +38,9 @@ tokio-util = { version = "0.7", features = ["io"] }
 futures-util = "0.3"
 fide-client = { path = "../../fide-client" }
 chess-results-client = { path = "../../chess-results-client" }
+# Lightweight, in-process PGN index/browse engine for opening large local PGN
+# files without a server (#104). No DuckDB — header-only browse + replay.
+chess-pgn = { path = "../../chess-pgn" }
 # Like std::fs::canonicalize but strips Windows' \\?\ verbatim prefix so paths
 # shown in the file browser stay readable (no-op on other platforms).
 dunce = "1"
