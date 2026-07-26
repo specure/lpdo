@@ -1224,7 +1224,11 @@ fn run_job(
                     reporter.done(if imported == 0 {
                         format!("{}: already up to date — no new games.", src.name)
                     } else {
-                        format!("{}: {imported} games imported.", src.name)
+                        format!(
+                            "{}: {} games imported.",
+                            src.name,
+                            crate::progress::thousands(imported as i64)
+                        )
                     });
                     // One coalesced identity-first pass for every source — bulk or
                     // feed. `dedup_games` is incremental (#—) so the pass is cheap

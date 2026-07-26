@@ -41,7 +41,7 @@ struct ProgressLabel {
 
 impl ProgressLabel {
     fn message(&self, games_this_file: usize) -> String {
-        let total = self.games_base + games_this_file as u64;
+        let total = crate::progress::thousands((self.games_base + games_this_file as u64) as i64);
         if self.file_count > 1 {
             format!("File {} of {} — {} games imported…", self.file_index, self.file_count, total)
         } else {
@@ -1605,12 +1605,12 @@ fn import_summary(imported: usize, skipped_dups: usize, skipped_ns: usize, skipp
         parts.push(format!("{} outside date window", skipped_window));
     }
     if parts.is_empty() {
-        format!("{} games imported", imported)
+        format!("{} games imported", crate::progress::thousands(imported as i64))
     } else {
         format!(
             "{} games imported, {} skipped ({})",
-            imported,
-            skipped_dups + skipped_ns + skipped_window,
+            crate::progress::thousands(imported as i64),
+            crate::progress::thousands((skipped_dups + skipped_ns + skipped_window) as i64),
             parts.join(", ")
         )
     }
@@ -1846,7 +1846,7 @@ mod progress_label_tests {
         // File 2 of 2, with 2_780_000 games already imported by file 1: the count
         // continues from there rather than resetting.
         let label = ProgressLabel { file_index: 2, file_count: 2, games_base: 2_780_000 };
-        assert_eq!(label.message(15_000), "File 2 of 2 — 2795000 games imported…");
+        assert_eq!(label.message(15_000), "File 2 of 2 — 2,795,000 games imported…");
     }
 
     #[test]
