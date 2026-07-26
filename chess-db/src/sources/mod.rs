@@ -499,14 +499,19 @@ pub fn list_status(conn: &Connection) -> Result<Vec<SourceStatus>> {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap_or((0, 0));
-        // Most recently imported item — newest by import time, id as a tiebreak.
+        // The source's newest DATA — the latest published item (TWIC issue /
+        // Lichess month / Ajedrez part). Ordered by publication date, NOT import
+        // time: feeds are fetched newest-first, so "most recently imported" would
+        // count *backwards* (2026-03 → … → 2020-01) during an initial import and
+        // then stick at the oldest month. Falls back to import time / id when a
+        // published date is missing.
         let last_import: Option<LastImport> = conn
             .query_row(
                 "SELECT external_id, CAST(published_at AS VARCHAR), CAST(imported_at AS VARCHAR),
                         COALESCE(game_count, 0)
                  FROM source_items
                  WHERE source_key = ? AND imported = TRUE
-                 ORDER BY imported_at DESC NULLS LAST, id DESC
+                 ORDER BY published_at DESC NULLS LAST, imported_at DESC NULLS LAST, id DESC
                  LIMIT 1",
                 duckdb::params![s.key],
                 |r| {
@@ -803,17 +808,20 @@ mod register_tests {
             "INSERT INTO source_items (id, source_key, external_id, imported, game_count, imported_at, published_at) VALUES
                (1, 'twic', '1648', TRUE,  100, TIMESTAMP '2026-06-08 10:00:00', DATE '2026-06-08'),
                (2, 'twic', '1649', TRUE,  200, TIMESTAMP '2026-06-15 10:00:00', DATE '2026-06-15'),
+               -- Newest PUBLISHED but imported EARLIEST (feeds fetch newest-first):
+               -- the latest-update tile must show this, not the last-imported one.
+               (4, 'twic', '1651', TRUE,  50,  TIMESTAMP '2026-06-01 10:00:00', DATE '2026-06-22'),
                (3, 'twic', '1650', FALSE, 0,   NULL, NULL);",
         )
         .unwrap();
 
         let twic = list_status(&conn).unwrap().into_iter().find(|s| s.key == "twic").unwrap();
-        assert_eq!(twic.items, 2, "only imported items count");
-        assert_eq!(twic.imported_games, 300, "sum of imported items' game counts");
+        assert_eq!(twic.items, 3, "only imported items count");
+        assert_eq!(twic.imported_games, 350, "sum of imported items' game counts");
         let li = twic.last_import.expect("has a last import");
-        assert_eq!(li.external_id, "1649", "newest imported item by import time");
-        assert_eq!(li.game_count, 200);
-        assert_eq!(li.published_at.as_deref(), Some("2026-06-15"));
+        assert_eq!(li.external_id, "1651", "newest item by publication date, not import time");
+        assert_eq!(li.game_count, 50);
+        assert_eq!(li.published_at.as_deref(), Some("2026-06-22"));
     }
 }
 
