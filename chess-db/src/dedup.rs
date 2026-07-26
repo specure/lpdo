@@ -1,5 +1,6 @@
 use anyhow::Result;
 use duckdb::Connection;
+use std::collections::HashSet;
 use crate::reporter::Reporter;
 
 /// Hard-delete a game and clean every row that references it: positions,
@@ -318,12 +319,23 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
     let mut deleted = 0usize;
     let mut diverged = 0usize;
     let mut checked = 0u64;
+    // Games slated for deletion this pass. dedup removes only the `games` row
+    // inline (a PK lookup) and defers the positions/game_collections cleanup to a
+    // single sweep at the end — those tables have no game_id index, so per-game
+    // deletes would each scan the whole table. Tracking dropped ids also keeps
+    // triplets (3+ copies) consistent: a pair whose game already went is skipped,
+    // the same effect the old immediate delete had by making later pairs no-ops.
+    let mut dropped: HashSet<u32> = HashSet::new();
 
     for (id1, id2, pgn1, pgn2) in &candidates {
-        // Cooperative cancellation (#157): stop between pairs. Each delete is its
-        // own committed unit, so a partial run leaves a consistent database.
+        // Cooperative cancellation (#157): stop between pairs. Each `games` delete
+        // is its own committed unit; the deferred references are swept here before
+        // returning, so a cancelled run still leaves a consistent database.
         if reporter.is_cancelled() {
             pb.finish_and_clear();
+            if !dry_run && !dropped.is_empty() {
+                sweep_deleted_game_refs(conn)?;
+            }
             reporter.cancelled(format!(
                 "Cancelled — {deleted} duplicate(s) deleted before stopping ({checked}/{total} pairs checked)."
             ));
@@ -331,6 +343,12 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
         }
         pb.inc(1);
         checked += 1;
+
+        // A prior pair already removed one of these two games — nothing to do.
+        if dropped.contains(id1) || dropped.contains(id2) {
+            reporter.progress(checked, total, "");
+            continue;
+        }
 
         // Compare bare SAN sequences, not raw movetext: the same game from
         // different sources is annotated differently (TWIC ships clean SAN;
@@ -361,8 +379,12 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
                 drop_id, white, black, where_, date, keep_id,
             );
             if !dry_run {
+                // Move the dropped game's collection memberships onto the survivor
+                // first, then remove only the games row — a PK lookup. Its
+                // positions/game_collections rows are cleaned by the end sweep.
                 merge_collections(conn, *keep_id, *drop_id)?;
-                hard_delete_game(conn, *drop_id)?;
+                conn.execute("DELETE FROM games WHERE id = ?", duckdb::params![*drop_id])?;
+                dropped.insert(*drop_id);
             }
             pb.println(&msg);
             if reporter.is_json() { reporter.log(&msg); }
@@ -378,6 +400,13 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
     }
 
     pb.finish_and_clear();
+
+    // Clean the deferred references of every game removed this pass — one anti-
+    // join each, no matter how many games went. Guarded on an actual deletion so
+    // a no-op incremental pass never pays for a full positions scan.
+    if !dry_run && !dropped.is_empty() {
+        sweep_deleted_game_refs(conn)?;
+    }
 
     // A complete pass vetted every remaining unvetted game (survivors of a pair
     // and games that had no candidate). Mark them so the next daily run only
@@ -398,6 +427,23 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
         )
     };
     reporter.done(&summary);
+    Ok(())
+}
+
+/// Delete `positions` and `game_collections` rows that reference a game no longer
+/// in `games`. `dedup_games` removes duplicate `games` rows inline but defers
+/// these two — both lack a `game_id` index, so a per-game delete scans the whole
+/// (large) table; one anti-join sweeps every orphan in a single pass instead.
+/// Positions are always removed before/with their game, so a hard kill can only
+/// leave games-without-positions (which `index_positions` refills), never the
+/// reverse — and the next run's sweep clears anything a kill left behind.
+fn sweep_deleted_game_refs(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DELETE FROM positions
+           WHERE NOT EXISTS (SELECT 1 FROM games g WHERE g.id = positions.game_id);
+         DELETE FROM game_collections
+           WHERE NOT EXISTS (SELECT 1 FROM games g WHERE g.id = game_collections.game_id);",
+    )?;
     Ok(())
 }
 
@@ -660,6 +706,32 @@ mod dedup_games_tests {
             .query_row("SELECT COUNT(*) FROM games WHERE deduped IS NOT TRUE", [], |r| r.get(0))
             .unwrap();
         assert_eq!(unvetted, 2, "dry run leaves games unvetted");
+    }
+
+    /// Removing a duplicate defers its positions/game_collections to the end
+    /// sweep — verify those rows are gone while the survivor's are kept.
+    #[test]
+    fn end_sweep_clears_removed_games_positions_and_collections() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO collections (id, name) VALUES (10, 'Dedup Test Coll');
+             INSERT INTO games (id, white_id, black_id, date, result, opening_line, move_count, pgn, deduped) VALUES
+               (1, 1, 2, '2024-06-18', '1-0', 'e4 e5 Nf3', 4, '[W \"a\"]\n\n1. e4 e5 2. Nf3 Nc6 1-0', FALSE),
+               (2, 1, 2, '2024-06-18', '1-0', 'e4 e5 Nf3', 3, '[W \"a\"]\n\n1. e4 e5 2. Nf3 1-0', FALSE);
+             INSERT INTO positions (game_id, move_number, zobrist_hash, next_move) VALUES
+               (1, 1, 111, 'e4'), (2, 1, 222, 'e4');
+             INSERT INTO game_collections (game_id, collection_id) VALUES (1, 10), (2, 10);",
+        ).unwrap();
+
+        dedup_games(&conn, false, true, &Reporter::silent()).unwrap();
+
+        // Game 2 (the shorter prefix) is removed; its deferred rows are swept.
+        assert_eq!(count_games(&conn), 1);
+        let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(count("SELECT COUNT(*) FROM positions WHERE game_id = 2"), 0, "removed game's positions swept");
+        assert_eq!(count("SELECT COUNT(*) FROM positions WHERE game_id = 1"), 1, "survivor's positions kept");
+        assert_eq!(count("SELECT COUNT(*) FROM game_collections WHERE game_id = 2"), 0, "removed game's memberships swept");
+        assert_eq!(count("SELECT COUNT(*) FROM game_collections WHERE game_id = 1"), 1, "survivor still in its collection");
     }
 
     /// The same game from TWIC (clean SAN) and a Lichess broadcast (eval/clock
