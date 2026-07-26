@@ -521,8 +521,9 @@ mod migration_tests {
             .unwrap();
         assert!(!enabled, "twic should be seeded disabled on a fresh install (#40 C4)");
 
-        // Date window (B1): TWIC seeds a from-2013-01-01 window — the 2013 quality
-        // handoff where TWIC takes over from Ajedrez's pre-2013 deep history (#148).
+        // Date window (B1): TWIC seeds with NO lower bound — every game it ships,
+        // overlapping Ajedrez's ≤2012-12-31 range on purpose (no earlier-dated
+        // games from the oldest issue are discarded).
         let (from, to, excl): (Option<String>, Option<String>, bool) = conn
             .query_row(
                 "SELECT CAST(from_date AS VARCHAR), CAST(to_date AS VARCHAR), exclude_undated
@@ -533,12 +534,12 @@ mod migration_tests {
             .unwrap();
         assert_eq!(
             (from.as_deref(), to.as_deref(), excl),
-            (Some("2013-01-01"), None, false),
-            "twic seeds a from-2013-01-01 window (the 2013 handoff, #148)"
+            (None, None, false),
+            "twic seeds with no lower bound (takes all games)"
         );
 
-        // Lichess Broadcasts is seeded from the catalog: disabled, from its
-        // earliest available data (2020-01-01) as a live-tail complement (#148).
+        // Lichess Broadcasts is seeded from the catalog: disabled, NO lower bound
+        // (import every broadcast game; its data just happens to start Jan 2020).
         let (lenabled, lfrom): (bool, Option<String>) = conn
             .query_row(
                 "SELECT enabled, CAST(from_date AS VARCHAR) FROM sources WHERE key = 'lichess-broadcasts'",
@@ -547,10 +548,10 @@ mod migration_tests {
             )
             .unwrap();
         assert!(!lenabled, "lichess should be seeded disabled");
-        assert_eq!(lfrom.as_deref(), Some("2020-01-01"));
+        assert_eq!(lfrom, None, "lichess seeds with no lower bound");
 
         // Ajedrez OTB seeded from the catalog: disabled, bounded ABOVE at 2012-12-31
-        // — pre-2013 deep history; TWIC takes 2013-01-01+ (the 2013 handoff, #148).
+        // — the deep-history base; TWIC overlaps it below 2013 now (#148).
         let (aenabled, ato): (bool, Option<String>) = conn
             .query_row(
                 "SELECT enabled, CAST(to_date AS VARCHAR) FROM sources WHERE key = 'ajedrez-otb'",

@@ -45,6 +45,11 @@ pub struct CatalogSource {
     pub default_from: Option<&'static str>,
     pub default_to: Option<&'static str>,
     pub default_exclude_undated: bool,
+    /// Display-only: the approximate date the source's earliest data begins, for
+    /// the coverage timeline. Feeds import ALL games (no `default_from` cutoff),
+    /// but we still want the bar drawn from ~when the first issue exists rather
+    /// than the far left. Falls back to `from_date` in the UI when None.
+    pub coverage_from: Option<&'static str>,
 }
 
 /// The curated, compiled-in catalog. TWIC (weekly) + Lichess Broadcasts (monthly)
@@ -63,19 +68,22 @@ pub static CATALOG: &[CatalogSource] = &[
         // which made the daemon auto-import TWIC before onboarding — that guard is
         // `default_enabled: false`, NOT the window, so the window below is safe.
         default_enabled: false,
-        // The 2013 quality handoff (#148): TWIC contributes games from 2013 onward,
-        // where it's ~99% FIDE-identified with clean full names — higher quality
-        // (and more volume) than Ajedrez there. Ajedrez covers the pre-2013 deep
-        // history; TWIC (+ Lichess) is the ≥2013 half. NOT a coverage horizon: the
-        // measured optimum is a two-sided quality crossover at ~2013, not "start
-        // where Ajedrez's data ends (~2024)". See the wiki page + #148 for the data.
-        // (Files still download: TWIC items expose no coverage range, so they can't
-        // be skipped by date — but only in-window games are imported/deduped/
-        // indexed, which is the expensive part.) Seeds NEW rows only; existing
-        // installs keep whatever window they already have.
-        default_from: Some("2013-01-01"),
+        // No lower bound — take every TWIC game. Its earliest downloadable issue
+        // is ~#920 (mid-2012), and a weekly issue can carry games dated to earlier
+        // weeks/months (tournaments span time), so any date floor would needlessly
+        // throw away the oldest issue's earlier-dated games. Ajedrez still caps at
+        // 2012-12-31 (its quality declines after), so ~2012-06 → 2012-12-31 is a
+        // deliberate OVERLAP: Ajedrez already holds ~99% of TWIC's games there, but
+        // the residual TWIC-only games are worth importing — dedup removes the
+        // duplicates. From 2013 on TWIC is the higher-quality half (~99% FIDE-
+        // identified, clean names); pre-2013 deep history is Ajedrez's job.
+        // (Supersedes the old 2013-01-01 handoff, #148.) Seeds NEW rows only;
+        // existing installs keep whatever window they have.
+        default_from: None,
         default_to: None,
         default_exclude_undated: false,
+        // TWIC's earliest downloadable issue (#920) is ~June 2012.
+        coverage_from: Some("2012-06-01"),
     },
     CatalogSource {
         key: "lichess-broadcasts",
@@ -85,13 +93,16 @@ pub static CATALOG: &[CatalogSource] = &[
         homepage: "https://database.lichess.org/",
         credit: "Lichess Broadcasts — lichess.org, CC BY-SA 4.0.",
         collection: "Lichess Broadcasts",
-        // Off by default. From its earliest available data (Jan 2020) onward —
-        // Lichess Broadcasts don't predate that, so this takes the whole feed as a
-        // live-tail complement to TWIC. Overlap with TWIC is auto-deduped (#148).
+        // Off by default. No game-date cutoff — import every broadcast game (a
+        // monthly file can carry games dated in an earlier month). Lichess's
+        // broadcast archive begins Jan 2020, so that's just where its data starts;
+        // overlap with TWIC is auto-deduped. The timeline draws it from Jan 2020
+        // via coverage_from below.
         default_enabled: false,
-        default_from: Some("2020-01-01"),
+        default_from: None,
         default_to: None,
         default_exclude_undated: false,
+        coverage_from: Some("2020-01-01"),
     },
     CatalogSource {
         key: "ajedrez-otb",
@@ -110,6 +121,8 @@ pub static CATALOG: &[CatalogSource] = &[
         default_from: None,
         default_to: Some("2012-12-31"),
         default_exclude_undated: false,
+        // Deep-history base: drawn from the far left (no coverage_from marker).
+        coverage_from: None,
     },
 ];
 
@@ -346,6 +359,9 @@ pub struct SourceStatus {
     pub from_date: Option<String>,
     pub to_date: Option<String>,
     pub exclude_undated: bool,
+    /// Display-only start for the coverage timeline (catalog `coverage_from`);
+    /// null → the UI falls back to `from_date`.
+    pub coverage_from: Option<String>,
     pub last_run: Option<String>,
     pub last_status: Option<String>,
     /// Items imported for this source.
@@ -518,6 +534,7 @@ pub fn list_status(conn: &Connection) -> Result<Vec<SourceStatus>> {
             from_date: win.from,
             to_date: win.to,
             exclude_undated: win.exclude_undated,
+            coverage_from: s.coverage_from.map(String::from),
             last_run,
             last_status,
             items,

@@ -242,6 +242,10 @@ export interface SourceStatus {
   from_date: string | null;
   to_date: string | null;
   exclude_undated: boolean;
+  /** Display-only start for the coverage timeline (approx first-issue date);
+   *  null → fall back to from_date. Feeds import all games, so this places their
+   *  bars sensibly instead of drawing from the far left. */
+  coverage_from: string | null;
   /** ISO timestamp of the last sync, and its outcome ("ok" / error text). */
   last_run: string | null;
   last_status: string | null;
