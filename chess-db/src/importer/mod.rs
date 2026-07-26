@@ -1450,6 +1450,9 @@ fn process_pgn_stream(
             id
         };
 
+        // Move fingerprints for hash-based dedup — computed from the same
+        // canonical form dedup verifies with (see crate::dedup::move_fingerprints).
+        let (move_hash, move_hash_short) = crate::dedup::move_fingerprints(&game.pgn);
         game_batch.push(GameRow {
             id: game_id,
             issue_id,
@@ -1468,6 +1471,8 @@ fn process_pgn_stream(
             pgn: game.pgn,
             opening_line: game.opening_line,
             chessbase_id: game.chessbase_id,
+            move_hash,
+            move_hash_short,
         });
 
         if max_position_depth.is_some() {
@@ -1680,6 +1685,8 @@ struct GameRow {
     pgn: String,
     opening_line: String,
     chessbase_id: Option<i64>,
+    move_hash: i64,
+    move_hash_short: Option<i64>,
 }
 
 struct PositionRow {
@@ -1696,7 +1703,8 @@ fn flush_games(conn: &Connection, games: &[GameRow], fast: bool) -> Result<()> {
     if fast {
         // Appender column order matches the live table layout. After Phase 2
         // dropped source_id, the trailing columns are: chessbase_id,
-        // deleted_at (NULL on insert), visibility, deduped.
+        // deleted_at (NULL on insert), visibility, deduped, move_hash,
+        // move_hash_short.
         let mut app = conn.appender("games")?;
         for g in games {
             app.append_row(duckdb::params![
@@ -1706,6 +1714,7 @@ fn flush_games(conn: &Connection, games: &[GameRow], fast: bool) -> Result<()> {
                 duckdb::types::Value::Null,          // deleted_at (TIMESTAMP)
                 g.visibility,
                 false,                               // deduped: new games await dedup_games
+                g.move_hash, g.move_hash_short,
             ])?;
         }
         app.flush()?;
@@ -1714,14 +1723,16 @@ fn flush_games(conn: &Connection, games: &[GameRow], fast: bool) -> Result<()> {
         let mut stmt = conn.prepare(
             "INSERT INTO games (id, issue_id, white_id, black_id, white_elo, black_elo,
                                event, site, date, round, result, eco, move_count, pgn,
-                               opening_line, chessbase_id, visibility, deduped)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)",
+                               opening_line, chessbase_id, visibility, deduped,
+                               move_hash, move_hash_short)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, ?)",
         )?;
         for g in games {
             stmt.execute(duckdb::params![
                 g.id, g.issue_id, g.white_id, g.black_id, g.white_elo, g.black_elo,
                 g.event, g.site, g.date, g.round, g.result, g.eco, g.move_count,
-                g.pgn, g.opening_line, g.chessbase_id, g.visibility
+                g.pgn, g.opening_line, g.chessbase_id, g.visibility,
+                g.move_hash, g.move_hash_short
             ])?;
         }
         conn.execute_batch("COMMIT")?;
@@ -1892,6 +1903,32 @@ mod bulk_index_tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::init(&conn).unwrap();
         conn
+    }
+
+    /// flush_games via BOTH paths (fast appender + prepared INSERT) must match the
+    /// live `games` column layout, incl. the trailing move_hash/move_hash_short —
+    /// a miscount would fail every real import with an appender error.
+    #[test]
+    fn flush_games_stores_all_columns_both_paths() {
+        let conn = setup();
+        let row = |id: u32, mh: i64| GameRow {
+            id, issue_id: 1, visibility: "public", white_id: 1, black_id: 2,
+            white_elo: None, black_elo: None, event: None, site: None,
+            date: Some("2024-01-01".into()), round: None, result: Some("1-0".into()),
+            eco: None, move_count: 3, pgn: "[W \"a\"]\n\n1. e4 e5 2. Nf3 1-0".into(),
+            opening_line: "e4 e5 Nf3".into(), chessbase_id: None,
+            move_hash: mh, move_hash_short: Some(mh + 1),
+        };
+        flush_games(&conn, &[row(1, 111)], true).unwrap();  // fast appender
+        flush_games(&conn, &[row(2, 222)], false).unwrap();  // prepared INSERT
+        let got = |id: u32| -> (i64, Option<i64>, bool) {
+            conn.query_row(
+                "SELECT move_hash, move_hash_short, deduped FROM games WHERE id = ?",
+                duckdb::params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            ).unwrap()
+        };
+        assert_eq!(got(1), (111, Some(112), false), "appender path");
+        assert_eq!(got(2), (222, Some(223), false), "prepared-insert path");
     }
 
     /// Appender-insert `n` players, bulk-style. fide_id alternates NULL/value to

@@ -286,6 +286,17 @@ pub fn init(conn: &Connection) -> Result<()> {
         println!("Done.");
     }
 
+    // Move fingerprints (#—): a hash of the canonical SAN sequence and of that
+    // sequence minus its last half-move. New games are hashed at import; existing
+    // rows read NULL and are backfilled by the next `dedup_games` pass (a
+    // background job — deliberately not here, since hashing every game re-reads
+    // and re-parses every PGN and would block daemon startup). dedup joins on
+    // these to find duplicates without parsing PGNs pair-by-pair.
+    conn.execute_batch(
+        "ALTER TABLE games ADD COLUMN IF NOT EXISTS move_hash BIGINT;
+         ALTER TABLE games ADD COLUMN IF NOT EXISTS move_hash_short BIGINT;",
+    )?;
+
     // Phase 2 cleanup: the sources table and games.source_id column are no
     // longer referenced by any code path. Drop them. Idempotent via IF EXISTS.
     //

@@ -253,20 +253,29 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
     // robust to id reuse: a new game (always written FALSE) paired with an old
     // vetted game (TRUE) still satisfies the OR, so new duplicates of old games
     // are caught regardless of which side gets the lower id.
+    // Ensure every game has a move fingerprint. New games are hashed at import;
+    // this backfills any that predate the columns — a one-time cost after upgrade,
+    // a no-op afterwards and for fresh installs. Required before the hash join
+    // below; it writes only the derived hash columns, so it runs even on a dry run.
+    backfill_move_hashes(conn, reporter)?;
+
     let spinner = reporter.spinner();
-    spinner.set_message("Scanning for candidate duplicate pairs...");
-    if reporter.is_json() { reporter.log("Scanning for candidate duplicate pairs..."); }
+    spinner.set_message("Scanning for duplicate games...");
+    if reporter.is_json() { reporter.log("Scanning for duplicate games..."); }
 
     // Incremental (background) runs only consider pairs with an unvetted side; a
     // `full` run (manual `games dedup` / the Maintenance button) drops that filter
-    // to re-examine every pair — needed to clean duplicates that a prior pass
-    // marked vetted before this comparison understood them (e.g. cross-source
-    // TWIC/Lichess games once annotations broke the raw compare).
+    // to re-examine every pair.
     let incremental_filter = if full {
         ""
     } else {
         "AND (g1.deduped IS NOT TRUE OR g2.deduped IS NOT TRUE)"
     };
+    // Candidates come straight from the move fingerprints: same players, date and
+    // result, and either identical move sequences (move_hash = move_hash) or a
+    // one-trailing-half-move difference (move_hash = move_hash_short, either way).
+    // No per-pair PGN parsing drives this — the hash match IS the filter — so the
+    // set is the true duplicates, not every game sharing an opening.
     let candidates: Vec<(u32, u32, String, String)> = {
         let mut stmt = conn.prepare(&format!(
             "SELECT g1.id, g2.id, g1.pgn, g2.pgn
@@ -278,10 +287,10 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
               AND g1.date = g2.date
               AND g1.result IS NOT DISTINCT FROM g2.result
               AND g1.id < g2.id
-              {incremental_filter}
-             WHERE g1.opening_line = g2.opening_line
-                OR g2.opening_line LIKE g1.opening_line || ' %'
-                OR g1.opening_line LIKE g2.opening_line || ' %'"
+              AND (g1.move_hash = g2.move_hash
+                   OR g1.move_hash = g2.move_hash_short
+                   OR g1.move_hash_short = g2.move_hash)
+              {incremental_filter}"
         ))?;
         stmt.query_map([], |r| {
             Ok((
@@ -298,26 +307,23 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
     spinner.finish_and_clear();
 
     if candidates.is_empty() {
-        // No pairs to check, but the games examined this pass (any still-unvetted
-        // rows) are now vetted — mark them so future runs skip them. Without this
-        // a table of all-unique games would be rescanned in full every sync.
+        // Nothing to remove, but the games examined this pass (any still-unvetted
+        // rows) are now vetted — mark them so future runs skip them.
         mark_vetted(conn, dry_run, reporter)?;
-        reporter.done("No candidate duplicate pairs found.");
+        reporter.done("No duplicate games found.");
         return Ok(());
     }
 
     let total = candidates.len() as u64;
-    let header = format!(
-        "{} candidate pair(s) found. Checking move text...{}",
-        total,
+    reporter.log(format!(
+        "{total} duplicate pair(s) found.{}",
         if dry_run { " (dry run)" } else { "" }
-    );
-    reporter.log(&header);
+    ));
 
     let pb = reporter.bar(total);
 
     let mut deleted = 0usize;
-    let mut diverged = 0usize;
+    let mut collisions = 0usize;
     let mut checked = 0u64;
     // Games slated for deletion this pass. dedup removes only the `games` row
     // inline (a PK lookup) and defers the positions/game_collections cleanup to a
@@ -346,64 +352,63 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
 
         // A prior pair already removed one of these two games — nothing to do.
         if dropped.contains(id1) || dropped.contains(id2) {
-            reporter.progress(checked, total, "");
+            reporter.progress(checked, total, format!("Checked {checked}/{total} · {deleted} removed"));
             continue;
         }
 
-        // Compare bare SAN sequences, not raw movetext: the same game from
-        // different sources is annotated differently (TWIC ships clean SAN;
-        // Lichess broadcasts embed {[%eval]}/{[%clk]} comments and $N NAGs), so a
-        // string compare never matched. The shorter sequence must be a
-        // move-boundary prefix of the longer (one source may stop early).
+        // The hash join already established these are duplicates (identical, or a
+        // single trailing half-move apart). Re-derive the move sequences and
+        // confirm to rule out the ~never 64-bit collision — a false positive here
+        // would delete a real game, so verify before deleting.
         let m1 = canonical_moves(pgn1);
         let m2 = canonical_moves(pgn2);
-
-        let (keep_id, drop_id, shorter, longer) = if m1.len() >= m2.len() {
-            (id1, id2, &m2, &m1)
-        } else {
-            (id2, id1, &m1, &m2)
-        };
-
-        if is_move_seq_prefix(shorter, longer) {
-            // Identify the game being removed so the user can see exactly what
-            // was deleted — players, event and date, plus the game it duplicates.
-            let drop_pgn = if drop_id == id1 { pgn1 } else { pgn2 };
-            let white = pgn_header(drop_pgn, "White").unwrap_or("?");
-            let black = pgn_header(drop_pgn, "Black").unwrap_or("?");
-            let date  = pgn_header(drop_pgn, "Date").unwrap_or("?");
-            let event = pgn_header(drop_pgn, "Event").unwrap_or("");
-            let where_ = if event.is_empty() { String::new() } else { format!(", {}", event) };
-            let msg = format!(
-                "{} [{}] {} vs {}{} ({}) — duplicate of [{}]",
-                if dry_run { "Would delete" } else { "Deleted" },
-                drop_id, white, black, where_, date, keep_id,
-            );
-            if !dry_run {
-                // Move the dropped game's collection memberships onto the survivor
-                // first, then remove only the games row — a PK lookup. Its
-                // positions/game_collections rows are cleaned by the end sweep.
-                merge_collections(conn, *keep_id, *drop_id)?;
-                conn.execute("DELETE FROM games WHERE id = ?", duckdb::params![*drop_id])?;
-                dropped.insert(*drop_id);
-            }
-            // Per-deletion detail goes to the terminal bar only. The daemon/GUI
-            // gets a running summary via progress() below, not a line per game —
-            // otherwise the Activity panel scrolls thousands of "Deleted …" lines.
-            pb.println(&msg);
-            deleted += 1;
-        } else {
-            // Same opening, different game — not a duplicate. Counted for the
-            // summary but not logged per-pair, which would bury the deletions.
-            diverged += 1;
+        let confirmed = m1 == m2
+            || (m1.len() + 1 == m2.len() && m2[..m1.len()] == m1[..])
+            || (m2.len() + 1 == m1.len() && m1[..m2.len()] == m2[..]);
+        if !confirmed {
+            collisions += 1;
+            reporter.progress(checked, total, format!("Checked {checked}/{total} · {deleted} removed"));
+            continue;
         }
 
-        // Drive the bar with a rolling summary (candidates checked + removed so
-        // far) rather than a per-pair line, so the Activity panel stays legible.
-        reporter.progress(
-            checked,
-            total,
-            format!("Checked {checked}/{total} candidate pairs · {deleted} duplicate(s) removed"),
+        // Survivor = the game with the LONGEST raw movetext (annotations and
+        // variations included): a more complete game wins, and at equal moves an
+        // annotated game beats a bare one — even if that means keeping the game
+        // with fewer moves played. Ties break to the lower id (id1 < id2 here).
+        let (keep_id, drop_id, drop_pgn) = if raw_movetext_len(pgn1) >= raw_movetext_len(pgn2) {
+            (id1, id2, pgn2)
+        } else {
+            (id2, id1, pgn1)
+        };
+
+        // Identify the game being removed so the user can see exactly what was
+        // deleted — players, event and date, plus the game it duplicates.
+        let white = pgn_header(drop_pgn, "White").unwrap_or("?");
+        let black = pgn_header(drop_pgn, "Black").unwrap_or("?");
+        let date  = pgn_header(drop_pgn, "Date").unwrap_or("?");
+        let event = pgn_header(drop_pgn, "Event").unwrap_or("");
+        let where_ = if event.is_empty() { String::new() } else { format!(", {}", event) };
+        let msg = format!(
+            "{} [{}] {} vs {}{} ({}) — duplicate of [{}]",
+            if dry_run { "Would delete" } else { "Deleted" },
+            drop_id, white, black, where_, date, keep_id,
         );
+        if !dry_run {
+            // Move the dropped game's collection memberships onto the survivor
+            // first, then remove only the games row — a PK lookup. Its
+            // positions/game_collections rows are cleaned by the end sweep.
+            merge_collections(conn, *keep_id, *drop_id)?;
+            conn.execute("DELETE FROM games WHERE id = ?", duckdb::params![*drop_id])?;
+            dropped.insert(*drop_id);
+        }
+        // Per-deletion detail goes to the terminal bar only. The daemon/GUI gets a
+        // running summary via progress() below, not a line per game.
+        pb.println(&msg);
+        deleted += 1;
+
+        // Drive the bar with a rolling summary (pairs checked + removed so far)
+        // rather than a per-pair line, so the Activity panel stays legible.
+        reporter.progress(checked, total, format!("Checked {checked}/{total} · {deleted} removed"));
     }
 
     pb.finish_and_clear();
@@ -422,16 +427,13 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
     // re-checks the games it didn't reach.
     mark_vetted(conn, dry_run, reporter)?;
 
+    // `collisions` counts hash matches that verification rejected — expected to
+    // be zero; surfaced only when non-zero so it never adds noise.
+    let tail = if collisions > 0 { format!(" ({collisions} hash collision(s) skipped)") } else { String::new() };
     let summary = if dry_run {
-        format!(
-            "Dry run: {} would be deleted, {} pairs skipped (diverging moves).",
-            deleted, diverged
-        )
+        format!("Dry run: {deleted} duplicate(s) would be deleted.{tail}")
     } else {
-        format!(
-            "Done: {} duplicate game(s) deleted, {} pair(s) skipped (diverging moves).",
-            deleted, diverged
-        )
+        format!("Done: {deleted} duplicate game(s) deleted.{tail}")
     };
     reporter.done(&summary);
     Ok(())
@@ -451,6 +453,65 @@ fn sweep_deleted_game_refs(conn: &Connection) -> Result<()> {
          DELETE FROM game_collections
            WHERE NOT EXISTS (SELECT 1 FROM games g WHERE g.id = game_collections.game_id);",
     )?;
+    Ok(())
+}
+
+/// Populate `move_hash`/`move_hash_short` for games that lack them — those that
+/// predate the columns. New games are hashed at import, so this is a one-time
+/// pass after upgrade and a no-op on every run thereafter (and for fresh
+/// installs). Processed in id-range chunks so peak memory is bounded (each chunk
+/// holds only its PGNs), and stopped cleanly on cancel — the next run resumes,
+/// since it only touches still-NULL rows. Not gated by dry_run: it writes only
+/// the derived hash columns, which the candidate query needs to work at all.
+fn backfill_move_hashes(conn: &Connection, reporter: &Reporter) -> Result<()> {
+    let pending: i64 =
+        conn.query_row("SELECT COUNT(*) FROM games WHERE move_hash IS NULL", [], |r| r.get(0))?;
+    if pending == 0 {
+        return Ok(());
+    }
+    reporter.log(format!("Computing move fingerprints for {pending} game(s) (one-time)…"));
+    let max_id: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) FROM games", [], |r| r.get(0))?;
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS hash_backfill;
+         CREATE TEMP TABLE hash_backfill (id UINTEGER, h BIGINT, hs BIGINT);",
+    )?;
+
+    const CHUNK: i64 = 200_000; // games per id-range pass; bounds memory to its PGNs
+    let mut lo = 0i64;
+    let mut done = 0i64;
+    while lo <= max_id {
+        if reporter.is_cancelled() {
+            conn.execute_batch("DROP TABLE IF EXISTS hash_backfill;")?;
+            return Ok(()); // resumes next run — only NULL rows are processed
+        }
+        let hi = lo + CHUNK;
+        let batch: Vec<(u32, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, pgn FROM games WHERE move_hash IS NULL AND id >= ? AND id < ?")?;
+            stmt.query_map(duckdb::params![lo, hi], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        if !batch.is_empty() {
+            conn.execute_batch("DELETE FROM hash_backfill;")?;
+            {
+                let mut app = conn.appender("hash_backfill")?;
+                for (id, pgn) in &batch {
+                    let (h, hs) = move_fingerprints(pgn);
+                    app.append_row(duckdb::params![id, h, hs])?;
+                }
+                app.flush()?;
+            }
+            conn.execute_batch(
+                "UPDATE games SET move_hash = m.h, move_hash_short = m.hs
+                 FROM hash_backfill m WHERE games.id = m.id;",
+            )?;
+            done += batch.len() as i64;
+            reporter.progress(done as u64, pending as u64, format!("Fingerprinting games… {done}/{pending}"));
+        }
+        lo = hi;
+    }
+    conn.execute_batch("DROP TABLE IF EXISTS hash_backfill;")?;
     Ok(())
 }
 
@@ -585,6 +646,51 @@ fn canonical_moves(pgn: &str) -> Vec<String> {
     bare.split_whitespace().filter_map(normalise_san_token).collect()
 }
 
+/// FNV-1a 64-bit over the space-joined SAN tokens. Deliberately *not*
+/// `DefaultHasher` — that isn't guaranteed stable across std versions, and these
+/// hashes are persisted in `games.move_hash`. Returned as `i64` (same bits) to
+/// fit DuckDB's BIGINT.
+fn hash_moves(moves: &[String]) -> i64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for (i, m) in moves.iter().enumerate() {
+        if i > 0 {
+            h = (h ^ u64::from(b' ')).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        for &b in m.as_bytes() {
+            h = (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    h as i64
+}
+
+/// The two move fingerprints stored per game (#—): a hash of the full canonical
+/// SAN sequence, and — for games of ≥2 moves — a hash of that sequence with the
+/// last half-move dropped. The pair lets dedup match exact duplicates AND ones
+/// that differ by a single trailing half-move (e.g. a resignation where the last
+/// move went unrecorded in one source) with a pure-SQL hash join, no per-pair
+/// move parsing. Computed from the stored PGN via the same `canonical_moves`
+/// dedup verifies with, so the two always agree.
+pub fn move_fingerprints(pgn: &str) -> (i64, Option<i64>) {
+    let m = canonical_moves(pgn);
+    let full = hash_moves(&m);
+    let short = (m.len() >= 2).then(|| hash_moves(&m[..m.len() - 1]));
+    (full, short)
+}
+
+/// Byte length of a PGN's raw move section (headers dropped) — the survivor
+/// tiebreaker for dedup: the game with the *longest* raw movetext wins, so a more
+/// complete game beats a shorter one and, at equal moves, an annotated game
+/// (inline `[%eval]`/`[%clk]`, variations) beats a bare one.
+fn raw_movetext_len(pgn: &str) -> usize {
+    pgn.lines()
+        .skip_while(|l| {
+            let t = l.trim_start();
+            t.is_empty() || t.starts_with('[')
+        })
+        .map(|l| l.len() + 1)
+        .sum()
+}
+
 /// Normalise one movetext token to a SAN move, or `None` if it isn't a move (a
 /// move number like `12.`/`12...`, a NAG `$n`, a result, or empty afterwards).
 fn normalise_san_token(tok: &str) -> Option<String> {
@@ -616,13 +722,6 @@ fn normalise_san_token(tok: &str) -> Option<String> {
         "0-0-0" => "O-O-O".to_string(),
         _ => mv.to_string(),
     })
-}
-
-/// True when `shorter` is a genuine move-boundary prefix of `longer` (one source
-/// may have recorded fewer moves). An empty sequence never matches — two
-/// move-less rows aren't evidence of a duplicate.
-fn is_move_seq_prefix(shorter: &[String], longer: &[String]) -> bool {
-    !shorter.is_empty() && longer.len() >= shorter.len() && longer[..shorter.len()] == *shorter
 }
 
 fn pick_survivor(rows: &[(u32, String, bool, Option<String>)]) -> usize {
@@ -783,6 +882,46 @@ mod dedup_games_tests {
         );
         assert_eq!(clean, vec!["e4", "e5", "Nf3", "Nc6"]);
         assert_eq!(clean, annotated, "annotations, NAGs and a variation are stripped");
+    }
+
+    #[test]
+    fn fingerprints_encode_exact_and_off_by_one() {
+        let four = move_fingerprints("[W \"a\"]\n\n1. e4 e5 2. Nf3 Nc6 1-0");
+        let three = move_fingerprints("[W \"a\"]\n\n1. e4 e5 2. Nf3 1-0");
+        // Identical move lists → identical full hash.
+        let four_again = move_fingerprints("[W \"a\"]\n\n1. e4 {[%eval 0.1]} 1... e5 2. Nf3 Nc6 1-0");
+        assert_eq!(four.0, four_again.0, "annotations don't change the full hash");
+        // The 4-move game's short hash == the 3-move game's full hash (off-by-one).
+        assert_eq!(four.1, Some(three.0), "short hash drops exactly the last half-move");
+    }
+
+    /// The survivor is the longest RAW movetext, so an annotated game wins even
+    /// with one fewer move played (the resignation case).
+    #[test]
+    fn annotated_shorter_game_wins() {
+        let conn = setup();
+        // Bare, 5 moves.
+        conn.execute(
+            "INSERT INTO games (id, white_id, black_id, date, result, opening_line, move_count, pgn, deduped)
+             VALUES (1, 1, 2, '2024-06-18', '1-0', 'e4 e5 Nf3 Nc6 Bb5', 5, ?, FALSE)",
+            duckdb::params!["[White \"A\"]\n[Black \"B\"]\n\n1. e4 e5 2. Nf3 Nc6 3. Bb5 1-0"],
+        ).unwrap();
+        // Annotated, 4 moves (one fewer — last move unrecorded) but far longer raw text.
+        conn.execute(
+            "INSERT INTO games (id, white_id, black_id, date, result, opening_line, move_count, pgn, deduped)
+             VALUES (2, 1, 2, '2024-06-18', '1-0', 'e4 e5 Nf3 Nc6', 4, ?, FALSE)",
+            duckdb::params!["[White \"A\"]\n[Black \"B\"]\n[GameURL \"x\"]\n\n\
+                1. e4 {[%eval 0.15] [%clk 1:00:53]} 1... e5 {[%eval 0.15] [%clk 1:00:52]} \
+                2. Nf3 {[%eval 0.11] [%clk 1:01:14]} 2... Nc6 {[%eval 0.27] [%clk 1:01:09]} 1-0"],
+        ).unwrap();
+
+        dedup_games(&conn, false, true, &Reporter::silent()).unwrap();
+
+        let survivors: Vec<u32> = {
+            let mut s = conn.prepare("SELECT id FROM games").unwrap();
+            s.query_map([], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect()
+        };
+        assert_eq!(survivors, vec![2], "the annotated 4-move game wins over the bare 5-move one");
     }
 }
 
