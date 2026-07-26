@@ -373,9 +373,14 @@ function FideRefreshSection() {
 
 function DeduplicationSection({ onMutated }: { onMutated?: () => void }) {
   const progress = useSidecarProgress("maint-dedup");
+  // Full re-checks every game (cleans duplicates an earlier pass missed, e.g. the
+  // same game across TWIC and a Lichess broadcast); incremental only checks games
+  // added since the last pass — the same cheap sweep the automatic post-sync
+  // maintenance runs. Default to full: a manual run is usually a deliberate clean.
+  const [mode, setMode] = useState<"incremental" | "full">("full");
 
   function run() {
-    void progress.run(["games", "dedup"]);
+    void progress.run(mode === "full" ? ["games", "dedup", "--full"] : ["games", "dedup"]);
   }
 
   // Dedup removes duplicate game rows — refresh server status + game list
@@ -390,7 +395,30 @@ function DeduplicationSection({ onMutated }: { onMutated?: () => void }) {
         Detects and removes duplicate games resulting from overlapping collections.
       </p>
       {!progress.running && !progress.done && (
-        <ActionButton onClick={run}>Run deduplication</ActionButton>
+        <>
+          <div className="inline-flex items-center gap-1 p-1 bg-surface-container rounded-full w-fit">
+            {(["incremental", "full"] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                aria-pressed={mode === m}
+                className={`h-7 px-3 rounded-full text-label-md capitalize transition-colors duration-short3 ease-standard ${
+                  mode === m
+                    ? "bg-secondary-container text-on-secondary-container"
+                    : "text-on-surface-variant hover:text-on-surface"
+                }`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+          <p className="text-label-sm text-on-surface-variant">
+            {mode === "full"
+              ? "Full — re-checks every game (slower). Cleans duplicates an earlier pass missed."
+              : "Incremental — only games added since the last pass (fast); same as the automatic sweep."}
+          </p>
+          <ActionButton onClick={run}>Run deduplication</ActionButton>
+        </>
       )}
       {(progress.running || progress.done) && (
         <ProgressSection progress={progress} label="Scanning…" />
