@@ -96,9 +96,16 @@ async fn tick(jobs: &Arc<JobManager>, reads: &ReadPool, db_path: &Path) -> anyho
         .await?;
     if !candidates.is_empty() {
         let in_flight = sources_sync_in_flight(jobs);
+        // One cluster for the batch of due feeds, so if the first pauses offline the
+        // rest wait behind it rather than each running and pausing too (#206).
+        let cluster = jobs.next_cluster_id();
         for src in candidates {
             if !in_flight.contains(src.key) {
-                jobs.submit("sources_sync".into(), serde_json::json!({ "source": src.key }));
+                jobs.submit_in_cluster(
+                    "sources_sync".into(),
+                    serde_json::json!({ "source": src.key }),
+                    Some(cluster.clone()),
+                );
             }
         }
     }

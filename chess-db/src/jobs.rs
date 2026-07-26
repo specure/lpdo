@@ -433,6 +433,15 @@ struct JobState {
 pub struct JobSlot {
     id: String,
     job_type: String,
+    /// Submission order (the counter value at submit). Used by the offline gate to
+    /// compare "earlier than" without parsing the id (#206 dependency model).
+    seq: u64,
+    /// Jobs submitted together as one logical operation share a cluster id (the
+    /// maintenance chain, the wizard's per-source syncs, a scheduler resync batch).
+    /// A job submitted on its own gets a unique cluster (its own id). The offline
+    /// gate holds a job behind an earlier *same-cluster* job that's stuck; solo
+    /// jobs from other clusters skip ahead (#206 dependency model).
+    cluster: String,
     /// The job's submission params (e.g. `{ "source": "ajedrez-otb" }`), kept so
     /// the scheduler can de-dupe an auto-sync against an in-flight one and the
     /// Activity view can label a job by what it operates on.
@@ -497,18 +506,22 @@ pub struct JobManager {
     /// after the import queue drains, so later imports never miss maintenance and
     /// two passes never stack for one drain cycle.
     maintenance: Mutex<MaintenanceNeeds>,
-    /// Network jobs held behind an offline "leader" (the one job showing
-    /// "waiting"), in submission order (#206). While the machine is offline only
-    /// the leader retries; the rest stay `queued` and are re-dispatched here in
-    /// order once connectivity returns (a network job succeeds) — so the queue
-    /// reads as one paused job with the rest queued behind it, not N paused jobs.
+    /// Jobs held behind a stuck (paused/deferred) job, in submission order (#206).
+    /// A held job stays `queued` and is re-dispatched from here once the thing it
+    /// waited on resolves, so the queue reads as one paused job with the rest
+    /// queued behind it, not N paused jobs. Holds both network jobs (waiting for
+    /// the offline leader) and non-network jobs (waiting for an earlier stuck job
+    /// in their own cluster).
     held: Mutex<Vec<Arc<JobSlot>>>,
-    /// The id of the current offline leader, or None when online (#206). Set
-    /// SYNCHRONOUSLY the instant a job detects offline (not via the async status
-    /// event) so the very next job's gate check sees it — otherwise the writer
-    /// moves on before the leader's "waiting" status has propagated and a second
-    /// job runs and pauses too.
-    offline_leader: Mutex<Option<String>>,
+    /// The single global offline "leader" — the one network job showing "waiting"
+    /// with a Retry-now button — or None when no network job is paused (#206).
+    /// Only network jobs go offline, and the network rule holds every *later*
+    /// network job behind the earliest one, so there is at most one leader ever.
+    /// Set SYNCHRONOUSLY the instant a job detects offline (not via the async
+    /// status event) so the very next job's gate check sees it — otherwise the
+    /// writer moves on before the "waiting" status propagates and a second job
+    /// runs and pauses too. Held as the `Arc` so the gate can read its seq/cluster.
+    offline_leader: Mutex<Option<Arc<JobSlot>>>,
 }
 
 /// What post-import maintenance is currently owed (#131, #167). `requested` marks
@@ -549,6 +562,25 @@ fn job_uses_network(job_type: &str) -> bool {
     matches!(job_type, "download" | "sources_sync" | "update" | "fide_refresh")
 }
 
+/// The offline-gate dependency predicate in pure form (#206): does any earlier
+/// *stuck* job (the paused network leader, or an already-deferred job) block
+/// `job`? Each `stuck` entry is `(seq, cluster, is_network)`. A stuck job `k`
+/// blocks `job` when it was submitted earlier (`k.seq < job_seq`) AND either the
+/// cluster rule (`k.cluster == job_cluster` — cluster-mates wait) or the network
+/// rule (`job_net && k.net` — network jobs run one-at-a-time) applies. The leader
+/// re-running from its own retry timer never blocks itself (its seq isn't
+/// strictly less than its own).
+fn offline_gate_blocks(
+    job_seq: u64,
+    job_cluster: &str,
+    job_net: bool,
+    stuck: &[(u64, &str, bool)],
+) -> bool {
+    stuck.iter().any(|&(seq, cluster, net)| {
+        seq < job_seq && (cluster == job_cluster || (job_net && net))
+    })
+}
+
 fn blocks_maintenance(job_type: &str) -> bool {
     matches!(
         job_type,
@@ -582,16 +614,41 @@ impl JobManager {
         }
     }
 
-    /// Whether a network job about to run should HOLD (queued) rather than run:
-    /// true when an offline leader exists and it isn't this job (#206). The leader
-    /// itself (re-running from its retry timer) must run to test the connection.
-    fn gate_should_hold(&self, self_id: &str) -> bool {
-        matches!(self.offline_leader.lock().unwrap().as_deref(), Some(l) if l != self_id)
+    /// Whether the job about to run should HOLD (stay queued) rather than run,
+    /// because an *earlier* stuck job (the paused network leader, or an already-
+    /// deferred job) sits ahead of it under either dependency rule (#206):
+    ///
+    ///   * cluster rule — an earlier job in the SAME cluster is stuck, so later
+    ///     cluster-mates wait for it (e.g. `resolve_fide` waits for a paused
+    ///     `fide_refresh` in the maintenance chain);
+    ///   * network rule — this is a network job and an earlier NETWORK job (any
+    ///     cluster) is stuck, so network jobs run strictly one-at-a-time and only
+    ///     the earliest is ever paused/retryable.
+    ///
+    /// The leader itself (re-running from its retry timer) never matches (its seq
+    /// isn't < its own), so it runs to re-test the connection. Locks leader before
+    /// held everywhere to keep a consistent order.
+    fn gate_should_hold(&self, job: &JobSlot) -> bool {
+        let leader = self.offline_leader.lock().unwrap();
+        let held = self.held.lock().unwrap();
+        let stuck: Vec<(u64, &str, bool)> = leader
+            .iter()
+            .chain(held.iter())
+            .map(|k| (k.seq, k.cluster.as_str(), job_uses_network(&k.job_type)))
+            .collect();
+        offline_gate_blocks(
+            job.seq,
+            &job.cluster,
+            job_uses_network(&job.job_type),
+            &stuck,
+        )
     }
 
-    /// Back online (a network job succeeded / the leader was cancelled): clear the
-    /// leader and re-dispatch every held job in submission order (#206). The first
-    /// to run again becomes the new leader if we're somehow still offline.
+    /// The leader resolved (reconnected + finished, errored for real, or was
+    /// cancelled): clear it and re-dispatch every held job in submission order
+    /// (#206). Each re-runs the gate, so most proceed and the next offline network
+    /// job becomes the new leader; a job still blocked (e.g. an earlier cluster-mate
+    /// hasn't run yet) simply re-holds. Idempotent.
     fn release_held(self: &Arc<Self>) {
         *self.offline_leader.lock().unwrap() = None;
         let held: Vec<Arc<JobSlot>> = std::mem::take(&mut *self.held.lock().unwrap());
@@ -663,12 +720,18 @@ impl JobManager {
         //
         // Ensure the FIDE list exists/current before it's used (no-op when
         // fresh, so no re-download per import); then the identity steps.
-        self.submit("fide_refresh".to_string(), serde_json::json!({ "if_due": true }));
-        self.submit("resolve_fide".to_string(), serde_json::json!({}));
-        self.submit("dedup_players".to_string(), serde_json::json!({}));
-        self.submit("normalise".to_string(), serde_json::json!({}));
-        self.submit("dedup_games".to_string(), serde_json::json!({}));
-        self.submit("index_positions".to_string(), serde_json::json!({ "fast": true }));
+        // One cluster for the whole chain so that if `fide_refresh` pauses offline,
+        // the identity steps that depend on the FIDE list (`resolve_fide`,
+        // `normalise`) — and their neighbours — wait for it rather than jumping
+        // ahead and failing with "No FIDE list loaded" (#206).
+        let c = self.next_cluster_id();
+        let m = |t: &str, p| self.submit_in_cluster(t.to_string(), p, Some(c.clone()));
+        m("fide_refresh", serde_json::json!({ "if_due": true }));
+        m("resolve_fide", serde_json::json!({}));
+        m("dedup_players", serde_json::json!({}));
+        m("normalise", serde_json::json!({}));
+        m("dedup_games", serde_json::json!({}));
+        m("index_positions", serde_json::json!({ "fast": true }));
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<JobSlot>> {
@@ -706,7 +769,8 @@ impl JobManager {
                 // The offline leader? Cancelling it must free the jobs held behind
                 // it so one can take over (#206). Uses the synchronous id, not the
                 // (async) "waiting" status.
-                let was_leader = self.offline_leader.lock().unwrap().as_deref() == Some(id);
+                let was_leader =
+                    self.offline_leader.lock().unwrap().as_ref().map(|l| l.id.as_str()) == Some(id);
                 {
                     let mut s = slot.state.lock().unwrap();
                     // Queued (never ran) or waiting (paused for network): terminate
@@ -727,15 +791,38 @@ impl JobManager {
         }
     }
 
+    /// A fresh cluster id for a batch of jobs that should wait for each other under
+    /// the offline gate's cluster rule (#206). Reuses the job counter, so it can't
+    /// collide with a solo job's own-id cluster (`job-N` vs `batch-N`).
+    pub fn next_cluster_id(&self) -> String {
+        format!("batch-{}", self.counter.fetch_add(1, Ordering::Relaxed))
+    }
+
     /// Enqueue a job and return its id immediately. The job runs on the writer
-    /// thread (serialized after any in-flight write).
+    /// thread (serialized after any in-flight write). Solo: its cluster is its own
+    /// id, so no other job waits on it (except via the network rule) (#206).
     pub fn submit(self: &Arc<Self>, job_type: String, params: serde_json::Value) -> String {
-        let id = format!("job-{}", self.counter.fetch_add(1, Ordering::Relaxed));
+        self.submit_in_cluster(job_type, params, None)
+    }
+
+    /// Like [`submit`], but places the job in an explicit cluster so later jobs in
+    /// the same cluster wait for it under the offline gate (#206). `cluster: None`
+    /// makes it solo (cluster = its own id).
+    pub fn submit_in_cluster(
+        self: &Arc<Self>,
+        job_type: String,
+        params: serde_json::Value,
+        cluster: Option<String>,
+    ) -> String {
+        let seq = self.counter.fetch_add(1, Ordering::Relaxed);
+        let id = format!("job-{seq}");
         let (events_tx, _keep) = broadcast::channel::<JobEvent>(256);
         let interruptible = !uses_appender(&job_type, &params);
         let slot = Arc::new(JobSlot {
             id: id.clone(),
             job_type,
+            seq,
+            cluster: cluster.unwrap_or_else(|| id.clone()),
             params,
             interruptible,
             state: Mutex::new(JobState {
@@ -858,20 +945,19 @@ impl JobManager {
                 reporter.cancelled("Cancelled before it started");
                 return;
             }
-            // Offline gate (#206): if a network job is already the offline leader,
-            // hold this one QUEUED behind it rather than letting it jump the queue.
-            // This applies to EVERY job type, not just network ones — the queue is
-            // FIFO and the paused leader is still at its head, so a later job (e.g.
-            // the resolve/dedup/normalise/index maintenance chain, some of which
-            // depend on the leader's download) must wait its turn. The signal is
-            // the synchronous `offline_leader` id (NOT the async "waiting" status),
-            // so the very next job sees it immediately. release_held re-dispatches
-            // in submission order once the leader reconnects/finishes.
-            if jm_run.gate_should_hold(&slot_run.id) {
+            // Offline gate (#206): hold this job QUEUED behind an earlier stuck job
+            // rather than letting it jump the queue, under either dependency rule —
+            // an earlier same-cluster job is stuck (so cluster-mates wait for it),
+            // or this is a network job and an earlier network job is stuck (so
+            // network jobs run one-at-a-time and only the earliest is retryable).
+            // The signal is the synchronous `offline_leader` (NOT the async
+            // "waiting" status), so the very next job sees it immediately;
+            // release_held re-dispatches held jobs once the leader resolves.
+            if jm_run.gate_should_hold(&slot_run) {
                 {
                     let mut s = slot_run.state.lock().unwrap();
                     s.status = "queued".into();
-                    s.message = String::new(); // just "Queued" (behind the sync ahead)
+                    s.message = String::new(); // just "Queued" (behind the job ahead)
                     s.retry_at = None;
                 }
                 jm_run.held.lock().unwrap().push(slot_run.clone());
@@ -913,9 +999,9 @@ impl JobManager {
                     // past the gate while someone else leads → hold queued instead.
                     let lead = {
                         let mut leader = jm_run.offline_leader.lock().unwrap();
-                        match leader.as_deref() {
-                            None => { *leader = Some(slot_run.id.clone()); true }
-                            Some(l) => l == slot_run.id,
+                        match leader.as_ref() {
+                            None => { *leader = Some(slot_run.clone()); true }
+                            Some(l) => l.id == slot_run.id,
                         }
                     };
                     if lead {
@@ -962,7 +1048,7 @@ impl JobManager {
                     // error, it's still done — free the jobs held behind it so the
                     // queue doesn't stall (#206). release_held clears offline_leader.
                     if job_uses_network(&slot_run.job_type)
-                        && jm_run.offline_leader.lock().unwrap().as_deref()
+                        && jm_run.offline_leader.lock().unwrap().as_ref().map(|l| l.id.as_str())
                             == Some(slot_run.id.as_str())
                     {
                         jm_run.release_held();
@@ -1568,6 +1654,60 @@ pub fn restore_snapshot_if_present(db: &Path) -> Result<()> {
     }
     eprintln!("Database restored from snapshot.");
     Ok(())
+}
+
+#[cfg(test)]
+mod offline_gate_tests {
+    use super::offline_gate_blocks;
+
+    // Cluster ids: "M" = the maintenance chain, "S" = a sources-sync batch.
+    // A stuck network leader from cluster S, submitted first (seq 1).
+    const NET_LEADER_S: (u64, &str, bool) = (1, "S", true);
+
+    #[test]
+    fn solo_nonnetwork_job_skips_a_paused_network_cluster() {
+        // A local PGN import (non-network, its own cluster) queued after an offline
+        // sources-sync must NOT wait — different cluster, and it isn't a network job.
+        assert!(!offline_gate_blocks(9, "job-9", false, &[NET_LEADER_S]));
+    }
+
+    #[test]
+    fn second_network_job_holds_behind_the_paused_leader() {
+        // A network job in a *different* cluster still waits for the earlier paused
+        // network job (network rule) — so only the leader is ever "waiting".
+        assert!(offline_gate_blocks(9, "M", true, &[NET_LEADER_S]));
+    }
+
+    #[test]
+    fn same_cluster_nonnetwork_job_waits_for_its_paused_network_sibling() {
+        // resolve_fide (non-network) behind a paused fide_refresh in the same
+        // maintenance cluster → held (cluster rule), so it can't run and hit
+        // "No FIDE list loaded".
+        let stuck = [(1u64, "M", true)]; // paused fide_refresh
+        assert!(offline_gate_blocks(2, "M", false, &stuck));
+    }
+
+    #[test]
+    fn the_leader_reruns_itself_on_retry() {
+        // The leader re-dispatched by its own retry timer must run (to re-test the
+        // connection), never block on itself.
+        assert!(!offline_gate_blocks(1, "S", true, &[NET_LEADER_S]));
+    }
+
+    #[test]
+    fn nonnetwork_stuck_job_does_not_block_a_foreign_network_job() {
+        // A held *non-network* job (e.g. a deferred dedup) doesn't invoke the
+        // network rule, so a network job from another cluster still runs.
+        let stuck = [(1u64, "M", false)];
+        assert!(!offline_gate_blocks(9, "S", true, &stuck));
+    }
+
+    #[test]
+    fn a_later_stuck_job_never_blocks_an_earlier_one() {
+        // Only *earlier* (smaller seq) stuck jobs block; a job can't wait on one
+        // submitted after it.
+        assert!(!offline_gate_blocks(1, "S", true, &[(5, "S", true)]));
+    }
 }
 
 #[cfg(test)]

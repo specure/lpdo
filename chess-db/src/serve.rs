@@ -1515,11 +1515,18 @@ fn spawn_first_run_pipeline(
 ) -> Vec<String> {
     let mut ids: Vec<String> = Vec::new();
     let mut keys: Vec<String> = Vec::new();
+    // One cluster for the whole batch: if the first source's sync pauses offline,
+    // the others wait behind it rather than each running and pausing too (#206).
+    let cluster = state.jobs.next_cluster_id();
     for s in sources {
         // One `sources_sync` per source — the SAME job the Sources page uses when
         // a feed is enabled, so onboarding shows a single "Sync <source>" entry
         // rather than a separate "Download …" + "Import …" pair (#195 follow-up).
-        ids.push(state.jobs.submit("sources_sync".into(), serde_json::json!({ "source": s.key })));
+        ids.push(state.jobs.submit_in_cluster(
+            "sources_sync".into(),
+            serde_json::json!({ "source": s.key }),
+            Some(cluster.clone()),
+        ));
         keys.push(s.key.to_string());
     }
     // First-run requests the one identity-first maintenance pass, coalesced with
