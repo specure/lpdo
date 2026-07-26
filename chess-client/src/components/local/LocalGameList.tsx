@@ -13,6 +13,10 @@ import IndexedGameList from "./IndexedGameList";
 
 type ColorFilter = "any" | "white" | "black";
 
+// Compressed PGNs (.zip/.zst/.gz) can't be read whole into a string; the indexed
+// browser decompresses + indexes them in-process (#104 slice 3).
+const COMPRESSED_RE = /\.(zip|zst|zstd|gz|gzip)$/i;
+
 interface Props {
   filePath: string;
   selectedId: number | null;
@@ -83,6 +87,13 @@ export default function LocalGameList({ filePath, selectedId, onSelect, onGameCo
     setError(null);
     setAllGames([]);
     setOversized(false);
+
+    // Compressed files go straight to the indexed browser (they aren't plain text).
+    if (COMPRESSED_RE.test(filePath)) {
+      setOversized(true);
+      setLoading(false);
+      return;
+    }
 
     invoke<string>("read_pgn_file", { path: filePath })
       .then((text) => {

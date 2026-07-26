@@ -24,11 +24,11 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use pgn_reader::{RawTag, Reader, Visitor};
@@ -255,24 +255,49 @@ impl IndexData {
 
 /// A PGN file opened for browsing. The header index grows incrementally under an
 /// `RwLock`, so queries can run while a background thread is still indexing.
+///
+/// A **compressed** source (`.zip`/`.zst`/`.gz`) is inflated on the fly while
+/// indexing and teed into a temp `.pgn` (`data_path`), so byte offsets — and
+/// `game_pgn` — work against a plain, seekable file without ever holding the
+/// whole thing in RAM. The temp file is deleted on drop.
 pub struct PgnIndex {
-    path: PathBuf,
-    file_len: u64,
+    /// The file the user opened (compressed or plain).
+    source: PathBuf,
+    /// Where recorded offsets point: the source itself if plain, else the temp
+    /// `.pgn` the decompressed bytes are teed into.
+    data_path: PathBuf,
+    /// Whether `data_path` is a temp file we own (and delete on drop).
+    is_temp: bool,
+    format: Format,
+    /// Length of `data_path`: fixed for a plain file, grows for a compressed one
+    /// (used as the final game's end offset).
+    data_len: AtomicU64,
     data: RwLock<IndexData>,
     cancel: AtomicBool,
     complete: AtomicBool,
 }
 
 impl PgnIndex {
-    /// Open a file for indexing (reads only its length). The returned handle is
-    /// empty until [`index`](Self::index) / [`index_blocking`](Self::index_blocking)
-    /// populate it. Shared via `Arc` so a background thread can index while
-    /// readers query.
+    /// Open a file for indexing. Detects compression from the extension; reads
+    /// only metadata (a plain file's length). The returned handle is empty until
+    /// [`index`](Self::index) / [`index_blocking`](Self::index_blocking) populate
+    /// it. Shared via `Arc` so a background thread can index while readers query.
     pub fn open(path: &Path) -> io::Result<Arc<Self>> {
-        let file_len = std::fs::metadata(path)?.len();
+        let format = Format::from_path(path);
+        let (data_path, is_temp, data_len) = if format == Format::Plain {
+            (path.to_path_buf(), false, std::fs::metadata(path)?.len())
+        } else {
+            // Surface a missing/unreadable source now; the temp file is created
+            // when indexing runs (length unknown until then).
+            std::fs::metadata(path)?;
+            (temp_path_for(), true, 0)
+        };
         Ok(Arc::new(PgnIndex {
-            path: path.to_path_buf(),
-            file_len,
+            source: path.to_path_buf(),
+            data_path,
+            is_temp,
+            format,
+            data_len: AtomicU64::new(data_len),
             data: RwLock::new(IndexData::new()),
             cancel: AtomicBool::new(false),
             complete: AtomicBool::new(false),
@@ -281,12 +306,34 @@ impl PgnIndex {
 
     /// Stream the file, appending games to the index `batch` at a time under the
     /// write lock (parsing happens unlocked; only the short append is locked).
-    /// Stops early if [`cancel`](Self::cancel) was called; sets the complete flag
-    /// on reaching EOF. Run this on a background thread while others query.
+    /// Decompresses on the fly for `.zip`/`.zst`/`.gz`. Stops early if
+    /// [`cancel`](Self::cancel) was called; sets the complete flag on reaching
+    /// EOF. Run this on a background thread while others query.
     pub fn index(&self, batch: usize) -> io::Result<()> {
-        let file = File::open(&self.path)?;
+        let source = File::open(&self.source)?;
+        match self.format {
+            Format::Plain => self.index_stream(source, batch),
+            Format::Gz => self.index_stream(flate2::read::GzDecoder::new(source), batch),
+            Format::Zst => self.index_stream(zstd::stream::read::Decoder::new(source)?, batch),
+            Format::Zip => {
+                // Index the first `.pgn` member (the archive + entry live for the
+                // whole stream, so `entry`'s borrow of `archive` is fine).
+                let mut archive = zip::ZipArchive::new(source).map_err(zip_io)?;
+                let entry_idx = first_pgn_entry(&mut archive)?;
+                let entry = archive.by_index(entry_idx).map_err(zip_io)?;
+                self.index_stream(entry, batch)
+            }
+        }
+    }
+
+    /// The format-agnostic indexing loop over an already-opened (possibly
+    /// decompressing) reader. For a compressed source the decompressed bytes are
+    /// teed into `data_path` as they're read.
+    fn index_stream<R: Read>(&self, source: R, batch: usize) -> io::Result<()> {
         let count = Rc::new(Cell::new(0u64));
-        let mut reader = Reader::new(CountingReader { inner: file, count: count.clone() });
+        let temp_out = if self.is_temp { Some(File::create(&self.data_path)?) } else { None };
+        let tee = TeeReader { inner: source, out: temp_out };
+        let mut reader = Reader::new(CountingReader { inner: tee, count: count.clone() });
         let mut visitor = HeaderVisitor;
         let mut pending: Vec<(u64, Headers)> = Vec::with_capacity(batch);
 
@@ -298,13 +345,16 @@ impl PgnIndex {
                 Some(item) => {
                     pending.push(item);
                     if pending.len() >= batch {
-                        self.flush(&mut pending);
+                        self.flush(&mut pending, &count);
                     }
                 }
                 None => break,
             }
         }
-        self.flush(&mut pending);
+        self.flush(&mut pending, &count);
+        if self.is_temp {
+            self.data_len.store(count.get(), Ordering::Relaxed);
+        }
         self.complete.store(true, Ordering::Relaxed);
         Ok(())
     }
@@ -314,9 +364,15 @@ impl PgnIndex {
         self.index(DEFAULT_BATCH)
     }
 
-    fn flush(&self, pending: &mut Vec<(u64, Headers)>) {
+    fn flush(&self, pending: &mut Vec<(u64, Headers)>, count: &Cell<u64>) {
         if pending.is_empty() {
             return;
+        }
+        // Publish the temp length BEFORE the entries, so any game we make
+        // queryable already has its bytes on disk (TeeReader writes unbuffered →
+        // visible to game_pgn's fresh read via the page cache).
+        if self.is_temp {
+            self.data_len.store(count.get(), Ordering::Relaxed);
         }
         let mut data = self.data.write().unwrap();
         for (offset, h) in pending.drain(..) {
@@ -361,9 +417,10 @@ impl PgnIndex {
         result
     }
 
-    /// Read one game's raw PGN text back from the file by its `id` (index in file
-    /// order). The slice runs to the next game's offset (or EOF), so it includes
-    /// the game's tags and movetext; trailing separator whitespace is trimmed.
+    /// Read one game's raw PGN text back by its `id` (index in file order),
+    /// against the plain data file (the temp `.pgn` for a compressed source). The
+    /// slice runs to the next game's offset (or EOF), so it includes the game's
+    /// tags and movetext; trailing separator whitespace is trimmed.
     pub fn game_pgn(&self, id: u32) -> io::Result<String> {
         let (start, end) = {
             let data = self.data.read().unwrap();
@@ -373,15 +430,92 @@ impl PgnIndex {
                 .get(i)
                 .map(|e| e.offset)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "game id out of range"))?;
-            let end = data.games.get(i + 1).map(|n| n.offset).unwrap_or(self.file_len);
+            let end = data
+                .games
+                .get(i + 1)
+                .map(|n| n.offset)
+                .unwrap_or_else(|| self.data_len.load(Ordering::Relaxed));
             (start, end)
         };
-        let mut file = File::open(&self.path)?;
+        let mut file = File::open(&self.data_path)?;
         file.seek(SeekFrom::Start(start))?;
         let mut buf = vec![0u8; end.saturating_sub(start) as usize];
         file.read_exact(&mut buf)?;
         Ok(String::from_utf8_lossy(&buf).trim().to_string())
     }
+}
+
+impl Drop for PgnIndex {
+    fn drop(&mut self) {
+        // Clean up the decompressed temp file for a compressed source.
+        if self.is_temp {
+            let _ = std::fs::remove_file(&self.data_path);
+        }
+    }
+}
+
+/// Which container/compression a source file uses, from its extension.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Format {
+    Plain,
+    Gz,
+    Zst,
+    Zip,
+}
+
+impl Format {
+    fn from_path(p: &Path) -> Format {
+        match p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+            Some("gz") | Some("gzip") => Format::Gz,
+            Some("zst") | Some("zstd") => Format::Zst,
+            Some("zip") => Format::Zip,
+            _ => Format::Plain,
+        }
+    }
+}
+
+/// A `Read` that also writes every byte it yields to `out` (if any) — used to tee
+/// a decompressing stream into the temp `.pgn`. Writes are unbuffered so a fresh
+/// read of the temp file (game_pgn) sees them promptly via the page cache.
+struct TeeReader<R> {
+    inner: R,
+    out: Option<File>,
+}
+
+impl<R: Read> Read for TeeReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if let Some(out) = self.out.as_mut() {
+            out.write_all(&buf[..n])?;
+        }
+        Ok(n)
+    }
+}
+
+/// A unique temp path for a decompressed `.pgn` (pid + a process-local counter).
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+fn temp_path_for() -> PathBuf {
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("lpdo-pgn-{}-{seq}.pgn", std::process::id()))
+}
+
+/// Index of the first `.pgn` member of a zip (else the first member; else error).
+fn first_pgn_entry(archive: &mut zip::ZipArchive<File>) -> io::Result<usize> {
+    let mut fallback = None;
+    for i in 0..archive.len() {
+        let name = archive.by_index(i).map_err(zip_io)?.name().to_ascii_lowercase();
+        if name.ends_with(".pgn") {
+            return Ok(i);
+        }
+        if fallback.is_none() {
+            fallback = Some(i);
+        }
+    }
+    fallback.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "zip archive is empty"))
+}
+
+fn zip_io(e: zip::result::ZipError) -> io::Error {
+    io::Error::other(e)
 }
 
 /// Pull the next game from the reader: its byte offset (via the counting reader:
@@ -655,6 +789,47 @@ mod tests {
         let g2 = idx.game_pgn(2).unwrap();
         assert!(g2.contains("[Event \"Casual\"]"));
         assert!(g2.contains("[Event \"Fake\"]")); // the comment text survives in the raw game
+    }
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("chess-pgn-test-{name}"))
+    }
+
+    #[test]
+    fn opens_gz_zst_and_zip_the_same_as_plain() {
+        // .gz
+        let gz = temp_path("sample.pgn.gz");
+        {
+            let mut enc = flate2::write::GzEncoder::new(File::create(&gz).unwrap(), flate2::Compression::default());
+            enc.write_all(SAMPLE.as_bytes()).unwrap();
+            enc.finish().unwrap();
+        }
+        // .zst
+        let zst = temp_path("sample.pgn.zst");
+        std::fs::write(&zst, zstd::encode_all(SAMPLE.as_bytes(), 3).unwrap()).unwrap();
+        // .zip (single deflated .pgn member)
+        let zip = temp_path("sample.zip");
+        {
+            let mut zw = zip::ZipWriter::new(File::create(&zip).unwrap());
+            zw.start_file("games.pgn", zip::write::SimpleFileOptions::default()).unwrap();
+            zw.write_all(SAMPLE.as_bytes()).unwrap();
+            zw.finish().unwrap();
+        }
+
+        for path in [&gz, &zst, &zip] {
+            let idx = build(path);
+            let tag = path.display();
+            assert_eq!(idx.len(), 3, "count for {tag}");
+            // Same header parsing as plain.
+            let any = idx.query(&Query { player1: Some("carlsen".into()), ..Default::default() });
+            assert_eq!(any.matched, 2, "carlsen matches for {tag}");
+            // Fetch-by-offset works against the decompressed temp file, with clean
+            // game boundaries (no bleed from the neighbouring game).
+            let g1 = idx.game_pgn(1).unwrap();
+            assert!(g1.contains("[White \"Aronian, Levon\"]"), "fetch for {tag}");
+            assert!(g1.contains("1. d4 Nf6 2. c4 e6 0-1"), "movetext for {tag}");
+            assert!(!g1.contains("Caruana"), "boundary for {tag}");
+        }
     }
 
     #[test]

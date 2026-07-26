@@ -15,6 +15,14 @@ pub struct DirectoryListing {
     entries: Vec<DirEntry>,
 }
 
+/// Files shown in the PGN browser: plain PGNs plus compressed archives the
+/// indexed browser can open directly (#104 slice 3). A non-PGN archive just
+/// indexes to zero games, so listing bare `.zip`/`.zst`/`.gz` is harmless.
+fn is_browsable_pgn(name: &str) -> bool {
+    let n = name.to_lowercase();
+    [".pgn", ".zip", ".zst", ".zstd", ".gz", ".gzip"].iter().any(|ext| n.ends_with(ext))
+}
+
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -57,7 +65,7 @@ pub async fn list_directory(path: String) -> Result<DirectoryListing, String> {
                 is_dir: true,
                 size: 0,
             });
-        } else if name.to_lowercase().ends_with(".pgn") {
+        } else if is_browsable_pgn(&name) {
             files.push(DirEntry {
                 name,
                 is_dir: false,

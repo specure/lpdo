@@ -963,8 +963,11 @@ dependencies = [
 name = "chess-pgn"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "pgn-reader",
  "serde",
+ "zip 8.6.0",
+ "zstd",
 ]
 
 [[package]]
