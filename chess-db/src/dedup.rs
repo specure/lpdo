@@ -1,5 +1,6 @@
 use anyhow::Result;
 use duckdb::Connection;
+use std::collections::HashSet;
 use crate::reporter::Reporter;
 
 /// Hard-delete a game and clean every row that references it: positions,
@@ -238,7 +239,7 @@ fn pgn_header<'a>(pgn: &'a str, tag: &str) -> Option<&'a str> {
     None
 }
 
-pub fn dedup_games(conn: &Connection, dry_run: bool, reporter: &Reporter) -> Result<()> {
+pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Reporter) -> Result<()> {
     // Phase 1: find candidate pairs via SQL.
     // Candidates share (white_id, black_id, date) and their opening_lines
     // are equal or one is a proper prefix of the other.
@@ -256,9 +257,19 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, reporter: &Reporter) -> Res
     spinner.set_message("Scanning for candidate duplicate pairs...");
     if reporter.is_json() { reporter.log("Scanning for candidate duplicate pairs..."); }
 
-    let candidates: Vec<(u32, u32, i16, i16, String, String)> = {
-        let mut stmt = conn.prepare(
-            "SELECT g1.id, g2.id, g1.move_count, g2.move_count, g1.pgn, g2.pgn
+    // Incremental (background) runs only consider pairs with an unvetted side; a
+    // `full` run (manual `games dedup` / the Maintenance button) drops that filter
+    // to re-examine every pair — needed to clean duplicates that a prior pass
+    // marked vetted before this comparison understood them (e.g. cross-source
+    // TWIC/Lichess games once annotations broke the raw compare).
+    let incremental_filter = if full {
+        ""
+    } else {
+        "AND (g1.deduped IS NOT TRUE OR g2.deduped IS NOT TRUE)"
+    };
+    let candidates: Vec<(u32, u32, String, String)> = {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT g1.id, g2.id, g1.pgn, g2.pgn
              FROM games g1
              JOIN games g2
                ON g1.white_id = g2.white_id
@@ -267,19 +278,17 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, reporter: &Reporter) -> Res
               AND g1.date = g2.date
               AND g1.result IS NOT DISTINCT FROM g2.result
               AND g1.id < g2.id
-              AND (g1.deduped IS NOT TRUE OR g2.deduped IS NOT TRUE)
+              {incremental_filter}
              WHERE g1.opening_line = g2.opening_line
                 OR g2.opening_line LIKE g1.opening_line || ' %'
-                OR g1.opening_line LIKE g2.opening_line || ' %'",
-        )?;
+                OR g1.opening_line LIKE g2.opening_line || ' %'"
+        ))?;
         stmt.query_map([], |r| {
             Ok((
                 r.get::<_, u32>(0)?,
                 r.get::<_, u32>(1)?,
-                r.get::<_, i16>(2)?,
-                r.get::<_, i16>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
             ))
         })?
         .filter_map(|r| r.ok())
@@ -310,12 +319,23 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, reporter: &Reporter) -> Res
     let mut deleted = 0usize;
     let mut diverged = 0usize;
     let mut checked = 0u64;
+    // Games slated for deletion this pass. dedup removes only the `games` row
+    // inline (a PK lookup) and defers the positions/game_collections cleanup to a
+    // single sweep at the end — those tables have no game_id index, so per-game
+    // deletes would each scan the whole table. Tracking dropped ids also keeps
+    // triplets (3+ copies) consistent: a pair whose game already went is skipped,
+    // the same effect the old immediate delete had by making later pairs no-ops.
+    let mut dropped: HashSet<u32> = HashSet::new();
 
-    for (id1, id2, moves1, moves2, pgn1, pgn2) in &candidates {
-        // Cooperative cancellation (#157): stop between pairs. Each delete is its
-        // own committed unit, so a partial run leaves a consistent database.
+    for (id1, id2, pgn1, pgn2) in &candidates {
+        // Cooperative cancellation (#157): stop between pairs. Each `games` delete
+        // is its own committed unit; the deferred references are swept here before
+        // returning, so a cancelled run still leaves a consistent database.
         if reporter.is_cancelled() {
             pb.finish_and_clear();
+            if !dry_run && !dropped.is_empty() {
+                sweep_deleted_game_refs(conn)?;
+            }
             reporter.cancelled(format!(
                 "Cancelled — {deleted} duplicate(s) deleted before stopping ({checked}/{total} pairs checked)."
             ));
@@ -324,16 +344,27 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, reporter: &Reporter) -> Res
         pb.inc(1);
         checked += 1;
 
-        let text1 = strip_result(extract_moves(pgn1));
-        let text2 = strip_result(extract_moves(pgn2));
+        // A prior pair already removed one of these two games — nothing to do.
+        if dropped.contains(id1) || dropped.contains(id2) {
+            reporter.progress(checked, total, "");
+            continue;
+        }
 
-        let (keep_id, drop_id, shorter, longer) = if moves1 >= moves2 {
-            (id1, id2, text2, text1)
+        // Compare bare SAN sequences, not raw movetext: the same game from
+        // different sources is annotated differently (TWIC ships clean SAN;
+        // Lichess broadcasts embed {[%eval]}/{[%clk]} comments and $N NAGs), so a
+        // string compare never matched. The shorter sequence must be a
+        // move-boundary prefix of the longer (one source may stop early).
+        let m1 = canonical_moves(pgn1);
+        let m2 = canonical_moves(pgn2);
+
+        let (keep_id, drop_id, shorter, longer) = if m1.len() >= m2.len() {
+            (id1, id2, &m2, &m1)
         } else {
-            (id2, id1, text1, text2)
+            (id2, id1, &m1, &m2)
         };
 
-        if is_move_prefix(shorter, longer) {
+        if is_move_seq_prefix(shorter, longer) {
             // Identify the game being removed so the user can see exactly what
             // was deleted — players, event and date, plus the game it duplicates.
             let drop_pgn = if drop_id == id1 { pgn1 } else { pgn2 };
@@ -348,11 +379,17 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, reporter: &Reporter) -> Res
                 drop_id, white, black, where_, date, keep_id,
             );
             if !dry_run {
+                // Move the dropped game's collection memberships onto the survivor
+                // first, then remove only the games row — a PK lookup. Its
+                // positions/game_collections rows are cleaned by the end sweep.
                 merge_collections(conn, *keep_id, *drop_id)?;
-                hard_delete_game(conn, *drop_id)?;
+                conn.execute("DELETE FROM games WHERE id = ?", duckdb::params![*drop_id])?;
+                dropped.insert(*drop_id);
             }
+            // Per-deletion detail goes to the terminal bar only. The daemon/GUI
+            // gets a running summary via progress() below, not a line per game —
+            // otherwise the Activity panel scrolls thousands of "Deleted …" lines.
             pb.println(&msg);
-            if reporter.is_json() { reporter.log(&msg); }
             deleted += 1;
         } else {
             // Same opening, different game — not a duplicate. Counted for the
@@ -360,11 +397,23 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, reporter: &Reporter) -> Res
             diverged += 1;
         }
 
-        // Advance the progress bar without emitting a per-pair log line.
-        reporter.progress(checked, total, "");
+        // Drive the bar with a rolling summary (candidates checked + removed so
+        // far) rather than a per-pair line, so the Activity panel stays legible.
+        reporter.progress(
+            checked,
+            total,
+            format!("Checked {checked}/{total} candidate pairs · {deleted} duplicate(s) removed"),
+        );
     }
 
     pb.finish_and_clear();
+
+    // Clean the deferred references of every game removed this pass — one anti-
+    // join each, no matter how many games went. Guarded on an actual deletion so
+    // a no-op incremental pass never pays for a full positions scan.
+    if !dry_run && !dropped.is_empty() {
+        sweep_deleted_game_refs(conn)?;
+    }
 
     // A complete pass vetted every remaining unvetted game (survivors of a pair
     // and games that had no candidate). Mark them so the next daily run only
@@ -385,6 +434,23 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, reporter: &Reporter) -> Res
         )
     };
     reporter.done(&summary);
+    Ok(())
+}
+
+/// Delete `positions` and `game_collections` rows that reference a game no longer
+/// in `games`. `dedup_games` removes duplicate `games` rows inline but defers
+/// these two — both lack a `game_id` index, so a per-game delete scans the whole
+/// (large) table; one anti-join sweeps every orphan in a single pass instead.
+/// Positions are always removed before/with their game, so a hard kill can only
+/// leave games-without-positions (which `index_positions` refills), never the
+/// reverse — and the next run's sweep clears anything a kill left behind.
+fn sweep_deleted_game_refs(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DELETE FROM positions
+           WHERE NOT EXISTS (SELECT 1 FROM games g WHERE g.id = positions.game_id);
+         DELETE FROM game_collections
+           WHERE NOT EXISTS (SELECT 1 FROM games g WHERE g.id = game_collections.game_id);",
+    )?;
     Ok(())
 }
 
@@ -483,37 +549,80 @@ pub fn cleanup_nonstandard(
     Ok(())
 }
 
-/// Extract just the move section from a PGN string (everything after the last header tag).
-fn extract_moves(pgn: &str) -> &str {
-    if let Some(pos) = pgn.rfind(']') {
-        pgn[pos + 1..].trim_start()
-    } else {
-        pgn
-    }
-}
+/// Reduce a PGN to its bare sequence of SAN moves so the same game matches
+/// across sources that annotate differently. Move numbers, comments (`{…}`,
+/// including Lichess's `[%eval]`/`[%clk]`), NAGs (`$n`), variations (`(…)`), and
+/// the result token are all dropped; castling `0-0`/`0-0-0` is normalised to
+/// `O-O`/`O-O-O` and trailing `!`/`?` move-quality marks are stripped.
+fn canonical_moves(pgn: &str) -> Vec<String> {
+    // Movetext = from the first non-header line onward. Can't scan for a trailing
+    // `]` (the old approach): Lichess comments embed it, e.g. `{[%eval 0.1]}`.
+    let movetext = pgn
+        .lines()
+        .skip_while(|l| {
+            let t = l.trim_start();
+            t.is_empty() || t.starts_with('[')
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
 
-/// Strip the PGN result token from the end of a move text string.
-fn strip_result(pgn: &str) -> &str {
-    let s = pgn.trim_end();
-    for suffix in &["1/2-1/2", "1-0", "0-1", "*"] {
-        if let Some(rest) = s.strip_suffix(suffix) {
-            return rest.trim_end();
+    // Strip `{comments}` and `(variations)` in one depth-tracked pass. A comment
+    // suppresses parens inside it (they're free text), so brace wins.
+    let mut bare = String::with_capacity(movetext.len());
+    let mut brace = 0usize;
+    let mut paren = 0usize;
+    for c in movetext.chars() {
+        match c {
+            '{' => brace += 1,
+            '}' => brace = brace.saturating_sub(1),
+            '(' if brace == 0 => paren += 1,
+            ')' if brace == 0 => paren = paren.saturating_sub(1),
+            _ if brace == 0 && paren == 0 => bare.push(c),
+            _ => {}
         }
     }
-    s
+
+    bare.split_whitespace().filter_map(normalise_san_token).collect()
 }
 
-/// Returns true if `shorter` is a move-boundary prefix of `longer`.
-/// Requires that after `shorter` ends, `longer` has either ended or
-/// continues with a space (preventing partial token matches).
-fn is_move_prefix(shorter: &str, longer: &str) -> bool {
-    if shorter.is_empty() {
-        return true;
+/// Normalise one movetext token to a SAN move, or `None` if it isn't a move (a
+/// move number like `12.`/`12...`, a NAG `$n`, a result, or empty afterwards).
+fn normalise_san_token(tok: &str) -> Option<String> {
+    if matches!(tok, "1-0" | "0-1" | "1/2-1/2" | "*") || tok.starts_with('$') {
+        return None;
     }
-    if !longer.starts_with(shorter) {
-        return false;
+    // Drop a leading move number: `12.` / `12...`, possibly glued (`12.e4`).
+    let bytes = tok.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
     }
-    matches!(longer.as_bytes().get(shorter.len()), None | Some(b' '))
+    let mv = if i > 0 && bytes.get(i) == Some(&b'.') {
+        let mut j = i;
+        while j < bytes.len() && bytes[j] == b'.' {
+            j += 1;
+        }
+        &tok[j..]
+    } else {
+        tok
+    };
+    // Trailing move-quality marks (`!`, `?`, `!?`, `?!`) — keep `+`/`#`.
+    let mv = mv.trim_end_matches(['!', '?']);
+    if mv.is_empty() {
+        return None;
+    }
+    Some(match mv {
+        "0-0" => "O-O".to_string(),
+        "0-0-0" => "O-O-O".to_string(),
+        _ => mv.to_string(),
+    })
+}
+
+/// True when `shorter` is a genuine move-boundary prefix of `longer` (one source
+/// may have recorded fewer moves). An empty sequence never matches — two
+/// move-less rows aren't evidence of a duplicate.
+fn is_move_seq_prefix(shorter: &[String], longer: &[String]) -> bool {
+    !shorter.is_empty() && longer.len() >= shorter.len() && longer[..shorter.len()] == *shorter
 }
 
 fn pick_survivor(rows: &[(u32, String, bool, Option<String>)]) -> usize {
@@ -557,7 +666,7 @@ mod dedup_games_tests {
         insert_game(&conn, 1, "e4 e5 Nf3", false);
         insert_game(&conn, 2, "e4 e5 Nf3 Nc6", false); // extends game 1 → dup
 
-        dedup_games(&conn, false, &Reporter::silent()).unwrap();
+        dedup_games(&conn, false, false, &Reporter::silent()).unwrap();
 
         assert_eq!(count_games(&conn), 1, "the shorter prefix game is removed");
         // Every remaining game is now vetted.
@@ -574,14 +683,14 @@ mod dedup_games_tests {
         // diverging moves so nothing is deleted but both get vetted).
         insert_game(&conn, 1, "e4 e5 Nf3 Nc6", false);
         insert_game(&conn, 2, "e4 e5 Nf3 d6", false);
-        dedup_games(&conn, false, &Reporter::silent()).unwrap();
+        dedup_games(&conn, false, false, &Reporter::silent()).unwrap();
         assert_eq!(count_games(&conn), 2, "diverging games are both kept");
 
         // A newly imported duplicate of game 1 (unvetted). The old games are now
         // vetted; the pair (old vetted, new unvetted) must still be a candidate —
         // proving the OR filter catches new dups of already-vetted games.
         insert_game(&conn, 3, "e4 e5 Nf3 Nc6 Bb5", false); // extends game 1
-        dedup_games(&conn, false, &Reporter::silent()).unwrap();
+        dedup_games(&conn, false, false, &Reporter::silent()).unwrap();
 
         // Game 1 (shorter) is removed as a prefix of game 3.
         let ids: Vec<u32> = {
@@ -597,13 +706,83 @@ mod dedup_games_tests {
         insert_game(&conn, 1, "e4 e5 Nf3", false);
         insert_game(&conn, 2, "e4 e5 Nf3 Nc6", false);
 
-        dedup_games(&conn, true, &Reporter::silent()).unwrap();
+        dedup_games(&conn, true, false, &Reporter::silent()).unwrap();
 
         assert_eq!(count_games(&conn), 2, "dry run deletes nothing");
         let unvetted: i64 = conn
             .query_row("SELECT COUNT(*) FROM games WHERE deduped IS NOT TRUE", [], |r| r.get(0))
             .unwrap();
         assert_eq!(unvetted, 2, "dry run leaves games unvetted");
+    }
+
+    /// Removing a duplicate defers its positions/game_collections to the end
+    /// sweep — verify those rows are gone while the survivor's are kept.
+    #[test]
+    fn end_sweep_clears_removed_games_positions_and_collections() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO collections (id, name) VALUES (10, 'Dedup Test Coll');
+             INSERT INTO games (id, white_id, black_id, date, result, opening_line, move_count, pgn, deduped) VALUES
+               (1, 1, 2, '2024-06-18', '1-0', 'e4 e5 Nf3', 4, '[W \"a\"]\n\n1. e4 e5 2. Nf3 Nc6 1-0', FALSE),
+               (2, 1, 2, '2024-06-18', '1-0', 'e4 e5 Nf3', 3, '[W \"a\"]\n\n1. e4 e5 2. Nf3 1-0', FALSE);
+             INSERT INTO positions (game_id, move_number, zobrist_hash, next_move) VALUES
+               (1, 1, 111, 'e4'), (2, 1, 222, 'e4');
+             INSERT INTO game_collections (game_id, collection_id) VALUES (1, 10), (2, 10);",
+        ).unwrap();
+
+        dedup_games(&conn, false, true, &Reporter::silent()).unwrap();
+
+        // Game 2 (the shorter prefix) is removed; its deferred rows are swept.
+        assert_eq!(count_games(&conn), 1);
+        let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(count("SELECT COUNT(*) FROM positions WHERE game_id = 2"), 0, "removed game's positions swept");
+        assert_eq!(count("SELECT COUNT(*) FROM positions WHERE game_id = 1"), 1, "survivor's positions kept");
+        assert_eq!(count("SELECT COUNT(*) FROM game_collections WHERE game_id = 2"), 0, "removed game's memberships swept");
+        assert_eq!(count("SELECT COUNT(*) FROM game_collections WHERE game_id = 1"), 1, "survivor still in its collection");
+    }
+
+    /// The same game from TWIC (clean SAN) and a Lichess broadcast (eval/clock
+    /// comments, NAGs, black-move numbers, a `]`-bearing GameURL header) must
+    /// dedup — the annotations previously defeated the raw-string compare.
+    #[test]
+    fn matches_across_clean_and_annotated_sources() {
+        let conn = setup();
+        let opening = "e4 e5 Nf3 Nf6 Nxe5 d6 Nf3 Nxe4 c4 c6";
+        let insert = |id: u32, pgn: &str| {
+            conn.execute(
+                "INSERT INTO games (id, white_id, black_id, date, result, opening_line, move_count, pgn, deduped)
+                 VALUES (?, 1, 2, '2024-06-18', '1-0', ?, 12, ?, FALSE)",
+                duckdb::params![id, opening, pgn],
+            ).unwrap();
+        };
+        // TWIC: bare SAN.
+        insert(1,
+            "[White \"Svrcek,Jozef\"]\n[Black \"Mazak,Ryan\"]\n[Date \"2024-06-18\"]\n[Result \"1-0\"]\n\n\
+             1. e4 e5 2. Nf3 Nf6 3. Nxe5 d6 4. Nf3 Nxe4 5. c4 c6 6. d3 Nf6 1-0");
+        // Lichess broadcast: same moves, drowned in annotations + a header value
+        // that itself contains ']' (must not fool the movetext split).
+        insert(2,
+            "[White \"Svrcek, Jozef\"]\n[Black \"Mazak, Ryan\"]\n[Date \"2024-06-18\"]\n[Result \"1-0\"]\n\
+             [GameURL \"https://lichess.org/broadcast/a/b/jF5[x]DQ\"]\n\n\
+             1. e4 {[%eval 0.15] [%clk 1:00:53]} 1... e5 {[%eval 0.15]} 2. Nf3 {[%clk 1:01:14]} \
+             2... Nf6 {[%eval 0.27]} 3. Nxe5 {[%eval 0.19]} 3... d6 {[%eval 0.32]} \
+             4. Nf3 {[%eval 0.31]} 4... Nxe4 {[%eval 0.26]} 5. c4 $6 {Inaccuracy. d4 was best.} \
+             5... c6 {[%eval 0.28]} 6. d3 {[%eval 0.13]} 6... Nf6 {[%eval 0.12]} 1-0");
+
+        dedup_games(&conn, false, false, &Reporter::silent()).unwrap();
+
+        assert_eq!(count_games(&conn), 1, "the annotated duplicate is removed");
+    }
+
+    #[test]
+    fn canonical_moves_strips_annotations_and_matches() {
+        // Clean vs annotated reduce to the same SAN sequence.
+        let clean = canonical_moves("[W \"a\"]\n\n1. e4 e5 2. Nf3 Nc6 1-0");
+        let annotated = canonical_moves(
+            "[W \"a\"]\n[URL \"x]y\"]\n\n1. e4 {[%eval 0.1]} 1... e5 $1 (1... c5 2. Nf3) 2. Nf3 {c} 2... Nc6 1-0",
+        );
+        assert_eq!(clean, vec!["e4", "e5", "Nf3", "Nc6"]);
+        assert_eq!(clean, annotated, "annotations, NAGs and a variation are stripped");
     }
 }
 

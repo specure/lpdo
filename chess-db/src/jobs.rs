@@ -972,7 +972,9 @@ fn run_job(
             run_index_positions_guarded(conn, db, Some(40), flag(p, "rebuild"), flag(p, "fast"), reporter)?;
         }
         "dedup_games" => {
-            dedup::dedup_games(conn, flag(p, "dry_run"), reporter)?;
+            // Background maintenance is incremental; an explicit "full" request
+            // (or the CLI) re-checks every pair. maybe_run_maintenance omits it.
+            dedup::dedup_games(conn, flag(p, "dry_run"), flag(p, "full"), reporter)?;
         }
         "dedup_players" => {
             dedup::dedup_players(conn, reporter)?;

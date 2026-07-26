@@ -69,20 +69,24 @@ function ActionButton({ onClick, disabled, children }: {
   );
 }
 
-function ProgressSection({ progress, label, extra }: {
+function ProgressSection({ progress, label, extra, quiet }: {
   progress: ReturnType<typeof useSidecarProgress>;
   label: string;
   /** Optional action rendered alongside Dismiss in the done row (e.g. "Reveal"). */
   extra?: React.ReactNode;
+  /** Hide the scrolling per-line log and hold a stable label instead of the
+   *  fast-changing live message — for jobs that emit a line per item (dedup can
+   *  delete thousands). The Activity panel carries the live detail. */
+  quiet?: boolean;
 }) {
   return (
     <>
       <div className="flex justify-between gap-2 text-label-md text-on-surface-variant">
-        <span className="truncate">{progress.done ? "Complete" : progress.message || label}</span>
+        <span className="truncate">{progress.done ? "Complete" : quiet ? label : progress.message || label}</span>
         <span className="shrink-0">{Math.round(progress.percent)}%</span>
       </div>
       <ProgressBar value={progress.percent} />
-      <LogBox lines={progress.log} />
+      {!quiet && <LogBox lines={progress.log} />}
       {progress.done && (
         <div className="flex items-center justify-between gap-2">
           <p className="text-success text-body-sm">✓ {progress.doneMessage}</p>
@@ -373,9 +377,14 @@ function FideRefreshSection() {
 
 function DeduplicationSection({ onMutated }: { onMutated?: () => void }) {
   const progress = useSidecarProgress("maint-dedup");
+  // Full re-checks every game (cleans duplicates an earlier pass missed, e.g. the
+  // same game across TWIC and a Lichess broadcast); incremental only checks games
+  // added since the last pass — the same cheap sweep the automatic post-sync
+  // maintenance runs. Default to full: a manual run is usually a deliberate clean.
+  const [mode, setMode] = useState<"incremental" | "full">("full");
 
   function run() {
-    void progress.run(["games", "dedup"]);
+    void progress.run(mode === "full" ? ["games", "dedup", "--full"] : ["games", "dedup"]);
   }
 
   // Dedup removes duplicate game rows — refresh server status + game list
@@ -390,10 +399,35 @@ function DeduplicationSection({ onMutated }: { onMutated?: () => void }) {
         Detects and removes duplicate games resulting from overlapping collections.
       </p>
       {!progress.running && !progress.done && (
-        <ActionButton onClick={run}>Run deduplication</ActionButton>
+        <>
+          <div className="inline-flex items-center gap-1 p-1 bg-surface-container rounded-full w-fit">
+            {(["incremental", "full"] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                aria-pressed={mode === m}
+                className={`h-7 px-3 rounded-full text-label-md capitalize transition-colors duration-short3 ease-standard ${
+                  mode === m
+                    ? "bg-secondary-container text-on-secondary-container"
+                    : "text-on-surface-variant hover:text-on-surface"
+                }`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+          <p className="text-label-sm text-on-surface-variant">
+            {mode === "full"
+              ? "Full — re-checks every game (slower). Cleans duplicates an earlier pass missed."
+              : "Incremental — only games added since the last pass (fast); same as the automatic sweep."}
+          </p>
+          <ActionButton onClick={run}>Run deduplication</ActionButton>
+        </>
       )}
       {(progress.running || progress.done) && (
-        <ProgressSection progress={progress} label="Scanning…" />
+        // Quiet: a full dedup deletes thousands of rows, one log line each — the
+        // Activity panel shows the live detail; here just a calm bar + summary.
+        <ProgressSection progress={progress} label="Removing duplicates…" quiet />
       )}
     </SectionCard>
   );

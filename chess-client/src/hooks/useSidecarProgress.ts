@@ -157,7 +157,11 @@ function planFromArgs(args: string[]): Plan {
     case "games": {
       switch (a1) {
         case "dedup":
-          return { kind: "job", type: "dedup_games", params: {} };
+          // `--full` re-examines pairs a prior incremental pass already marked
+          // vetted (cleans duplicates older logic missed, e.g. the same game from
+          // TWIC and a Lichess broadcast); without it the pass is incremental,
+          // like the automatic post-sync one. The Maintenance panel picks.
+          return { kind: "job", type: "dedup_games", params: { full: args[2] === "--full" } };
         case "purge":
           return { kind: "mutation", path: "/purge" };
         case "soft-delete":
