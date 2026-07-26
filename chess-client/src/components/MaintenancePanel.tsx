@@ -69,20 +69,24 @@ function ActionButton({ onClick, disabled, children }: {
   );
 }
 
-function ProgressSection({ progress, label, extra }: {
+function ProgressSection({ progress, label, extra, quiet }: {
   progress: ReturnType<typeof useSidecarProgress>;
   label: string;
   /** Optional action rendered alongside Dismiss in the done row (e.g. "Reveal"). */
   extra?: React.ReactNode;
+  /** Hide the scrolling per-line log and hold a stable label instead of the
+   *  fast-changing live message — for jobs that emit a line per item (dedup can
+   *  delete thousands). The Activity panel carries the live detail. */
+  quiet?: boolean;
 }) {
   return (
     <>
       <div className="flex justify-between gap-2 text-label-md text-on-surface-variant">
-        <span className="truncate">{progress.done ? "Complete" : progress.message || label}</span>
+        <span className="truncate">{progress.done ? "Complete" : quiet ? label : progress.message || label}</span>
         <span className="shrink-0">{Math.round(progress.percent)}%</span>
       </div>
       <ProgressBar value={progress.percent} />
-      <LogBox lines={progress.log} />
+      {!quiet && <LogBox lines={progress.log} />}
       {progress.done && (
         <div className="flex items-center justify-between gap-2">
           <p className="text-success text-body-sm">✓ {progress.doneMessage}</p>
@@ -421,7 +425,9 @@ function DeduplicationSection({ onMutated }: { onMutated?: () => void }) {
         </>
       )}
       {(progress.running || progress.done) && (
-        <ProgressSection progress={progress} label="Scanning…" />
+        // Quiet: a full dedup deletes thousands of rows, one log line each — the
+        // Activity panel shows the live detail; here just a calm bar + summary.
+        <ProgressSection progress={progress} label="Removing duplicates…" quiet />
       )}
     </SectionCard>
   );
