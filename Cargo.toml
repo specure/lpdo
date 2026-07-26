@@ -1,3 +1,3 @@
 [workspace]
-members = ["chess-db", "chess-results-client", "fide-client", "chess-client/src-tauri"]
+members = ["chess-db", "chess-pgn", "chess-results-client", "fide-client", "chess-client/src-tauri"]
 resolver = "2"

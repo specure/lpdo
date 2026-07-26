@@ -1,0 +1,28 @@
+# chess-pgn — a lightweight, DuckDB-free PGN indexing/browsing engine (#104).
+#
+# Streams a PGN once, building a compact in-memory index (per-game byte offset +
+# the tag-roster headers), then filters/paginates it and fetches one game's raw
+# text by offset. Built on the SAME `pgn-reader` crate the chess-db importer uses,
+# so header/boundary parsing matches an import (no divergence, comment-safe).
+#
+# Deliberately does NOT do position search, dedup, or player normalisation — that
+# is the database's job (import). This is the engine for opening large/multiple
+# PGN files locally, and the offline-library engine for the portable client (#210).
+[package]
+name = "chess-pgn"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "chess_pgn"
+path = "src/lib.rs"
+
+[[bin]]
+name = "chess-pgn"
+path = "src/main.rs"
+
+[dependencies]
+# Same PGN parser as the chess-db importer, so indexing matches import semantics.
+pgn-reader = "0.29.0"
+serde = { version = "1", features = ["derive"] }
