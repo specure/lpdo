@@ -341,6 +341,7 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
             pb.finish_and_clear();
             if !dry_run && !dropped.is_empty() {
                 sweep_deleted_game_refs(conn)?;
+                crate::db::queries::recalculate_game_counts(conn)?;
             }
             reporter.cancelled(format!(
                 "Cancelled — {deleted} duplicate(s) deleted before stopping ({checked}/{total} pairs checked)."
@@ -415,9 +416,12 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
 
     // Clean the deferred references of every game removed this pass — one anti-
     // join each, no matter how many games went. Guarded on an actual deletion so
-    // a no-op incremental pass never pays for a full positions scan.
+    // a no-op incremental pass never pays for a full positions scan. Then refresh
+    // per-player game counts, which the removed games left overstated (#205) — the
+    // same recalc import/cleanup run; a no-op pass skips it.
     if !dry_run && !dropped.is_empty() {
         sweep_deleted_game_refs(conn)?;
+        crate::db::queries::recalculate_game_counts(conn)?;
     }
 
     // A complete pass vetted every remaining unvetted game (survivors of a pair
@@ -922,6 +926,29 @@ mod dedup_games_tests {
             s.query_map([], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect()
         };
         assert_eq!(survivors, vec![2], "the annotated 4-move game wins over the bare 5-move one");
+    }
+
+    /// #205: removing a duplicate must refresh the players' game counts, which the
+    /// deleted game left overstated.
+    #[test]
+    fn dedup_refreshes_player_game_counts() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO players (id, name, name_normalized, name_normalised, game_count) VALUES
+               (1, 'A', 'a', FALSE, 99), (2, 'B', 'b', FALSE, 99);
+             INSERT INTO games (id, white_id, black_id, date, result, opening_line, move_count, pgn, deduped) VALUES
+               (1, 1, 2, '2024-06-18', '1-0', 'e4 e5 Nf3 Nc6', 4, '[W \"a\"]\n\n1. e4 e5 2. Nf3 Nc6 1-0', FALSE),
+               (2, 1, 2, '2024-06-18', '1-0', 'e4 e5 Nf3 Nc6', 4, '[W \"a\"]\n\n1. e4 e5 2. Nf3 Nc6 1-0', FALSE);",
+        ).unwrap();
+
+        dedup_games(&conn, false, true, &Reporter::silent()).unwrap();
+
+        assert_eq!(count_games(&conn), 1, "the duplicate game is removed");
+        let gc = |id: u32| -> i64 {
+            conn.query_row("SELECT game_count FROM players WHERE id = ?", duckdb::params![id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(gc(1), 1, "white player's count refreshed (was stale 99)");
+        assert_eq!(gc(2), 1, "black player's count refreshed (was stale 99)");
     }
 }
 
