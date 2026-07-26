@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use chess_pgn::{GameIndex, Query};
+use chess_pgn::{PgnIndex, Query};
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -16,13 +16,18 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let index = match GameIndex::build(Path::new(&path)) {
+    let index = match PgnIndex::open(Path::new(&path)) {
         Ok(idx) => idx,
         Err(e) => {
             eprintln!("{path}: {e}");
             return ExitCode::FAILURE;
         }
     };
+    // CLI indexes the whole file up front (no background/growing here).
+    if let Err(e) = index.index_blocking() {
+        eprintln!("{path}: {e}");
+        return ExitCode::FAILURE;
+    }
     println!("{} games", index.len());
 
     match args.next().as_deref() {

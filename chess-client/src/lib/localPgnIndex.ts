@@ -33,14 +33,19 @@ export interface PgnQuery {
 }
 
 export interface PgnQueryResult {
+  /** Games indexed so far (grows until `complete`). */
   total: number;
+  /** Matches among those indexed so far. */
   matched: number;
   rows: IndexedRow[];
+  /** True once the whole file has been indexed. */
+  complete: boolean;
 }
 
-/** Stream + index a PGN file; returns a session handle and the game count. */
+/** Open a PGN file; indexing starts in the background. Poll `pgnQuery` (its
+ *  `complete` flag + growing `total`) to watch it fill in. */
 export const pgnOpen = (path: string) =>
-  invoke<{ session: number; count: number }>("pgn_open", { path });
+  invoke<{ session: number }>("pgn_open", { path });
 
 /** Filter + paginate an open index. */
 export const pgnQuery = (session: number, query: PgnQuery) =>

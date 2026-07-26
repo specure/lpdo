@@ -1,11 +1,18 @@
 //! Lightweight, DuckDB-free PGN indexing + browsing engine (#104).
 //!
-//! [`GameIndex::build`] streams a PGN file once and records, per game, its **byte
-//! offset** plus the tag-roster headers (White, Black, Result, Date, Event,
-//! Round, Elos). [`GameIndex::query`] filters/paginates that in-memory index, and
-//! [`GameIndex::game_pgn`] reads a single game's raw text back by offset — so a
-//! multi-GB, millions-of-games file is browsable with bounded memory and no
-//! whole-file-in-RAM parse.
+//! [`PgnIndex::open`] takes a PGN file and [`PgnIndex::index`] streams it once,
+//! recording per game its **byte offset** plus the tag-roster headers (White,
+//! Black, Result, Date, Event, Elos). [`PgnIndex::query`] filters/paginates that
+//! index and [`PgnIndex::game_pgn`] reads a single game's raw text back by offset
+//! — so a multi-GB, millions-of-games file is browsable with bounded memory and
+//! no whole-file-in-RAM parse.
+//!
+//! The index is built **incrementally under an `RwLock`**: a background thread
+//! calls [`PgnIndex::index`] to append games in batches while readers call
+//! [`PgnIndex::query`]/[`PgnIndex::game_pgn`] concurrently (#104 "growing index").
+//! So the client can open a huge file instantly and watch the game list and
+//! search results fill in live; [`QueryResult::complete`] reports when indexing
+//! has finished. Synchronous callers (CLI/tests) use [`PgnIndex::index_blocking`].
 //!
 //! Parsing rides on the same [`pgn_reader`] crate the chess-db importer uses, so
 //! game boundaries and tag decoding match an import (a `[Event …]` inside a
@@ -21,9 +28,16 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 
 use pgn_reader::{RawTag, Reader, Visitor};
 use serde::{Deserialize, Serialize};
+
+/// Games appended to the index per lock acquisition while building. Big enough
+/// that the write lock is taken only a few hundred times over millions of games
+/// (low contention with readers), small enough that the first games appear ~fast.
+pub const DEFAULT_BATCH: usize = 16_384;
 
 /// Which side a name filter applies to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -58,7 +72,7 @@ pub struct Query {
 }
 
 /// One row in a query result — the shape the game-list UI needs. `id` is the
-/// game's index in file order and is what [`GameIndex::game_pgn`] takes.
+/// game's index in file order and is what [`PgnIndex::game_pgn`] takes.
 #[derive(Debug, Clone, Serialize)]
 pub struct GameRow {
     pub id: u32,
@@ -71,16 +85,19 @@ pub struct GameRow {
     pub result: Option<String>,
 }
 
-/// The outcome of a [`Query`]: the page of rows plus counts for the header
-/// ("`matched` / `total` games").
+/// The outcome of a [`Query`]: the page of rows, counts for the header
+/// ("`matched` / `total` games"), and whether indexing has finished (`complete`)
+/// — while it's `false`, `total`/`rows` grow as the background pass proceeds.
 #[derive(Debug, Clone, Serialize)]
 pub struct QueryResult {
-    /// Total games in the file (before filtering).
+    /// Games indexed so far (before filtering). Grows until `complete`.
     pub total: usize,
-    /// Games matching the filters (before pagination).
+    /// Games matching the filters among those indexed so far.
     pub matched: usize,
     /// The requested page of matching rows.
     pub rows: Vec<GameRow>,
+    /// True once the whole file has been indexed.
+    pub complete: bool,
 }
 
 /// Deduplicating string pool: header values (player names, events, dates) repeat
@@ -134,70 +151,47 @@ struct Entry {
     black_elo: u16,
 }
 
-/// A built index over one PGN file.
-pub struct GameIndex {
-    path: PathBuf,
-    file_len: u64,
+/// The growing index data (guarded by a lock inside [`PgnIndex`]). Holds the
+/// query logic; knows nothing about the file (offsets are resolved against
+/// `file_len` by the owner).
+struct IndexData {
     interner: Interner,
     games: Vec<Entry>,
 }
 
-impl GameIndex {
-    /// Stream `path` once and build the index. Bounded memory: the file is never
-    /// held in RAM; only the compact per-game index is.
-    pub fn build(path: &Path) -> io::Result<GameIndex> {
-        let file = File::open(path)?;
-        let file_len = file.metadata()?.len();
+impl IndexData {
+    fn new() -> Self {
+        IndexData { interner: Interner::new(), games: Vec::new() }
+    }
 
-        // Track the exact logical byte position without seeking: `count` is the
-        // total bytes pgn-reader has pulled from the file; `reader.buffer()` is
-        // the slice it has read but not yet consumed. So `count - buffer.len()`
-        // is the position of the next unconsumed byte — invariant to read-ahead.
-        let count = Rc::new(Cell::new(0u64));
-        let mut reader = Reader::new(CountingReader { inner: file, count: count.clone() });
+    /// Append one parsed game.
+    fn push(&mut self, offset: u64, h: Headers) {
+        let white = self.interner.intern(clean(h.white).as_deref().unwrap_or("?"));
+        let black = self.interner.intern(clean(h.black).as_deref().unwrap_or("?"));
+        let event = self.intern_opt(clean(h.event));
+        let date = self.intern_opt(clean(h.date));
+        let result = self.intern_opt(clean(h.result));
+        self.games.push(Entry {
+            offset,
+            white,
+            black,
+            event,
+            date,
+            result,
+            white_elo: h.white_elo.unwrap_or(0),
+            black_elo: h.black_elo.unwrap_or(0),
+        });
+    }
 
-        let mut interner = Interner::new();
-        let mut games = Vec::new();
-        let mut visitor = HeaderVisitor;
-
-        loop {
-            // Flushes the previous game's (skipped) movetext and inter-game
-            // whitespace, leaving the position at the next game's first byte.
-            if !reader.has_more()? {
-                break;
-            }
-            let offset = count.get() - reader.buffer().len() as u64;
-            let Some(h) = reader.read_game(&mut visitor)? else {
-                break;
-            };
-            games.push(Entry {
-                offset,
-                white: interner.intern(clean(h.white).as_deref().unwrap_or("?")),
-                black: interner.intern(clean(h.black).as_deref().unwrap_or("?")),
-                event: intern_opt(&mut interner, clean(h.event)),
-                date: intern_opt(&mut interner, clean(h.date)),
-                result: intern_opt(&mut interner, clean(h.result)),
-                white_elo: h.white_elo.unwrap_or(0),
-                black_elo: h.black_elo.unwrap_or(0),
-            });
+    fn intern_opt(&mut self, v: Option<String>) -> u32 {
+        match v {
+            Some(s) => self.interner.intern(&s),
+            None => 0,
         }
-
-        Ok(GameIndex { path: path.to_path_buf(), file_len, interner, games })
     }
 
-    /// Number of games in the file.
-    pub fn len(&self) -> usize {
-        self.games.len()
-    }
-
-    /// Whether the file held no games.
-    pub fn is_empty(&self) -> bool {
-        self.games.is_empty()
-    }
-
-    /// Filter + paginate. Linear scan over the index (fast: a few hundred ms even
-    /// at ~11 M games), returning the requested page plus the match/total counts.
-    pub fn query(&self, q: &Query) -> QueryResult {
+    /// Filter + paginate the games indexed so far.
+    fn query(&self, q: &Query) -> QueryResult {
         let p1 = q.player1.as_deref().filter(|s| !s.is_empty()).map(str::to_lowercase);
         let p2 = q.player2.as_deref().filter(|s| !s.is_empty()).map(str::to_lowercase);
         let ev = q.event.as_deref().filter(|s| !s.is_empty()).map(str::to_lowercase);
@@ -226,34 +220,13 @@ impl GameIndex {
                 continue;
             }
 
-            // Only materialise rows on the requested page.
             if matched >= q.offset && (q.limit == 0 || rows.len() < q.limit) {
                 rows.push(self.row(i as u32, e));
             }
             matched += 1;
         }
 
-        QueryResult { total: self.games.len(), matched, rows }
-    }
-
-    /// Read one game's raw PGN text back from the file by its `id` (index in file
-    /// order). The slice runs to the next game's offset (or EOF), so it includes
-    /// the game's tags and movetext; trailing separator whitespace is trimmed.
-    pub fn game_pgn(&self, id: u32) -> io::Result<String> {
-        let i = id as usize;
-        let entry = self
-            .games
-            .get(i)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "game id out of range"))?;
-        let start = entry.offset;
-        let end = self.games.get(i + 1).map(|n| n.offset).unwrap_or(self.file_len);
-        let len = end.saturating_sub(start) as usize;
-
-        let mut file = File::open(&self.path)?;
-        file.seek(SeekFrom::Start(start))?;
-        let mut buf = vec![0u8; len];
-        file.read_exact(&mut buf)?;
-        Ok(String::from_utf8_lossy(&buf).trim().to_string())
+        QueryResult { total: self.games.len(), matched, rows, complete: false }
     }
 
     fn name_matches(&self, e: &Entry, needle_lower: &str, color: Color) -> bool {
@@ -278,6 +251,144 @@ impl GameIndex {
             result: non_empty(self.interner.value(e.result)),
         }
     }
+}
+
+/// A PGN file opened for browsing. The header index grows incrementally under an
+/// `RwLock`, so queries can run while a background thread is still indexing.
+pub struct PgnIndex {
+    path: PathBuf,
+    file_len: u64,
+    data: RwLock<IndexData>,
+    cancel: AtomicBool,
+    complete: AtomicBool,
+}
+
+impl PgnIndex {
+    /// Open a file for indexing (reads only its length). The returned handle is
+    /// empty until [`index`](Self::index) / [`index_blocking`](Self::index_blocking)
+    /// populate it. Shared via `Arc` so a background thread can index while
+    /// readers query.
+    pub fn open(path: &Path) -> io::Result<Arc<Self>> {
+        let file_len = std::fs::metadata(path)?.len();
+        Ok(Arc::new(PgnIndex {
+            path: path.to_path_buf(),
+            file_len,
+            data: RwLock::new(IndexData::new()),
+            cancel: AtomicBool::new(false),
+            complete: AtomicBool::new(false),
+        }))
+    }
+
+    /// Stream the file, appending games to the index `batch` at a time under the
+    /// write lock (parsing happens unlocked; only the short append is locked).
+    /// Stops early if [`cancel`](Self::cancel) was called; sets the complete flag
+    /// on reaching EOF. Run this on a background thread while others query.
+    pub fn index(&self, batch: usize) -> io::Result<()> {
+        let file = File::open(&self.path)?;
+        let count = Rc::new(Cell::new(0u64));
+        let mut reader = Reader::new(CountingReader { inner: file, count: count.clone() });
+        let mut visitor = HeaderVisitor;
+        let mut pending: Vec<(u64, Headers)> = Vec::with_capacity(batch);
+
+        loop {
+            if self.cancel.load(Ordering::Relaxed) {
+                return Ok(()); // closed mid-index — abandon without marking complete
+            }
+            match next_game(&mut reader, &count, &mut visitor)? {
+                Some(item) => {
+                    pending.push(item);
+                    if pending.len() >= batch {
+                        self.flush(&mut pending);
+                    }
+                }
+                None => break,
+            }
+        }
+        self.flush(&mut pending);
+        self.complete.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Index the whole file to completion in one go (CLI / tests).
+    pub fn index_blocking(&self) -> io::Result<()> {
+        self.index(DEFAULT_BATCH)
+    }
+
+    fn flush(&self, pending: &mut Vec<(u64, Headers)>) {
+        if pending.is_empty() {
+            return;
+        }
+        let mut data = self.data.write().unwrap();
+        for (offset, h) in pending.drain(..) {
+            data.push(offset, h);
+        }
+    }
+
+    /// Games indexed so far.
+    pub fn len(&self) -> usize {
+        self.data.read().unwrap().games.len()
+    }
+
+    /// Whether the file held no games *and* indexing has finished.
+    pub fn is_empty(&self) -> bool {
+        self.is_complete() && self.len() == 0
+    }
+
+    /// Whether the whole file has been indexed.
+    pub fn is_complete(&self) -> bool {
+        self.complete.load(Ordering::Relaxed)
+    }
+
+    /// Ask a running [`index`](Self::index) to stop at the next game boundary.
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// Filter + paginate. Stamps the current `complete` flag onto the result so
+    /// the caller knows whether more games are still arriving.
+    pub fn query(&self, q: &Query) -> QueryResult {
+        let mut result = self.data.read().unwrap().query(q);
+        result.complete = self.is_complete();
+        result
+    }
+
+    /// Read one game's raw PGN text back from the file by its `id` (index in file
+    /// order). The slice runs to the next game's offset (or EOF), so it includes
+    /// the game's tags and movetext; trailing separator whitespace is trimmed.
+    pub fn game_pgn(&self, id: u32) -> io::Result<String> {
+        let (start, end) = {
+            let data = self.data.read().unwrap();
+            let i = id as usize;
+            let start = data
+                .games
+                .get(i)
+                .map(|e| e.offset)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "game id out of range"))?;
+            let end = data.games.get(i + 1).map(|n| n.offset).unwrap_or(self.file_len);
+            (start, end)
+        };
+        let mut file = File::open(&self.path)?;
+        file.seek(SeekFrom::Start(start))?;
+        let mut buf = vec![0u8; end.saturating_sub(start) as usize];
+        file.read_exact(&mut buf)?;
+        Ok(String::from_utf8_lossy(&buf).trim().to_string())
+    }
+}
+
+/// Pull the next game from the reader: its byte offset (via the counting reader:
+/// bytes read − still-buffered) plus its parsed headers. Returns `None` at EOF.
+fn next_game<R: Read>(
+    reader: &mut Reader<R>,
+    count: &Cell<u64>,
+    visitor: &mut HeaderVisitor,
+) -> io::Result<Option<(u64, Headers)>> {
+    // has_more() flushes the previous game's (skipped) movetext + inter-game
+    // whitespace, leaving the position at the next game's first byte.
+    if !reader.has_more()? {
+        return Ok(None);
+    }
+    let offset = count.get() - reader.buffer().len() as u64;
+    Ok(reader.read_game(visitor)?.map(|h| (offset, h)))
 }
 
 /// A `Read` wrapper that counts every byte handed upstream, into a shared cell we
@@ -356,13 +467,6 @@ fn clean(v: Option<String>) -> Option<String> {
     v.filter(|s| !s.is_empty() && s != "?")
 }
 
-fn intern_opt(interner: &mut Interner, v: Option<String>) -> u32 {
-    match v {
-        Some(s) => interner.intern(&s),
-        None => 0,
-    }
-}
-
 fn non_empty(s: &str) -> Option<String> {
     (!s.is_empty()).then(|| s.to_string())
 }
@@ -400,6 +504,13 @@ mod tests {
         path
     }
 
+    /// Open + index a file to completion (the synchronous path used in tests).
+    fn build(path: &Path) -> Arc<PgnIndex> {
+        let idx = PgnIndex::open(path).unwrap();
+        idx.index_blocking().unwrap();
+        idx
+    }
+
     const SAMPLE: &str = r#"[Event "Wch London"]
 [Site "London"]
 [Date "2018.11.09"]
@@ -435,17 +546,19 @@ mod tests {
     #[test]
     fn indexes_all_games_and_ignores_event_in_comments() {
         let path = temp_pgn("count", SAMPLE);
-        let idx = GameIndex::build(&path).unwrap();
+        let idx = build(&path);
         // Three real games — the bracketed text inside the comment is NOT a 4th.
         assert_eq!(idx.len(), 3);
+        assert!(idx.is_complete());
     }
 
     #[test]
     fn reads_headers() {
         let path = temp_pgn("headers", SAMPLE);
-        let idx = GameIndex::build(&path).unwrap();
+        let idx = build(&path);
         let all = idx.query(&Query::default());
         assert_eq!(all.matched, 3);
+        assert!(all.complete);
         let g0 = &all.rows[0];
         assert_eq!(g0.white, "Carlsen, Magnus");
         assert_eq!(g0.black, "Caruana, Fabiano");
@@ -463,7 +576,7 @@ mod tests {
     #[test]
     fn filters_by_player_and_color() {
         let path = temp_pgn("player", SAMPLE);
-        let idx = GameIndex::build(&path).unwrap();
+        let idx = build(&path);
 
         // Carlsen appears in both real games (as White, then as Black).
         let any = idx.query(&Query { player1: Some("carlsen".into()), ..Default::default() });
@@ -482,7 +595,7 @@ mod tests {
     #[test]
     fn filters_by_two_players_event_and_year() {
         let path = temp_pgn("combo", SAMPLE);
-        let idx = GameIndex::build(&path).unwrap();
+        let idx = build(&path);
 
         let both = idx.query(&Query {
             player1: Some("carlsen".into()),
@@ -507,7 +620,7 @@ mod tests {
     #[test]
     fn paginates() {
         let path = temp_pgn("page", SAMPLE);
-        let idx = GameIndex::build(&path).unwrap();
+        let idx = build(&path);
         let page = idx.query(&Query { offset: 1, limit: 1, ..Default::default() });
         assert_eq!(page.total, 3);
         assert_eq!(page.matched, 3);
@@ -518,7 +631,7 @@ mod tests {
     #[test]
     fn fetches_exact_game_text_by_offset() {
         let path = temp_pgn("fetch", SAMPLE);
-        let idx = GameIndex::build(&path).unwrap();
+        let idx = build(&path);
 
         let g1 = idx.game_pgn(1).unwrap();
         // The right game, whole and self-contained (Aronian vs Carlsen)...
@@ -533,5 +646,73 @@ mod tests {
         let g2 = idx.game_pgn(2).unwrap();
         assert!(g2.contains("[Event \"Casual\"]"));
         assert!(g2.contains("[Event \"Fake\"]")); // the comment text survives in the raw game
+    }
+
+    #[test]
+    fn open_starts_empty_and_incomplete() {
+        let path = temp_pgn("empty-open", SAMPLE);
+        let idx = PgnIndex::open(&path).unwrap();
+        assert_eq!(idx.len(), 0);
+        assert!(!idx.is_complete());
+        assert!(!idx.query(&Query::default()).complete);
+        idx.index_blocking().unwrap();
+        assert!(idx.is_complete());
+        assert_eq!(idx.len(), 3);
+    }
+
+    #[test]
+    fn queries_run_concurrently_while_indexing() {
+        // A file big enough that indexing isn't instantaneous, so the reader and
+        // the background writer genuinely overlap under the RwLock.
+        let mut content = String::with_capacity(4_000_000);
+        for i in 0..40_000 {
+            content.push_str(&format!(
+                "[White \"P{}\"]\n[Black \"Q\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0\n\n",
+                i % 50
+            ));
+        }
+        let path = temp_pgn("concurrent", &content);
+        let idx = PgnIndex::open(&path).unwrap();
+
+        let writer = idx.clone();
+        let handle = std::thread::spawn(move || writer.index(256).unwrap());
+
+        // Poll while indexing: the running total must never go backwards. A small
+        // gap between polls mirrors the client's real cadence (~500 ms) and leaves
+        // the writer room — a *tight* reader loop would starve it, since glibc's
+        // RwLock favours readers (why the app polls rather than busy-loops).
+        let mut last = 0usize;
+        let mut saw_partial = false;
+        loop {
+            let r = idx.query(&Query { limit: 1, ..Default::default() });
+            assert!(r.total >= last, "total went backwards: {} < {last}", r.total);
+            if r.total > 0 && !r.complete {
+                saw_partial = true;
+            }
+            last = r.total;
+            if r.complete {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+        handle.join().unwrap();
+        assert!(saw_partial, "expected to observe the index mid-growth");
+
+        let done = idx.query(&Query { player1: Some("P7".into()), player1_color: Color::White, limit: 0, ..Default::default() });
+        assert_eq!(done.total, 40_000);
+        assert!(done.complete);
+        // P7 is White in every 50th game → 800 of 40k.
+        assert_eq!(done.matched, 800);
+    }
+
+    #[test]
+    fn cancel_stops_indexing_without_marking_complete() {
+        let path = temp_pgn("cancel", SAMPLE);
+        let idx = PgnIndex::open(&path).unwrap();
+        idx.cancel();
+        idx.index_blocking().unwrap();
+        // Cancelled before any batch flushed: nothing indexed, not complete.
+        assert!(!idx.is_complete());
+        assert_eq!(idx.len(), 0);
     }
 }
