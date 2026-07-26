@@ -9,8 +9,13 @@ import {
 } from "../../lib/pgnEditor";
 import AddGameModal from "./AddGameModal";
 import EditHeadersModal from "./EditHeadersModal";
+import IndexedGameList from "./IndexedGameList";
 
 type ColorFilter = "any" | "white" | "black";
+
+// Compressed PGNs (.zip/.zst/.gz) can't be read whole into a string; the indexed
+// browser decompresses + indexes them in-process (#104 slice 3).
+const COMPRESSED_RE = /\.(zip|zst|zstd|gz|gzip)$/i;
 
 interface Props {
   filePath: string;
@@ -38,6 +43,9 @@ export default function LocalGameList({ filePath, selectedId, onSelect, onGameCo
   const [allGames, setAllGames] = useState<LocalGame[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Files over read_pgn_file's in-memory cap can't be loaded whole; hand them to
+  // the indexed (read-only) browser instead of failing with "File too large" (#104).
+  const [oversized, setOversized] = useState(false);
   const selectedRef = useRef<HTMLButtonElement>(null);
 
   // Add-game modal + reload counter + pending post-reload selection
@@ -78,6 +86,14 @@ export default function LocalGameList({ filePath, selectedId, onSelect, onGameCo
     setLoading(true);
     setError(null);
     setAllGames([]);
+    setOversized(false);
+
+    // Compressed files go straight to the indexed browser (they aren't plain text).
+    if (COMPRESSED_RE.test(filePath)) {
+      setOversized(true);
+      setLoading(false);
+      return;
+    }
 
     invoke<string>("read_pgn_file", { path: filePath })
       .then((text) => {
@@ -92,7 +108,11 @@ export default function LocalGameList({ filePath, selectedId, onSelect, onGameCo
           onSelect(parsed[0]);
         }
       })
-      .catch((e) => setError(String(e)))
+      .catch((e) => {
+        // Too big for the whole-file editor → switch to the indexed browser.
+        if (/too large/i.test(String(e))) setOversized(true);
+        else setError(String(e));
+      })
       .finally(() => setLoading(false));
   }, [filePath, reloadKey]);
 
@@ -155,6 +175,18 @@ export default function LocalGameList({ filePath, selectedId, onSelect, onGameCo
   useEffect(() => {
     selectedRef.current?.scrollIntoView({ block: "nearest" });
   }, [selectedId]);
+
+  // A file too large for the in-memory editor is browsed read-only via the index.
+  if (oversized) {
+    return (
+      <IndexedGameList
+        filePath={filePath}
+        selectedId={selectedId}
+        onSelect={onSelect}
+        onGameCount={onGameCount}
+      />
+    );
+  }
 
   const fileName = filePath.split("/").pop() ?? filePath;
   const showFilters = allGames.length > 1;

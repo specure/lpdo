@@ -910,6 +910,7 @@ dependencies = [
 name = "chess-client"
 version = "0.9.3"
 dependencies = [
+ "chess-pgn",
  "chess-results-client",
  "dunce",
  "fide-client",
@@ -954,6 +955,17 @@ dependencies = [
  "tokio-util",
  "tower-http 0.7.0",
  "windows-sys 0.61.2",
+ "zip 8.6.0",
+ "zstd",
+]
+
+[[package]]
+name = "chess-pgn"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "pgn-reader",
+ "serde",
  "zip 8.6.0",
  "zstd",
 ]
