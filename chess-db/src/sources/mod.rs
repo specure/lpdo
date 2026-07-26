@@ -45,6 +45,11 @@ pub struct CatalogSource {
     pub default_from: Option<&'static str>,
     pub default_to: Option<&'static str>,
     pub default_exclude_undated: bool,
+    /// Display-only: the approximate date the source's earliest data begins, for
+    /// the coverage timeline. Feeds import ALL games (no `default_from` cutoff),
+    /// but we still want the bar drawn from ~when the first issue exists rather
+    /// than the far left. Falls back to `from_date` in the UI when None.
+    pub coverage_from: Option<&'static str>,
 }
 
 /// The curated, compiled-in catalog. TWIC (weekly) + Lichess Broadcasts (monthly)
@@ -63,19 +68,22 @@ pub static CATALOG: &[CatalogSource] = &[
         // which made the daemon auto-import TWIC before onboarding — that guard is
         // `default_enabled: false`, NOT the window, so the window below is safe.
         default_enabled: false,
-        // The 2013 quality handoff (#148): TWIC contributes games from 2013 onward,
-        // where it's ~99% FIDE-identified with clean full names — higher quality
-        // (and more volume) than Ajedrez there. Ajedrez covers the pre-2013 deep
-        // history; TWIC (+ Lichess) is the ≥2013 half. NOT a coverage horizon: the
-        // measured optimum is a two-sided quality crossover at ~2013, not "start
-        // where Ajedrez's data ends (~2024)". See the wiki page + #148 for the data.
-        // (Files still download: TWIC items expose no coverage range, so they can't
-        // be skipped by date — but only in-window games are imported/deduped/
-        // indexed, which is the expensive part.) Seeds NEW rows only; existing
-        // installs keep whatever window they already have.
-        default_from: Some("2013-01-01"),
+        // No lower bound — take every TWIC game. Its earliest downloadable issue
+        // is ~#920 (mid-2012), and a weekly issue can carry games dated to earlier
+        // weeks/months (tournaments span time), so any date floor would needlessly
+        // throw away the oldest issue's earlier-dated games. Ajedrez still caps at
+        // 2012-12-31 (its quality declines after), so ~2012-06 → 2012-12-31 is a
+        // deliberate OVERLAP: Ajedrez already holds ~99% of TWIC's games there, but
+        // the residual TWIC-only games are worth importing — dedup removes the
+        // duplicates. From 2013 on TWIC is the higher-quality half (~99% FIDE-
+        // identified, clean names); pre-2013 deep history is Ajedrez's job.
+        // (Supersedes the old 2013-01-01 handoff, #148.) Seeds NEW rows only;
+        // existing installs keep whatever window they have.
+        default_from: None,
         default_to: None,
         default_exclude_undated: false,
+        // TWIC's earliest downloadable issue (#920) is ~June 2012.
+        coverage_from: Some("2012-06-01"),
     },
     CatalogSource {
         key: "lichess-broadcasts",
@@ -85,13 +93,16 @@ pub static CATALOG: &[CatalogSource] = &[
         homepage: "https://database.lichess.org/",
         credit: "Lichess Broadcasts — lichess.org, CC BY-SA 4.0.",
         collection: "Lichess Broadcasts",
-        // Off by default. From its earliest available data (Jan 2020) onward —
-        // Lichess Broadcasts don't predate that, so this takes the whole feed as a
-        // live-tail complement to TWIC. Overlap with TWIC is auto-deduped (#148).
+        // Off by default. No game-date cutoff — import every broadcast game (a
+        // monthly file can carry games dated in an earlier month). Lichess's
+        // broadcast archive begins Jan 2020, so that's just where its data starts;
+        // overlap with TWIC is auto-deduped. The timeline draws it from Jan 2020
+        // via coverage_from below.
         default_enabled: false,
-        default_from: Some("2020-01-01"),
+        default_from: None,
         default_to: None,
         default_exclude_undated: false,
+        coverage_from: Some("2020-01-01"),
     },
     CatalogSource {
         key: "ajedrez-otb",
@@ -110,6 +121,8 @@ pub static CATALOG: &[CatalogSource] = &[
         default_from: None,
         default_to: Some("2012-12-31"),
         default_exclude_undated: false,
+        // Deep-history base: drawn from the far left (no coverage_from marker).
+        coverage_from: None,
     },
 ];
 
@@ -346,6 +359,9 @@ pub struct SourceStatus {
     pub from_date: Option<String>,
     pub to_date: Option<String>,
     pub exclude_undated: bool,
+    /// Display-only start for the coverage timeline (catalog `coverage_from`);
+    /// null → the UI falls back to `from_date`.
+    pub coverage_from: Option<String>,
     pub last_run: Option<String>,
     pub last_status: Option<String>,
     /// Items imported for this source.
@@ -483,14 +499,19 @@ pub fn list_status(conn: &Connection) -> Result<Vec<SourceStatus>> {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap_or((0, 0));
-        // Most recently imported item — newest by import time, id as a tiebreak.
+        // The source's newest DATA — the latest published item (TWIC issue /
+        // Lichess month / Ajedrez part). Ordered by publication date, NOT import
+        // time: feeds are fetched newest-first, so "most recently imported" would
+        // count *backwards* (2026-03 → … → 2020-01) during an initial import and
+        // then stick at the oldest month. Falls back to import time / id when a
+        // published date is missing.
         let last_import: Option<LastImport> = conn
             .query_row(
                 "SELECT external_id, CAST(published_at AS VARCHAR), CAST(imported_at AS VARCHAR),
                         COALESCE(game_count, 0)
                  FROM source_items
                  WHERE source_key = ? AND imported = TRUE
-                 ORDER BY imported_at DESC NULLS LAST, id DESC
+                 ORDER BY published_at DESC NULLS LAST, imported_at DESC NULLS LAST, id DESC
                  LIMIT 1",
                 duckdb::params![s.key],
                 |r| {
@@ -518,6 +539,7 @@ pub fn list_status(conn: &Connection) -> Result<Vec<SourceStatus>> {
             from_date: win.from,
             to_date: win.to,
             exclude_undated: win.exclude_undated,
+            coverage_from: s.coverage_from.map(String::from),
             last_run,
             last_status,
             items,
@@ -786,17 +808,20 @@ mod register_tests {
             "INSERT INTO source_items (id, source_key, external_id, imported, game_count, imported_at, published_at) VALUES
                (1, 'twic', '1648', TRUE,  100, TIMESTAMP '2026-06-08 10:00:00', DATE '2026-06-08'),
                (2, 'twic', '1649', TRUE,  200, TIMESTAMP '2026-06-15 10:00:00', DATE '2026-06-15'),
+               -- Newest PUBLISHED but imported EARLIEST (feeds fetch newest-first):
+               -- the latest-update tile must show this, not the last-imported one.
+               (4, 'twic', '1651', TRUE,  50,  TIMESTAMP '2026-06-01 10:00:00', DATE '2026-06-22'),
                (3, 'twic', '1650', FALSE, 0,   NULL, NULL);",
         )
         .unwrap();
 
         let twic = list_status(&conn).unwrap().into_iter().find(|s| s.key == "twic").unwrap();
-        assert_eq!(twic.items, 2, "only imported items count");
-        assert_eq!(twic.imported_games, 300, "sum of imported items' game counts");
+        assert_eq!(twic.items, 3, "only imported items count");
+        assert_eq!(twic.imported_games, 350, "sum of imported items' game counts");
         let li = twic.last_import.expect("has a last import");
-        assert_eq!(li.external_id, "1649", "newest imported item by import time");
-        assert_eq!(li.game_count, 200);
-        assert_eq!(li.published_at.as_deref(), Some("2026-06-15"));
+        assert_eq!(li.external_id, "1651", "newest item by publication date, not import time");
+        assert_eq!(li.game_count, 50);
+        assert_eq!(li.published_at.as_deref(), Some("2026-06-22"));
     }
 }
 

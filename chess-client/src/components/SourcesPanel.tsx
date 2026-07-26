@@ -185,13 +185,18 @@ function CoverageTimeline({ sources }: { sources: SourceStatus[] }) {
   const shown = sources.filter((s) => s.enabled);
   if (shown.length === 0) return null;
 
+  // The bar's visual start: the display-only coverage_from (approx first-issue
+  // date) when set, else the actual game-date window. Feeds import all games (no
+  // from_date), so coverage_from is what places TWIC at ~2012-06 and Lichess at
+  // ~2020-01 instead of the far left.
+  const dFrom = (s: SourceStatus) => s.coverage_from ?? s.from_date;
+
   // Schematic (not to scale), but ordered by start date: deep-history sources
-  // (no `from`) come first / on the left; feeds with a `from` are placed by that
-  // start date, so a later-starting feed (Lichess, 2026) visibly begins to the
-  // right of an earlier one (TWIC, 2013). A deep-history bar ends exactly where
-  // the earliest feed begins, so a sharp hand-off (Ajedrez → 2012-12-31, TWIC
-  // 2013-01-01 →) reads as contiguous, not overlapping.
-  const feedFroms = shown.filter((s) => s.from_date).map((s) => dayIndex(s.from_date!));
+  // (no start) come first / on the left; sources with a start are placed by it,
+  // so a later-starting feed (Lichess, 2020) visibly begins to the right of an
+  // earlier one (TWIC, 2012). A deep-history bar ends where the earliest such
+  // start begins, so an Ajedrez → TWIC hand-off reads as contiguous.
+  const feedFroms = shown.filter((s) => dFrom(s)).map((s) => dayIndex(dFrom(s)!));
   const hasFeeds = feedFroms.length > 0;
   const minFrom = hasFeeds ? Math.min(...feedFroms) : 0;
   const maxFrom = hasFeeds ? Math.max(...feedFroms) : 0;
@@ -201,9 +206,9 @@ function CoverageTimeline({ sources }: { sources: SourceStatus[] }) {
       ? BAND_L
       : BAND_L + (BAND_R - BAND_L) * ((dayIndex(from) - minFrom) / (maxFrom - minFrom));
 
-  // Earliest coverage first (deep history on top, then feeds by start date).
+  // Earliest coverage first (deep history on top, then by start date).
   const ordered = [...shown].sort(
-    (a, b) => (a.from_date ? dayIndex(a.from_date) : -Infinity) - (b.from_date ? dayIndex(b.from_date) : -Infinity),
+    (a, b) => (dFrom(a) ? dayIndex(dFrom(a)!) : -Infinity) - (dFrom(b) ? dayIndex(dFrom(b)!) : -Infinity),
   );
 
   return (
@@ -211,8 +216,8 @@ function CoverageTimeline({ sources }: { sources: SourceStatus[] }) {
       <div className="text-label-sm text-on-surface-variant uppercase tracking-wide">Coverage</div>
       <div className="space-y-2">
         {ordered.map((s) => {
-          const historical = !s.from_date;
-          const left = historical ? 1 : feedLeft(s.from_date!);
+          const historical = !dFrom(s);
+          const left = historical ? 1 : feedLeft(dFrom(s)!);
           // Deep-history bars stop where the first feed starts (BAND_L) so a sharp
           // hand-off touches rather than overlaps; if there are no feeds they run full.
           const width = historical ? (hasFeeds ? BAND_L : RIGHT) - left : RIGHT - left;
