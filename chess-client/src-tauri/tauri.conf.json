@@ -48,6 +48,7 @@
         "files": {
           "/usr/share/mime/packages/lpdo.xml": "lpdo-mime.xml"
         },
+        "desktopTemplate": "deb/lpdo.desktop",
         "postInstallScript": "deb/postinst.sh",
         "postRemoveScript": "deb/postrm.sh"
       }
