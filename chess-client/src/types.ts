@@ -299,6 +299,10 @@ export interface Job {
   cancellable?: boolean;
   path?: string;
   error?: string;
+  /** Epoch-ms when the job started running / reached a terminal state (#170).
+   *  Live-session only — the daemon's job registry is cleared on restart. */
+  started_at?: number;
+  ended_at?: number;
   /** Submission params, used to label a job by what it operates on. */
   params?: Record<string, unknown>;
 }
