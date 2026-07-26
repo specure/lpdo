@@ -34,9 +34,22 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "fileAssociations": [
+      {
+        "ext": ["pgn"],
+        "mimeType": "application/x-chess-pgn",
+        "description": "Chess game (PGN)",
+        "role": "Viewer"
+      }
+    ],
     "linux": {
       "deb": {
-        "recommends": ["lpdo-server"]
+        "recommends": ["lpdo-server"],
+        "files": {
+          "/usr/share/mime/packages/lpdo.xml": "lpdo-mime.xml"
+        },
+        "postInstallScript": "deb/postinst.sh",
+        "postRemoveScript": "deb/postrm.sh"
       }
     }
   }

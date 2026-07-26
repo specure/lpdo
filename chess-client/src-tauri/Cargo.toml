@@ -28,6 +28,9 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
+# Route a double-clicked .pgn (file association) to the already-running instance
+# instead of spawning a second window (#104/#210).
+tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "fs", "io-util"] }

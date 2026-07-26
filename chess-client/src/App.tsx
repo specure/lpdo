@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import PlayerList from "./components/PlayerList";
 import GameList from "./components/GameList";
 import GameBoard from "./components/GameBoard";
@@ -253,6 +255,25 @@ export default function App() {
   const [localSelectedFile, setLocalSelectedFile] = useState<string | null>(null);
   const [localSelectedGame, setLocalSelectedGame] = useState<LocalGame | null>(null);
   const [localGameCount, setLocalGameCount] = useState<number | null>(null);
+
+  // Open a PGN in the local browser: switch to the PGNs page and select the file.
+  // It lands at the top of "recent" via the existing onGameCount → addRecentPgnFile
+  // path once it loads. Shared by the file-association open (below).
+  const openLocalFile = useCallback((path: string) => {
+    setMode("local");
+    setLocalSelectedFile(path);
+    setLocalSelectedGame(null);
+    setLocalGameCount(null);
+  }, []);
+
+  // File association (#104/#210): open a .pgn passed on launch (`lpdo file.pgn`,
+  // or a double-click), and — while already running — a second launch that the
+  // single-instance plugin forwards here as an "open-pgn-file" event.
+  useEffect(() => {
+    invoke<string | null>("take_launch_file").then((p) => { if (p) openLocalFile(p); }).catch(() => {});
+    const unlisten = listen<string>("open-pgn-file", (e) => openLocalFile(e.payload));
+    return () => { void unlisten.then((off) => off()); };
+  }, [openLocalFile]);
   const [filesCollapsed, setFilesCollapsed] = useState(false);
   const [gameListCollapsed, setGameListCollapsed] = useState(false);
   const [scopePublicOnly, setScopePublicOnly] = useState<boolean>(

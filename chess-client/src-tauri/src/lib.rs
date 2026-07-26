@@ -4,6 +4,7 @@ mod prep;
 mod shortlist;
 
 use fide_client::{ActivitySummary, FidePlayer, RatingPoint, RecentGame};
+use tauri::{Emitter, Manager};
 
 // The GUI is a pure HTTP client: it talks to the LPDO server over
 // 127.0.0.1:7777 — the OS-managed system daemon (`lpdo-server` on Linux, the
@@ -50,9 +51,39 @@ async fn fide_rating_history(fide_id: u64) -> Result<Vec<RatingPoint>, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// The first argument that looks like a PGN file the browser can open (a
+/// double-clicked `.pgn`/`.zip`/`.zst`/`.gz` via the file association). Skips the
+/// binary path in `argv[0]`.
+fn pgn_arg(argv: &[String]) -> Option<String> {
+    argv.iter().skip(1).find(|a| is_openable_pgn(a)).cloned()
+}
+
+fn is_openable_pgn(arg: &str) -> bool {
+    let lower = arg.to_lowercase();
+    [".pgn", ".zip", ".zst", ".zstd", ".gz", ".gzip"].iter().any(|ext| lower.ends_with(ext))
+}
+
+/// The PGN file this process was launched with (file association / `lpdo file.pgn`),
+/// if any. The frontend reads this once on startup to open it.
+#[tauri::command]
+fn take_launch_file() -> Option<String> {
+    pgn_arg(&std::env::args().collect::<Vec<_>>())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Must be registered first: a second `lpdo file.pgn` (double-click while
+        // running) forwards its argv here instead of opening a new window, and we
+        // emit the file to the frontend + focus the window (#104/#210).
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if let Some(path) = pgn_arg(&argv) {
+                let _ = app.emit("open-pgn-file", path);
+            }
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -83,6 +114,7 @@ pub fn run() {
             pgn_index::pgn_query,
             pgn_index::pgn_game,
             pgn_index::pgn_close,
+            take_launch_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

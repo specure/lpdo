@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Registers the Chess PGN MIME type + globs so the desktop maps .pgn (and the
+     single-file compressed variants) to LPDO. Installed to
+     /usr/share/mime/packages/lpdo.xml; update-mime-database picks it up (#104/#210).
+     LPDO registers as a *handler* (via the .desktop MimeType) — it does not force
+     itself as the default, so ChessX/SCID/etc. still work. -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-chess-pgn">
+    <comment>Chess game (PGN)</comment>
+    <comment xml:lang="de">Schachpartie (PGN)</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.pgn"/>
+    <glob pattern="*.pgn.gz"/>
+    <glob pattern="*.pgn.zst"/>
+  </mime-type>
+</mime-info>
