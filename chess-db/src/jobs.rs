@@ -503,6 +503,12 @@ pub struct JobManager {
     /// order once connectivity returns (a network job succeeds) — so the queue
     /// reads as one paused job with the rest queued behind it, not N paused jobs.
     held: Mutex<Vec<Arc<JobSlot>>>,
+    /// The id of the current offline leader, or None when online (#206). Set
+    /// SYNCHRONOUSLY the instant a job detects offline (not via the async status
+    /// event) so the very next job's gate check sees it — otherwise the writer
+    /// moves on before the leader's "waiting" status has propagated and a second
+    /// job runs and pauses too.
+    offline_leader: Mutex<Option<String>>,
 }
 
 /// What post-import maintenance is currently owed (#131, #167). `requested` marks
@@ -572,24 +578,22 @@ impl JobManager {
             reopening: Arc::new(AtomicBool::new(false)),
             maintenance: Mutex::new(MaintenanceNeeds::default()),
             held: Mutex::new(Vec::new()),
+            offline_leader: Mutex::new(None),
         }
     }
 
-    /// Whether some OTHER network job is currently paused `"waiting"` — i.e. we
-    /// appear to be offline, so a network job about to run should hold instead
-    /// (#206). Excludes `self_id` (a leader re-running from its retry timer).
-    fn offline_pending(&self, self_id: &str) -> bool {
-        self.jobs.lock().unwrap().values().any(|s| {
-            s.id != self_id
-                && job_uses_network(&s.job_type)
-                && s.state.lock().unwrap().status == "waiting"
-        })
+    /// Whether a network job about to run should HOLD (queued) rather than run:
+    /// true when an offline leader exists and it isn't this job (#206). The leader
+    /// itself (re-running from its retry timer) must run to test the connection.
+    fn gate_should_hold(&self, self_id: &str) -> bool {
+        matches!(self.offline_leader.lock().unwrap().as_deref(), Some(l) if l != self_id)
     }
 
-    /// Re-dispatch every held job in submission order — called when connectivity
-    /// returns (a network job succeeds) or the leader is cancelled (#206). The
-    /// first one to run again becomes the new leader if we're still offline.
+    /// Back online (a network job succeeded / the leader was cancelled): clear the
+    /// leader and re-dispatch every held job in submission order (#206). The first
+    /// to run again becomes the new leader if we're somehow still offline.
     fn release_held(self: &Arc<Self>) {
+        *self.offline_leader.lock().unwrap() = None;
         let held: Vec<Arc<JobSlot>> = std::mem::take(&mut *self.held.lock().unwrap());
         for slot in held {
             if slot.cancel.load(Ordering::Relaxed) {
@@ -699,12 +703,12 @@ impl JobManager {
                 slot.cancel.store(true, Ordering::Relaxed);
                 // Invalidate any pending offline-retry timer so it fires as a no-op.
                 slot.retry_gen.fetch_add(1, Ordering::SeqCst);
-                let was_leader;
+                // The offline leader? Cancelling it must free the jobs held behind
+                // it so one can take over (#206). Uses the synchronous id, not the
+                // (async) "waiting" status.
+                let was_leader = self.offline_leader.lock().unwrap().as_deref() == Some(id);
                 {
                     let mut s = slot.state.lock().unwrap();
-                    // Waiting = the offline "leader" (#206). Cancelling it must free
-                    // the jobs held behind it, so one of them can take over.
-                    was_leader = s.status == "waiting";
                     // Queued (never ran) or waiting (paused for network): terminate
                     // now. A running job just gets the flag + stops on a boundary.
                     if s.status == "queued" || s.status == "waiting" {
@@ -715,7 +719,7 @@ impl JobManager {
                     }
                 }
                 if was_leader {
-                    self.release_held();
+                    self.release_held(); // clears offline_leader + re-dispatches held
                 }
                 true
             }
@@ -854,17 +858,17 @@ impl JobManager {
                 reporter.cancelled("Cancelled before it started");
                 return;
             }
-            // Offline gate (#206): if another network job is already paused waiting
-            // for a connection, don't run this one and pause it too — hold it
-            // QUEUED behind the leader so the queue reads as one paused job with
-            // the rest queued. release_held re-dispatches it when connectivity
-            // returns. (The serial writer guarantees the leader has already flipped
-            // to "waiting" by the time we get here.)
-            if job_uses_network(&slot_run.job_type) && jm_run.offline_pending(&slot_run.id) {
+            // Offline gate (#206): if another network job is already the offline
+            // leader, hold this one QUEUED behind it rather than running and
+            // pausing it too — so the queue reads as one paused job with the rest
+            // queued. The signal is the synchronous `offline_leader` id (NOT the
+            // async "waiting" status), so the very next job sees it immediately.
+            // release_held re-dispatches it once the leader reconnects/finishes.
+            if job_uses_network(&slot_run.job_type) && jm_run.gate_should_hold(&slot_run.id) {
                 {
                     let mut s = slot_run.state.lock().unwrap();
                     s.status = "queued".into();
-                    s.message = "Waiting for the network to return".into();
+                    s.message = String::new(); // just "Queued" (behind the sync ahead)
                     s.retry_at = None;
                 }
                 jm_run.held.lock().unwrap().push(slot_run.clone());
@@ -900,8 +904,29 @@ impl JobManager {
                         && crate::net::is_offline_error(&e)
                         && !reporter.is_cancelled() =>
                 {
-                    reporter.waiting("Offline — waiting for a connection; will retry");
-                    jm_run.schedule_retry(&slot_run.id, OFFLINE_RETRY_MS);
+                    // Claim leadership synchronously (before returning) so the next
+                    // job's gate check sees it. Already the leader (a retry that's
+                    // still offline) → stay the leader; a fresh offliner that raced
+                    // past the gate while someone else leads → hold queued instead.
+                    let lead = {
+                        let mut leader = jm_run.offline_leader.lock().unwrap();
+                        match leader.as_deref() {
+                            None => { *leader = Some(slot_run.id.clone()); true }
+                            Some(l) => l == slot_run.id,
+                        }
+                    };
+                    if lead {
+                        reporter.waiting("Offline — waiting for a connection; will retry");
+                        jm_run.schedule_retry(&slot_run.id, OFFLINE_RETRY_MS);
+                    } else {
+                        {
+                            let mut s = slot_run.state.lock().unwrap();
+                            s.status = "queued".into();
+                            s.message = String::new();
+                            s.retry_at = None;
+                        }
+                        jm_run.held.lock().unwrap().push(slot_run.clone());
+                    }
                 }
                 Err(e) => {
                     let msg = format!("{:#}", e);
@@ -930,6 +955,15 @@ impl JobManager {
                         });
                     }
                     reporter.error(msg);
+                    // If the offline leader failed with a *real* (non-connectivity)
+                    // error, it's still done — free the jobs held behind it so the
+                    // queue doesn't stall (#206). release_held clears offline_leader.
+                    if job_uses_network(&slot_run.job_type)
+                        && jm_run.offline_leader.lock().unwrap().as_deref()
+                            == Some(slot_run.id.as_str())
+                    {
+                        jm_run.release_held();
+                    }
                 }
             }
         };
