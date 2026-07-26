@@ -344,6 +344,15 @@ impl PgnIndex {
         self.cancel.store(true, Ordering::Relaxed);
     }
 
+    /// Rough heap footprint of the index, for a cache to budget against (#104).
+    /// ~48 bytes/game covers the fixed `Entry` (36 B) plus amortised interner and
+    /// `Vec` over-allocation — deliberately a slight over-estimate so a memory cap
+    /// evicts a touch early rather than late. Grows with the index while building.
+    pub fn estimated_bytes(&self) -> u64 {
+        const PER_GAME: u64 = 48;
+        self.len() as u64 * PER_GAME
+    }
+
     /// Filter + paginate. Stamps the current `complete` flag onto the result so
     /// the caller knows whether more games are still arriving.
     pub fn query(&self, q: &Query) -> QueryResult {

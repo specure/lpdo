@@ -56,7 +56,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(pgn_index::PgnSessions::default())
+        .manage(pgn_index::PgnCache::default())
         .invoke_handler(tauri::generate_handler![
             fide_player,
             fide_activity,
