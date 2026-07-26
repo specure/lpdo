@@ -157,7 +157,12 @@ function planFromArgs(args: string[]): Plan {
     case "games": {
       switch (a1) {
         case "dedup":
-          return { kind: "job", type: "dedup_games", params: {} };
+          // Manual "Run deduplication" is a FULL re-check: it re-examines pairs a
+          // prior incremental pass already marked vetted, so it cleans duplicates
+          // that older logic missed (e.g. the same game from TWIC and a Lichess
+          // broadcast, once annotation handling was fixed). The background
+          // post-sync pass stays incremental.
+          return { kind: "job", type: "dedup_games", params: { full: true } };
         case "purge":
           return { kind: "mutation", path: "/purge" };
         case "soft-delete":
