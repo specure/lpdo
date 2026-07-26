@@ -574,7 +574,7 @@ pub fn import(
     fast: bool,
     skip_dedup: bool,
     reporter: &Reporter,
-) -> Result<()> {
+) -> Result<usize> {
     let mut stmt = conn.prepare(
         "SELECT id, filename FROM source_items
          WHERE source_key = ? AND downloaded = TRUE AND imported = FALSE ORDER BY id",
@@ -587,7 +587,7 @@ pub fn import(
 
     if issues.is_empty() {
         reporter.done("No new issues to import.");
-        return Ok(());
+        return Ok(0);
     }
 
     // Decide bulk vs inline by total download size (≈ games), not item count, so a
@@ -758,7 +758,7 @@ pub fn import(
         collection,
     );
     reporter.done(&done_msg);
-    import_result
+    import_result.map(|()| tot_imported)
 }
 
 /// Import arbitrary PGN files from a single file or a directory of `.pgn` files,

@@ -1194,35 +1194,38 @@ fn run_job(
             // maintenance below — so they show as their own visible jobs instead
             // of a hidden tail that leaves the bar stuck at 100% (#163/#147).
             let step = reporter.sub_step();
-            let sync = (|| -> Result<()> {
+            let sync = (|| -> Result<usize> {
                 reporter.log(format!("{}: download", src.name));
                 rt.block_on(crate::sources::download_feed(conn, src, None, None, &dir, &step))?;
-                if reporter.is_cancelled() { return Ok(()); }
+                if reporter.is_cancelled() { return Ok(0); }
                 reporter.log(format!("{}: import (fast)", src.name));
                 // Snapshot-guard a bulk source import (e.g. Ajedrez) so a fatal
                 // appender fault rolls back cleanly instead of half-importing (#82).
                 let bulk = importer::source_import_is_bulk(conn, &dir, src.key, 10)?;
                 run_import_guarded(conn, db, bulk, &step, || {
                     importer::import(conn, &dir, src.key, src.collection, None, 10, true, true, &step)
-                })?;
-                Ok(())
+                })
             })();
             if reporter.is_cancelled() {
                 let _ = crate::sources::record_run(conn, src.key, "cancelled");
                 return Ok(());
             }
             match sync {
-                Ok(()) => {
+                Ok(imported) => {
                     // Record the run BEFORE maintenance: the import is committed and
                     // the source marked synced, so an interrupted maintenance can't
                     // leave the ledger unmarked (the items=0 inconsistency, #163).
                     // Then request the coalesced dedup → index → normalise as their
                     // own visible jobs (#131).
                     crate::sources::record_run(conn, src.key, "ok")?;
-                    reporter.done(format!(
-                        "{} imported — preparing the database in the background.",
-                        src.name
-                    ));
+                    // Report the actual game count rather than a vague "preparing the
+                    // database" — the number the user watched climb during the import
+                    // (#—). Maintenance runs afterwards as its own visible jobs.
+                    reporter.done(if imported == 0 {
+                        format!("{}: already up to date — no new games.", src.name)
+                    } else {
+                        format!("{}: {imported} games imported.", src.name)
+                    });
                     // One coalesced identity-first pass for every source — bulk or
                     // feed. `dedup_games` is incremental (#—) so the pass is cheap
                     // to run after each sync; the old light/full split is gone.
@@ -1518,13 +1521,13 @@ const FAST_INDEX_SNAPSHOT_THRESHOLD: i64 = 200_000;
 /// Non-bulk imports (small feed syncs, scratch/paste) skip the snapshot — they're
 /// cheap and low-risk, and a full-DB copy per weekly TWIC sync isn't worth it.
 /// First-run setup also skips it (the setup sentinel already guards a disposable DB).
-fn run_import_guarded(
+fn run_import_guarded<T>(
     conn: &Connection,
     db: &Path,
     bulk: bool,
     reporter: &Reporter,
-    run: impl FnOnce() -> Result<()>,
-) -> Result<()> {
+    run: impl FnOnce() -> Result<T>,
+) -> Result<T> {
     let snapshotted =
         bulk && !setup_load_is_disposable(conn, db) && make_safety_snapshot(conn, db, reporter);
     let res = run();
@@ -1793,7 +1796,7 @@ mod import_guard_tests {
     #[test]
     fn bulk_fatal_leaves_snapshot_for_reopen() {
         let (db, conn) = tmp_db("fatal");
-        let r = run_import_guarded(&conn, &db, true, &Reporter::silent(), || {
+        let r = run_import_guarded(&conn, &db, true, &Reporter::silent(), || -> Result<()> {
             Err(anyhow!("FATAL Error: database has been invalidated because of a previous fatal error"))
         });
         assert!(r.is_err());
@@ -1806,7 +1809,7 @@ mod import_guard_tests {
     #[test]
     fn bulk_nonfatal_removes_snapshot() {
         let (db, conn) = tmp_db("nonfatal");
-        let r = run_import_guarded(&conn, &db, true, &Reporter::silent(), || {
+        let r = run_import_guarded(&conn, &db, true, &Reporter::silent(), || -> Result<()> {
             Err(anyhow!("a corrupt PGN — ordinary, non-fatal import error"))
         });
         assert!(r.is_err());
@@ -1819,7 +1822,10 @@ mod import_guard_tests {
     #[test]
     fn non_bulk_never_snapshots() {
         let (db, conn) = tmp_db("nonbulk");
-        let r = run_import_guarded(&conn, &db, false, &Reporter::silent(), || Err(anyhow!("boom")));
+        let r =
+            run_import_guarded(&conn, &db, false, &Reporter::silent(), || -> Result<()> {
+                Err(anyhow!("boom"))
+            });
         assert!(r.is_err());
         assert!(!snapshot_path(&db).exists(), "a non-bulk import doesn't snapshot at all");
     }
