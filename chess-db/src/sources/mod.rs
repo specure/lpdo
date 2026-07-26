@@ -323,9 +323,17 @@ pub async fn download_feed(
         pb.set_message(item.external_id.clone());
         match feed.fetch_item(item, &dest).await {
             Ok(()) => mark_downloaded(conn, src.key, item)?,
+            // A connectivity failure means we're offline — abort so the job runner
+            // pauses and retries the whole sync rather than skipping every item and
+            // "succeeding" with nothing (#206). Already-downloaded items are kept,
+            // so the retry resumes from here.
+            Err(e) if crate::net::is_offline_error(&e) => {
+                pb.finish_and_clear();
+                return Err(e.context("download interrupted — no network connection"));
+            }
+            // A single item failing for a NON-connectivity reason (a corrupt or
+            // missing file) must never abort the whole run; log a warning and skip.
             Err(e) => {
-                // One item failing must never abort the whole run; log a warning
-                // (not reporter.error, which the GUI treats as terminal).
                 let msg = format!("Skipping {} {} ({})", client_label, item.external_id, e);
                 pb.println(&msg);
                 reporter.log(&msg);

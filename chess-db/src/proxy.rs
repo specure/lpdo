@@ -582,16 +582,7 @@ pub async fn run_status(port: u16) -> Result<()> {
         .get(format!("{}/status", base_url(port)))
         .send().await.context("querying status")?
         .json().await.context("reading status")?;
-    let n = |v: i64| -> String {
-        // Thousands separators, e.g. 12,040,323.
-        let s = v.to_string();
-        let mut out = String::new();
-        for (i, c) in s.chars().rev().enumerate() {
-            if i > 0 && i % 3 == 0 { out.push(','); }
-            out.push(c);
-        }
-        out.chars().rev().collect()
-    };
+    let n = crate::progress::thousands; // thousands separators, e.g. 12,040,323
     println!("=== Chess DB Status (server v{}) ===", s.version);
     println!("Games:           {}", n(s.games));
     println!("Players:         {}", n(s.players));

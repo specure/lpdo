@@ -186,6 +186,20 @@ impl Reporter {
         }
     }
 
+    /// NON-terminal pause: a network job lost connectivity and will be retried by
+    /// the job runner (#206). Only meaningful for the in-process channel (the job
+    /// runner owns the retry). For the CLI, there's no retry machinery, so it's
+    /// just a log line and the operation's error is surfaced normally.
+    pub fn waiting(&self, msg: impl std::fmt::Display) {
+        match &self.sink {
+            Sink::Terminal => eprintln!("{}", msg),
+            Sink::Json => self.emit_json(serde_json::json!({ "type": "waiting", "message": msg.to_string() })),
+            Sink::Channel(_) => self.send(JobEvent {
+                kind: "waiting".into(), message: msg.to_string(), value: None, total: None, path: None,
+            }),
+        }
+    }
+
     /// Create a count-based progress bar (hidden unless interactive terminal).
     pub fn bar(&self, len: u64) -> ProgressBar {
         if matches!(self.sink, Sink::Terminal) {

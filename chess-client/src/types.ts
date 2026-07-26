@@ -288,7 +288,7 @@ export interface Job {
   id: string;
   /** Job kind, e.g. "sources_sync" | "update" | "index_positions" | "backup". */
   type: string;
-  status: "queued" | "running" | "done" | "error" | "cancelled";
+  status: "queued" | "running" | "waiting" | "done" | "error" | "cancelled";
   value: number;
   total: number;
   message: string;
@@ -303,6 +303,9 @@ export interface Job {
    *  Live-session only — the daemon's job registry is cleared on restart. */
   started_at?: number;
   ended_at?: number;
+  /** Epoch-ms of the next auto-retry while status is "waiting" for a network
+   *  connection (#206) — drives the "retry in ~X min" countdown. */
+  retry_at?: number;
   /** Submission params, used to label a job by what it operates on. */
   params?: Record<string, unknown>;
 }

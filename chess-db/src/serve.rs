@@ -641,7 +641,7 @@ async fn set_source_enabled_handler(
         for j in state.jobs.list() {
             let touches_this = j.params.get("source").and_then(|v| v.as_str()) == Some(key.as_str());
             let is_sync = matches!(j.job_type.as_str(), "sources_sync" | "download" | "import");
-            let active = j.status == "queued" || j.status == "running";
+            let active = matches!(j.status.as_str(), "queued" | "running" | "waiting");
             if touches_this && is_sync && active {
                 state.jobs.cancel(&j.id);
             }
@@ -702,7 +702,7 @@ async fn set_source_enabled_handler(
         let already_syncing = state.jobs.list().iter().any(|j| {
             j.job_type == "sources_sync"
                 && j.params.get("source").and_then(|v| v.as_str()) == Some(key.as_str())
-                && (j.status == "queued" || j.status == "running")
+                && matches!(j.status.as_str(), "queued" | "running" | "waiting")
         });
         if is_feed {
             if !already_syncing {
@@ -1424,6 +1424,19 @@ async fn cancel_job_handler(
     }
 }
 
+/// "Retry now" for a job paused waiting for the network (#206): re-run it at once
+/// instead of waiting out the retry timer. No-op unless it's currently waiting.
+async fn retry_job_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> std::result::Result<StatusCode, (StatusCode, String)> {
+    if state.jobs.retry_now(&id) {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((StatusCode::CONFLICT, format!("job {} is not waiting to retry", id)))
+    }
+}
+
 /// Server-Sent Events stream of a job's progress: replays buffered events, then
 /// streams live ones. The client closes the stream when it sees done/error.
 async fn job_events_handler(
@@ -1502,11 +1515,18 @@ fn spawn_first_run_pipeline(
 ) -> Vec<String> {
     let mut ids: Vec<String> = Vec::new();
     let mut keys: Vec<String> = Vec::new();
+    // One cluster for the whole batch: if the first source's sync pauses offline,
+    // the others wait behind it rather than each running and pausing too (#206).
+    let cluster = state.jobs.next_cluster_id();
     for s in sources {
         // One `sources_sync` per source — the SAME job the Sources page uses when
         // a feed is enabled, so onboarding shows a single "Sync <source>" entry
         // rather than a separate "Download …" + "Import …" pair (#195 follow-up).
-        ids.push(state.jobs.submit("sources_sync".into(), serde_json::json!({ "source": s.key })));
+        ids.push(state.jobs.submit_in_cluster(
+            "sources_sync".into(),
+            serde_json::json!({ "source": s.key }),
+            Some(cluster.clone()),
+        ));
         keys.push(s.key.to_string());
     }
     // First-run requests the one identity-first maintenance pass, coalesced with
@@ -1975,6 +1995,7 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         .route("/jobs/{id}",                           get(get_job_handler))
         .route("/jobs/{id}/events",                    get(job_events_handler))
         .route("/jobs/{id}/cancel",                    post(cancel_job_handler))
+        .route("/jobs/{id}/retry",                     post(retry_job_handler))
         .with_state(state)
         // Allow the bundled webview (a cross-origin caller, e.g. tauri://localhost)
         // to reach this local server. In dev the Vite proxy makes calls same-origin;

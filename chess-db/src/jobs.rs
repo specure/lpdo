@@ -379,6 +379,10 @@ pub struct JobSnapshot {
     pub started_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<u64>,
+    /// Epoch-ms of the next auto-retry while the job is `"waiting"` for a network
+    /// connection (#206). Drives the panel's "retry in ~X min" countdown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<u64>,
     /// The submission params, so the UI can label a job by what it touches (e.g.
     /// which source/collection) and the scheduler can de-dupe by it.
     pub params: serde_json::Value,
@@ -421,11 +425,23 @@ struct JobState {
     /// "5 min ago · took 30s" (#170). None until each transition happens.
     started_at: Option<u64>,
     ended_at: Option<u64>,
+    /// Epoch-ms of the next automatic retry while `status == "waiting"` — a
+    /// network job paused because the machine is offline (#206). None otherwise.
+    retry_at: Option<u64>,
 }
 
 pub struct JobSlot {
     id: String,
     job_type: String,
+    /// Submission order (the counter value at submit). Used by the offline gate to
+    /// compare "earlier than" without parsing the id (#206 dependency model).
+    seq: u64,
+    /// Jobs submitted together as one logical operation share a cluster id (the
+    /// maintenance chain, the wizard's per-source syncs, a scheduler resync batch).
+    /// A job submitted on its own gets a unique cluster (its own id). The offline
+    /// gate holds a job behind an earlier *same-cluster* job that's stuck; solo
+    /// jobs from other clusters skip ahead (#206 dependency model).
+    cluster: String,
     /// The job's submission params (e.g. `{ "source": "ajedrez-otb" }`), kept so
     /// the scheduler can de-dupe an auto-sync against an in-flight one and the
     /// Activity view can label a job by what it operates on.
@@ -435,6 +451,9 @@ pub struct JobSlot {
     events: broadcast::Sender<JobEvent>,
     buffer: Mutex<Vec<JobEvent>>,
     cancel: Arc<AtomicBool>,
+    /// Bumped on every (re)schedule of an offline retry so a superseded timer —
+    /// e.g. after a manual "Retry now" or a cancel — fires as a no-op (#206).
+    retry_gen: AtomicU64,
 }
 
 impl JobSlot {
@@ -453,6 +472,7 @@ impl JobSlot {
             error: s.error.clone(),
             started_at: s.started_at,
             ended_at: s.ended_at,
+            retry_at: s.retry_at,
             params: self.params.clone(),
         }
     }
@@ -486,6 +506,22 @@ pub struct JobManager {
     /// after the import queue drains, so later imports never miss maintenance and
     /// two passes never stack for one drain cycle.
     maintenance: Mutex<MaintenanceNeeds>,
+    /// Jobs held behind a stuck (paused/deferred) job, in submission order (#206).
+    /// A held job stays `queued` and is re-dispatched from here once the thing it
+    /// waited on resolves, so the queue reads as one paused job with the rest
+    /// queued behind it, not N paused jobs. Holds both network jobs (waiting for
+    /// the offline leader) and non-network jobs (waiting for an earlier stuck job
+    /// in their own cluster).
+    held: Mutex<Vec<Arc<JobSlot>>>,
+    /// The single global offline "leader" — the one network job showing "waiting"
+    /// with a Retry-now button — or None when no network job is paused (#206).
+    /// Only network jobs go offline, and the network rule holds every *later*
+    /// network job behind the earliest one, so there is at most one leader ever.
+    /// Set SYNCHRONOUSLY the instant a job detects offline (not via the async
+    /// status event) so the very next job's gate check sees it — otherwise the
+    /// writer moves on before the "waiting" status propagates and a second job
+    /// runs and pauses too. Held as the `Arc` so the gate can read its seq/cluster.
+    offline_leader: Mutex<Option<Arc<JobSlot>>>,
 }
 
 /// What post-import maintenance is currently owed (#131, #167). `requested` marks
@@ -516,6 +552,35 @@ fn is_cancellable(job_type: &str) -> bool {
     )
 }
 
+/// How long a network job pauses before retrying while the machine is offline
+/// (#206). Fixed interval; a connectivity probe (Phase 2) would resume sooner.
+const OFFLINE_RETRY_MS: u64 = 15 * 60 * 1000;
+
+/// Job types that make network requests, so a connectivity failure should pause
+/// and retry rather than fail (#206). Local jobs (import/dedup/index/…) never do.
+fn job_uses_network(job_type: &str) -> bool {
+    matches!(job_type, "download" | "sources_sync" | "update" | "fide_refresh")
+}
+
+/// The offline-gate dependency predicate in pure form (#206): does any earlier
+/// *stuck* job (the paused network leader, or an already-deferred job) block
+/// `job`? Each `stuck` entry is `(seq, cluster, is_network)`. A stuck job `k`
+/// blocks `job` when it was submitted earlier (`k.seq < job_seq`) AND either the
+/// cluster rule (`k.cluster == job_cluster` — cluster-mates wait) or the network
+/// rule (`job_net && k.net` — network jobs run one-at-a-time) applies. The leader
+/// re-running from its own retry timer never blocks itself (its seq isn't
+/// strictly less than its own).
+fn offline_gate_blocks(
+    job_seq: u64,
+    job_cluster: &str,
+    job_net: bool,
+    stuck: &[(u64, &str, bool)],
+) -> bool {
+    stuck.iter().any(|&(seq, cluster, net)| {
+        seq < job_seq && (cluster == job_cluster || (job_net && net))
+    })
+}
+
 fn blocks_maintenance(job_type: &str) -> bool {
     matches!(
         job_type,
@@ -544,6 +609,54 @@ impl JobManager {
             counter: AtomicU64::new(1),
             reopening: Arc::new(AtomicBool::new(false)),
             maintenance: Mutex::new(MaintenanceNeeds::default()),
+            held: Mutex::new(Vec::new()),
+            offline_leader: Mutex::new(None),
+        }
+    }
+
+    /// Whether the job about to run should HOLD (stay queued) rather than run,
+    /// because an *earlier* stuck job (the paused network leader, or an already-
+    /// deferred job) sits ahead of it under either dependency rule (#206):
+    ///
+    ///   * cluster rule — an earlier job in the SAME cluster is stuck, so later
+    ///     cluster-mates wait for it (e.g. `resolve_fide` waits for a paused
+    ///     `fide_refresh` in the maintenance chain);
+    ///   * network rule — this is a network job and an earlier NETWORK job (any
+    ///     cluster) is stuck, so network jobs run strictly one-at-a-time and only
+    ///     the earliest is ever paused/retryable.
+    ///
+    /// The leader itself (re-running from its retry timer) never matches (its seq
+    /// isn't < its own), so it runs to re-test the connection. Locks leader before
+    /// held everywhere to keep a consistent order.
+    fn gate_should_hold(&self, job: &JobSlot) -> bool {
+        let leader = self.offline_leader.lock().unwrap();
+        let held = self.held.lock().unwrap();
+        let stuck: Vec<(u64, &str, bool)> = leader
+            .iter()
+            .chain(held.iter())
+            .map(|k| (k.seq, k.cluster.as_str(), job_uses_network(&k.job_type)))
+            .collect();
+        offline_gate_blocks(
+            job.seq,
+            &job.cluster,
+            job_uses_network(&job.job_type),
+            &stuck,
+        )
+    }
+
+    /// The leader resolved (reconnected + finished, errored for real, or was
+    /// cancelled): clear it and re-dispatch every held job in submission order
+    /// (#206). Each re-runs the gate, so most proceed and the next offline network
+    /// job becomes the new leader; a job still blocked (e.g. an earlier cluster-mate
+    /// hasn't run yet) simply re-holds. Idempotent.
+    fn release_held(self: &Arc<Self>) {
+        *self.offline_leader.lock().unwrap() = None;
+        let held: Vec<Arc<JobSlot>> = std::mem::take(&mut *self.held.lock().unwrap());
+        for slot in held {
+            if slot.cancel.load(Ordering::Relaxed) {
+                continue; // cancelled while held — drop it
+            }
+            self.dispatch(slot);
         }
     }
 
@@ -588,10 +701,12 @@ impl JobManager {
         if !needs.requested {
             return;
         }
-        let busy = self
-            .list()
-            .iter()
-            .any(|j| (j.status == "queued" || j.status == "running") && blocks_maintenance(&j.job_type));
+        let busy = self.list().iter().any(|j| {
+            // "waiting" (offline-paused, #206) counts as in-flight: don't run
+            // maintenance until the paused sync has actually imported.
+            matches!(j.status.as_str(), "queued" | "running" | "waiting")
+                && blocks_maintenance(&j.job_type)
+        });
         if busy {
             // Not drained yet — put back what we claimed and wait for a later call.
             self.maintenance.lock().unwrap().requested = true;
@@ -605,12 +720,18 @@ impl JobManager {
         //
         // Ensure the FIDE list exists/current before it's used (no-op when
         // fresh, so no re-download per import); then the identity steps.
-        self.submit("fide_refresh".to_string(), serde_json::json!({ "if_due": true }));
-        self.submit("resolve_fide".to_string(), serde_json::json!({}));
-        self.submit("dedup_players".to_string(), serde_json::json!({}));
-        self.submit("normalise".to_string(), serde_json::json!({}));
-        self.submit("dedup_games".to_string(), serde_json::json!({}));
-        self.submit("index_positions".to_string(), serde_json::json!({ "fast": true }));
+        // One cluster for the whole chain so that if `fide_refresh` pauses offline,
+        // the identity steps that depend on the FIDE list (`resolve_fide`,
+        // `normalise`) — and their neighbours — wait for it rather than jumping
+        // ahead and failing with "No FIDE list loaded" (#206).
+        let c = self.next_cluster_id();
+        let m = |t: &str, p| self.submit_in_cluster(t.to_string(), p, Some(c.clone()));
+        m("fide_refresh", serde_json::json!({ "if_due": true }));
+        m("resolve_fide", serde_json::json!({}));
+        m("dedup_players", serde_json::json!({}));
+        m("normalise", serde_json::json!({}));
+        m("dedup_games", serde_json::json!({}));
+        m("index_positions", serde_json::json!({ "fast": true }));
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<JobSlot>> {
@@ -639,17 +760,30 @@ impl JobManager {
     /// appearing stuck until the writer thread reaches it — the writer then skips
     /// it (the body's start-of-run cancellation check). A running job just gets
     /// the flag; its loop stops at the next committed boundary.
-    pub fn cancel(&self, id: &str) -> bool {
+    pub fn cancel(self: &Arc<Self>, id: &str) -> bool {
         match self.get(id) {
             Some(slot) => {
                 slot.cancel.store(true, Ordering::Relaxed);
+                // Invalidate any pending offline-retry timer so it fires as a no-op.
+                slot.retry_gen.fetch_add(1, Ordering::SeqCst);
+                // The offline leader? Cancelling it must free the jobs held behind
+                // it so one can take over (#206). Uses the synchronous id, not the
+                // (async) "waiting" status.
+                let was_leader =
+                    self.offline_leader.lock().unwrap().as_ref().map(|l| l.id.as_str()) == Some(id);
                 {
                     let mut s = slot.state.lock().unwrap();
-                    if s.status == "queued" {
+                    // Queued (never ran) or waiting (paused for network): terminate
+                    // now. A running job just gets the flag + stops on a boundary.
+                    if s.status == "queued" || s.status == "waiting" {
                         s.status = "cancelled".into();
                         s.message = "Cancelled".into();
                         s.ended_at = Some(now_ms());
+                        s.retry_at = None;
                     }
+                }
+                if was_leader {
+                    self.release_held(); // clears offline_leader + re-dispatches held
                 }
                 true
             }
@@ -657,16 +791,40 @@ impl JobManager {
         }
     }
 
+    /// A fresh cluster id for a batch of jobs that should wait for each other under
+    /// the offline gate's cluster rule (#206). Reuses the job counter, so it can't
+    /// collide with a solo job's own-id cluster (`job-N` vs `batch-N`).
+    pub fn next_cluster_id(&self) -> String {
+        format!("batch-{}", self.counter.fetch_add(1, Ordering::Relaxed))
+    }
+
     /// Enqueue a job and return its id immediately. The job runs on the writer
-    /// thread (serialized after any in-flight write).
+    /// thread (serialized after any in-flight write). Solo: its cluster is its own
+    /// id, so no other job waits on it (except via the network rule) (#206).
     pub fn submit(self: &Arc<Self>, job_type: String, params: serde_json::Value) -> String {
-        let id = format!("job-{}", self.counter.fetch_add(1, Ordering::Relaxed));
+        self.submit_in_cluster(job_type, params, None)
+    }
+
+    /// Like [`submit`], but places the job in an explicit cluster so later jobs in
+    /// the same cluster wait for it under the offline gate (#206). `cluster: None`
+    /// makes it solo (cluster = its own id).
+    pub fn submit_in_cluster(
+        self: &Arc<Self>,
+        job_type: String,
+        params: serde_json::Value,
+        cluster: Option<String>,
+    ) -> String {
+        let seq = self.counter.fetch_add(1, Ordering::Relaxed);
+        let id = format!("job-{seq}");
         let (events_tx, _keep) = broadcast::channel::<JobEvent>(256);
+        let interruptible = !uses_appender(&job_type, &params);
         let slot = Arc::new(JobSlot {
             id: id.clone(),
-            job_type: job_type.clone(),
-            params: params.clone(),
-            interruptible: !uses_appender(&job_type, &params),
+            job_type,
+            seq,
+            cluster: cluster.unwrap_or_else(|| id.clone()),
+            params,
+            interruptible,
             state: Mutex::new(JobState {
                 status: "queued".into(),
                 value: 0,
@@ -676,26 +834,34 @@ impl JobManager {
                 error: None,
                 started_at: None,
                 ended_at: None,
+                retry_at: None,
             }),
             events: events_tx,
             buffer: Mutex::new(Vec::new()),
             cancel: Arc::new(AtomicBool::new(false)),
+            retry_gen: AtomicU64::new(0),
         });
         {
             self.jobs.lock().unwrap().insert(id.clone(), slot.clone());
             self.order.lock().unwrap().push(id.clone());
         }
+        self.dispatch(slot);
+        id
+    }
 
+    /// (Re)run a job's body: wire up a fresh event pipeline and spawn the body on
+    /// the writer (or read pool). Called for the initial submit and again for each
+    /// offline retry (#206), so the same slot re-runs under the same id.
+    fn dispatch(self: &Arc<Self>, slot: Arc<JobSlot>) {
         // Event pipeline: drain the reporter's channel, update the snapshot and
         // ring buffer, and fan out to SSE subscribers. Ends when the reporter
-        // (and thus its sender) is dropped at job completion.
+        // (and thus its sender) is dropped at the end of this attempt.
         let (ev_tx, mut ev_rx) = tokio::sync::mpsc::unbounded_channel::<JobEvent>();
         let slot_ev = slot.clone();
-        // Trigger a coalesced-maintenance drain check the instant this job ends
-        // (the loop below exits when the reporter's sender drops at completion),
-        // so maintenance starts right after the queue drains rather than waiting
-        // for the scheduler's periodic tick. No-op unless maintenance is owed and
-        // the queue is empty (#131).
+        // Trigger a coalesced-maintenance drain check the instant this attempt
+        // ends (the loop below exits when the reporter's sender drops), so
+        // maintenance starts right after the queue drains rather than waiting for
+        // the scheduler's periodic tick. No-op unless owed and the queue is empty.
         let jm = Arc::clone(self);
         self.rt.spawn(async move {
             while let Some(ev) = ev_rx.recv().await {
@@ -727,6 +893,11 @@ impl JobManager {
                             s.status = "cancelled".into();
                             s.ended_at = Some(now_ms());
                         }
+                        // Offline pause (#206): NOT terminal (no ended_at) — the
+                        // retry timer re-dispatches this same slot.
+                        "waiting" => {
+                            s.status = "waiting".into();
+                        }
                         _ => {
                             if s.status == "queued" {
                                 s.status = "running".into();
@@ -756,11 +927,13 @@ impl JobManager {
         // other writes).
         let slot_run = slot.clone();
         let cancel = slot.cancel.clone();
+        let params = slot.params.clone();
         let rt = self.rt.clone();
         let db_path = self.db_path.clone();
         let writer = self.writer.clone();
         let reads = self.reads.clone();
         let reopening = self.reopening.clone();
+        let read_only = is_read_only(&slot.job_type);
         // Jobs that fan out follow-up work (e.g. sources_sync requesting the
         // coalesced maintenance, #163) need the manager itself.
         let jm_run = Arc::clone(self);
@@ -772,10 +945,31 @@ impl JobManager {
                 reporter.cancelled("Cancelled before it started");
                 return;
             }
+            // Offline gate (#206): hold this job QUEUED behind an earlier stuck job
+            // rather than letting it jump the queue, under either dependency rule —
+            // an earlier same-cluster job is stuck (so cluster-mates wait for it),
+            // or this is a network job and an earlier network job is stuck (so
+            // network jobs run one-at-a-time and only the earliest is retryable).
+            // The signal is the synchronous `offline_leader` (NOT the async
+            // "waiting" status), so the very next job sees it immediately;
+            // release_held re-dispatches held jobs once the leader resolves.
+            if jm_run.gate_should_hold(&slot_run) {
+                {
+                    let mut s = slot_run.state.lock().unwrap();
+                    s.status = "queued".into();
+                    s.message = String::new(); // just "Queued" (behind the job ahead)
+                    s.retry_at = None;
+                }
+                jm_run.held.lock().unwrap().push(slot_run.clone());
+                return;
+            }
             {
+                // Each attempt (re)stamps its start, so "took" reflects the last
+                // run, not the accumulated offline waits (#170/#206).
                 let mut s = slot_run.state.lock().unwrap();
                 s.status = "running".into();
                 s.started_at = Some(now_ms());
+                s.retry_at = None;
             }
             match run_job(&slot_run.job_type, &params, conn, &reporter, &rt, &db_path, &jm_run) {
                 // A job that returns Ok after observing cancellation stopped
@@ -783,7 +977,46 @@ impl JobManager {
                 Ok(()) if reporter.is_cancelled() => reporter.cancelled("Cancelled"),
                 // Empty message keeps the operation's own final message; this
                 // just guarantees a terminal "done" even if the op didn't emit one.
-                Ok(()) => reporter.done(""),
+                Ok(()) => {
+                    reporter.done("");
+                    // A network job succeeding proves we're back online — release
+                    // any jobs held behind an offline leader so they run now (#206).
+                    if job_uses_network(&slot_run.job_type) {
+                        jm_run.release_held();
+                    }
+                }
+                // A network job that lost connectivity pauses and retries instead
+                // of failing (#206): same row, no terminal state, re-dispatched by
+                // schedule_retry. A genuine (non-connectivity) error still fails.
+                Err(e)
+                    if job_uses_network(&slot_run.job_type)
+                        && crate::net::is_offline_error(&e)
+                        && !reporter.is_cancelled() =>
+                {
+                    // Claim leadership synchronously (before returning) so the next
+                    // job's gate check sees it. Already the leader (a retry that's
+                    // still offline) → stay the leader; a fresh offliner that raced
+                    // past the gate while someone else leads → hold queued instead.
+                    let lead = {
+                        let mut leader = jm_run.offline_leader.lock().unwrap();
+                        match leader.as_ref() {
+                            None => { *leader = Some(slot_run.clone()); true }
+                            Some(l) => l.id == slot_run.id,
+                        }
+                    };
+                    if lead {
+                        reporter.waiting("Offline — waiting for a connection; will retry");
+                        jm_run.schedule_retry(&slot_run.id, OFFLINE_RETRY_MS);
+                    } else {
+                        {
+                            let mut s = slot_run.state.lock().unwrap();
+                            s.status = "queued".into();
+                            s.message = String::new();
+                            s.retry_at = None;
+                        }
+                        jm_run.held.lock().unwrap().push(slot_run.clone());
+                    }
+                }
                 Err(e) => {
                     let msg = format!("{:#}", e);
                     // A whole-instance DuckDB invalidation poisons every shared
@@ -811,16 +1044,65 @@ impl JobManager {
                         });
                     }
                     reporter.error(msg);
+                    // If the offline leader failed with a *real* (non-connectivity)
+                    // error, it's still done — free the jobs held behind it so the
+                    // queue doesn't stall (#206). release_held clears offline_leader.
+                    if job_uses_network(&slot_run.job_type)
+                        && jm_run.offline_leader.lock().unwrap().as_ref().map(|l| l.id.as_str())
+                            == Some(slot_run.id.as_str())
+                    {
+                        jm_run.release_held();
+                    }
                 }
             }
         };
-        if is_read_only(&job_type) {
+        if read_only {
             self.reads.spawn_fn(body);
         } else {
             self.writer.spawn_fn(body);
         }
+    }
 
-        id
+    /// Schedule an offline retry of a paused (`"waiting"`) job (#206): stamp
+    /// `retry_at` and spawn a timer that re-dispatches the same slot after
+    /// `delay_ms`. A `retry_gen` bump invalidates the timer if a manual "Retry
+    /// now" or a cancel happens first.
+    fn schedule_retry(self: &Arc<Self>, id: &str, delay_ms: u64) {
+        let Some(slot) = self.get(id) else { return };
+        let gen = slot.retry_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        slot.state.lock().unwrap().retry_at = Some(now_ms() + delay_ms);
+        let jm = Arc::clone(self);
+        self.rt.spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            // Superseded (retry-now / cancel), or no longer waiting → do nothing.
+            if slot.retry_gen.load(Ordering::SeqCst) != gen || slot.cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            {
+                let mut s = slot.state.lock().unwrap();
+                if s.status != "waiting" {
+                    return;
+                }
+                s.retry_at = None;
+            }
+            jm.dispatch(slot);
+        });
+    }
+
+    /// Retry a paused job immediately (the "Retry now" button, #206). Invalidates
+    /// its pending timer and re-dispatches at once. No-op unless it's waiting.
+    pub fn retry_now(self: &Arc<Self>, id: &str) -> bool {
+        let Some(slot) = self.get(id) else { return false };
+        {
+            let mut s = slot.state.lock().unwrap();
+            if s.status != "waiting" {
+                return false;
+            }
+            s.retry_at = None;
+        }
+        slot.retry_gen.fetch_add(1, Ordering::SeqCst); // kill the pending timer
+        self.dispatch(slot);
+        true
     }
 }
 
@@ -912,35 +1194,42 @@ fn run_job(
             // maintenance below — so they show as their own visible jobs instead
             // of a hidden tail that leaves the bar stuck at 100% (#163/#147).
             let step = reporter.sub_step();
-            let sync = (|| -> Result<()> {
+            let sync = (|| -> Result<usize> {
                 reporter.log(format!("{}: download", src.name));
                 rt.block_on(crate::sources::download_feed(conn, src, None, None, &dir, &step))?;
-                if reporter.is_cancelled() { return Ok(()); }
+                if reporter.is_cancelled() { return Ok(0); }
                 reporter.log(format!("{}: import (fast)", src.name));
                 // Snapshot-guard a bulk source import (e.g. Ajedrez) so a fatal
                 // appender fault rolls back cleanly instead of half-importing (#82).
                 let bulk = importer::source_import_is_bulk(conn, &dir, src.key, 10)?;
                 run_import_guarded(conn, db, bulk, &step, || {
                     importer::import(conn, &dir, src.key, src.collection, None, 10, true, true, &step)
-                })?;
-                Ok(())
+                })
             })();
             if reporter.is_cancelled() {
                 let _ = crate::sources::record_run(conn, src.key, "cancelled");
                 return Ok(());
             }
             match sync {
-                Ok(()) => {
+                Ok(imported) => {
                     // Record the run BEFORE maintenance: the import is committed and
                     // the source marked synced, so an interrupted maintenance can't
                     // leave the ledger unmarked (the items=0 inconsistency, #163).
                     // Then request the coalesced dedup → index → normalise as their
                     // own visible jobs (#131).
                     crate::sources::record_run(conn, src.key, "ok")?;
-                    reporter.done(format!(
-                        "{} imported — preparing the database in the background.",
-                        src.name
-                    ));
+                    // Report the actual game count rather than a vague "preparing the
+                    // database" — the number the user watched climb during the import
+                    // (#—). Maintenance runs afterwards as its own visible jobs.
+                    reporter.done(if imported == 0 {
+                        format!("{}: already up to date — no new games.", src.name)
+                    } else {
+                        format!(
+                            "{}: {} games imported.",
+                            src.name,
+                            crate::progress::thousands(imported as i64)
+                        )
+                    });
                     // One coalesced identity-first pass for every source — bulk or
                     // feed. `dedup_games` is incremental (#—) so the pass is cheap
                     // to run after each sync; the old light/full split is gone.
@@ -1027,7 +1316,7 @@ fn run_job(
                 conn.query_row("SELECT COUNT(*) FROM fide_players", [], |r| r.get(0))?;
             if fide_count == 0 {
                 reporter.done(
-                    "No FIDE list loaded — run `chess-db fide refresh` first; nothing to normalise.",
+                    "No FIDE list loaded yet — skipping name normalisation (nothing to do).",
                 );
             } else {
                 crate::fide::normalise_from_local(conn, flag(p, "dry_run"), reporter)?;
@@ -1236,13 +1525,13 @@ const FAST_INDEX_SNAPSHOT_THRESHOLD: i64 = 200_000;
 /// Non-bulk imports (small feed syncs, scratch/paste) skip the snapshot — they're
 /// cheap and low-risk, and a full-DB copy per weekly TWIC sync isn't worth it.
 /// First-run setup also skips it (the setup sentinel already guards a disposable DB).
-fn run_import_guarded(
+fn run_import_guarded<T>(
     conn: &Connection,
     db: &Path,
     bulk: bool,
     reporter: &Reporter,
-    run: impl FnOnce() -> Result<()>,
-) -> Result<()> {
+    run: impl FnOnce() -> Result<T>,
+) -> Result<T> {
     let snapshotted =
         bulk && !setup_load_is_disposable(conn, db) && make_safety_snapshot(conn, db, reporter);
     let res = run();
@@ -1375,6 +1664,60 @@ pub fn restore_snapshot_if_present(db: &Path) -> Result<()> {
 }
 
 #[cfg(test)]
+mod offline_gate_tests {
+    use super::offline_gate_blocks;
+
+    // Cluster ids: "M" = the maintenance chain, "S" = a sources-sync batch.
+    // A stuck network leader from cluster S, submitted first (seq 1).
+    const NET_LEADER_S: (u64, &str, bool) = (1, "S", true);
+
+    #[test]
+    fn solo_nonnetwork_job_skips_a_paused_network_cluster() {
+        // A local PGN import (non-network, its own cluster) queued after an offline
+        // sources-sync must NOT wait — different cluster, and it isn't a network job.
+        assert!(!offline_gate_blocks(9, "job-9", false, &[NET_LEADER_S]));
+    }
+
+    #[test]
+    fn second_network_job_holds_behind_the_paused_leader() {
+        // A network job in a *different* cluster still waits for the earlier paused
+        // network job (network rule) — so only the leader is ever "waiting".
+        assert!(offline_gate_blocks(9, "M", true, &[NET_LEADER_S]));
+    }
+
+    #[test]
+    fn same_cluster_nonnetwork_job_waits_for_its_paused_network_sibling() {
+        // resolve_fide (non-network) behind a paused fide_refresh in the same
+        // maintenance cluster → held (cluster rule), so it can't run and hit
+        // "No FIDE list loaded".
+        let stuck = [(1u64, "M", true)]; // paused fide_refresh
+        assert!(offline_gate_blocks(2, "M", false, &stuck));
+    }
+
+    #[test]
+    fn the_leader_reruns_itself_on_retry() {
+        // The leader re-dispatched by its own retry timer must run (to re-test the
+        // connection), never block on itself.
+        assert!(!offline_gate_blocks(1, "S", true, &[NET_LEADER_S]));
+    }
+
+    #[test]
+    fn nonnetwork_stuck_job_does_not_block_a_foreign_network_job() {
+        // A held *non-network* job (e.g. a deferred dedup) doesn't invoke the
+        // network rule, so a network job from another cluster still runs.
+        let stuck = [(1u64, "M", false)];
+        assert!(!offline_gate_blocks(9, "S", true, &stuck));
+    }
+
+    #[test]
+    fn a_later_stuck_job_never_blocks_an_earlier_one() {
+        // Only *earlier* (smaller seq) stuck jobs block; a job can't wait on one
+        // submitted after it.
+        assert!(!offline_gate_blocks(1, "S", true, &[(5, "S", true)]));
+    }
+}
+
+#[cfg(test)]
 mod setup_sentinel_tests {
     use super::*;
 
@@ -1457,7 +1800,7 @@ mod import_guard_tests {
     #[test]
     fn bulk_fatal_leaves_snapshot_for_reopen() {
         let (db, conn) = tmp_db("fatal");
-        let r = run_import_guarded(&conn, &db, true, &Reporter::silent(), || {
+        let r = run_import_guarded(&conn, &db, true, &Reporter::silent(), || -> Result<()> {
             Err(anyhow!("FATAL Error: database has been invalidated because of a previous fatal error"))
         });
         assert!(r.is_err());
@@ -1470,7 +1813,7 @@ mod import_guard_tests {
     #[test]
     fn bulk_nonfatal_removes_snapshot() {
         let (db, conn) = tmp_db("nonfatal");
-        let r = run_import_guarded(&conn, &db, true, &Reporter::silent(), || {
+        let r = run_import_guarded(&conn, &db, true, &Reporter::silent(), || -> Result<()> {
             Err(anyhow!("a corrupt PGN — ordinary, non-fatal import error"))
         });
         assert!(r.is_err());
@@ -1483,7 +1826,10 @@ mod import_guard_tests {
     #[test]
     fn non_bulk_never_snapshots() {
         let (db, conn) = tmp_db("nonbulk");
-        let r = run_import_guarded(&conn, &db, false, &Reporter::silent(), || Err(anyhow!("boom")));
+        let r =
+            run_import_guarded(&conn, &db, false, &Reporter::silent(), || -> Result<()> {
+                Err(anyhow!("boom"))
+            });
         assert!(r.is_err());
         assert!(!snapshot_path(&db).exists(), "a non-bulk import doesn't snapshot at all");
     }

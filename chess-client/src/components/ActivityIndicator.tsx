@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { getJobs, cancelJob } from "../api";
+import { getJobs, cancelJob, retryJob } from "../api";
 import type { Job } from "../types";
 
 // ── Global background-activity view (#40 Phase C3) ────────────────────────────
@@ -94,30 +94,53 @@ function formatDuration(ms: number): string {
   return m ? `${h}h ${m}m` : `${h}h`;
 }
 
-function ActiveRow({ job, eta, cancelling, onCancel }: { job: Job; eta?: string; cancelling: boolean; onCancel: (id: string) => void }) {
+/** "~45s" / "~14 min" until a future epoch-ms timestamp (offline retry, #206). */
+function formatUntil(ms: number): string {
+  const sec = Math.max(0, Math.round((ms - Date.now()) / 1000));
+  if (sec < 60) return `~${sec}s`;
+  return `~${Math.round(sec / 60)} min`;
+}
+
+function ActiveRow({ job, eta, cancelling, onCancel, onRetry }: { job: Job; eta?: string; cancelling: boolean; onCancel: (id: string) => void; onRetry: (id: string) => void }) {
   const queued = job.status === "queued";
+  const waiting = job.status === "waiting";
   const known = job.total > 0;
   return (
     <div className="px-4 py-3 space-y-1.5">
       <div className="flex items-start justify-between gap-2">
         <span className="text-body-sm text-on-surface line-clamp-2 break-words">{jobLabel(job)}</span>
-        {/* Queued jobs can always be cancelled (they haven't started). A running
-            job shows Cancel when it honours cooperative cancellation — it stops on
-            a committed boundary, so a fast import counts even though it can't be
-            killed mid-write (#157/#161). Cancellation is cooperative, so once
-            requested the button shows "Cancelling…" until the job stops. */}
-        {(queued || (job.status === "running" && job.cancellable)) && (
-          <button
-            onClick={() => onCancel(job.id)}
-            disabled={cancelling}
-            className="shrink-0 h-6 px-2 inline-flex items-center rounded-full text-error border border-outline text-label-sm hover:bg-error/8 transition-colors duration-short3 ease-standard disabled:opacity-60 disabled:cursor-default disabled:hover:bg-transparent"
-          >
-            {cancelling ? "Cancelling…" : "Cancel"}
-          </button>
-        )}
+        <div className="flex items-center gap-1 shrink-0">
+          {/* A network job paused offline (#206) can be retried immediately. */}
+          {waiting && (
+            <button
+              onClick={() => onRetry(job.id)}
+              className="h-6 px-2 inline-flex items-center rounded-full text-primary border border-outline text-label-sm hover:bg-primary/8 transition-colors duration-short3 ease-standard"
+            >
+              Retry now
+            </button>
+          )}
+          {/* Queued/waiting jobs can always be cancelled (they haven't started /
+              are paused). A running job shows Cancel when it honours cooperative
+              cancellation (#157/#161). Cancellation is cooperative, so once
+              requested the button shows "Cancelling…" until the job stops. */}
+          {(queued || waiting || (job.status === "running" && job.cancellable)) && (
+            <button
+              onClick={() => onCancel(job.id)}
+              disabled={cancelling}
+              className="h-6 px-2 inline-flex items-center rounded-full text-error border border-outline text-label-sm hover:bg-error/8 transition-colors duration-short3 ease-standard disabled:opacity-60 disabled:cursor-default disabled:hover:bg-transparent"
+            >
+              {cancelling ? "Cancelling…" : "Cancel"}
+            </button>
+          )}
+        </div>
       </div>
       {queued ? (
         <div className="text-label-sm text-on-surface-variant break-words">{job.message ? `Queued · ${job.message}` : "Queued"}</div>
+      ) : waiting ? (
+        <div className="text-label-sm text-warning break-words">
+          {job.message || "Offline — waiting for a connection"}
+          {job.retry_at ? ` · retry ${formatUntil(job.retry_at)}` : ""}
+        </div>
       ) : (
         <>
           {/* The live progress line updates ~1×/s; keep it single-line so it
@@ -250,7 +273,7 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
         setCancelling((prev) => {
           if (prev.size === 0) return prev;
           const stillActive = new Set(
-            j.filter((x) => x.status === "queued" || x.status === "running").map((x) => x.id),
+            j.filter((x) => x.status === "queued" || x.status === "running" || x.status === "waiting").map((x) => x.id),
           );
           let changed = false;
           const next = new Set<string>();
@@ -276,8 +299,9 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
 
   const all = jobs ?? [];
   // Submission order (oldest→newest); active oldest-first reads as the pipeline,
-  // recent newest-first so the latest finish is on top.
-  const active = all.filter((j) => j.status === "running" || j.status === "queued");
+  // recent newest-first so the latest finish is on top. "waiting" (offline-
+  // paused, #206) is active — it's still in the pipeline, just retrying.
+  const active = all.filter((j) => j.status === "running" || j.status === "queued" || j.status === "waiting");
   const recent = all
     .filter((j) => j.status === "done" || j.status === "error" || j.status === "cancelled")
     .slice(-8)
@@ -287,6 +311,10 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
   function handleCancel(id: string) {
     setCancelling((s) => new Set(s).add(id));
     void cancelJob(id);
+  }
+
+  function handleRetry(id: string) {
+    void retryJob(id);
   }
 
   return (
@@ -324,7 +352,7 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
             <>
               {active.length > 0 && (
                 <div className="divide-y divide-outline-variant">
-                  {active.map((j) => <ActiveRow key={j.id} job={j} eta={etas.get(j.id)} cancelling={cancelling.has(j.id)} onCancel={handleCancel} />)}
+                  {active.map((j) => <ActiveRow key={j.id} job={j} eta={etas.get(j.id)} cancelling={cancelling.has(j.id)} onCancel={handleCancel} onRetry={handleRetry} />)}
                 </div>
               )}
               {recent.length > 0 && (

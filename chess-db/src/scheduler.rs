@@ -96,9 +96,16 @@ async fn tick(jobs: &Arc<JobManager>, reads: &ReadPool, db_path: &Path) -> anyho
         .await?;
     if !candidates.is_empty() {
         let in_flight = sources_sync_in_flight(jobs);
+        // One cluster for the batch of due feeds, so if the first pauses offline the
+        // rest wait behind it rather than each running and pausing too (#206).
+        let cluster = jobs.next_cluster_id();
         for src in candidates {
             if !in_flight.contains(src.key) {
-                jobs.submit("sources_sync".into(), serde_json::json!({ "source": src.key }));
+                jobs.submit_in_cluster(
+                    "sources_sync".into(),
+                    serde_json::json!({ "source": src.key }),
+                    Some(cluster.clone()),
+                );
             }
         }
     }
@@ -109,7 +116,9 @@ async fn tick(jobs: &Arc<JobManager>, reads: &ReadPool, db_path: &Path) -> anyho
 fn job_in_flight(jobs: &Arc<JobManager>, job_type: &str) -> bool {
     jobs.list()
         .iter()
-        .any(|j| j.job_type == job_type && (j.status == "running" || j.status == "queued"))
+        // "waiting" (offline-paused, #206) counts as in-flight so we don't stack a
+        // duplicate each tick while the machine is offline.
+        .any(|j| j.job_type == job_type && matches!(j.status.as_str(), "running" | "queued" | "waiting"))
 }
 
 /// Whether background imports may run (#40 C4): only after first-run setup has
@@ -137,7 +146,7 @@ async fn setup_gate_open(reads: &ReadPool) -> anyhow::Result<bool> {
 fn sources_sync_in_flight(jobs: &Arc<JobManager>) -> std::collections::HashSet<String> {
     jobs.list()
         .into_iter()
-        .filter(|j| j.job_type == "sources_sync" && (j.status == "queued" || j.status == "running"))
+        .filter(|j| j.job_type == "sources_sync" && matches!(j.status.as_str(), "queued" | "running" | "waiting"))
         .filter_map(|j| j.params.get("source").and_then(|v| v.as_str()).map(str::to_owned))
         .collect()
 }

@@ -15,6 +15,7 @@ mod fide;
 mod importer;
 mod jobs;
 mod lichess;
+mod net;
 mod players;
 mod reverse;
 mod progress;
