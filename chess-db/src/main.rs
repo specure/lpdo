@@ -76,6 +76,34 @@ fn default_db_path() -> PathBuf {
     data_root().join("chess.db")
 }
 
+/// The lpdo-server system-service database, for `--system`: read it directly
+/// while the server is stopped (needs sudo — the state dir is `lpdo:lpdo` 0750).
+/// Linux only; the packaged Linux server keeps its data under `/var/lib/lpdo`
+/// (`HOME=/var/lib/lpdo` → `.chess-db/chess.db`) (#214).
+fn system_db_path() -> PathBuf {
+    PathBuf::from("/var/lib/lpdo/.chess-db/chess.db")
+}
+
+/// When a command runs locally against the *default* (usually empty) local DB
+/// while a stopped system server holds the real data, hint at how to reach it —
+/// so an accidental "0 games" isn't mistaken for data loss (#214).
+fn maybe_hint_system_db(cli: &Cli) {
+    // Only when the user didn't pick a DB themselves.
+    if cli.system || cli.db != default_db_path() {
+        return;
+    }
+    let sys = system_db_path();
+    if sys.exists() && sys != cli.db {
+        eprintln!(
+            "note: no lpdo-server running — reading your local database ({}).\n      \
+             The server's database is at {}; start the server, or read it directly with:\n      \
+             sudo chess-db --system <command>",
+            cli.db.display(),
+            sys.display(),
+        );
+    }
+}
+
 /// Default destination for `backup`. Matches the path shown in the GUI's
 /// Maintenance panel so a manual CLI backup lands in the same place. When
 /// unset, keeps the historical `~/lpdo/backup` (not under `.chess-db`).
@@ -114,6 +142,11 @@ struct Cli {
     /// Force proxying to the daemon; error if none is reachable.
     #[arg(long, global = true, conflicts_with = "local")]
     remote: bool,
+
+    /// Read the system server's database directly (Linux: /var/lib/lpdo/.chess-db)
+    /// — useful while the server is stopped. Needs sudo (the data is system-owned).
+    #[arg(long, global = true)]
+    system: bool,
 
     #[command(subcommand)]
     command: Commands,
@@ -1770,7 +1803,11 @@ async fn try_proxy_read(command: &Commands, port: u16) -> Option<Result<()>> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    // `--system` targets the server's system-service database directly (#214).
+    if cli.system {
+        cli.db = system_db_path();
+    }
     let reporter = reporter::Reporter::new(cli.json);
 
     // `service` manages the systemd unit and must NOT open the database (the
@@ -1850,6 +1887,11 @@ async fn main() -> Result<()> {
             }
             // No daemon and not --remote → fall through to direct database access.
         }
+
+        // Running locally (no daemon reachable, or --local): if we're about to
+        // read the default, likely-empty local DB while a stopped system server
+        // holds the real data, point the user at it (#214).
+        maybe_hint_system_db(&cli);
     }
 
     let spinner = reporter.spinner();
