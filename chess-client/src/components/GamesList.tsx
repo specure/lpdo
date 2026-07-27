@@ -185,9 +185,9 @@ export default function GamesList({
   }, [firstMovesStr, dateFrom, dateTo, scopePublicOnly]);
 
   // Move-number prefix for the explorer list, from the current ply: White to
-  // move → "N. ", Black to move → "N... " (e.g. "1. e4", "1... Nf6").
+  // move → "N.", Black to move → "N..." (e.g. "1.e4", "1...Nf6").
   const moveNo = Math.floor(moveSequence.length / 2) + 1;
-  const movePrefix = moveSequence.length % 2 === 0 ? `${moveNo}. ` : `${moveNo}... `;
+  const movePrefix = moveSequence.length % 2 === 0 ? `${moveNo}.` : `${moveNo}...`;
 
   const colorBtn = (active: boolean) =>
     `text-label-md h-7 px-2.5 inline-flex items-center rounded-full transition-colors duration-short3 ease-standard ${
