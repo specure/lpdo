@@ -629,7 +629,7 @@ export default function GameList({
             <div className="p-3">
               {/* Column headers */}
               <div className="flex items-center text-label-sm text-on-surface-variant px-2 mb-1 select-none">
-                <span className="w-10">Move</span>
+                <span className="w-20">Move</span>
                 <span className="w-12 text-right">Games</span>
                 <span className="w-7 text-right">W%</span>
                 <span className="w-7 text-right">L%</span>
@@ -648,6 +648,9 @@ export default function GameList({
                   // `color` is already narrowed to "white" | "black" inside
                   // this branch because the panel only renders when movesEnabled.
                   const invertStats = color !== sideToMove;
+                  // Move-number prefix (e.g. "1.e4", "1...Nf6").
+                  const moveNo = Math.floor(moveSequence.length / 2) + 1;
+                  const movePrefix = sideToMove === "white" ? `${moveNo}.` : `${moveNo}...`;
                   return moveStats.map((stat, index) => {
                     const wPct = invertStats ? stat.l_pct : stat.w_pct;
                     const lPct = invertStats ? stat.w_pct : stat.l_pct;
@@ -670,7 +673,7 @@ export default function GameList({
                             : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
                         }`}
                       >
-                        <span className="w-10 font-mono">{stat.mv}</span>
+                        <span className="w-20 font-mono truncate text-left">{movePrefix}{stat.mv}</span>
                         <span className="w-12 text-right">{stat.games.toLocaleString()}</span>
                         <span className={`w-7 text-right ${isSelected ? "" : "text-success"}`}>{Math.round(wPct)}</span>
                         <span className={`w-7 text-right ${isSelected ? "" : "text-error"}`}>{Math.round(lPct)}</span>
