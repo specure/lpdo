@@ -68,10 +68,12 @@ export default function GamesList({
 
   const [games, setGames] = useState<GameSummary[]>([]);
   const [total, setTotal] = useState<number | null>(null);
-  const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const queryToken = useRef(0);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   // Opening explorer (always on).
   const [moveStats, setMoveStats] = useState<MoveStats[]>([]);
@@ -93,19 +95,10 @@ export default function GamesList({
   useEffect(() => { onSelectedMoveChange(moveStats[0]?.mv ?? null); }, [moveStats, onSelectedMoveChange]);
   useEffect(() => { onTopGameChange(games[0] ?? null); }, [games, onTopGameChange]);
 
-  // Reset to page 1 on any filter change.
-  useEffect(() => { setOffset(0); }, [p1?.id, p1Color, p2?.id, event, dateFrom, dateTo, firstMovesStr, scopePublicOnly, scopeCollectionId, scopeIncludeDeleted]);
-
-  // Game list.
-  useEffect(() => {
-    abortRef.current?.abort();
-    abortRef.current = new AbortController();
-    const sig = abortRef.current.signal;
-    setLoading(true);
-    setError(null);
-
+  // Build the games query at a given offset (shared by the first page + load-more).
+  function buildParams(off: number): URLSearchParams {
     const primary = p1 ?? p2;
-    const params = new URLSearchParams({ limit: String(PAGE), offset: String(offset) });
+    const params = new URLSearchParams({ limit: String(PAGE), offset: String(off) });
     if (primary) {
       params.set("player_id", String(primary.id));
       params.set("color", p1 ? p1Color : p2Color);
@@ -120,7 +113,21 @@ export default function GamesList({
     if (scopePublicOnly) params.set("visibility", "public");
     if (scopeCollectionId !== null) params.set("collection_id", String(scopeCollectionId));
     if (scopeIncludeDeleted) params.set("include_deleted", "true");
+    return params;
+  }
 
+  // First page (reset) whenever a filter changes; further pages append on scroll.
+  useEffect(() => {
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+    const sig = abortRef.current.signal;
+    const token = ++queryToken.current;
+    setLoading(true);
+    setError(null);
+    setGames([]);
+    setTotal(null);
+
+    const params = buildParams(0);
     const countParams = new URLSearchParams(params);
     countParams.set("count", "true");
 
@@ -128,10 +135,35 @@ export default function GamesList({
       fetch(`/api/games?${params}`, { signal: sig }).then((r) => { if (!r.ok) throw new Error(`Server error ${r.status}`); return r.json() as Promise<GameSummary[]>; }),
       fetch(`/api/games?${countParams}`, { signal: sig }).then((r) => { if (!r.ok) throw new Error(`Server error ${r.status}`); return r.json() as Promise<{ count: number }>; }),
     ])
-      .then(([data, { count }]) => { setGames(data); setTotal(count); setLoading(false); })
-      .catch((e) => { if (e instanceof DOMException && e.name === "AbortError") return; setError(e instanceof Error ? e.message : "Failed to load games"); setLoading(false); });
+      .then(([data, { count }]) => {
+        if (token !== queryToken.current) return;
+        setGames(data);
+        setTotal(count);
+        setLoading(false);
+        scrollRef.current?.scrollTo({ top: 0 });
+      })
+      .catch((e) => {
+        if (e instanceof DOMException && e.name === "AbortError") return;
+        if (token === queryToken.current) { setError(e instanceof Error ? e.message : "Failed to load games"); setLoading(false); }
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p1?.id, p1Color, p2?.id, p2Color, event, dateFrom, dateTo, offset, firstMovesStr, scopePublicOnly, scopeCollectionId, scopeIncludeDeleted]);
+  }, [p1?.id, p1Color, p2?.id, p2Color, event, dateFrom, dateTo, firstMovesStr, scopePublicOnly, scopeCollectionId, scopeIncludeDeleted]);
+
+  function loadMore() {
+    if (loading || loadingMore || total === null || games.length >= total) return;
+    const token = queryToken.current;
+    setLoadingMore(true);
+    fetch(`/api/games?${buildParams(games.length)}`)
+      .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<GameSummary[]>; })
+      .then((data) => { if (token !== queryToken.current) return; setGames((prev) => [...prev, ...data]); })
+      .catch(() => {})
+      .finally(() => setLoadingMore(false));
+  }
+
+  function onScroll(e: React.UIEvent<HTMLDivElement>) {
+    const el = e.currentTarget;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 400) loadMore();
+  }
 
   // Opening-explorer move stats (all games; side-to-move is intrinsic).
   useEffect(() => {
@@ -151,9 +183,6 @@ export default function GamesList({
       .catch((e) => { if (e instanceof DOMException && e.name === "AbortError") return; setMoveStats([]); setMovesLoading(false); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [firstMovesStr, dateFrom, dateTo, scopePublicOnly]);
-
-  const pageStart = total ? offset + 1 : 0;
-  const pageEnd = offset + games.length;
 
   const colorBtn = (active: boolean) =>
     `text-label-md h-7 px-2.5 inline-flex items-center rounded-full transition-colors duration-short3 ease-standard ${
@@ -235,15 +264,11 @@ export default function GamesList({
 
       {/* Column 2: the game list */}
       <div className="w-72 shrink-0 flex flex-col overflow-hidden bg-surface-container-low border-r border-outline/40">
-        <div className="px-3 py-2 shrink-0 flex items-center justify-between text-label-md text-on-surface-variant border-b border-outline/40">
-          <span>{loading ? "Loading…" : total !== null ? `${pageStart.toLocaleString()}–${pageEnd.toLocaleString()} of ${total.toLocaleString()}` : ""}</span>
-          <div className="flex gap-1">
-            <button onClick={() => setOffset((o) => Math.max(0, o - PAGE))} disabled={offset === 0 || loading} className="h-7 px-2 rounded-full border border-outline text-on-surface disabled:opacity-30 hover:bg-on-surface/8">‹ Prev</button>
-            <button onClick={() => setOffset((o) => o + PAGE)} disabled={loading || total === null || pageEnd >= total} className="h-7 px-2 rounded-full border border-outline text-on-surface disabled:opacity-30 hover:bg-on-surface/8">Next ›</button>
-          </div>
+        <div className="px-3 py-2 shrink-0 text-label-md text-on-surface-variant border-b border-outline/40">
+          {loading ? "Loading…" : total !== null ? `${total.toLocaleString()} game${total !== 1 ? "s" : ""}` : ""}
         </div>
 
-        <div className="flex-1 overflow-y-auto">
+        <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto">
           {error && <div className="p-4 text-center text-error text-body-md">{error}</div>}
           {!error && !loading && games.length === 0 && (
             <div className="p-4 text-center text-on-surface-variant text-body-md">No games found</div>
@@ -277,6 +302,7 @@ export default function GamesList({
               </button>
             );
           })}
+          {loadingMore && <div className="p-3 text-center text-on-surface-variant text-body-sm">Loading…</div>}
         </div>
       </div>
     </div>
