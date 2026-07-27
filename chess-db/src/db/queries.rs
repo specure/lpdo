@@ -1,8 +1,12 @@
 use anyhow::Result;
 use duckdb::Connection;
+use serde::Deserialize;
 use std::path::Path;
 
 /// Aggregated move statistics for a single move from a given position.
+/// `Deserialize` so the CLI proxy can parse the daemon's `/position/moves`
+/// JSON (field names match `serve::MoveStats`) and reuse the local renderer (#213).
+#[derive(Deserialize)]
 pub struct MoveStats {
     pub mv: String,
     pub games: i64,

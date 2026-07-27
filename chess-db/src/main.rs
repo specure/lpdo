@@ -1729,9 +1729,21 @@ async fn try_proxy_read(command: &Commands, port: u16) -> Option<Result<()>> {
                     first_moves, from, to, fen, collection, moves_stats, show_moves, limit, pgn, count,
                 },
         } => {
-            // moves-stats aggregates a position; no plain /games equivalent.
+            // moves-stats aggregates a position — it has no /games form, but the
+            // daemon serves it at /position/moves, so proxy there (#213).
             if *moves_stats {
-                return None;
+                let mut q: Vec<(&str, String)> = Vec::new();
+                if let Some(v) = name { q.push(("name", v.clone())); }
+                if let Some(v) = fide_id { q.push(("fide_id", v.to_string())); }
+                if let Some(v) = white { q.push(("white", v.clone())); }
+                if let Some(v) = black { q.push(("black", v.clone())); }
+                if let Some(v) = white_fide_id { q.push(("white_fide_id", v.to_string())); }
+                if let Some(v) = black_fide_id { q.push(("black_fide_id", v.to_string())); }
+                if let Some(v) = first_moves { q.push(("first_moves", v.clone())); }
+                if let Some(v) = fen { q.push(("fen", v.clone())); }
+                if let Some(v) = from { q.push(("from", v.clone())); }
+                if let Some(v) = to { q.push(("to", v.clone())); }
+                return Some(proxy::run_position_moves(port, q, fen.clone(), first_moves.clone()).await);
             }
             let mut q: Vec<(&str, String)> = Vec::new();
             if let Some(v) = name { q.push(("name", v.clone())); }

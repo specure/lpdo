@@ -644,6 +644,29 @@ pub async fn run_search_players(
 
 /// `search games` — GET /games with the CLI filters as query params, render rows
 /// / count / raw PGN. Returns the same footer as the local search.
+/// Proxy `search games --moves-stats` to the daemon's `/position/moves` (#213):
+/// the daemon aggregates the move popularity, and we render it with the same
+/// table as the local path (side/description computed client-side from the FEN).
+pub async fn run_position_moves(
+    port: u16,
+    query: Vec<(&str, String)>,
+    fen: Option<String>,
+    first_moves: Option<String>,
+) -> Result<()> {
+    let client = reqwest::Client::new();
+    let url = reqwest::Url::parse_with_params(&format!("{}/position/moves", base_url(port)), &query)
+        .context("building position-moves query")?;
+    let resp = client.get(url).send().await.context("querying position moves")?;
+    if !resp.status().is_success() {
+        bail!("daemon returned {}: {}", resp.status(), resp.text().await.unwrap_or_default().trim());
+    }
+    let stats: Vec<crate::db::queries::MoveStats> =
+        resp.json().await.context("reading position-moves response")?;
+    let (side, pos_desc) = crate::search::describe_position(fen.as_deref(), first_moves.as_deref())?;
+    crate::search::render_position_moves(&stats, &side, &pos_desc);
+    Ok(())
+}
+
 pub async fn run_search_games(port: u16, query: Vec<(&str, String)>, show_moves: bool) -> Result<()> {
     let client = reqwest::Client::new();
     let count_only = query.iter().any(|(k, _)| *k == "count");
