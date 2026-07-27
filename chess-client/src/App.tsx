@@ -770,7 +770,7 @@ export default function App() {
         </>
       ) : mode === "games" ? (
         <div className="flex flex-1 overflow-hidden">
-          {/* Panel 1: filters + DB-wide game list */}
+          {/* Panel 1: filters + DB-wide game list / opening explorer */}
           <div className="w-80 shrink-0 overflow-hidden flex flex-col border-r border-outline/40">
             <GamesList
               selectedId={selectedGame?.id ?? null}
@@ -778,12 +778,34 @@ export default function App() {
               scopePublicOnly={scopePublicOnly}
               scopeCollectionId={scopeCollectionId}
               scopeIncludeDeleted={scopeIncludeDeleted}
+              moveSequence={moveSequence}
+              onMoveAppend={handleMoveAppend}
+              onPositionModeChange={setPositionModeActive}
+              onMoveStatsChange={setPositionMoveStats}
+              onSelectedMoveChange={setPositionSelectedSan}
+              onTopGameChange={setTopGame}
             />
           </div>
-          {/* Panel 2: board */}
+          {/* Panel 2: board (game, or the position explorer's board) */}
           <div className="flex-1 flex overflow-hidden">
             {selectedGame ? (
-              <GameBoard game={selectedGame} onGameMutated={onGameMutated} onEditingChange={setEditing} />
+              <GameBoard
+                game={selectedGame}
+                moveSequence={positionModeActive ? moveSequence : undefined}
+                onBackToPosition={positionModeActive ? () => setSelectedGame(null) : undefined}
+                onGameMutated={onGameMutated}
+                onEditingChange={setEditing}
+              />
+            ) : positionModeActive ? (
+              <PositionBoard
+                moveSequence={moveSequence}
+                onBack={handleMoveBack}
+                onReset={handleMoveReset}
+                moveStats={positionMoveStats}
+                selectedMoveSan={positionSelectedSan}
+                relatedGame={topGame}
+                onSwitchToGame={() => { if (topGame) handleSelectGame(topGame); }}
+              />
             ) : (
               <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md">
                 Select a game

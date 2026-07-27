@@ -1,19 +1,30 @@
 import { useEffect, useRef, useState } from "react";
-import { GameSummary, PlayerInfo } from "../types";
+import { Chess } from "chess.js";
+import { GameSummary, MoveStats, PlayerInfo } from "../types";
 import PlayerPicker from "./PlayerPicker";
 
 // DB-wide game browser (the Games page): like the Players game list, but without
 // having to pick a player first. Player 1 / Player 2 are autocomplete-to-player
 // (indexed, precise); with no filters it shows all games, paginated by date.
-// Position/board search is a follow-up.
+// A "Position" mode turns it into a DB-wide opening explorer: click moves to walk
+// the tree (server move-stats over ALL games) while the list filters to games
+// reaching that position (#—).
 
 type ColorFilter = "any" | "white" | "black";
 const PAGE = 100;
 const OPPOSITE: Record<ColorFilter, ColorFilter> = { any: "any", white: "black", black: "white" };
 
-// Year "YYYY" → full ISO bounds for the server's date range filter.
 const fromISO = (y: string) => (/^\d{4}$/.test(y) ? `${y}-01-01` : y);
 const toISO = (y: string) => (/^\d{4}$/.test(y) ? `${y}-12-31` : y);
+
+/** FEN after playing a SAN move sequence (empty = starting position). */
+function fenFromMoves(moves: string[]): string {
+  const chess = new Chess();
+  for (const mv of moves) {
+    try { chess.move(mv); } catch { break; }
+  }
+  return chess.fen();
+}
 
 interface Props {
   selectedId: number | null;
@@ -21,6 +32,13 @@ interface Props {
   scopePublicOnly: boolean;
   scopeCollectionId: number | null;
   scopeIncludeDeleted: boolean;
+  // Position/explorer wiring (shared with App's board, like GameList).
+  moveSequence: string[];
+  onMoveAppend: (mv: string) => void;
+  onPositionModeChange: (active: boolean) => void;
+  onMoveStatsChange: (stats: MoveStats[]) => void;
+  onSelectedMoveChange: (san: string | null) => void;
+  onTopGameChange: (game: GameSummary | null) => void;
 }
 
 export default function GamesList({
@@ -29,6 +47,12 @@ export default function GamesList({
   scopePublicOnly,
   scopeCollectionId,
   scopeIncludeDeleted,
+  moveSequence,
+  onMoveAppend,
+  onPositionModeChange,
+  onMoveStatsChange,
+  onSelectedMoveChange,
+  onTopGameChange,
 }: Props) {
   const [p1, setP1] = useState<PlayerInfo | null>(null);
   const [p1Color, setP1Color] = useState<ColorFilter>("any");
@@ -49,17 +73,33 @@ export default function GamesList({
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
+  // Position (opening-explorer) mode.
+  const [positionOpen, setPositionOpen] = useState(false);
+  const [moveStats, setMoveStats] = useState<MoveStats[]>([]);
+  const [movesLoading, setMovesLoading] = useState(false);
+  const movesAbortRef = useRef<AbortController | null>(null);
+
+  const firstMovesStr = moveSequence.join(" ");
+
   function setP1C(c: ColorFilter) { setP1Color(c); setP2Color(OPPOSITE[c]); }
   function setP2C(c: ColorFilter) { setP2Color(c); setP1Color(OPPOSITE[c]); }
 
-  // Debounce the free-text filters.
   useEffect(() => { const t = setTimeout(() => setEvent(eventInput), 400); return () => clearTimeout(t); }, [eventInput]);
   useEffect(() => { const t = setTimeout(() => setDateFrom(dateFromInput), 400); return () => clearTimeout(t); }, [dateFromInput]);
   useEffect(() => { const t = setTimeout(() => setDateTo(dateToInput), 400); return () => clearTimeout(t); }, [dateToInput]);
 
-  // Reset to the first page whenever the filters change.
-  useEffect(() => { setOffset(0); }, [p1?.id, p1Color, p2?.id, event, dateFrom, dateTo, scopePublicOnly, scopeCollectionId, scopeIncludeDeleted]);
+  // Tell App whether the board should show the position explorer.
+  useEffect(() => { onPositionModeChange(positionOpen); }, [positionOpen, onPositionModeChange]);
+  // Feed the board the current stats + its top move (for the arrow).
+  useEffect(() => { onMoveStatsChange(moveStats); }, [moveStats, onMoveStatsChange]);
+  useEffect(() => { onSelectedMoveChange(moveStats[0]?.mv ?? null); }, [moveStats, onSelectedMoveChange]);
+  // Report the top game so the board's "switch to game" has a target.
+  useEffect(() => { onTopGameChange(games[0] ?? null); }, [games, onTopGameChange]);
 
+  // Reset to page 1 on any filter change.
+  useEffect(() => { setOffset(0); }, [p1?.id, p1Color, p2?.id, event, dateFrom, dateTo, positionOpen, firstMovesStr, scopePublicOnly, scopeCollectionId, scopeIncludeDeleted]);
+
+  // Game list.
   useEffect(() => {
     abortRef.current?.abort();
     abortRef.current = new AbortController();
@@ -67,8 +107,6 @@ export default function GamesList({
     setLoading(true);
     setError(null);
 
-    // One player set → query by that player; both set → Player 1 + opponent_id
-    // (indexed two-player predicate), colour from Player 1.
     const primary = p1 ?? p2;
     const params = new URLSearchParams({ limit: String(PAGE), offset: String(offset) });
     if (primary) {
@@ -79,6 +117,7 @@ export default function GamesList({
     if (event) params.set("event", event);
     if (dateFrom) params.set("from", fromISO(dateFrom));
     if (dateTo) params.set("to", toISO(dateTo));
+    if (positionOpen) params.set("fen", fenFromMoves(moveSequence));
     if (scopePublicOnly) params.set("visibility", "public");
     if (scopeCollectionId !== null) params.set("collection_id", String(scopeCollectionId));
     if (scopeIncludeDeleted) params.set("include_deleted", "true");
@@ -93,7 +132,27 @@ export default function GamesList({
       .then(([data, { count }]) => { setGames(data); setTotal(count); setLoading(false); })
       .catch((e) => { if (e instanceof DOMException && e.name === "AbortError") return; setError(e instanceof Error ? e.message : "Failed to load games"); setLoading(false); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p1?.id, p1Color, p2?.id, p2Color, event, dateFrom, dateTo, offset, scopePublicOnly, scopeCollectionId, scopeIncludeDeleted]);
+  }, [p1?.id, p1Color, p2?.id, p2Color, event, dateFrom, dateTo, offset, positionOpen, firstMovesStr, scopePublicOnly, scopeCollectionId, scopeIncludeDeleted]);
+
+  // Opening-explorer move stats (all games; side-to-move is intrinsic).
+  useEffect(() => {
+    if (!positionOpen) return;
+    movesAbortRef.current?.abort();
+    movesAbortRef.current = new AbortController();
+    setMovesLoading(true);
+
+    const params = new URLSearchParams();
+    if (firstMovesStr) params.set("first_moves", firstMovesStr);
+    if (dateFrom) params.set("from", fromISO(dateFrom));
+    if (dateTo) params.set("to", toISO(dateTo));
+    if (scopePublicOnly) params.set("visibility", "public");
+
+    fetch(`/api/position/moves?${params}`, { signal: movesAbortRef.current.signal })
+      .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<MoveStats[]>; })
+      .then((data) => { setMoveStats(data); setMovesLoading(false); })
+      .catch((e) => { if (e instanceof DOMException && e.name === "AbortError") return; setMoveStats([]); setMovesLoading(false); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [positionOpen, firstMovesStr, dateFrom, dateTo, scopePublicOnly]);
 
   const pageStart = total ? offset + 1 : 0;
   const pageEnd = offset + games.length;
@@ -103,6 +162,10 @@ export default function GamesList({
       active ? "bg-secondary-container text-on-secondary-container" : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
     }`;
   const textInput = "h-9 px-3 rounded-sm bg-transparent text-on-surface placeholder:text-on-surface-variant text-body-sm border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard";
+  const chipClass = (active: boolean) =>
+    `inline-flex items-center h-7 px-3 rounded-full text-label-md transition-colors duration-short3 ease-standard ${
+      active ? "bg-secondary-container text-on-secondary-container" : "border border-outline text-on-surface hover:bg-on-surface/8"
+    }`;
 
   function colorRow(color: ColorFilter, set: (c: ColorFilter) => void) {
     return (
@@ -139,24 +202,53 @@ export default function GamesList({
           <input type="text" value={dateFromInput} onChange={(e) => setDateFromInput(e.target.value)} placeholder="From (YYYY)" className={`flex-1 min-w-0 ${textInput}`} />
           <input type="text" value={dateToInput} onChange={(e) => setDateToInput(e.target.value)} placeholder="To (YYYY)" className={`flex-1 min-w-0 ${textInput}`} />
         </div>
+        <button onClick={() => setPositionOpen((o) => !o)} className={chipClass(positionOpen)}>
+          {positionOpen ? "Position ✓" : "Position…"}
+        </button>
       </div>
+
+      {/* Opening explorer (moves from the current position, over all matching games) */}
+      {positionOpen && (
+        <div className="bg-surface-container shrink-0 border-b border-outline/40">
+          {movesLoading ? (
+            <div className="p-3 text-center text-on-surface-variant text-body-sm">Loading…</div>
+          ) : moveStats.length === 0 ? (
+            <div className="p-3 text-center text-on-surface-variant text-body-sm">No moves from this position</div>
+          ) : (
+            <div className="p-3">
+              <div className="flex items-center text-label-sm text-on-surface-variant px-2 mb-1 select-none">
+                <span className="w-10">Move</span>
+                <span className="w-14 text-right">Games</span>
+                <span className="w-7 text-right">W%</span>
+                <span className="w-7 text-right">L%</span>
+                <span className="flex-1 text-right">Last</span>
+              </div>
+              <div className="max-h-52 overflow-y-auto">
+                {moveStats.map((stat) => (
+                  <button
+                    key={stat.mv}
+                    onClick={() => onMoveAppend(stat.mv)}
+                    className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
+                  >
+                    <span className="w-10 font-mono">{stat.mv}</span>
+                    <span className="w-14 text-right">{stat.games.toLocaleString()}</span>
+                    <span className="w-7 text-right text-success">{Math.round(stat.w_pct)}</span>
+                    <span className="w-7 text-right text-error">{Math.round(stat.l_pct)}</span>
+                    <span className="flex-1 text-right text-on-surface-variant">{stat.last_played?.slice(0, 4) ?? "—"}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Count + pagination */}
       <div className="px-3 py-2 shrink-0 flex items-center justify-between text-label-md text-on-surface-variant">
-        <span>
-          {loading ? "Loading…" : total !== null ? `${pageStart.toLocaleString()}–${pageEnd.toLocaleString()} of ${total.toLocaleString()}` : ""}
-        </span>
+        <span>{loading ? "Loading…" : total !== null ? `${pageStart.toLocaleString()}–${pageEnd.toLocaleString()} of ${total.toLocaleString()}` : ""}</span>
         <div className="flex gap-1">
-          <button
-            onClick={() => setOffset((o) => Math.max(0, o - PAGE))}
-            disabled={offset === 0 || loading}
-            className="h-7 px-2 rounded-full border border-outline text-on-surface disabled:opacity-30 hover:bg-on-surface/8"
-          >‹ Prev</button>
-          <button
-            onClick={() => setOffset((o) => o + PAGE)}
-            disabled={loading || total === null || pageEnd >= total}
-            className="h-7 px-2 rounded-full border border-outline text-on-surface disabled:opacity-30 hover:bg-on-surface/8"
-          >Next ›</button>
+          <button onClick={() => setOffset((o) => Math.max(0, o - PAGE))} disabled={offset === 0 || loading} className="h-7 px-2 rounded-full border border-outline text-on-surface disabled:opacity-30 hover:bg-on-surface/8">‹ Prev</button>
+          <button onClick={() => setOffset((o) => o + PAGE)} disabled={loading || total === null || pageEnd >= total} className="h-7 px-2 rounded-full border border-outline text-on-surface disabled:opacity-30 hover:bg-on-surface/8">Next ›</button>
         </div>
       </div>
 
