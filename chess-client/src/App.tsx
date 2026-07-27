@@ -770,23 +770,21 @@ export default function App() {
         </>
       ) : mode === "games" ? (
         <div className="flex flex-1 overflow-hidden">
-          {/* Panel 1: filters + DB-wide game list / opening explorer */}
-          <div className="w-80 shrink-0 overflow-hidden flex flex-col border-r border-outline/40">
-            <GamesList
-              selectedId={selectedGame?.id ?? null}
-              onSelect={handleSelectGame}
-              scopePublicOnly={scopePublicOnly}
-              scopeCollectionId={scopeCollectionId}
-              scopeIncludeDeleted={scopeIncludeDeleted}
-              moveSequence={moveSequence}
-              onMoveAppend={handleMoveAppend}
-              onPositionModeChange={setPositionModeActive}
-              onMoveStatsChange={setPositionMoveStats}
-              onSelectedMoveChange={setPositionSelectedSan}
-              onTopGameChange={setTopGame}
-            />
-          </div>
-          {/* Panel 2: board (game, or the position explorer's board) */}
+          {/* Panels 1 & 2 (filters+explorer, game list) — self-sizing two columns */}
+          <GamesList
+            selectedId={selectedGame?.id ?? null}
+            onSelect={handleSelectGame}
+            scopePublicOnly={scopePublicOnly}
+            scopeCollectionId={scopeCollectionId}
+            scopeIncludeDeleted={scopeIncludeDeleted}
+            moveSequence={moveSequence}
+            onMoveAppend={handleMoveAppend}
+            onPositionModeChange={setPositionModeActive}
+            onMoveStatsChange={setPositionMoveStats}
+            onSelectedMoveChange={setPositionSelectedSan}
+            onTopGameChange={setTopGame}
+          />
+          {/* Panel 3: board (game, or the position explorer's board) */}
           <div className="flex-1 flex overflow-hidden">
             {selectedGame ? (
               <GameBoard

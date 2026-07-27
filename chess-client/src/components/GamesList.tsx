@@ -3,12 +3,12 @@ import { Chess } from "chess.js";
 import { GameSummary, MoveStats, PlayerInfo } from "../types";
 import PlayerPicker from "./PlayerPicker";
 
-// DB-wide game browser (the Games page): like the Players game list, but without
-// having to pick a player first. Player 1 / Player 2 are autocomplete-to-player
-// (indexed, precise); with no filters it shows all games, paginated by date.
-// A "Position" mode turns it into a DB-wide opening explorer: click moves to walk
-// the tree (server move-stats over ALL games) while the list filters to games
-// reaching that position (#—).
+// DB-wide game browser + opening explorer (the Games page): like the Players
+// view, but without picking a player first. Two columns: filters + explorer on
+// the left, the game list on the right. Player 1 / Player 2 are
+// autocomplete-to-player (indexed). Position/explorer is always on — click moves
+// to walk the tree (server move-stats over ALL matching games) while the list
+// filters to games reaching that position (#—).
 
 type ColorFilter = "any" | "white" | "black";
 const PAGE = 100;
@@ -73,8 +73,7 @@ export default function GamesList({
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Position (opening-explorer) mode.
-  const [positionOpen, setPositionOpen] = useState(false);
+  // Opening explorer (always on).
   const [moveStats, setMoveStats] = useState<MoveStats[]>([]);
   const [movesLoading, setMovesLoading] = useState(false);
   const movesAbortRef = useRef<AbortController | null>(null);
@@ -88,16 +87,14 @@ export default function GamesList({
   useEffect(() => { const t = setTimeout(() => setDateFrom(dateFromInput), 400); return () => clearTimeout(t); }, [dateFromInput]);
   useEffect(() => { const t = setTimeout(() => setDateTo(dateToInput), 400); return () => clearTimeout(t); }, [dateToInput]);
 
-  // Tell App whether the board should show the position explorer.
-  useEffect(() => { onPositionModeChange(positionOpen); }, [positionOpen, onPositionModeChange]);
-  // Feed the board the current stats + its top move (for the arrow).
+  // The board always shows the position explorer here (when no game is selected).
+  useEffect(() => { onPositionModeChange(true); return () => onPositionModeChange(false); }, [onPositionModeChange]);
   useEffect(() => { onMoveStatsChange(moveStats); }, [moveStats, onMoveStatsChange]);
   useEffect(() => { onSelectedMoveChange(moveStats[0]?.mv ?? null); }, [moveStats, onSelectedMoveChange]);
-  // Report the top game so the board's "switch to game" has a target.
   useEffect(() => { onTopGameChange(games[0] ?? null); }, [games, onTopGameChange]);
 
   // Reset to page 1 on any filter change.
-  useEffect(() => { setOffset(0); }, [p1?.id, p1Color, p2?.id, event, dateFrom, dateTo, positionOpen, firstMovesStr, scopePublicOnly, scopeCollectionId, scopeIncludeDeleted]);
+  useEffect(() => { setOffset(0); }, [p1?.id, p1Color, p2?.id, event, dateFrom, dateTo, firstMovesStr, scopePublicOnly, scopeCollectionId, scopeIncludeDeleted]);
 
   // Game list.
   useEffect(() => {
@@ -117,7 +114,9 @@ export default function GamesList({
     if (event) params.set("event", event);
     if (dateFrom) params.set("from", fromISO(dateFrom));
     if (dateTo) params.set("to", toISO(dateTo));
-    if (positionOpen) params.set("fen", fenFromMoves(moveSequence));
+    // Only filter by position once a move is played — the root (start position)
+    // is "all games", which is far cheaper as a plain query than a positions join.
+    if (moveSequence.length > 0) params.set("fen", fenFromMoves(moveSequence));
     if (scopePublicOnly) params.set("visibility", "public");
     if (scopeCollectionId !== null) params.set("collection_id", String(scopeCollectionId));
     if (scopeIncludeDeleted) params.set("include_deleted", "true");
@@ -132,11 +131,10 @@ export default function GamesList({
       .then(([data, { count }]) => { setGames(data); setTotal(count); setLoading(false); })
       .catch((e) => { if (e instanceof DOMException && e.name === "AbortError") return; setError(e instanceof Error ? e.message : "Failed to load games"); setLoading(false); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p1?.id, p1Color, p2?.id, p2Color, event, dateFrom, dateTo, offset, positionOpen, firstMovesStr, scopePublicOnly, scopeCollectionId, scopeIncludeDeleted]);
+  }, [p1?.id, p1Color, p2?.id, p2Color, event, dateFrom, dateTo, offset, firstMovesStr, scopePublicOnly, scopeCollectionId, scopeIncludeDeleted]);
 
   // Opening-explorer move stats (all games; side-to-move is intrinsic).
   useEffect(() => {
-    if (!positionOpen) return;
     movesAbortRef.current?.abort();
     movesAbortRef.current = new AbortController();
     setMovesLoading(true);
@@ -152,7 +150,7 @@ export default function GamesList({
       .then((data) => { setMoveStats(data); setMovesLoading(false); })
       .catch((e) => { if (e instanceof DOMException && e.name === "AbortError") return; setMoveStats([]); setMovesLoading(false); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [positionOpen, firstMovesStr, dateFrom, dateTo, scopePublicOnly]);
+  }, [firstMovesStr, dateFrom, dateTo, scopePublicOnly]);
 
   const pageStart = total ? offset + 1 : 0;
   const pageEnd = offset + games.length;
@@ -162,10 +160,6 @@ export default function GamesList({
       active ? "bg-secondary-container text-on-secondary-container" : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
     }`;
   const textInput = "h-9 px-3 rounded-sm bg-transparent text-on-surface placeholder:text-on-surface-variant text-body-sm border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard";
-  const chipClass = (active: boolean) =>
-    `inline-flex items-center h-7 px-3 rounded-full text-label-md transition-colors duration-short3 ease-standard ${
-      active ? "bg-secondary-container text-on-secondary-container" : "border border-outline text-on-surface hover:bg-on-surface/8"
-    }`;
 
   function colorRow(color: ColorFilter, set: (c: ColorFilter) => void) {
     return (
@@ -180,42 +174,38 @@ export default function GamesList({
   }
 
   return (
-    <div className="flex flex-col h-full bg-surface-container-low">
-      {/* Filters */}
-      <div className="p-3 shrink-0 space-y-3 border-b border-outline/40">
-        <div>
-          <div className="text-label-md text-on-surface-variant mb-1.5 flex items-center justify-between">
-            <span>Player 1</span> {colorRow(p1Color, setP1C)}
+    <div className="flex h-full shrink-0">
+      {/* Column 1: filters + opening explorer */}
+      <div className="w-72 shrink-0 flex flex-col overflow-y-auto bg-surface-container-low border-r border-outline/40">
+        <div className="p-3 space-y-3">
+          <div>
+            <div className="text-label-md text-on-surface-variant mb-1.5 flex items-center justify-between">
+              <span>Player 1</span> {colorRow(p1Color, setP1C)}
+            </div>
+            <PlayerPicker label="" value={p1} onPick={setP1} excludeId={p2?.id} />
           </div>
-          <PlayerPicker label="" value={p1} onPick={setP1} excludeId={p2?.id} />
-        </div>
-        <div>
-          <div className="text-label-md text-on-surface-variant mb-1.5 flex items-center justify-between">
-            <span>Player 2</span> {colorRow(p2Color, setP2C)}
+          <div>
+            <div className="text-label-md text-on-surface-variant mb-1.5 flex items-center justify-between">
+              <span>Player 2</span> {colorRow(p2Color, setP2C)}
+            </div>
+            <PlayerPicker label="" value={p2} onPick={setP2} excludeId={p1?.id} />
           </div>
-          <PlayerPicker label="" value={p2} onPick={setP2} excludeId={p1?.id} />
+          <input type="text" value={eventInput} onChange={(e) => setEventInput(e.target.value)} placeholder="Event…" className={`w-full ${textInput}`} />
+          <div className="flex gap-2">
+            <input type="text" value={dateFromInput} onChange={(e) => setDateFromInput(e.target.value)} placeholder="From (YYYY)" className={`flex-1 min-w-0 ${textInput}`} />
+            <input type="text" value={dateToInput} onChange={(e) => setDateToInput(e.target.value)} placeholder="To (YYYY)" className={`flex-1 min-w-0 ${textInput}`} />
+          </div>
         </div>
-        <div className="flex gap-2">
-          <input type="text" value={eventInput} onChange={(e) => setEventInput(e.target.value)} placeholder="Event…" className={`flex-1 min-w-0 ${textInput}`} />
-        </div>
-        <div className="flex gap-2">
-          <input type="text" value={dateFromInput} onChange={(e) => setDateFromInput(e.target.value)} placeholder="From (YYYY)" className={`flex-1 min-w-0 ${textInput}`} />
-          <input type="text" value={dateToInput} onChange={(e) => setDateToInput(e.target.value)} placeholder="To (YYYY)" className={`flex-1 min-w-0 ${textInput}`} />
-        </div>
-        <button onClick={() => setPositionOpen((o) => !o)} className={chipClass(positionOpen)}>
-          {positionOpen ? "Position ✓" : "Position…"}
-        </button>
-      </div>
 
-      {/* Opening explorer (moves from the current position, over all matching games) */}
-      {positionOpen && (
-        <div className="bg-surface-container shrink-0 border-b border-outline/40">
+        {/* Opening explorer — moves from the current position across all matching games */}
+        <div className="border-t border-outline/40 flex-1 min-h-0 flex flex-col">
+          <div className="px-3 pt-2 text-label-sm text-on-surface-variant uppercase tracking-wider">Position</div>
           {movesLoading ? (
             <div className="p-3 text-center text-on-surface-variant text-body-sm">Loading…</div>
           ) : moveStats.length === 0 ? (
             <div className="p-3 text-center text-on-surface-variant text-body-sm">No moves from this position</div>
           ) : (
-            <div className="p-3">
+            <div className="p-2">
               <div className="flex items-center text-label-sm text-on-surface-variant px-2 mb-1 select-none">
                 <span className="w-10">Move</span>
                 <span className="w-14 text-right">Games</span>
@@ -223,7 +213,7 @@ export default function GamesList({
                 <span className="w-7 text-right">L%</span>
                 <span className="flex-1 text-right">Last</span>
               </div>
-              <div className="max-h-52 overflow-y-auto">
+              <div className="overflow-y-auto">
                 {moveStats.map((stat) => (
                   <button
                     key={stat.mv}
@@ -241,52 +231,53 @@ export default function GamesList({
             </div>
           )}
         </div>
-      )}
-
-      {/* Count + pagination */}
-      <div className="px-3 py-2 shrink-0 flex items-center justify-between text-label-md text-on-surface-variant">
-        <span>{loading ? "Loading…" : total !== null ? `${pageStart.toLocaleString()}–${pageEnd.toLocaleString()} of ${total.toLocaleString()}` : ""}</span>
-        <div className="flex gap-1">
-          <button onClick={() => setOffset((o) => Math.max(0, o - PAGE))} disabled={offset === 0 || loading} className="h-7 px-2 rounded-full border border-outline text-on-surface disabled:opacity-30 hover:bg-on-surface/8">‹ Prev</button>
-          <button onClick={() => setOffset((o) => o + PAGE)} disabled={loading || total === null || pageEnd >= total} className="h-7 px-2 rounded-full border border-outline text-on-surface disabled:opacity-30 hover:bg-on-surface/8">Next ›</button>
-        </div>
       </div>
 
-      {/* List */}
-      <div className="flex-1 overflow-y-auto">
-        {error && <div className="p-4 text-center text-error text-body-md">{error}</div>}
-        {!error && !loading && games.length === 0 && (
-          <div className="p-4 text-center text-on-surface-variant text-body-md">No games found</div>
-        )}
-        {games.map((game) => {
-          const selected = selectedId === game.id;
-          const subText = selected ? "text-on-secondary-container/80" : "text-on-surface-variant";
-          return (
-            <button
-              key={game.id}
-              onClick={() => onSelect(game)}
-              className={`w-full text-left px-4 py-3 transition-colors duration-short3 ease-standard ${
-                selected ? "bg-secondary-container text-on-secondary-container" : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
-              }`}
-            >
-              <div className="text-body-md truncate flex items-center gap-1.5">
-                <span className={`w-2 h-2 rounded-full shrink-0 ${selected ? "bg-on-secondary-container" : "bg-on-surface"}`} />
-                <span className="truncate">{game.white}</span>
-                {game.white_elo && <span className={`text-body-sm shrink-0 ${subText}`}>({game.white_elo})</span>}
-              </div>
-              <div className="text-body-md truncate flex items-center gap-1.5">
-                <span className={`w-2 h-2 rounded-full bg-transparent shrink-0 border ${selected ? "border-on-secondary-container" : "border-on-surface-variant"}`} />
-                <span className="truncate">{game.black}</span>
-                {game.black_elo && <span className={`text-body-sm shrink-0 ${subText}`}>({game.black_elo})</span>}
-              </div>
-              <div className={`text-body-sm mt-0.5 flex gap-2 truncate ${subText}`}>
-                {game.result && <span className={selected ? "" : "text-on-surface"}>{game.result === "1/2-1/2" ? "½-½" : game.result}</span>}
-                {game.date && <span>{game.date.slice(0, 10)}</span>}
-                {game.event && <span className="truncate">{game.event}</span>}
-              </div>
-            </button>
-          );
-        })}
+      {/* Column 2: the game list */}
+      <div className="w-72 shrink-0 flex flex-col overflow-hidden bg-surface-container-low border-r border-outline/40">
+        <div className="px-3 py-2 shrink-0 flex items-center justify-between text-label-md text-on-surface-variant border-b border-outline/40">
+          <span>{loading ? "Loading…" : total !== null ? `${pageStart.toLocaleString()}–${pageEnd.toLocaleString()} of ${total.toLocaleString()}` : ""}</span>
+          <div className="flex gap-1">
+            <button onClick={() => setOffset((o) => Math.max(0, o - PAGE))} disabled={offset === 0 || loading} className="h-7 px-2 rounded-full border border-outline text-on-surface disabled:opacity-30 hover:bg-on-surface/8">‹ Prev</button>
+            <button onClick={() => setOffset((o) => o + PAGE)} disabled={loading || total === null || pageEnd >= total} className="h-7 px-2 rounded-full border border-outline text-on-surface disabled:opacity-30 hover:bg-on-surface/8">Next ›</button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          {error && <div className="p-4 text-center text-error text-body-md">{error}</div>}
+          {!error && !loading && games.length === 0 && (
+            <div className="p-4 text-center text-on-surface-variant text-body-md">No games found</div>
+          )}
+          {games.map((game) => {
+            const selected = selectedId === game.id;
+            const subText = selected ? "text-on-secondary-container/80" : "text-on-surface-variant";
+            return (
+              <button
+                key={game.id}
+                onClick={() => onSelect(game)}
+                className={`w-full text-left px-4 py-3 transition-colors duration-short3 ease-standard ${
+                  selected ? "bg-secondary-container text-on-secondary-container" : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
+                }`}
+              >
+                <div className="text-body-md truncate flex items-center gap-1.5">
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${selected ? "bg-on-secondary-container" : "bg-on-surface"}`} />
+                  <span className="truncate">{game.white}</span>
+                  {game.white_elo && <span className={`text-body-sm shrink-0 ${subText}`}>({game.white_elo})</span>}
+                </div>
+                <div className="text-body-md truncate flex items-center gap-1.5">
+                  <span className={`w-2 h-2 rounded-full bg-transparent shrink-0 border ${selected ? "border-on-secondary-container" : "border-on-surface-variant"}`} />
+                  <span className="truncate">{game.black}</span>
+                  {game.black_elo && <span className={`text-body-sm shrink-0 ${subText}`}>({game.black_elo})</span>}
+                </div>
+                <div className={`text-body-sm mt-0.5 flex gap-2 truncate ${subText}`}>
+                  {game.result && <span className={selected ? "" : "text-on-surface"}>{game.result === "1/2-1/2" ? "½-½" : game.result}</span>}
+                  {game.date && <span>{game.date.slice(0, 10)}</span>}
+                  {game.event && <span className="truncate">{game.event}</span>}
+                </div>
+              </button>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
