@@ -187,13 +187,13 @@ export default function GamesList({
           <div className="text-label-md text-on-surface-variant mb-1.5 flex items-center justify-between">
             <span>Player 1</span> {colorRow(p1Color, setP1C)}
           </div>
-          <PlayerPicker label="Player 1" value={p1} onPick={setP1} excludeId={p2?.id} />
+          <PlayerPicker label="" value={p1} onPick={setP1} excludeId={p2?.id} />
         </div>
         <div>
           <div className="text-label-md text-on-surface-variant mb-1.5 flex items-center justify-between">
             <span>Player 2</span> {colorRow(p2Color, setP2C)}
           </div>
-          <PlayerPicker label="Player 2" value={p2} onPick={setP2} excludeId={p1?.id} />
+          <PlayerPicker label="" value={p2} onPick={setP2} excludeId={p1?.id} />
         </div>
         <div className="flex gap-2">
           <input type="text" value={eventInput} onChange={(e) => setEventInput(e.target.value)} placeholder="Event…" className={`flex-1 min-w-0 ${textInput}`} />

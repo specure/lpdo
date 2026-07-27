@@ -45,7 +45,7 @@ export default function PlayerPicker({
   if (value) {
     return (
       <div>
-        <div className="text-label-sm text-on-surface-variant uppercase tracking-wider mb-1">{label}</div>
+        {label && <div className="text-label-sm text-on-surface-variant uppercase tracking-wider mb-1">{label}</div>}
         <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-sm bg-surface-container">
           <div className="min-w-0">
             <div className="text-body-md text-on-surface truncate">{value.name}</div>
