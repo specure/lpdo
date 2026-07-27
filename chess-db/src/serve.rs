@@ -287,6 +287,8 @@ struct GamesQuery {
     fide_id: Option<u32>,
     color: Option<String>,
     opponent: Option<String>,
+    /// Second resolved player id (Games page's Player 2 via autocomplete).
+    opponent_id: Option<u32>,
     // color-specific
     white: Option<String>,
     black: Option<String>,
@@ -391,6 +393,10 @@ fn build_games_sql(
     player_id: Option<u32>,
     color: Option<&str>,
     opponent: Option<&str>,
+    // Second resolved player (Games page's Player 2 via autocomplete). When set
+    // alongside `player_id`, matches games between the two by id (indexed) —
+    // either colour, or colour-specific per `color`.
+    opponent_id: Option<u32>,
     white: Option<&str>,
     black: Option<&str>,
     white_fide_id: Option<u32>,
@@ -426,25 +432,41 @@ fn build_games_sql(
     let move_num_col     = if fen_hash.is_some()     { ", pos.move_number"         } else { "" };
 
     let sql = if let Some(pid) = player_id {
-        let color_filter = match color.unwrap_or("any") {
-            "white" => { params.push(Box::new(pid)); "g.white_id = ?" }
-            "black" => { params.push(Box::new(pid)); "g.black_id = ?" }
-            _       => { params.push(Box::new(pid)); params.push(Box::new(pid)); "(g.white_id = ? OR g.black_id = ?)" }
-        };
-        let opponent_filter = if let Some(opp) = opponent {
-            let norm = format!("{}%", normalize_name(opp));
-            match color.unwrap_or("any") {
-                "white" => { params.push(Box::new(norm)); "AND pb.name_normalized LIKE ?" }
-                "black" => { params.push(Box::new(norm)); "AND pw.name_normalized LIKE ?" }
-                _ => {
-                    params.push(Box::new(pid));
-                    params.push(Box::new(norm.clone()));
-                    params.push(Box::new(pid));
-                    params.push(Box::new(norm));
-                    "AND ((g.white_id = ? AND pb.name_normalized LIKE ?) OR (g.black_id = ? AND pw.name_normalized LIKE ?))"
-                }
+        let c = color.unwrap_or("any");
+        // Player 1 = pid (+ colour). Player 2 = an autocomplete-resolved id
+        // (indexed, either colour) or a free-text opponent name.
+        let players_filter: String = if let Some(oid) = opponent_id {
+            match c {
+                "white" => { params.push(Box::new(pid)); params.push(Box::new(oid));
+                             "g.white_id = ? AND g.black_id = ?".into() }
+                "black" => { params.push(Box::new(pid)); params.push(Box::new(oid));
+                             "g.black_id = ? AND g.white_id = ?".into() }
+                _       => { params.push(Box::new(pid)); params.push(Box::new(oid));
+                             params.push(Box::new(oid)); params.push(Box::new(pid));
+                             "((g.white_id = ? AND g.black_id = ?) OR (g.white_id = ? AND g.black_id = ?))".into() }
             }
-        } else { "" };
+        } else {
+            let color_filter = match c {
+                "white" => { params.push(Box::new(pid)); "g.white_id = ?" }
+                "black" => { params.push(Box::new(pid)); "g.black_id = ?" }
+                _       => { params.push(Box::new(pid)); params.push(Box::new(pid)); "(g.white_id = ? OR g.black_id = ?)" }
+            };
+            let opponent_filter = if let Some(opp) = opponent {
+                let norm = format!("{}%", normalize_name(opp));
+                match c {
+                    "white" => { params.push(Box::new(norm)); "AND pb.name_normalized LIKE ?" }
+                    "black" => { params.push(Box::new(norm)); "AND pw.name_normalized LIKE ?" }
+                    _ => {
+                        params.push(Box::new(pid));
+                        params.push(Box::new(norm.clone()));
+                        params.push(Box::new(pid));
+                        params.push(Box::new(norm));
+                        "AND ((g.white_id = ? AND pb.name_normalized LIKE ?) OR (g.black_id = ? AND pw.name_normalized LIKE ?))"
+                    }
+                }
+            } else { "" };
+            format!("{color_filter} {opponent_filter}")
+        };
         if let Some(f) = from  { params.push(Box::new(f.to_string())); }
         if let Some(t) = to    { params.push(Box::new(t.to_string())); }
         if let Some(e) = event { params.push(Box::new(format!("%{}%", e))); }
@@ -461,7 +483,7 @@ fn build_games_sql(
                  JOIN players pw ON g.white_id = pw.id
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
-                 WHERE {color_filter} {opponent_filter} {date_from_filter} {date_to_filter}
+                 WHERE {players_filter} {date_from_filter} {date_to_filter}
                  {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}"
             ), params);
         }
@@ -472,7 +494,7 @@ fn build_games_sql(
              JOIN players pw ON g.white_id = pw.id
              JOIN players pb ON g.black_id = pb.id
              {pos_join}
-             WHERE {color_filter} {opponent_filter} {date_from_filter} {date_to_filter}
+             WHERE {players_filter} {date_from_filter} {date_to_filter}
              {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}
              ORDER BY g.date DESC NULLS LAST LIMIT ? OFFSET ?"
         ), params);
@@ -919,6 +941,7 @@ async fn games_handler(
         };
         let (sql, params) = build_games_sql(
             q.name.as_deref(), q.fide_id, q.player_id, q.color.as_deref(), q.opponent.as_deref(),
+            q.opponent_id,
             q.white.as_deref(), q.black.as_deref(), q.white_fide_id, q.black_fide_id,
             q.event.as_deref(), q.eco.as_deref(), q.first_moves.as_deref(),
             q.from.as_deref(), q.to.as_deref(),
@@ -2007,6 +2030,46 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
     println!("chess-db server listening on http://{}", addr);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod games_sql_tests {
+    use super::build_games_sql;
+
+    // Games page: Player 1 + Player 2 both resolved to ids (autocomplete).
+    fn sql(player_id: Option<u32>, opponent_id: Option<u32>, opponent: Option<&str>, color: &str) -> String {
+        build_games_sql(
+            None, None, player_id, Some(color), opponent, opponent_id,
+            None, None, None, None, // white/black + fide
+            None, None, None, None, None, // event, eco, first_moves, from, to
+            None, None, None, // fen_hash, collection_id, visibility
+            false, false, false, // include_deleted, include_pgn, count
+            100, 0,
+        ).0
+    }
+
+    #[test]
+    fn two_player_ids_any_colour_match_either_way() {
+        let s = sql(Some(1), Some(2), None, "any");
+        assert!(
+            s.contains("(g.white_id = ? AND g.black_id = ?) OR (g.white_id = ? AND g.black_id = ?)"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn two_player_ids_colour_specific() {
+        assert!(sql(Some(1), Some(2), None, "white").contains("g.white_id = ? AND g.black_id = ?"));
+        assert!(sql(Some(1), Some(2), None, "black").contains("g.black_id = ? AND g.white_id = ?"));
+    }
+
+    #[test]
+    fn opponent_name_path_is_unchanged_without_opponent_id() {
+        let s = sql(Some(1), None, Some("carlsen"), "any");
+        assert!(s.contains("name_normalized LIKE"), "{s}");
+        // Not the id-based two-player predicate.
+        assert!(!s.contains("g.black_id = ? AND g.white_id = ?"), "{s}");
+    }
 }
 
 #[cfg(test)]
