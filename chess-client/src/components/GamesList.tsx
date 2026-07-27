@@ -184,6 +184,11 @@ export default function GamesList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [firstMovesStr, dateFrom, dateTo, scopePublicOnly]);
 
+  // Move-number prefix for the explorer list, from the current ply: White to
+  // move → "N. ", Black to move → "N... " (e.g. "1. e4", "1... Nf6").
+  const moveNo = Math.floor(moveSequence.length / 2) + 1;
+  const movePrefix = moveSequence.length % 2 === 0 ? `${moveNo}. ` : `${moveNo}... `;
+
   const colorBtn = (active: boolean) =>
     `text-label-md h-7 px-2.5 inline-flex items-center rounded-full transition-colors duration-short3 ease-standard ${
       active ? "bg-secondary-container text-on-secondary-container" : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
@@ -228,7 +233,7 @@ export default function GamesList({
 
         {/* Opening explorer — moves from the current position across all matching games */}
         <div className="border-t border-outline/40 flex-1 min-h-0 flex flex-col">
-          <div className="px-3 pt-2 text-label-sm text-on-surface-variant uppercase tracking-wider">Position</div>
+          <div className="px-3 pt-2 text-label-sm text-on-surface-variant uppercase tracking-wider">Moves</div>
           {movesLoading ? (
             <div className="p-3 text-center text-on-surface-variant text-body-sm">Loading…</div>
           ) : moveStats.length === 0 ? (
@@ -236,7 +241,7 @@ export default function GamesList({
           ) : (
             <div className="p-2">
               <div className="flex items-center text-label-sm text-on-surface-variant px-2 mb-1 select-none">
-                <span className="w-10">Move</span>
+                <span className="w-20">Move</span>
                 <span className="w-14 text-right">Games</span>
                 <span className="w-7 text-right">W%</span>
                 <span className="w-7 text-right">L%</span>
@@ -249,7 +254,7 @@ export default function GamesList({
                     onClick={() => onMoveAppend(stat.mv)}
                     className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
                   >
-                    <span className="w-10 font-mono">{stat.mv}</span>
+                    <span className="w-20 font-mono truncate text-left">{movePrefix}{stat.mv}</span>
                     <span className="w-14 text-right">{stat.games.toLocaleString()}</span>
                     <span className="w-7 text-right text-success">{Math.round(stat.w_pct)}</span>
                     <span className="w-7 text-right text-error">{Math.round(stat.l_pct)}</span>
