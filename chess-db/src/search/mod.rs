@@ -515,9 +515,39 @@ pub fn position_moves(
         to,
         None, // visibility — CLI doesn't expose this filter yet
     )?;
+    render_position_moves(&stats, side, &pos_desc);
+    Ok(())
+}
+
+/// Side-to-move label + a human position description, from a FEN or a first-moves
+/// sequence (or the starting position). Used by the CLI proxy of `--moves-stats`
+/// (#213), which fetches the stats over HTTP and needs these computed client-side.
+pub fn describe_position(fen: Option<&str>, first_moves: Option<&str>) -> Result<(String, String)> {
+    use shakmaty::Color;
+    let pos: Chess = if let Some(fen_str) = fen {
+        fen_str.parse::<Fen>()?.into_position(shakmaty::CastlingMode::Standard)?
+    } else if let Some(moves) = first_moves {
+        moves_to_position(moves)?.0
+    } else {
+        Chess::default()
+    };
+    let side = if pos.turn() == Color::White { "White" } else { "Black" }.to_string();
+    let pos_desc = if let Some(fen_str) = fen {
+        format!("FEN: {}", fen_str)
+    } else if let Some(moves) = first_moves {
+        format!("after {}", moves)
+    } else {
+        "starting position".to_string()
+    };
+    Ok((side, pos_desc))
+}
+
+/// Render the move-stats table. Shared by the local `position_moves` and the CLI
+/// proxy (#213), so `search games --moves-stats` prints identically either way.
+pub fn render_position_moves(stats: &[crate::db::queries::MoveStats], side: &str, pos_desc: &str) {
     if stats.is_empty() {
         println!("No games found for this position.");
-        return Ok(());
+        return;
     }
 
     let total: i64 = stats.iter().map(|m| m.games).sum();
@@ -528,7 +558,7 @@ pub fn position_moves(
     );
     println!("  {}", "─".repeat(74));
 
-    for m in &stats {
+    for m in stats {
         let w_pct = format!("{:.0}", m.w_pct);
         let d_pct = format!("{:.0}", m.d_pct);
         let l_pct = format!("{:.0}", m.l_pct);
@@ -553,7 +583,6 @@ pub fn position_moves(
         );
     }
     println!();
-    Ok(())
 }
 
 pub fn players(
