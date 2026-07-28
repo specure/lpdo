@@ -18,26 +18,33 @@ function fenFromMoves(moves: string[]): string {
   return chess.fen();
 }
 
-function formatMoveSequence(moves: string[]): string {
-  return moves
-    .map((mv, i) => (i % 2 === 0 ? `${Math.floor(i / 2) + 1}.${mv}` : mv))
-    .join(" ");
-}
-
 interface Props {
+  /** The active line up to the cursor — drives the board position + arrows. */
   moveSequence: string[];
   onBack: () => void;
+  /** Rewind to the starting position (the ⏮ button). */
   onReset: () => void;
+  /** Step forward along `fullLine` (the › button). Omit to hide it. */
+  onForward?: () => void;
+  /** Jump to the end of `fullLine` (the ⏭ button). Omit to hide it. */
+  onEnd?: () => void;
+  /** Click a move in the list → set the cursor to that ply. Omit → not clickable. */
+  onJumpTo?: (ply: number) => void;
+  /** Full explored line incl. moves ahead of the cursor; defaults to moveSequence. */
+  fullLine?: string[];
   relatedGame?: GameSummary | null;
   onSwitchToGame?: () => void;
   moveStats?: MoveStats[];
   selectedMoveSan?: string | null;
-  /** Show the "→ White vs Black [Tab]" related-game line under the header.
-   *  Off on the Games page, where a dedicated game list + mini board replace it. */
+  /** Show the "→ White vs Black [Tab]" related-game line. Off on the Games page,
+   *  where a dedicated game list + mini board replace it. */
   showRelatedGame?: boolean;
 }
 
-export default function PositionBoard({ moveSequence, onBack, onReset, relatedGame, onSwitchToGame, moveStats, selectedMoveSan, showRelatedGame = true }: Props) {
+export default function PositionBoard({
+  moveSequence, onBack, onReset, onForward, onEnd, onJumpTo, fullLine,
+  relatedGame, onSwitchToGame, moveStats, selectedMoveSan, showRelatedGame = true,
+}: Props) {
   const [flipped, setFlipped] = useState(false);
   const boardContainerRef = useRef<HTMLDivElement>(null);
   const [squareSize, setSquareSize] = useState(480);
@@ -48,7 +55,7 @@ export default function PositionBoard({ moveSequence, onBack, onReset, relatedGa
     function measure() {
       const rect = el!.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0)
-        setSquareSize(Math.floor(Math.min(rect.width, rect.height)) - 16);
+        setSquareSize(Math.floor(Math.min(rect.width, rect.height)) - 4);
     }
     measure();
     const ro = new ResizeObserver(measure);
@@ -62,6 +69,25 @@ export default function PositionBoard({ moveSequence, onBack, onReset, relatedGa
 
   const fen = useMemo(() => fenFromMoves(moveSequence), [moveSequence]);
   const hasSequence = moveSequence.length > 0;
+
+  // Move list: the full explored line, with a cursor at the active ply. Moves
+  // before the cursor are played; moves at/after it are "ahead" (dimmed).
+  const list = fullLine ?? moveSequence;
+  const cursor = moveSequence.length;
+  const canForward = cursor < list.length;
+  const rows = useMemo(() => {
+    const out: { no: number; w?: { san: string; i: number }; b?: { san: string; i: number } }[] = [];
+    list.forEach((san, i) => {
+      const no = Math.floor(i / 2) + 1;
+      if (i % 2 === 0) out.push({ no, w: { san, i } });
+      else {
+        const last = out[out.length - 1];
+        if (last && last.no === no && !last.b) last.b = { san, i };
+        else out.push({ no, b: { san, i } });
+      }
+    });
+    return out;
+  }, [list]);
 
   const arrows = useMemo((): Arrow[] => {
     if (!moveStats?.length) return [];
@@ -82,64 +108,21 @@ export default function PositionBoard({ moveSequence, onBack, onReset, relatedGa
     return selected ? [...others, selected] : others;
   }, [fen, moveStats, selectedMoveSan]);
 
-  return (
-    <div className="flex flex-col flex-1 overflow-hidden p-3 gap-3 bg-surface">
-      {/* Position header */}
-      <div className="shrink-0 space-y-1">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className={`font-mono text-body-md flex-1 truncate min-w-0 ${hasSequence ? "text-on-surface" : "text-on-surface-variant"}`}>
-            {hasSequence ? formatMoveSequence(moveSequence) : "Starting position"}
-          </span>
-          {/* Standard icon buttons — circular with state-layer overlay */}
-          <button
-            onClick={onBack}
-            disabled={!hasSequence}
-            className={`shrink-0 w-8 h-8 inline-flex items-center justify-center rounded-full text-on-surface-variant text-label-md hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard ${!hasSequence ? "invisible" : ""}`}
-            title="Undo last move"
-          >←</button>
-          <button
-            onClick={onReset}
-            disabled={!hasSequence}
-            className={`shrink-0 w-8 h-8 inline-flex items-center justify-center rounded-full text-on-surface-variant text-label-md hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard ${!hasSequence ? "invisible" : ""}`}
-            title="Reset to starting position"
-          >✕</button>
-          <button
-            onClick={() => setFlipped((f) => !f)}
-            className="shrink-0 w-8 h-8 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
-            title="Flip board"
-          >
-            <IconFlip />
-          </button>
-        </div>
-        {showRelatedGame && <div className="h-4 flex items-center">
-          {displayedGame && (
-            <button
-              onClick={onSwitchToGame}
-              className="text-body-sm text-on-surface-variant hover:text-on-surface transition-colors duration-short3 ease-standard flex items-center gap-1 w-fit"
-            >
-              →{" "}
-              <span>
-                {displayedGame.white} <span className="text-outline">vs</span> {displayedGame.black}
-              </span>
-              {displayedGame.result && (
-                <span className="ml-1">
-                  {displayedGame.result === "1/2-1/2" ? "½-½" : displayedGame.result}
-                </span>
-              )}
-              {displayedGame.date && (
-                <span className="text-outline">{displayedGame.date.slice(0, 4)}</span>
-              )}
-              <span className="ml-1 text-outline">[Tab]</span>
-            </button>
-          )}
-        </div>}
-      </div>
+  const navBtn = "shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-full text-on-surface-variant text-body-md hover:bg-on-surface/8 active:bg-on-surface/12 disabled:opacity-30 disabled:hover:bg-transparent transition-colors duration-short3 ease-standard";
+  const moveCls = (i: number) =>
+    `px-1 rounded-sm font-mono ${onJumpTo ? "cursor-pointer" : ""} ${
+      i === cursor - 1
+        ? "bg-secondary-container text-on-secondary-container"
+        : i >= cursor
+        ? "text-on-surface-variant/50 hover:bg-on-surface/8"
+        : "text-on-surface hover:bg-on-surface/8"
+    }`;
+  const moveClick = (i: number) => (onJumpTo ? () => onJumpTo(i + 1) : undefined);
 
-      {/* Board */}
-      <div
-        ref={boardContainerRef}
-        className="flex-1 min-h-0 min-w-0 overflow-hidden flex items-center justify-center"
-      >
+  return (
+    <div className="flex flex-1 overflow-hidden p-2 gap-2 bg-surface min-h-0 min-w-0">
+      {/* Board (left) — scales to fit the panel */}
+      <div ref={boardContainerRef} className="flex-1 min-h-0 min-w-0 overflow-hidden flex items-center justify-center">
         <div style={{ width: squareSize, height: squareSize, flexShrink: 0 }}>
           <Chessboard
             options={{
@@ -154,6 +137,43 @@ export default function PositionBoard({ moveSequence, onBack, onReset, relatedGa
               boardStyle: { alignContent: "start" },
             }}
           />
+        </div>
+      </div>
+
+      {/* Controls (right) — nav arrows, optional related game, scrollable move list */}
+      <div className="w-40 shrink-0 flex flex-col min-h-0 gap-1.5">
+        <div className="flex items-center gap-0.5 shrink-0">
+          <button className={navBtn} onClick={onReset} disabled={!hasSequence} title="Rewind to start">⏮</button>
+          <button className={navBtn} onClick={onBack} disabled={!hasSequence} title="Back">‹</button>
+          {onForward && <button className={navBtn} onClick={onForward} disabled={!canForward} title="Forward">›</button>}
+          {onEnd && <button className={navBtn} onClick={onEnd} disabled={!canForward} title="To end">⏭</button>}
+          <button className={`${navBtn} ml-auto`} onClick={() => setFlipped((f) => !f)} title="Flip board"><IconFlip /></button>
+        </div>
+
+        {showRelatedGame && displayedGame && (
+          <button
+            onClick={onSwitchToGame}
+            className="shrink-0 text-body-sm text-on-surface-variant hover:text-on-surface transition-colors duration-short3 ease-standard text-left truncate"
+            title={`${displayedGame.white} vs ${displayedGame.black}`}
+          >
+            → {displayedGame.white} <span className="text-outline">vs</span> {displayedGame.black}
+            {displayedGame.result && <span className="ml-1">{displayedGame.result === "1/2-1/2" ? "½-½" : displayedGame.result}</span>}
+            <span className="ml-1 text-outline">[Tab]</span>
+          </button>
+        )}
+
+        <div className="flex-1 min-h-0 overflow-y-auto text-body-sm leading-6">
+          {rows.length === 0 ? (
+            <span className="text-on-surface-variant">Starting position</span>
+          ) : (
+            rows.map((r) => (
+              <span key={r.no} className="mr-1 whitespace-nowrap">
+                <span className="text-on-surface-variant select-none">{r.no}.</span>{" "}
+                {r.w && <span className={moveCls(r.w.i)} onClick={moveClick(r.w.i)}>{r.w.san}</span>}
+                {r.b && <> <span className={moveCls(r.b.i)} onClick={moveClick(r.b.i)}>{r.b.san}</span></>}
+              </span>
+            ))
+          )}
         </div>
       </div>
     </div>

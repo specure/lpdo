@@ -746,6 +746,7 @@ export default function App() {
                   moveSequence={moveSequence}
                   onBack={handleMoveBack}
                   onReset={handleMoveReset}
+                  onJumpTo={(n) => setMoveSequence((s) => s.slice(0, n))}
                   moveStats={positionMoveStats}
                   selectedMoveSan={positionSelectedSan}
                   relatedGame={lastSelectedGame ?? topGame}

@@ -61,7 +61,16 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // ── Opening explorer (A + B), always on ─────────────────────────────────────
-  const [moveSequence, setMoveSequence] = useState<string[]>([]);
+  // Cursor model: `line` is the full explored line, `ply` the current depth. The
+  // active sequence (board position, filters, move-stats) is line[0..ply]. Back/
+  // forward just move the cursor; clicking a new move from B branches from here.
+  const [line, setLine] = useState<string[]>([]);
+  const [ply, setPly] = useState(0);
+  const moveSequence = line.slice(0, ply);
+  function appendMove(mv: string) {
+    setLine((prev) => (prev[ply] === mv ? prev : [...prev.slice(0, ply), mv]));
+    setPly((p) => p + 1);
+  }
   const [moveStats, setMoveStats] = useState<MoveStats[]>([]);
   const [movesLoading, setMovesLoading] = useState(false);
   const movesAbortRef = useRef<AbortController | null>(null);
@@ -194,6 +203,26 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const panel = "bg-surface-container-low border border-outline/40 rounded-md overflow-hidden flex flex-col min-h-0 min-w-0";
   const anyFilter = p1 || p2 || event || dateFrom || dateTo;
 
+  // Resizable game-list columns. White/Black/Result/Year have user-draggable
+  // widths (persisted); Event fills the remainder so no space is wasted.
+  type ColKey = "white" | "black" | "result" | "year";
+  const [colW, setColW] = useState<Record<ColKey, number>>(() => {
+    try { const s = localStorage.getItem("gamesColWidths"); if (s) return JSON.parse(s); } catch { /* ignore */ }
+    return { white: 170, black: 170, result: 48, year: 52 };
+  });
+  useEffect(() => { try { localStorage.setItem("gamesColWidths", JSON.stringify(colW)); } catch { /* ignore */ } }, [colW]);
+  const gridCols = `${colW.white}px ${colW.black}px ${colW.result}px ${colW.year}px minmax(0,1fr)`;
+  function startResize(key: ColKey, e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startW = colW[key];
+    const onMove = (ev: MouseEvent) => setColW((w) => ({ ...w, [key]: Math.max(36, startW + (ev.clientX - startX)) }));
+    const onUp = () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
   return (
     <div className="flex flex-1 overflow-hidden">
       {/* ── Collapsible filter rail ─────────────────────────────────────────── */}
@@ -248,8 +277,12 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
         <div className={panel} style={{ gridArea: "a" }}>
           <PositionBoard
             moveSequence={moveSequence}
-            onBack={() => setMoveSequence((s) => s.slice(0, -1))}
-            onReset={() => setMoveSequence([])}
+            fullLine={line}
+            onBack={() => setPly((p) => Math.max(0, p - 1))}
+            onReset={() => setPly(0)}
+            onForward={() => setPly((p) => Math.min(line.length, p + 1))}
+            onEnd={() => setPly(line.length)}
+            onJumpTo={(n) => setPly(Math.max(0, Math.min(line.length, n)))}
             moveStats={moveStats}
             selectedMoveSan={moveStats[0]?.mv ?? null}
             showRelatedGame={false}
@@ -275,7 +308,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
               {moveStats.map((stat) => (
                 <button
                   key={stat.mv}
-                  onClick={() => setMoveSequence((s) => [...s, stat.mv])}
+                  onClick={() => appendMove(stat.mv)}
                   className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
                 >
                   <span className="w-24 font-mono truncate text-left">{movePrefix}{stat.mv}</span>
@@ -298,10 +331,23 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
           </div>
         </div>
 
-        {/* D — game list */}
+        {/* D — game list (resizable columns) */}
         <div className={panel} style={{ gridArea: "d" }}>
           <div className="px-3 py-2 shrink-0 text-label-md text-on-surface-variant border-b border-outline/40">
             {loading ? "Loading…" : total !== null ? `${total.toLocaleString()} game${total !== 1 ? "s" : ""}` : ""}
+          </div>
+          {/* Column header with drag-to-resize handles */}
+          <div className="shrink-0 grid items-center text-label-sm text-on-surface-variant border-b border-outline/40 select-none" style={{ gridTemplateColumns: gridCols }}>
+            {(["white", "black", "result", "year"] as ColKey[]).map((k) => (
+              <div key={k} className="relative px-3 py-1 truncate">
+                {k === "white" ? "White" : k === "black" ? "Black" : k === "result" ? "Result" : "Year"}
+                <span
+                  onMouseDown={(e) => startResize(k, e)}
+                  className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-primary/40"
+                />
+              </div>
+            ))}
+            <div className="px-3 py-1 truncate">Event</div>
           </div>
           <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto">
             {error && <div className="p-4 text-center text-error text-body-md">{error}</div>}
@@ -315,18 +361,16 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                 <button
                   key={game.id}
                   onClick={() => setSelectedGame(game)}
-                  className={`w-full flex items-baseline gap-2 px-3 py-1.5 text-body-sm whitespace-nowrap transition-colors duration-short3 ease-standard ${
+                  style={{ display: "grid", gridTemplateColumns: gridCols }}
+                  className={`w-full items-baseline text-body-sm text-left transition-colors duration-short3 ease-standard ${
                     selected ? "bg-secondary-container text-on-secondary-container" : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
                   }`}
                 >
-                  <span className="min-w-0 flex-[2] truncate text-left">
-                    {game.white}{game.white_elo ? <span className={subText}> {game.white_elo}</span> : null}
-                    <span className={subText}> – </span>
-                    {game.black}{game.black_elo ? <span className={subText}> {game.black_elo}</span> : null}
-                  </span>
-                  {game.result && <span className="shrink-0 tabular-nums">{game.result === "1/2-1/2" ? "½-½" : game.result}</span>}
-                  {game.date && <span className={`shrink-0 ${subText}`}>{game.date.slice(0, 4)}</span>}
-                  {game.event && <span className={`min-w-0 flex-1 truncate text-left ${subText}`}>{game.event}</span>}
+                  <span className="px-3 py-1.5 truncate">{game.white}{game.white_elo ? <span className={subText}> {game.white_elo}</span> : null}</span>
+                  <span className="px-3 py-1.5 truncate">{game.black}{game.black_elo ? <span className={subText}> {game.black_elo}</span> : null}</span>
+                  <span className="px-3 py-1.5 truncate tabular-nums">{game.result ? (game.result === "1/2-1/2" ? "½-½" : game.result) : ""}</span>
+                  <span className={`px-3 py-1.5 truncate ${subText}`}>{game.date?.slice(0, 4) ?? ""}</span>
+                  <span className={`px-3 py-1.5 truncate ${subText}`}>{game.event ?? ""}</span>
                 </button>
               );
             })}
