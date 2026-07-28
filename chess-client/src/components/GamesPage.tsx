@@ -252,14 +252,12 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
             onReset={() => setMoveSequence([])}
             moveStats={moveStats}
             selectedMoveSan={moveStats[0]?.mv ?? null}
-            relatedGame={games[0] ?? null}
-            onSwitchToGame={() => { if (games[0]) setSelectedGame(games[0]); }}
+            showRelatedGame={false}
           />
         </div>
 
         {/* B — opening-explorer moves */}
         <div className={panel} style={{ gridArea: "b" }}>
-          <div className="px-3 py-2 shrink-0 text-label-md text-on-surface-variant uppercase tracking-wider border-b border-outline/40">Moves</div>
           {movesLoading ? (
             <div className="p-3 text-center text-on-surface-variant text-body-sm">Loading…</div>
           ) : moveStats.length === 0 ? (
@@ -267,12 +265,12 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
           ) : (
             <div className="flex-1 overflow-y-auto p-2">
               <div className="flex items-center text-label-sm text-on-surface-variant px-2 mb-1 select-none">
-                <span className="w-20">Move</span>
-                <span className="w-16 text-right">Games</span>
-                <span className="w-9 text-right">W%</span>
-                <span className="w-9 text-right">D%</span>
-                <span className="w-9 text-right">L%</span>
-                <span className="flex-1 text-right">Last</span>
+                <span className="w-24">Move</span>
+                <span className="w-20 text-right">Games</span>
+                <span className="w-10 text-right">W%</span>
+                <span className="w-10 text-right">D%</span>
+                <span className="w-10 text-right">L%</span>
+                <span className="w-16 text-right">Last</span>
               </div>
               {moveStats.map((stat) => (
                 <button
@@ -280,12 +278,12 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                   onClick={() => setMoveSequence((s) => [...s, stat.mv])}
                   className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
                 >
-                  <span className="w-20 font-mono truncate text-left">{movePrefix}{stat.mv}</span>
-                  <span className="w-16 text-right">{stat.games.toLocaleString()}</span>
-                  <span className="w-9 text-right text-success">{Math.round(stat.w_pct)}</span>
-                  <span className="w-9 text-right text-on-surface-variant">{Math.round(stat.d_pct)}</span>
-                  <span className="w-9 text-right text-error">{Math.round(stat.l_pct)}</span>
-                  <span className="flex-1 text-right text-on-surface-variant">{stat.last_played?.slice(0, 4) ?? "—"}</span>
+                  <span className="w-24 font-mono truncate text-left">{movePrefix}{stat.mv}</span>
+                  <span className="w-20 text-right">{stat.games.toLocaleString()}</span>
+                  <span className="w-10 text-right text-success">{Math.round(stat.w_pct)}</span>
+                  <span className="w-10 text-right text-on-surface-variant">{Math.round(stat.d_pct)}</span>
+                  <span className="w-10 text-right text-error">{Math.round(stat.l_pct)}</span>
+                  <span className="w-16 text-right text-on-surface-variant">{stat.last_played?.slice(0, 4) ?? "—"}</span>
                 </button>
               ))}
             </div>
@@ -317,25 +315,18 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                 <button
                   key={game.id}
                   onClick={() => setSelectedGame(game)}
-                  className={`w-full text-left px-4 py-3 transition-colors duration-short3 ease-standard ${
+                  className={`w-full flex items-baseline gap-2 px-3 py-1.5 text-body-sm whitespace-nowrap transition-colors duration-short3 ease-standard ${
                     selected ? "bg-secondary-container text-on-secondary-container" : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
                   }`}
                 >
-                  <div className="text-body-md truncate flex items-center gap-1.5">
-                    <span className={`w-2 h-2 rounded-full shrink-0 ${selected ? "bg-on-secondary-container" : "bg-on-surface"}`} />
-                    <span className="truncate">{game.white}</span>
-                    {game.white_elo && <span className={`text-body-sm shrink-0 ${subText}`}>({game.white_elo})</span>}
-                  </div>
-                  <div className="text-body-md truncate flex items-center gap-1.5">
-                    <span className={`w-2 h-2 rounded-full bg-transparent shrink-0 border ${selected ? "border-on-secondary-container" : "border-on-surface-variant"}`} />
-                    <span className="truncate">{game.black}</span>
-                    {game.black_elo && <span className={`text-body-sm shrink-0 ${subText}`}>({game.black_elo})</span>}
-                  </div>
-                  <div className={`text-body-sm mt-0.5 flex gap-2 truncate ${subText}`}>
-                    {game.result && <span className={selected ? "" : "text-on-surface"}>{game.result === "1/2-1/2" ? "½-½" : game.result}</span>}
-                    {game.date && <span>{game.date.slice(0, 10)}</span>}
-                    {game.event && <span className="truncate">{game.event}</span>}
-                  </div>
+                  <span className="min-w-0 flex-[2] truncate text-left">
+                    {game.white}{game.white_elo ? <span className={subText}> {game.white_elo}</span> : null}
+                    <span className={subText}> – </span>
+                    {game.black}{game.black_elo ? <span className={subText}> {game.black_elo}</span> : null}
+                  </span>
+                  {game.result && <span className="shrink-0 tabular-nums">{game.result === "1/2-1/2" ? "½-½" : game.result}</span>}
+                  {game.date && <span className={`shrink-0 ${subText}`}>{game.date.slice(0, 4)}</span>}
+                  {game.event && <span className={`min-w-0 flex-1 truncate text-left ${subText}`}>{game.event}</span>}
                 </button>
               );
             })}

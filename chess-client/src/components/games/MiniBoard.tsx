@@ -25,8 +25,10 @@ export default function MiniBoard({
         {game.white} – {game.black}
         {game.result && <span className="text-on-surface-variant"> · {game.result === "1/2-1/2" ? "½-½" : game.result}</span>}
       </div>
-      <div className="flex-1 min-h-0 flex items-start justify-center">
-        <div style={{ width: "min(100%, 340px)", aspectRatio: "1 / 1" }}>
+      <div className="flex-1 min-h-0 min-w-0 flex items-center justify-center overflow-hidden">
+        {/* Largest square that fits the frame: height drives width via the aspect
+            ratio, and max-width clamps it back down when the frame is taller than wide. */}
+        <div style={{ height: "100%", maxWidth: "100%", aspectRatio: "1 / 1" }}>
           <Chessboard
             options={{
               position: fen,

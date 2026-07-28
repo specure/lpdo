@@ -32,9 +32,12 @@ interface Props {
   onSwitchToGame?: () => void;
   moveStats?: MoveStats[];
   selectedMoveSan?: string | null;
+  /** Show the "→ White vs Black [Tab]" related-game line under the header.
+   *  Off on the Games page, where a dedicated game list + mini board replace it. */
+  showRelatedGame?: boolean;
 }
 
-export default function PositionBoard({ moveSequence, onBack, onReset, relatedGame, onSwitchToGame, moveStats, selectedMoveSan }: Props) {
+export default function PositionBoard({ moveSequence, onBack, onReset, relatedGame, onSwitchToGame, moveStats, selectedMoveSan, showRelatedGame = true }: Props) {
   const [flipped, setFlipped] = useState(false);
   const boardContainerRef = useRef<HTMLDivElement>(null);
   const [squareSize, setSquareSize] = useState(480);
@@ -108,7 +111,7 @@ export default function PositionBoard({ moveSequence, onBack, onReset, relatedGa
             <IconFlip />
           </button>
         </div>
-        <div className="h-4 flex items-center">
+        {showRelatedGame && <div className="h-4 flex items-center">
           {displayedGame && (
             <button
               onClick={onSwitchToGame}
@@ -129,7 +132,7 @@ export default function PositionBoard({ moveSequence, onBack, onReset, relatedGa
               <span className="ml-1 text-outline">[Tab]</span>
             </button>
           )}
-        </div>
+        </div>}
       </div>
 
       {/* Board */}
