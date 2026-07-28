@@ -71,6 +71,8 @@ cp "$gui" "$OUT/lpdo_${VER}_amd64.deb"
 
 echo ">>> [6/6] publish + verify"
 mkdir -p "$DRAFTS"
+# Clear any older draft .debs so the dir only ever holds the current build.
+rm -f "$DRAFTS"/*.deb
 cp "$OUT"/lpdo_${VER}_amd64.deb "$OUT"/lpdo-cli_${VER}_amd64.deb "$OUT"/lpdo-server_${VER}_amd64.deb "$DRAFTS/"
 for f in "$DRAFTS"/lpdo_${VER}_amd64.deb "$DRAFTS"/lpdo-cli_${VER}_amd64.deb "$DRAFTS"/lpdo-server_${VER}_amd64.deb; do
   # dpkg-deb reports the *control* version — the authoritative one, not the filename.
