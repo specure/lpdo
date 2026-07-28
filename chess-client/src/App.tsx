@@ -12,6 +12,7 @@ import PrepView from "./components/prep/PrepView";
 import PrepPlayerList from "./components/prep/PrepPlayerList";
 import DirectoryBrowser from "./components/local/DirectoryBrowser";
 import LocalGameList from "./components/local/LocalGameList";
+import GamesList from "./components/GamesList";
 import HomeEmptyState from "./components/HomeEmptyState";
 import UpdateBanner from "./components/UpdateBanner";
 import ActivityIndicator from "./components/ActivityIndicator";
@@ -247,7 +248,7 @@ export default function App() {
   const [positionSelectedSan, setPositionSelectedSan] = useState<string | null>(null);
   const [showSetup, setShowSetup] = useState(false);
   const [showAddGame, setShowAddGame] = useState(false);
-  const [mode, setMode] = useState<"home" | "players" | "prep" | "local" | "maintenance">("home");
+  const [mode, setMode] = useState<"home" | "players" | "prep" | "games" | "local" | "maintenance">("home");
   // When set, focuses the player search input on the next render (used so the
   // Home screen's "Search a player" card can switch tabs and focus in one step).
   const [pendingSearchFocus, setPendingSearchFocus] = useState(false);
@@ -479,7 +480,7 @@ export default function App() {
 
           {/* Segmented mode switcher — outlined pill */}
           <div className="inline-flex items-center h-9 rounded-full border border-outline overflow-hidden">
-            {(["home", "players", "prep", "local"] as const).map((m) => (
+            {(["home", "players", "prep", "games", "local"] as const).map((m) => (
               <button
                 key={m}
                 onClick={() => setMode(m)}
@@ -489,7 +490,7 @@ export default function App() {
                     : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
                 }`}
               >
-                {m === "home" ? "Home" : m === "players" ? "Players" : m === "prep" ? "Prep" : "PGNs"}
+                {m === "home" ? "Home" : m === "players" ? "Players" : m === "prep" ? "Prep" : m === "games" ? "Games" : "PGNs"}
               </button>
             ))}
           </div>
@@ -648,7 +649,7 @@ export default function App() {
         />
       )}
 
-      {status === "disconnected" && (mode === "players" || mode === "prep") ? (
+      {status === "disconnected" && (mode === "players" || mode === "prep" || mode === "games") ? (
         <div className="flex-1 flex items-center justify-center bg-surface-dim">
           {/* M3 outlined card — Expressive uses xl (28px) corners */}
           <div className="max-w-md p-8 rounded-xl bg-surface-container-high text-center space-y-3">
@@ -767,6 +768,49 @@ export default function App() {
             </div>
           </div>
         </>
+      ) : mode === "games" ? (
+        <div className="flex flex-1 overflow-hidden">
+          {/* Panels 1 & 2 (filters+explorer, game list) — self-sizing two columns */}
+          <GamesList
+            selectedId={selectedGame?.id ?? null}
+            onSelect={handleSelectGame}
+            scopePublicOnly={scopePublicOnly}
+            scopeCollectionId={scopeCollectionId}
+            scopeIncludeDeleted={scopeIncludeDeleted}
+            moveSequence={moveSequence}
+            onMoveAppend={handleMoveAppend}
+            onPositionModeChange={setPositionModeActive}
+            onMoveStatsChange={setPositionMoveStats}
+            onSelectedMoveChange={setPositionSelectedSan}
+            onTopGameChange={setTopGame}
+          />
+          {/* Panel 3: board (game, or the position explorer's board) */}
+          <div className="flex-1 flex overflow-hidden">
+            {selectedGame ? (
+              <GameBoard
+                game={selectedGame}
+                moveSequence={positionModeActive ? moveSequence : undefined}
+                onBackToPosition={positionModeActive ? () => setSelectedGame(null) : undefined}
+                onGameMutated={onGameMutated}
+                onEditingChange={setEditing}
+              />
+            ) : positionModeActive ? (
+              <PositionBoard
+                moveSequence={moveSequence}
+                onBack={handleMoveBack}
+                onReset={handleMoveReset}
+                moveStats={positionMoveStats}
+                selectedMoveSan={positionSelectedSan}
+                relatedGame={topGame}
+                onSwitchToGame={() => { if (topGame) handleSelectGame(topGame); }}
+              />
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md">
+                Select a game
+              </div>
+            )}
+          </div>
+        </div>
       ) : null}
       {/* Each of these dialogs can mutate database contents (import/dedup/purge),
           so re-poll status on close so the Home Database section + empty-DB CTA
