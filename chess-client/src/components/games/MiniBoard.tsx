@@ -53,6 +53,9 @@ export default function MiniBoard({
               allowDrawingArrows: false,
               darkSquareStyle: { backgroundColor: "var(--color-board-game-dark)" },
               lightSquareStyle: { backgroundColor: "var(--color-board-game-light)" },
+              // Anchor the square grid to the top so react-chessboard's absolutely
+              // positioned animation layer lines up — without this pieces overshoot.
+              boardStyle: { alignContent: "start" },
             }}
           />
         </div>
