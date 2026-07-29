@@ -395,8 +395,17 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                   {/* D — game list (resizable columns) */}
                   <Panel defaultSize={62} minSize={25}>
                     <div className={panel}>
-                      <div className="px-3 py-2 shrink-0 text-label-md text-on-surface-variant border-b border-outline/40">
-                        {loading ? "Loading…" : total !== null ? `${total.toLocaleString()} game${total !== 1 ? "s" : ""}` : ""}
+                      <div className="px-3 py-2 shrink-0 text-label-md border-b border-outline/40 truncate" title={p1?.name}>
+                        {loading ? (
+                          <span className="text-on-surface-variant">Loading…</span>
+                        ) : p1 ? (
+                          <>
+                            <span className="text-on-surface">{p1.name}{p1Color === "white" ? " (White)" : p1Color === "black" ? " (Black)" : ""}</span>
+                            {total !== null && <span className="text-on-surface-variant"> · {total.toLocaleString()} game{total !== 1 ? "s" : ""}</span>}
+                          </>
+                        ) : (
+                          <span className="text-on-surface-variant">{total !== null ? `${total.toLocaleString()} game${total !== 1 ? "s" : ""}` : ""}</span>
+                        )}
                       </div>
                       {/* Column header with drag-to-resize handles */}
                       <div className="shrink-0 grid items-center text-label-sm text-on-surface-variant border-b border-outline/40 select-none" style={{ gridTemplateColumns: gridCols }}>
