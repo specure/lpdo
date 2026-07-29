@@ -12,7 +12,7 @@ import PrepView from "./components/prep/PrepView";
 import PrepPlayerList from "./components/prep/PrepPlayerList";
 import DirectoryBrowser from "./components/local/DirectoryBrowser";
 import LocalGameList from "./components/local/LocalGameList";
-import GamesList from "./components/GamesList";
+import GamesPage from "./components/GamesPage";
 import HomeEmptyState from "./components/HomeEmptyState";
 import UpdateBanner from "./components/UpdateBanner";
 import ActivityIndicator from "./components/ActivityIndicator";
@@ -746,6 +746,7 @@ export default function App() {
                   moveSequence={moveSequence}
                   onBack={handleMoveBack}
                   onReset={handleMoveReset}
+                  onJumpTo={(n) => setMoveSequence((s) => s.slice(0, n))}
                   moveStats={positionMoveStats}
                   selectedMoveSan={positionSelectedSan}
                   relatedGame={lastSelectedGame ?? topGame}
@@ -769,48 +770,11 @@ export default function App() {
           </div>
         </>
       ) : mode === "games" ? (
-        <div className="flex flex-1 overflow-hidden">
-          {/* Panels 1 & 2 (filters+explorer, game list) — self-sizing two columns */}
-          <GamesList
-            selectedId={selectedGame?.id ?? null}
-            onSelect={handleSelectGame}
-            scopePublicOnly={scopePublicOnly}
-            scopeCollectionId={scopeCollectionId}
-            scopeIncludeDeleted={scopeIncludeDeleted}
-            moveSequence={moveSequence}
-            onMoveAppend={handleMoveAppend}
-            onPositionModeChange={setPositionModeActive}
-            onMoveStatsChange={setPositionMoveStats}
-            onSelectedMoveChange={setPositionSelectedSan}
-            onTopGameChange={setTopGame}
-          />
-          {/* Panel 3: board (game, or the position explorer's board) */}
-          <div className="flex-1 flex overflow-hidden">
-            {selectedGame ? (
-              <GameBoard
-                game={selectedGame}
-                moveSequence={positionModeActive ? moveSequence : undefined}
-                onBackToPosition={positionModeActive ? () => setSelectedGame(null) : undefined}
-                onGameMutated={onGameMutated}
-                onEditingChange={setEditing}
-              />
-            ) : positionModeActive ? (
-              <PositionBoard
-                moveSequence={moveSequence}
-                onBack={handleMoveBack}
-                onReset={handleMoveReset}
-                moveStats={positionMoveStats}
-                selectedMoveSan={positionSelectedSan}
-                relatedGame={topGame}
-                onSwitchToGame={() => { if (topGame) handleSelectGame(topGame); }}
-              />
-            ) : (
-              <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md">
-                Select a game
-              </div>
-            )}
-          </div>
-        </div>
+        <GamesPage
+          scopePublicOnly={scopePublicOnly}
+          scopeCollectionId={scopeCollectionId}
+          scopeIncludeDeleted={scopeIncludeDeleted}
+        />
       ) : null}
       {/* Each of these dialogs can mutate database contents (import/dedup/purge),
           so re-poll status on close so the Home Database section + empty-DB CTA
