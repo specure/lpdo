@@ -31,12 +31,21 @@ export default function MoveList({
         : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
     }`;
 
+  // Keyboard nav when the move list has focus: ←/→ step, Home/End jump.
+  const last = game.moves.length;
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "ArrowLeft") { e.preventDefault(); setPly(Math.max(0, ply - 1)); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); setPly(Math.min(last, ply + 1)); }
+    else if (e.key === "Home") { e.preventDefault(); setPly(0); }
+    else if (e.key === "End") { e.preventDefault(); setPly(last); }
+  }
+
   if (game.moves.length === 0) {
     return <div className="p-3 text-center text-on-surface-variant text-body-sm">No moves</div>;
   }
 
   return (
-    <div className="h-full overflow-y-auto p-2 text-body-sm leading-6">
+    <div tabIndex={0} onKeyDown={onKeyDown} className="h-full overflow-y-auto p-2 text-body-sm leading-6 focus:outline-none focus-visible:ring-1 focus-visible:ring-primary/50">
       <span className="align-baseline">
         {rows.map((r) => (
           <span key={r.no} className="mr-1 whitespace-nowrap">

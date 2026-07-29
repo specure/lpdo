@@ -41,11 +41,17 @@ export default function PositionMoves({ moveSequence, onBack, onReset, onForward
     `px-1 rounded-sm font-mono ${onJumpTo ? "cursor-pointer" : ""} ${
       i === cursor - 1
         ? "bg-secondary-container text-on-secondary-container"
-        : i >= cursor
-        ? "text-on-surface-variant/50 hover:bg-on-surface/8"
         : "text-on-surface hover:bg-on-surface/8"
     }`;
   const moveClick = (i: number) => (onJumpTo ? () => onJumpTo(i + 1) : undefined);
+
+  // Keyboard nav when the move list has focus: ←/→ step, Home/End jump.
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "ArrowLeft") { e.preventDefault(); onBack(); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); onForward?.(); }
+    else if (e.key === "Home") { e.preventDefault(); onReset(); }
+    else if (e.key === "End") { e.preventDefault(); onEnd?.(); }
+  }
 
   return (
     <div className="flex flex-col h-full min-h-0 gap-1.5">
@@ -55,7 +61,7 @@ export default function PositionMoves({ moveSequence, onBack, onReset, onForward
         {onForward && <button className={navBtn} onClick={onForward} disabled={!canForward} title="Forward">›</button>}
         {onEnd && <button className={navBtn} onClick={onEnd} disabled={!canForward} title="To end">⏭</button>}
       </div>
-      <div className="flex-1 min-h-0 overflow-y-auto text-body-sm leading-6">
+      <div tabIndex={0} onKeyDown={onKeyDown} className="flex-1 min-h-0 overflow-y-auto text-body-sm leading-6 focus:outline-none focus-visible:ring-1 focus-visible:ring-primary/50 rounded-sm">
         {rows.length === 0 ? (
           <span className="text-on-surface-variant">Starting position</span>
         ) : (
