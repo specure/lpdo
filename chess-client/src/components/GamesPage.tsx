@@ -36,11 +36,15 @@ interface Props {
   scopePublicOnly: boolean;
   scopeCollectionId: number | null;
   scopeIncludeDeleted: boolean;
+  /** Players mode: locks Player 1 to this player (chosen via the external player
+   *  list) and scopes the games + explorer to them. Undefined on the Games page. */
+  player?: PlayerInfo | null;
 }
 
-export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeIncludeDeleted }: Props) {
+export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, player }: Props) {
+  const playerScoped = player !== undefined;
   // ── Filters ───────────────────────────────────────────────────────────────
-  const [p1, setP1] = useState<PlayerInfo | null>(null);
+  const [p1, setP1] = useState<PlayerInfo | null>(player ?? null);
   const [p1Color, setP1Color] = useState<ColorFilter>("any");
   const [p2, setP2] = useState<PlayerInfo | null>(null);
   const [p2Color, setP2Color] = useState<ColorFilter>("any");
@@ -82,6 +86,16 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const [selectedPly, setSelectedPly] = useState(0);
   const { game: loadedGame, loading: gameLoading } = useGamePgn(selectedGame?.id ?? null);
   useEffect(() => { setSelectedPly(0); }, [selectedGame?.id]);
+
+  // Players mode: when the externally-selected player changes, lock Player 1 to
+  // them and reset the explorer + selection to a clean slate for the new player.
+  useEffect(() => {
+    if (!playerScoped) return;
+    setP1(player ?? null);
+    setLine([]); setPly(0);
+    setSelectedGame(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [player?.id]);
 
   const firstMovesStr = moveSequence.join(" ");
 
@@ -172,13 +186,17 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     if (dateFrom) params.set("from", fromISO(dateFrom));
     if (dateTo) params.set("to", toISO(dateTo));
     if (scopePublicOnly) params.set("visibility", "public");
+    // Scope the explorer to the selected player (their repertoire), matching the
+    // game list — DB-wide only when no player is chosen.
+    const primary = p1 ?? p2;
+    if (primary) { params.set("player_id", String(primary.id)); params.set("color", p1 ? p1Color : p2Color); }
 
     fetch(`/api/position/moves?${params}`, { signal: movesAbortRef.current.signal })
       .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<MoveStats[]>; })
       .then((data) => { setMoveStats(data); setMovesLoading(false); })
       .catch((e) => { if (e instanceof DOMException && e.name === "AbortError") return; setMoveStats([]); setMovesLoading(false); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [firstMovesStr, dateFrom, dateTo, scopePublicOnly]);
+  }, [firstMovesStr, dateFrom, dateTo, scopePublicOnly, p1?.id, p1Color, p2?.id, p2Color]);
 
   // Explorer move-number prefix: White to move → "N.", Black to move → "N...".
   const moveNo = Math.floor(moveSequence.length / 2) + 1;
@@ -250,13 +268,17 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
           <div className="p-3 space-y-3">
             <div>
               <div className="text-label-md text-on-surface-variant mb-1.5 flex items-center justify-between">
-                <span>Player 1</span> {colorRow(p1Color, setP1C)}
+                <span>{playerScoped ? "Player" : "Player 1"}</span> {colorRow(p1Color, setP1C)}
               </div>
-              <PlayerPicker label="" value={p1} onPick={setP1} excludeId={p2?.id} />
+              {playerScoped ? (
+                <div className="px-3 py-2 rounded-sm bg-surface-container text-body-md text-on-surface truncate">{p1?.name ?? "—"}</div>
+              ) : (
+                <PlayerPicker label="" value={p1} onPick={setP1} excludeId={p2?.id} />
+              )}
             </div>
             <div>
               <div className="text-label-md text-on-surface-variant mb-1.5 flex items-center justify-between">
-                <span>Player 2</span> {colorRow(p2Color, setP2C)}
+                <span>{playerScoped ? "Opponent" : "Player 2"}</span> {colorRow(p2Color, setP2C)}
               </div>
               <PlayerPicker label="" value={p2} onPick={setP2} excludeId={p1?.id} />
             </div>

@@ -2,9 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import PlayerList from "./components/PlayerList";
-import GameList from "./components/GameList";
 import GameBoard from "./components/GameBoard";
-import PositionBoard from "./components/PositionBoard";
 import SetupWizard from "./components/SetupWizard";
 import MaintenancePanel from "./components/MaintenancePanel";
 import AddGameDialog from "./components/AddGameDialog";
@@ -18,7 +16,7 @@ import UpdateBanner from "./components/UpdateBanner";
 import ActivityIndicator from "./components/ActivityIndicator";
 import { loadMyPlayer } from "./components/MyStatsWidget";
 import { useUpdateCheck } from "./hooks/useUpdateCheck";
-import { GameSummary, LocalGame, MoveStats, PlayerInfo, PrepContext, StatusInfo } from "./types";
+import { GameSummary, LocalGame, PlayerInfo, PrepContext, StatusInfo } from "./types";
 
 type ServerStatus = "checking" | "connected" | "disconnected";
 
@@ -237,15 +235,7 @@ export default function App() {
   const [selectedPlayer, setSelectedPlayer] = useState<PlayerInfo | null>(null);
   // Additional players Ctrl/Cmd-clicked alongside the anchor (for merging two).
   const [selectedExtras, setSelectedExtras] = useState<PlayerInfo[]>([]);
-  const [selectedGame, setSelectedGame] = useState<GameSummary | null>(null);
-  const [lastSelectedGame, setLastSelectedGame] = useState<GameSummary | null>(null);
-  const [topGame, setTopGame] = useState<GameSummary | null>(null);
-  const [moveSequence, setMoveSequence] = useState<string[]>([]);
-  const [positionModeActive, setPositionModeActive] = useState(false);
-  // True while the moves editor is active, so list arrow-key nav is suspended.
-  const [editing, setEditing] = useState(false);
-  const [positionMoveStats, setPositionMoveStats] = useState<MoveStats[]>([]);
-  const [positionSelectedSan, setPositionSelectedSan] = useState<string | null>(null);
+  const [playersCollapsed, setPlayersCollapsed] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
   const [showAddGame, setShowAddGame] = useState(false);
   const [mode, setMode] = useState<"home" | "players" | "prep" | "games" | "local" | "maintenance">("home");
@@ -284,7 +274,7 @@ export default function App() {
     const v = localStorage.getItem("scopeCollectionId");
     return v && v !== "null" ? Number(v) : null;
   });
-  const [scopeIncludeDeleted, setScopeIncludeDeleted] = useState<boolean>(
+  const [scopeIncludeDeleted] = useState<boolean>(
     () => localStorage.getItem("scopeIncludeDeleted") === "1"
   );
   const [collectionsList, setCollectionsList] = useState<{ id: number; name: string; game_count: number }[]>([]);
@@ -293,16 +283,7 @@ export default function App() {
   const [gameMutationKey, setGameMutationKey] = useState(0);
   const onGameMutated = () => setGameMutationKey((k) => k + 1);
   // Bumped after a player merge so the player search list re-fetches.
-  const [playerReloadKey, setPlayerReloadKey] = useState(0);
-  const handlePlayersMerged = (_keepId: number, dropId: number) => {
-    refreshServerStatus();
-    onGameMutated();                       // kept player's games changed
-    setPlayerReloadKey((k) => k + 1);      // refresh player search results
-    removeRecentPlayer(dropId);            // the dropped player no longer exists
-    if (selectedPlayer?.id === dropId) setSelectedPlayer(null);
-    setSelectedExtras([]);
-  };
-
+  const [playerReloadKey] = useState(0);
   useEffect(() => {
     localStorage.setItem("scopePublicOnly", scopePublicOnly ? "1" : "0");
   }, [scopePublicOnly]);
@@ -337,13 +318,6 @@ export default function App() {
     setSelectedPlayer(player);
     setSelectedExtras([]);
     addRecentPlayer(player);
-    setSelectedGame(null);
-    setLastSelectedGame(null);
-    setTopGame(null);
-    setMoveSequence([]);
-    setPositionModeActive(false);
-    setPositionMoveStats([]);
-    setPositionSelectedSan(null);
   }
 
   // A recent player carries a persisted (possibly stale) id — re-resolve it to
@@ -359,11 +333,6 @@ export default function App() {
     handleSelectPlayer(fresh, additive);
   }
 
-  function handleSelectGame(game: GameSummary) {
-    setSelectedGame(game);
-    setLastSelectedGame(game);
-  }
-
   // Home "My games" card: open the Players view scoped to the user's own games —
   // their profile player plus the private "My games" collection filter.
   function handleMyGames() {
@@ -376,27 +345,13 @@ export default function App() {
     setMode("players");
   }
 
-  function handleShowGameInPlayers(player: PlayerInfo, game: GameSummary) {
-    // Clear any prep-context overlay so the normal Players view shows up,
-    // pick the player, then pre-select the game.
+  function handleShowGameInPlayers(player: PlayerInfo, _game: GameSummary) {
+    // Clear any prep-context overlay so the normal Players view shows up and pick
+    // the player. (Pre-selecting the specific game is a follow-up once GamesPage
+    // accepts an initial selection.)
     setPrepContext(null);
     handleSelectPlayer(player);
-    setSelectedGame(game);
-    setLastSelectedGame(game);
     setMode("players");
-  }
-
-  function handleMoveAppend(mv: string) {
-    setMoveSequence((s) => [...s, mv]);
-    setSelectedGame(null);
-  }
-
-  function handleMoveBack() {
-    setMoveSequence((s) => s.slice(0, -1));
-  }
-
-  function handleMoveReset() {
-    setMoveSequence([]);
   }
 
   // Resolve the pending focus request once Players mode is active and the
@@ -417,23 +372,6 @@ export default function App() {
     }
   }, [mode, prepContext, selectedPlayer, recentPlayers]);
 
-  // Tab: switch between position mode and game mode
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if (e.key !== "Tab" || !positionModeActive) return;
-      const tag = (document.activeElement as HTMLElement)?.tagName?.toLowerCase();
-      if (tag === "input" || tag === "textarea" || tag === "select") return;
-      e.preventDefault();
-      if (selectedGame) {
-        setSelectedGame(null);
-      } else {
-        const target = lastSelectedGame ?? topGame;
-        if (target) handleSelectGame(target);
-      }
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [positionModeActive, selectedGame, lastSelectedGame, topGame]);
 
   return (
     <div className={`flex flex-col h-screen bg-surface text-on-surface${scheme === "light" ? " light" : ""}${hc ? " hc" : ""}`}>
@@ -675,98 +613,61 @@ export default function App() {
             />
           </div>
 
-          {/* Players view — always mounted, hidden when prep is active */}
+          {/* Players view — always mounted, hidden when prep is active.
+              Read-only analysis layout (#219) scoped to the selected player, with
+              a collapsible player list on the left (filters collapse inside it). */}
           <div className={mode === "prep" ? "hidden" : "flex flex-1 overflow-hidden"}>
-            {/* Panel 1: prep player list or normal player search */}
-            <div className="w-56 shrink-0 overflow-hidden flex flex-col">
-              {prepContext ? (
-                <PrepPlayerList
-                  context={prepContext}
-                  onSelectPlayer={handleSelectPlayer}
-                  onBack={() => { setPrepContext(null); setMode("prep"); }}
-                  onClose={() => setPrepContext(null)}
-                />
-              ) : (
-                <PlayerList
-                  selectedId={selectedPlayer?.id ?? null}
-                  selectedIds={selectedPlayer ? [selectedPlayer.id, ...selectedExtras.map((p) => p.id)] : []}
-                  onSelect={handleSelectPlayer}
-                  onSelectRecent={handleSelectRecent}
-                  inputRef={playerSearchRef}
-                  recentPlayers={recentPlayers}
-                  onRemoveRecent={removeRecentPlayer}
-                  reloadKey={playerReloadKey}
-                />
-              )}
-            </div>
-
-            {/* Panel 2: game list for selected player */}
-            {selectedPlayer && (
-              <div className="w-72 shrink-0 overflow-hidden flex flex-col">
-                <GameList
-                  player={selectedPlayer}
-                  selectedId={selectedGame?.id ?? null}
-                  onSelect={handleSelectGame}
-                  moveSequence={moveSequence}
-                  onMoveAppend={handleMoveAppend}
-                  onMoveBack={handleMoveBack}
-                  onMoveReset={handleMoveReset}
-                  onPositionModeChange={setPositionModeActive}
-                  arrowKeysActive={positionModeActive && selectedGame === null}
-                  editing={editing}
-                  onTopGameChange={setTopGame}
-                  onMoveStatsChange={setPositionMoveStats}
-                  onSelectedMoveChange={setPositionSelectedSan}
-                  scopePublicOnly={scopePublicOnly}
-                  setScopePublicOnly={setScopePublicOnly}
-                  scopeCollectionId={scopeCollectionId}
-                  setScopeCollectionId={setScopeCollectionId}
-                  scopeIncludeDeleted={scopeIncludeDeleted}
-                  setScopeIncludeDeleted={setScopeIncludeDeleted}
-                  scopeCollections={collectionsList}
-                  reloadKey={gameMutationKey}
-                  onPlayersMerged={handlePlayersMerged}
-                  coSelected={selectedExtras}
-                />
+            {/* Collapsible player list (prep opponents or normal search) */}
+            {playersCollapsed ? (
+              <button
+                onClick={() => setPlayersCollapsed(false)}
+                className="w-8 shrink-0 flex flex-col items-center gap-2 pt-3 bg-surface-container-low border-r border-outline/40 text-on-surface-variant hover:text-on-surface hover:bg-on-surface/4 transition-colors duration-short3 ease-standard"
+                title="Show players"
+              >
+                <span className="text-body-md">»</span>
+                <span className="text-label-sm uppercase tracking-wider" style={{ writingMode: "vertical-rl" }}>Players</span>
+              </button>
+            ) : (
+              <div className="w-56 shrink-0 overflow-hidden flex flex-col border-r border-outline/40">
+                <div className="px-3 py-2 flex items-center justify-between border-b border-outline/40">
+                  <span className="text-label-md text-on-surface-variant uppercase tracking-wider">{prepContext ? "Opponents" : "Players"}</span>
+                  <button onClick={() => setPlayersCollapsed(true)} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide players">«</button>
+                </div>
+                {prepContext ? (
+                  <PrepPlayerList
+                    context={prepContext}
+                    onSelectPlayer={handleSelectPlayer}
+                    onBack={() => { setPrepContext(null); setMode("prep"); }}
+                    onClose={() => setPrepContext(null)}
+                  />
+                ) : (
+                  <PlayerList
+                    selectedId={selectedPlayer?.id ?? null}
+                    selectedIds={selectedPlayer ? [selectedPlayer.id, ...selectedExtras.map((p) => p.id)] : []}
+                    onSelect={handleSelectPlayer}
+                    onSelectRecent={handleSelectRecent}
+                    inputRef={playerSearchRef}
+                    recentPlayers={recentPlayers}
+                    onRemoveRecent={removeRecentPlayer}
+                    reloadKey={playerReloadKey}
+                  />
+                )}
               </div>
             )}
 
-            {/* Panel 3: board */}
-            <div className="flex-1 flex overflow-hidden">
-              {selectedGame ? (
-                <GameBoard
-                  game={selectedGame}
-                  moveSequence={positionModeActive ? moveSequence : undefined}
-                  onBackToPosition={positionModeActive ? () => setSelectedGame(null) : undefined}
-                  onGameMutated={onGameMutated}
-                  onEditingChange={setEditing}
-                />
-              ) : positionModeActive ? (
-                <PositionBoard
-                  moveSequence={moveSequence}
-                  onBack={handleMoveBack}
-                  onReset={handleMoveReset}
-                  onJumpTo={(n) => setMoveSequence((s) => s.slice(0, n))}
-                  moveStats={positionMoveStats}
-                  selectedMoveSan={positionSelectedSan}
-                  relatedGame={lastSelectedGame ?? topGame}
-                  onSwitchToGame={() => {
-                    const target = lastSelectedGame ?? topGame;
-                    if (target) handleSelectGame(target);
-                  }}
-                />
-              ) : prepContext || selectedPlayer ? (
-                <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md">
-                  {prepContext
-                    ? "Select an opponent to view their games"
-                    : "Select a game"}
-                </div>
-              ) : (
-                <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md">
-                  Search for a player
-                </div>
-              )}
-            </div>
+            {/* Analysis mosaic scoped to the selected player */}
+            {selectedPlayer ? (
+              <GamesPage
+                player={selectedPlayer}
+                scopePublicOnly={scopePublicOnly}
+                scopeCollectionId={scopeCollectionId}
+                scopeIncludeDeleted={scopeIncludeDeleted}
+              />
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md">
+                {prepContext ? "Select an opponent to view their games" : "Search for a player"}
+              </div>
+            )}
           </div>
         </>
       ) : mode === "games" ? (
