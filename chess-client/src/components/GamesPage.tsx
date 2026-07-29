@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { Chess } from "chess.js";
 import { GameSummary, MoveStats, PlayerInfo } from "../types";
 import PlayerPicker from "./PlayerPicker";
@@ -201,8 +202,11 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     );
   }
 
-  const panel = "bg-surface-container-low border border-outline/40 rounded-md overflow-hidden flex flex-col min-h-0 min-w-0";
+  const panel = "bg-surface-container-low border border-outline/40 rounded-md overflow-hidden flex flex-col min-h-0 min-w-0 h-full w-full";
   const anyFilter = p1 || p2 || event || dateFrom || dateTo;
+  // Resizable-panel dividers: thin, transparent, highlight on hover/drag.
+  const vHandle = "w-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-state=drag]:bg-primary/50 transition-colors";
+  const hHandle = "h-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-state=drag]:bg-primary/50 transition-colors";
 
   // Resizable game-list columns. White/Black/Result/Year have user-draggable
   // widths (persisted); Event fills the remainder so no space is wasted.
@@ -265,157 +269,189 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
         </div>
       )}
 
-      {/* ── 6-area mosaic ───────────────────────────────────────────────────── */}
-      <div
-        className="flex-1 grid gap-1.5 p-1.5 overflow-hidden"
-        style={{
-          gridTemplateColumns: "minmax(260px, 1fr) minmax(240px, 1.15fr) minmax(220px, 0.9fr)",
-          // A/C column is split lower than the B/(D&E) column: A spans rows 1-2,
-          // C rows 3-4, while B only occupies row 1. B carries its own internal
-          // B1/B2 split, independent of the D/(E&F) column boundary.
-          gridTemplateRows: "minmax(0, 1fr) minmax(0, 0.4fr) minmax(0, 0.6fr) minmax(0, 1fr)",
-          gridTemplateAreas: '"a b b" "a d e" "c d e" "c d f"',
-        }}
-      >
-        {/* A — position board (board only) */}
-        <div className={panel} style={{ gridArea: "a" }}>
-          <PositionBoard
-            moveSequence={moveSequence}
-            onBack={() => setPly((p) => Math.max(0, p - 1))}
-            onReset={() => setPly(0)}
-            moveStats={moveStats}
-            selectedMoveSan={moveStats[0]?.mv ?? null}
-            showRelatedGame={false}
-            showMoves={false}
-          />
-        </div>
+      {/* ── 6-area mosaic (resizable, nested panel groups) ────────────────────── */}
+      <div className="flex-1 min-w-0 min-h-0 p-1.5">
+        <PanelGroup direction="horizontal" autoSaveId="games-cols" className="h-full w-full">
+          {/* Left column: A (board) over C (engine) */}
+          <Panel defaultSize={30} minSize={16}>
+            <PanelGroup direction="vertical" autoSaveId="games-leftcol" className="h-full w-full">
+              {/* A — position board (board only) */}
+              <Panel defaultSize={60} minSize={20}>
+                <div className={panel}>
+                  <PositionBoard
+                    moveSequence={moveSequence}
+                    onBack={() => setPly((p) => Math.max(0, p - 1))}
+                    onReset={() => setPly(0)}
+                    moveStats={moveStats}
+                    selectedMoveSan={moveStats[0]?.mv ?? null}
+                    showRelatedGame={false}
+                    showMoves={false}
+                  />
+                </div>
+              </Panel>
+              <PanelResizeHandle className={hHandle} />
+              {/* C — engine evaluation (placeholder, #221) */}
+              <Panel defaultSize={40} minSize={12}>
+                <div className={panel}>
+                  <div className="px-3 py-2 shrink-0 text-label-md text-on-surface-variant uppercase tracking-wider border-b border-outline/40">Engine</div>
+                  <div className="flex-1 flex items-center justify-center text-center text-on-surface-variant text-body-sm px-3">
+                    Engine evaluation — coming soon
+                  </div>
+                </div>
+              </Panel>
+            </PanelGroup>
+          </Panel>
 
-        {/* B — position-related moves (B1, ~1/3) + explorer stats (B2, ~2/3) */}
-        <div className="flex gap-1.5 min-h-0 min-w-0" style={{ gridArea: "b" }}>
-        {/* B1 — position-related moves (the played line + nav) */}
-        <div className={`${panel} basis-1/3 shrink-0`}>
-          <div className="p-2 h-full min-h-0">
-            <PositionMoves
-              moveSequence={moveSequence}
-              fullLine={line}
-              onBack={() => setPly((p) => Math.max(0, p - 1))}
-              onReset={() => setPly(0)}
-              onForward={() => setPly((p) => Math.min(line.length, p + 1))}
-              onEnd={() => setPly(line.length)}
-              onJumpTo={(n) => setPly(Math.max(0, Math.min(line.length, n)))}
-            />
-          </div>
-        </div>
+          <PanelResizeHandle className={vHandle} />
 
-        {/* B2 — opening-explorer moves (stats over all matching games) */}
-        <div className={`${panel} flex-1 min-w-0`}>
-          {movesLoading ? (
-            <div className="p-3 text-center text-on-surface-variant text-body-sm">Loading…</div>
-          ) : moveStats.length === 0 ? (
-            <div className="p-3 text-center text-on-surface-variant text-body-sm">No moves from this position</div>
-          ) : (
-            <div className="flex-1 overflow-y-auto p-2">
-              <div className="flex items-center text-label-sm text-on-surface-variant px-2 mb-1 select-none">
-                <span className="w-24">Move</span>
-                <span className="w-20 text-right">Games</span>
-                <span className="w-10 text-right">W%</span>
-                <span className="w-10 text-right">D%</span>
-                <span className="w-10 text-right">L%</span>
-                <span className="w-16 text-right">Last</span>
-              </div>
-              {moveStats.map((stat) => (
-                <button
-                  key={stat.mv}
-                  onClick={() => appendMove(stat.mv)}
-                  className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
-                >
-                  <span className="w-24 font-mono truncate text-left">{movePrefix}{stat.mv}</span>
-                  <span className="w-20 text-right">{stat.games.toLocaleString()}</span>
-                  <span className="w-10 text-right text-success">{Math.round(stat.w_pct)}</span>
-                  <span className="w-10 text-right text-on-surface-variant">{Math.round(stat.d_pct)}</span>
-                  <span className="w-10 text-right text-error">{Math.round(stat.l_pct)}</span>
-                  <span className="w-16 text-right text-on-surface-variant">{stat.last_played?.slice(0, 4) ?? "—"}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-        </div>
+          {/* Right area: B (B1|B2) over bottom (D | E/F) */}
+          <Panel defaultSize={70} minSize={30}>
+            <PanelGroup direction="vertical" autoSaveId="games-right" className="h-full w-full">
+              {/* B — position moves (B1) + explorer stats (B2) */}
+              <Panel defaultSize={34} minSize={15}>
+                <PanelGroup direction="horizontal" autoSaveId="games-b" className="h-full w-full">
+                  {/* B1 — position-related moves (the played line + nav) */}
+                  <Panel defaultSize={33} minSize={15}>
+                    <div className={panel}>
+                      <div className="p-2 h-full min-h-0">
+                        <PositionMoves
+                          moveSequence={moveSequence}
+                          fullLine={line}
+                          onBack={() => setPly((p) => Math.max(0, p - 1))}
+                          onReset={() => setPly(0)}
+                          onForward={() => setPly((p) => Math.min(line.length, p + 1))}
+                          onEnd={() => setPly(line.length)}
+                          onJumpTo={(n) => setPly(Math.max(0, Math.min(line.length, n)))}
+                        />
+                      </div>
+                    </div>
+                  </Panel>
+                  <PanelResizeHandle className={vHandle} />
+                  {/* B2 — opening-explorer moves (stats over all matching games) */}
+                  <Panel defaultSize={67} minSize={20}>
+                    <div className={panel}>
+                      {movesLoading ? (
+                        <div className="p-3 text-center text-on-surface-variant text-body-sm">Loading…</div>
+                      ) : moveStats.length === 0 ? (
+                        <div className="p-3 text-center text-on-surface-variant text-body-sm">No moves from this position</div>
+                      ) : (
+                        <div className="flex-1 overflow-y-auto p-2">
+                          <div className="flex items-center text-label-sm text-on-surface-variant px-2 mb-1 select-none">
+                            <span className="w-24">Move</span>
+                            <span className="w-20 text-right">Games</span>
+                            <span className="w-10 text-right">W%</span>
+                            <span className="w-10 text-right">D%</span>
+                            <span className="w-10 text-right">L%</span>
+                            <span className="w-16 text-right">Last</span>
+                          </div>
+                          {moveStats.map((stat) => (
+                            <button
+                              key={stat.mv}
+                              onClick={() => appendMove(stat.mv)}
+                              className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
+                            >
+                              <span className="w-24 font-mono truncate text-left">{movePrefix}{stat.mv}</span>
+                              <span className="w-20 text-right">{stat.games.toLocaleString()}</span>
+                              <span className="w-10 text-right text-success">{Math.round(stat.w_pct)}</span>
+                              <span className="w-10 text-right text-on-surface-variant">{Math.round(stat.d_pct)}</span>
+                              <span className="w-10 text-right text-error">{Math.round(stat.l_pct)}</span>
+                              <span className="w-16 text-right text-on-surface-variant">{stat.last_played?.slice(0, 4) ?? "—"}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </Panel>
+                </PanelGroup>
+              </Panel>
 
-        {/* C — engine evaluation (placeholder, #221) */}
-        <div className={panel} style={{ gridArea: "c" }}>
-          <div className="px-3 py-2 shrink-0 text-label-md text-on-surface-variant uppercase tracking-wider border-b border-outline/40">Engine</div>
-          <div className="flex-1 flex items-center justify-center text-center text-on-surface-variant text-body-sm px-3">
-            Engine evaluation — coming soon
-          </div>
-        </div>
+              <PanelResizeHandle className={hHandle} />
 
-        {/* D — game list (resizable columns) */}
-        <div className={panel} style={{ gridArea: "d" }}>
-          <div className="px-3 py-2 shrink-0 text-label-md text-on-surface-variant border-b border-outline/40">
-            {loading ? "Loading…" : total !== null ? `${total.toLocaleString()} game${total !== 1 ? "s" : ""}` : ""}
-          </div>
-          {/* Column header with drag-to-resize handles */}
-          <div className="shrink-0 grid items-center text-label-sm text-on-surface-variant border-b border-outline/40 select-none" style={{ gridTemplateColumns: gridCols }}>
-            {(["white", "black", "result", "year"] as ColKey[]).map((k) => (
-              <div key={k} className="relative px-3 py-1 truncate">
-                {k === "white" ? "White" : k === "black" ? "Black" : k === "result" ? "Result" : "Year"}
-                <span
-                  onMouseDown={(e) => startResize(k, e)}
-                  className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-primary/40"
-                />
-              </div>
-            ))}
-            <div className="px-3 py-1 truncate">Event</div>
-          </div>
-          <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto">
-            {error && <div className="p-4 text-center text-error text-body-md">{error}</div>}
-            {!error && !loading && games.length === 0 && (
-              <div className="p-4 text-center text-on-surface-variant text-body-md">No games found</div>
-            )}
-            {games.map((game) => {
-              const selected = selectedGame?.id === game.id;
-              const subText = selected ? "text-on-secondary-container/80" : "text-on-surface-variant";
-              return (
-                <button
-                  key={game.id}
-                  onClick={() => setSelectedGame(game)}
-                  style={{ display: "grid", gridTemplateColumns: gridCols }}
-                  className={`w-full items-baseline text-body-sm text-left transition-colors duration-short3 ease-standard ${
-                    selected ? "bg-secondary-container text-on-secondary-container" : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
-                  }`}
-                >
-                  <span className="px-3 py-1.5 truncate">{game.white}{game.white_elo ? <span className={subText}> {game.white_elo}</span> : null}</span>
-                  <span className="px-3 py-1.5 truncate">{game.black}{game.black_elo ? <span className={subText}> {game.black_elo}</span> : null}</span>
-                  <span className="px-3 py-1.5 truncate tabular-nums">{game.result ? (game.result === "1/2-1/2" ? "½-½" : game.result) : ""}</span>
-                  <span className={`px-3 py-1.5 truncate ${subText}`}>{game.date?.slice(0, 4) ?? ""}</span>
-                  <span className={`px-3 py-1.5 truncate ${subText}`}>{game.event ?? ""}</span>
-                </button>
-              );
-            })}
-            {loadingMore && <div className="p-3 text-center text-on-surface-variant text-body-sm">Loading…</div>}
-          </div>
-        </div>
-
-        {/* E — mini board of the selected game */}
-        <div className={panel} style={{ gridArea: "e" }}>
-          {loadedGame ? (
-            <MiniBoard game={loadedGame} ply={selectedPly} setPly={setSelectedPly} />
-          ) : (
-            <div className="flex-1 flex items-center justify-center text-center text-on-surface-variant text-body-sm px-3">
-              {gameLoading ? "Loading…" : "Select a game"}
-            </div>
-          )}
-        </div>
-
-        {/* F — compact move list of the selected game */}
-        <div className={panel} style={{ gridArea: "f" }}>
-          {loadedGame ? (
-            <MoveList game={loadedGame} ply={selectedPly} setPly={setSelectedPly} />
-          ) : (
-            <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-sm px-3">—</div>
-          )}
-        </div>
+              {/* Bottom: D (game list) | E-F (mini board over move list) */}
+              <Panel defaultSize={66} minSize={25}>
+                <PanelGroup direction="horizontal" autoSaveId="games-bottom" className="h-full w-full">
+                  {/* D — game list (resizable columns) */}
+                  <Panel defaultSize={62} minSize={25}>
+                    <div className={panel}>
+                      <div className="px-3 py-2 shrink-0 text-label-md text-on-surface-variant border-b border-outline/40">
+                        {loading ? "Loading…" : total !== null ? `${total.toLocaleString()} game${total !== 1 ? "s" : ""}` : ""}
+                      </div>
+                      {/* Column header with drag-to-resize handles */}
+                      <div className="shrink-0 grid items-center text-label-sm text-on-surface-variant border-b border-outline/40 select-none" style={{ gridTemplateColumns: gridCols }}>
+                        {(["white", "black", "result", "year"] as ColKey[]).map((k) => (
+                          <div key={k} className="relative px-3 py-1 truncate">
+                            {k === "white" ? "White" : k === "black" ? "Black" : k === "result" ? "Result" : "Year"}
+                            <span
+                              onMouseDown={(e) => startResize(k, e)}
+                              className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-primary/40"
+                            />
+                          </div>
+                        ))}
+                        <div className="px-3 py-1 truncate">Event</div>
+                      </div>
+                      <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto">
+                        {error && <div className="p-4 text-center text-error text-body-md">{error}</div>}
+                        {!error && !loading && games.length === 0 && (
+                          <div className="p-4 text-center text-on-surface-variant text-body-md">No games found</div>
+                        )}
+                        {games.map((game) => {
+                          const selected = selectedGame?.id === game.id;
+                          const subText = selected ? "text-on-secondary-container/80" : "text-on-surface-variant";
+                          return (
+                            <button
+                              key={game.id}
+                              onClick={() => setSelectedGame(game)}
+                              style={{ display: "grid", gridTemplateColumns: gridCols }}
+                              className={`w-full items-baseline text-body-sm text-left transition-colors duration-short3 ease-standard ${
+                                selected ? "bg-secondary-container text-on-secondary-container" : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
+                              }`}
+                            >
+                              <span className="px-3 py-1.5 truncate">{game.white}{game.white_elo ? <span className={subText}> {game.white_elo}</span> : null}</span>
+                              <span className="px-3 py-1.5 truncate">{game.black}{game.black_elo ? <span className={subText}> {game.black_elo}</span> : null}</span>
+                              <span className="px-3 py-1.5 truncate tabular-nums">{game.result ? (game.result === "1/2-1/2" ? "½-½" : game.result) : ""}</span>
+                              <span className={`px-3 py-1.5 truncate ${subText}`}>{game.date?.slice(0, 4) ?? ""}</span>
+                              <span className={`px-3 py-1.5 truncate ${subText}`}>{game.event ?? ""}</span>
+                            </button>
+                          );
+                        })}
+                        {loadingMore && <div className="p-3 text-center text-on-surface-variant text-body-sm">Loading…</div>}
+                      </div>
+                    </div>
+                  </Panel>
+                  <PanelResizeHandle className={vHandle} />
+                  {/* E over F */}
+                  <Panel defaultSize={38} minSize={18}>
+                    <PanelGroup direction="vertical" autoSaveId="games-ef" className="h-full w-full">
+                      {/* E — mini board of the selected game */}
+                      <Panel defaultSize={55} minSize={20}>
+                        <div className={panel}>
+                          {loadedGame ? (
+                            <MiniBoard game={loadedGame} ply={selectedPly} setPly={setSelectedPly} />
+                          ) : (
+                            <div className="flex-1 flex items-center justify-center text-center text-on-surface-variant text-body-sm px-3">
+                              {gameLoading ? "Loading…" : "Select a game"}
+                            </div>
+                          )}
+                        </div>
+                      </Panel>
+                      <PanelResizeHandle className={hHandle} />
+                      {/* F — compact move list of the selected game */}
+                      <Panel defaultSize={45} minSize={12}>
+                        <div className={panel}>
+                          {loadedGame ? (
+                            <MoveList game={loadedGame} ply={selectedPly} setPly={setSelectedPly} />
+                          ) : (
+                            <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-sm px-3">—</div>
+                          )}
+                        </div>
+                      </Panel>
+                    </PanelGroup>
+                  </Panel>
+                </PanelGroup>
+              </Panel>
+            </PanelGroup>
+          </Panel>
+        </PanelGroup>
       </div>
     </div>
   );
