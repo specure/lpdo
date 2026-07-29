@@ -2,8 +2,9 @@ import { Chessboard } from "react-chessboard";
 import { LoadedGame } from "../../lib/useGamePgn";
 
 // Small read-only board (area E of the Games page, #219) showing the selected
-// game at the current ply. Navigation (right of the board, unified with the
-// position board) is shared with the compact move list (F) via the lifted `ply`.
+// game at the current ply. Nav sits on one line below the board; if it has to
+// wrap, the back/forward pair and the rewind/fast-forward pair each stay
+// together. Shares the lifted `ply` with the compact move list (F).
 export default function MiniBoard({
   game,
   ply,
@@ -25,25 +26,27 @@ export default function MiniBoard({
         {game.white} – {game.black}
         {game.result && <span className="text-on-surface-variant"> · {game.result === "1/2-1/2" ? "½-½" : game.result}</span>}
       </div>
-      <div className="flex-1 min-h-0 min-w-0 flex items-stretch gap-1">
-        <div className="flex-1 min-w-0 flex items-center justify-center overflow-hidden">
-          <div style={{ height: "100%", maxWidth: "100%", aspectRatio: "1 / 1" }}>
-            <Chessboard
-              options={{
-                position: fen,
-                allowDragging: false,
-                allowDrawingArrows: false,
-                darkSquareStyle: { backgroundColor: "var(--color-board-game-dark)" },
-                lightSquareStyle: { backgroundColor: "var(--color-board-game-light)" },
-              }}
-            />
-          </div>
+      <div className="flex-1 min-h-0 min-w-0 flex items-center justify-center overflow-hidden">
+        <div style={{ height: "100%", maxWidth: "100%", aspectRatio: "1 / 1" }}>
+          <Chessboard
+            options={{
+              position: fen,
+              allowDragging: false,
+              allowDrawingArrows: false,
+              darkSquareStyle: { backgroundColor: "var(--color-board-game-dark)" },
+              lightSquareStyle: { backgroundColor: "var(--color-board-game-light)" },
+            }}
+          />
         </div>
-        <div className="shrink-0 flex flex-col items-center justify-center gap-1">
-          <button className={navBtn} disabled={at === 0} onClick={() => setPly(0)} title="Start">⏮</button>
+      </div>
+      <div className="shrink-0 flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
+        <div className="flex gap-1">
           <button className={navBtn} disabled={at === 0} onClick={() => setPly(at - 1)} title="Back">‹</button>
           <button className={navBtn} disabled={at >= last} onClick={() => setPly(at + 1)} title="Forward">›</button>
-          <button className={navBtn} disabled={at >= last} onClick={() => setPly(last)} title="End">⏭</button>
+        </div>
+        <div className="flex gap-1">
+          <button className={navBtn} disabled={at === 0} onClick={() => setPly(0)} title="Rewind to start">⏮</button>
+          <button className={navBtn} disabled={at >= last} onClick={() => setPly(last)} title="Fast-forward to end">⏭</button>
         </div>
       </div>
     </div>

@@ -3,6 +3,7 @@ import { Chess } from "chess.js";
 import { GameSummary, MoveStats, PlayerInfo } from "../types";
 import PlayerPicker from "./PlayerPicker";
 import PositionBoard from "./PositionBoard";
+import PositionMoves from "./PositionMoves";
 import MiniBoard from "./games/MiniBoard";
 import MoveList from "./games/MoveList";
 import { useGamePgn } from "../lib/useGamePgn";
@@ -268,29 +269,43 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
       <div
         className="flex-1 grid gap-1.5 p-1.5 overflow-hidden"
         style={{
-          gridTemplateColumns: "minmax(260px, 1fr) minmax(300px, 1.4fr) minmax(220px, 0.85fr)",
-          gridTemplateRows: "minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 1fr)",
-          gridTemplateAreas: '"a b b" "c d e" "c d f"',
+          gridTemplateColumns: "minmax(260px, 1fr) minmax(240px, 1.15fr) minmax(220px, 0.9fr)",
+          // A/C column is split lower than the B/(D&E) column: A spans rows 1-2,
+          // C rows 3-4, while B1/B2 only occupy row 1.
+          gridTemplateRows: "minmax(0, 1fr) minmax(0, 0.4fr) minmax(0, 0.6fr) minmax(0, 1fr)",
+          gridTemplateAreas: '"a b1 b2" "a d e" "c d e" "c d f"',
         }}
       >
-        {/* A — main position board */}
+        {/* A — position board (board only) */}
         <div className={panel} style={{ gridArea: "a" }}>
           <PositionBoard
             moveSequence={moveSequence}
-            fullLine={line}
             onBack={() => setPly((p) => Math.max(0, p - 1))}
             onReset={() => setPly(0)}
-            onForward={() => setPly((p) => Math.min(line.length, p + 1))}
-            onEnd={() => setPly(line.length)}
-            onJumpTo={(n) => setPly(Math.max(0, Math.min(line.length, n)))}
             moveStats={moveStats}
             selectedMoveSan={moveStats[0]?.mv ?? null}
             showRelatedGame={false}
+            showMoves={false}
           />
         </div>
 
-        {/* B — opening-explorer moves */}
-        <div className={panel} style={{ gridArea: "b" }}>
+        {/* B1 — position-related moves (the played line + nav) */}
+        <div className={panel} style={{ gridArea: "b1" }}>
+          <div className="p-2 h-full min-h-0">
+            <PositionMoves
+              moveSequence={moveSequence}
+              fullLine={line}
+              onBack={() => setPly((p) => Math.max(0, p - 1))}
+              onReset={() => setPly(0)}
+              onForward={() => setPly((p) => Math.min(line.length, p + 1))}
+              onEnd={() => setPly(line.length)}
+              onJumpTo={(n) => setPly(Math.max(0, Math.min(line.length, n)))}
+            />
+          </div>
+        </div>
+
+        {/* B2 — opening-explorer moves (stats over all matching games) */}
+        <div className={panel} style={{ gridArea: "b2" }}>
           {movesLoading ? (
             <div className="p-3 text-center text-on-surface-variant text-body-sm">Loading…</div>
           ) : moveStats.length === 0 ? (
