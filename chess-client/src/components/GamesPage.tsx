@@ -271,9 +271,10 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
         style={{
           gridTemplateColumns: "minmax(260px, 1fr) minmax(240px, 1.15fr) minmax(220px, 0.9fr)",
           // A/C column is split lower than the B/(D&E) column: A spans rows 1-2,
-          // C rows 3-4, while B1/B2 only occupy row 1.
+          // C rows 3-4, while B only occupies row 1. B carries its own internal
+          // B1/B2 split, independent of the D/(E&F) column boundary.
           gridTemplateRows: "minmax(0, 1fr) minmax(0, 0.4fr) minmax(0, 0.6fr) minmax(0, 1fr)",
-          gridTemplateAreas: '"a b1 b2" "a d e" "c d e" "c d f"',
+          gridTemplateAreas: '"a b b" "a d e" "c d e" "c d f"',
         }}
       >
         {/* A — position board (board only) */}
@@ -289,8 +290,10 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
           />
         </div>
 
+        {/* B — position-related moves (B1, ~1/3) + explorer stats (B2, ~2/3) */}
+        <div className="flex gap-1.5 min-h-0 min-w-0" style={{ gridArea: "b" }}>
         {/* B1 — position-related moves (the played line + nav) */}
-        <div className={panel} style={{ gridArea: "b1" }}>
+        <div className={`${panel} basis-1/3 shrink-0`}>
           <div className="p-2 h-full min-h-0">
             <PositionMoves
               moveSequence={moveSequence}
@@ -305,7 +308,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
         </div>
 
         {/* B2 — opening-explorer moves (stats over all matching games) */}
-        <div className={panel} style={{ gridArea: "b2" }}>
+        <div className={`${panel} flex-1 min-w-0`}>
           {movesLoading ? (
             <div className="p-3 text-center text-on-surface-variant text-body-sm">Loading…</div>
           ) : moveStats.length === 0 ? (
@@ -336,6 +339,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
               ))}
             </div>
           )}
+        </div>
         </div>
 
         {/* C — engine evaluation (placeholder, #221) */}
