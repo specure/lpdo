@@ -48,6 +48,11 @@ export default function MiniBoard({
         <div style={{ width: squareSize, height: squareSize, flexShrink: 0 }}>
           <Chessboard
             options={{
+              // Unique per instance: react-chessboard locates squares by
+              // `${id}-square-…` via getElementById, and the default id is a shared
+              // constant — colliding with the position board made the mini board
+              // animate against the larger board's geometry (double-distance overshoot).
+              id: "games-mini-board",
               position: fen,
               allowDragging: false,
               allowDrawingArrows: false,

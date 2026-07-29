@@ -98,6 +98,7 @@ export default function PositionBoard({
         <div style={{ width: squareSize, height: squareSize, flexShrink: 0 }}>
           <Chessboard
             options={{
+              id: "position-board", // unique id — see MiniBoard note (shared default id collides)
               position: fen,
               boardOrientation: flipped ? "black" : "white",
               allowDragging: false,

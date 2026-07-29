@@ -1646,6 +1646,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
           >
             <Chessboard
               options={{
+                id: "game-board", // unique id so it never shares square DOM ids with another board
                 position: currentFen,
                 boardOrientation: flipped ? "black" : "white",
                 allowDragging: movesEditor.active && !movesEditor.pendingDivergence && !movesEditor.pendingPromotion,
