@@ -2,9 +2,8 @@ import { Chessboard } from "react-chessboard";
 import { LoadedGame } from "../../lib/useGamePgn";
 
 // Small read-only board (area E of the Games page, #219) showing the selected
-// game at the current ply. Nav sits on one line below the board; if it has to
-// wrap, the back/forward pair and the rewind/fast-forward pair each stay
-// together. Shares the lifted `ply` with the compact move list (F).
+// game at the current ply. Nav sits below the board in the unified order shared
+// with the position board: ⏮ ‹ › ⏭. Shares the lifted `ply` with the move list (F).
 export default function MiniBoard({
   game,
   ply,
@@ -39,15 +38,11 @@ export default function MiniBoard({
           />
         </div>
       </div>
-      <div className="shrink-0 flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
-        <div className="flex gap-1">
-          <button className={navBtn} disabled={at === 0} onClick={() => setPly(at - 1)} title="Back">‹</button>
-          <button className={navBtn} disabled={at >= last} onClick={() => setPly(at + 1)} title="Forward">›</button>
-        </div>
-        <div className="flex gap-1">
-          <button className={navBtn} disabled={at === 0} onClick={() => setPly(0)} title="Rewind to start">⏮</button>
-          <button className={navBtn} disabled={at >= last} onClick={() => setPly(last)} title="Fast-forward to end">⏭</button>
-        </div>
+      <div className="shrink-0 flex flex-wrap items-center justify-center gap-1">
+        <button className={navBtn} disabled={at === 0} onClick={() => setPly(0)} title="Rewind to start">⏮</button>
+        <button className={navBtn} disabled={at === 0} onClick={() => setPly(at - 1)} title="Back">‹</button>
+        <button className={navBtn} disabled={at >= last} onClick={() => setPly(at + 1)} title="Forward">›</button>
+        <button className={navBtn} disabled={at >= last} onClick={() => setPly(last)} title="Fast-forward to end">⏭</button>
       </div>
     </div>
   );
