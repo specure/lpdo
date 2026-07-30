@@ -254,7 +254,10 @@ fn ensure_poller() {
                 // agree) and the table reflects the deeper analysis. Bust first so
                 // the query actually re-fetches instead of returning the old entry.
                 shared().cache.lock().unwrap().remove(&zobrist);
-                let depth = query(&fen, zobrist).await.depth.unwrap_or(0);
+                // Only commit a depth the poll actually returned — a transient
+                // failure (offline / no querypv depth) must not clobber the last
+                // good value to 0.
+                let Some(depth) = query(&fen, zobrist).await.depth else { continue };
                 let mut watches = shared().watches.lock().unwrap();
                 if let Some(w) = watches.get_mut(&zobrist) {
                     w.current_depth = depth;

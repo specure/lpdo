@@ -354,7 +354,11 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
       if (!fen || fen !== currentFenNow || engineSource !== "chessdb") return;
       fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}`)
         .then((r) => r.json() as Promise<{ status: EngineStatus; moves: CloudMove[]; depth: number | null }>)
-        .then((d) => { setEngineMoves(d.moves ?? []); setChessdbDepth(d.depth ?? null); setEngineStatus(d.moves?.length ? "ok" : (d.status ?? "unknown")); })
+        .then((d) => {
+          // Don't let a transient degraded response blank the panel; keep what's shown.
+          if (d.status === "offline" || !d.moves?.length) return;
+          setEngineMoves(d.moves); setChessdbDepth(d.depth ?? null); setEngineStatus("ok");
+        })
         .catch(() => {});
     };
     function onUpdated(e: Event) { refresh((e as CustomEvent<{ fen: string }>).detail?.fen); }
