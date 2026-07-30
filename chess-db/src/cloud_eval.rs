@@ -183,9 +183,11 @@ pub async fn query_lichess(fen: &str, zobrist: i64) -> LichessEval {
     let eval = match s
         .client
         .get(LICHESS_URL)
-        // Lichess returns up to this many PV lines (it caps at however many it has
-        // cached for the position — popular positions have more).
-        .query(&[("fen", fen), ("multiPv", "10")])
+        // Ask for everything: Lichess caches roughly one PV line per analysed
+        // reply — up to the number of legal moves on heavily-worked positions
+        // (e.g. ~30 in a Ruy Lopez), fewer otherwise — and ignores oversized
+        // requests, so a big number returns "all cached".
+        .query(&[("fen", fen), ("multiPv", "100")])
         .send()
         .await
     {
