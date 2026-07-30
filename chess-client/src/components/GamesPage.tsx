@@ -33,7 +33,13 @@ function fenFromMoves(moves: string[]): string {
 }
 
 // Cloud engine (chessdb.cn) — one candidate move + its score (#221).
-interface CloudMove { san: string; uci: string; scoreCp: number; mate: number | null; winrate: number | null; rank: number; }
+interface CloudMove { san: string; uci: string; scoreCp: number; mate: number | null; winrate: number | null; rank: number; note: string; }
+
+/** chessdb note "! (20-04)" → { mark:"!", opp:"20", oppStrong:"04" }; null for mate/odd notes. */
+function parseNote(note: string): { mark: string; opp: string; oppStrong: string } | null {
+  const m = note.match(/^\s*(\S*)\s*\((\d+)-(\d+)\)/);
+  return m ? { mark: m[1], opp: m[2], oppStrong: m[3] } : null;
+}
 type EngineStatus = "loading" | "ok" | "unknown" | "offline";
 
 /** Score from the side-to-move's perspective, e.g. "+0.30", "-1.15", "M3". */
@@ -370,7 +376,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                 <div className={panel}>
                   <div className="px-3 py-2 shrink-0 flex items-center justify-between text-label-md text-on-surface-variant uppercase tracking-wider border-b border-outline/40">
                     <span>Engine</span>
-                    <span className="normal-case tracking-normal text-on-surface-variant/70 cursor-help" title="Cloud analysis provided by chessdb.cn">chessdb.cn ⓘ</span>
+                    <span className="normal-case tracking-normal text-on-surface-variant/70 cursor-help" title="Free cloud analysis provided by the community database chessdb.cn">via chessdb.cn</span>
                   </div>
                   {engineStatus === "loading" ? (
                     <div className="p-3 text-center text-on-surface-variant text-body-sm">Analysing…</div>
@@ -392,19 +398,33 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                       <div className="flex items-center text-label-sm text-on-surface-variant px-2 mb-1 select-none">
                         <span className="w-24">Move</span>
                         <span className="w-16 text-right">Eval</span>
-                        <span className="flex-1 text-right">Win%</span>
+                        <span
+                          className="flex-1 text-right cursor-help underline decoration-dotted underline-offset-2"
+                          title="chessdb note: a quality mark (! = a strong / 'power' move) plus (opponent's total legal moves, then strong moves) after this move. Few strong replies means a forcing line."
+                        >Replies</span>
                       </div>
-                      {engineMoves.map((m) => (
-                        <button
-                          key={m.uci || m.san}
-                          onClick={() => appendMove(m.san.replace(/[+#]+$/, ""))}
-                          className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
-                        >
-                          <span className="w-24 font-mono truncate text-left">{movePrefix}{m.san}</span>
-                          <span className={`w-16 text-right tabular-nums ${evalColor(m)}`}>{fmtEval(m)}</span>
-                          <span className="flex-1 text-right text-on-surface-variant">{m.winrate !== null ? `${Math.round(m.winrate)}%` : "—"}</span>
-                        </button>
-                      ))}
+                      {engineMoves.map((m) => {
+                        const nn = parseNote(m.note);
+                        return (
+                          <button
+                            key={m.uci || m.san}
+                            onClick={() => appendMove(m.san.replace(/[+#]+$/, ""))}
+                            className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
+                          >
+                            <span className="w-24 font-mono truncate text-left">
+                              {movePrefix}{m.san}{nn && nn.mark && nn.mark !== "*" && <span className="text-primary">{nn.mark}</span>}
+                            </span>
+                            <span className={`w-16 text-right tabular-nums ${evalColor(m)}`}>{fmtEval(m)}</span>
+                            <span className="flex-1 text-right font-mono tabular-nums">
+                              {nn ? (
+                                <><span className="text-on-surface-variant">{Number(nn.opp)}-</span><span className="text-on-surface">{Number(nn.oppStrong)}</span></>
+                              ) : (
+                                <span className="text-on-surface-variant">{m.note || "—"}</span>
+                              )}
+                            </span>
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                 </div>

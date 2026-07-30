@@ -29,6 +29,10 @@ pub struct CloudMove {
     /// Practical win% (0–100), if chessdb reports it.
     pub winrate: Option<f64>,
     pub rank: i32,
+    /// chessdb's raw note, e.g. `"! (20-04)"` — a quality mark (`!` = a strong /
+    /// "power" move) plus, for a normal position, `(opponent's legal moves -
+    /// opponent's strong moves)` after this move. Low second number ⇒ forcing.
+    pub note: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -119,6 +123,7 @@ fn parse_queryall(v: &serde_json::Value) -> CloudEval {
                         mate: parse_mate(note),
                         winrate: m.get("winrate").and_then(|w| w.as_str()).and_then(|w| w.parse().ok()),
                         rank: m.get("rank").and_then(|r| r.as_i64()).unwrap_or(0) as i32,
+                        note: note.to_string(),
                     })
                 })
                 .collect()
