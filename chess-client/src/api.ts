@@ -73,6 +73,33 @@ export function getJobs(): Promise<Job[]> {
   return apiGet<Job[]>("/jobs");
 }
 
+// ── Deepen watches (chessdb depth, #221) ──────────────────────────────────────
+
+/** A background poller that notifies when chessdb's depth for a position grows. */
+export interface CloudWatch {
+  zobrist: number;
+  fen: string;
+  label: string;
+  baseline_depth: number;
+  current_depth: number;
+  status: "watching" | "landed";
+}
+
+/** Start watching a position for deeper chessdb analysis (also queues it). */
+export async function addCloudWatch(fen: string, label: string): Promise<CloudWatch> {
+  return postJson<CloudWatch>(`/cloud-eval/watch?fen=${encodeURIComponent(fen)}&label=${encodeURIComponent(label)}`);
+}
+
+/** Active + landed deepen watches. */
+export function getCloudWatches(): Promise<CloudWatch[]> {
+  return apiGet<CloudWatch[]>("/cloud-eval/watches");
+}
+
+/** Dismiss a deepen watch. */
+export async function deleteCloudWatch(fen: string): Promise<void> {
+  await fetch(apiUrl(`/cloud-eval/watch?fen=${encodeURIComponent(fen)}`), { method: "DELETE" });
+}
+
 // ── Sources (multi-source import catalog, #40) ────────────────────────────────
 
 import type { SourceStatus, Job, StatusInfo, ScheduleInfo } from "./types";

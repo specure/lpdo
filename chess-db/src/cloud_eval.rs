@@ -7,6 +7,7 @@
 //! and rely on the client to debounce position changes.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -55,6 +56,11 @@ struct Shared {
     client: reqwest::Client,
     cache: Mutex<HashMap<i64, (Instant, CloudEval)>>,
     lichess_cache: Mutex<HashMap<i64, (Instant, LichessEval)>>,
+    /// Active "deepen watches" keyed by Zobrist — background pollers that notify
+    /// (via the activity panel) when chessdb's depth for a position grows.
+    watches: Mutex<HashMap<i64, Watch>>,
+    /// Whether the single background poll loop has been spawned yet.
+    poller_started: AtomicBool,
 }
 
 fn shared() -> &'static Shared {
@@ -67,6 +73,8 @@ fn shared() -> &'static Shared {
             .expect("build reqwest client"),
         cache: Mutex::new(HashMap::new()),
         lichess_cache: Mutex::new(HashMap::new()),
+        watches: Mutex::new(HashMap::new()),
+        poller_started: AtomicBool::new(false),
     })
 }
 
@@ -155,6 +163,111 @@ pub async fn queue(fen: &str) {
         .query(&[("action", "queue"), ("board", fen), ("json", "1")])
         .send()
         .await;
+}
+
+// ── Deepen watches (#221) ───────────────────────────────────────────────────
+// After you queue a position for deeper crowd analysis, a watch polls chessdb's
+// `querypv` depth in the background and flips to "landed" the moment the depth
+// rises above where it was when you clicked Watch. Watches live in memory (they
+// keep running with the GUI closed, as long as the daemon is up) and surface in
+// the activity panel. No DB involvement — this is a pure external-API poller.
+
+const WATCH_POLL: Duration = Duration::from_secs(60);
+
+#[derive(Clone, Serialize)]
+pub struct Watch {
+    /// Zobrist key — also lets the client match a watch to the board on screen.
+    pub zobrist: i64,
+    pub fen: String,
+    /// Short human label supplied by the client (e.g. the move list).
+    pub label: String,
+    /// chessdb depth captured when the watch started.
+    pub baseline_depth: i32,
+    /// Latest observed depth.
+    pub current_depth: i32,
+    /// `"watching"` (still polling) or `"landed"` (depth grew — done).
+    pub status: String,
+}
+
+/// Fetch just chessdb's search depth for a position (`querypv`), best-effort.
+async fn query_depth(fen: &str) -> Option<i32> {
+    let s = shared();
+    let resp = s
+        .client
+        .get(BASE)
+        .query(&[("action", "querypv"), ("board", fen), ("json", "1")])
+        .send()
+        .await
+        .ok()?;
+    let v = resp.json::<serde_json::Value>().await.ok()?;
+    v.get("depth").and_then(|d| d.as_i64()).map(|d| d as i32)
+}
+
+/// Start (or refresh) a watch for a position. Queues the position for deeper
+/// analysis and captures the current depth as the baseline. Returns the watch.
+pub async fn add_watch(fen: &str, zobrist: i64, label: &str) -> Watch {
+    queue(fen).await; // nudge chessdb to work on it
+    let baseline = query_depth(fen).await.unwrap_or(0);
+    let watch = Watch {
+        zobrist,
+        fen: fen.to_string(),
+        label: label.to_string(),
+        baseline_depth: baseline,
+        current_depth: baseline,
+        status: "watching".into(),
+    };
+    let s = shared();
+    s.watches.lock().unwrap().insert(zobrist, watch.clone());
+    ensure_poller();
+    watch
+}
+
+pub fn list_watches() -> Vec<Watch> {
+    let mut v: Vec<Watch> = shared().watches.lock().unwrap().values().cloned().collect();
+    v.sort_by(|a, b| a.zobrist.cmp(&b.zobrist));
+    v
+}
+
+/// Remove a watch (dismiss). No-op if it doesn't exist.
+pub fn remove_watch(zobrist: i64) {
+    shared().watches.lock().unwrap().remove(&zobrist);
+}
+
+/// Spawn the single background poll loop the first time a watch is created.
+fn ensure_poller() {
+    let s = shared();
+    if s.poller_started.swap(true, Ordering::SeqCst) {
+        return; // already running
+    }
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(WATCH_POLL).await;
+            // Snapshot the positions still being watched, then poll them without
+            // holding the lock across awaits.
+            let pending: Vec<(i64, String)> = shared()
+                .watches
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|w| w.status == "watching")
+                .map(|w| (w.zobrist, w.fen.clone()))
+                .collect();
+            for (zobrist, fen) in pending {
+                if let Some(depth) = query_depth(&fen).await {
+                    let mut watches = shared().watches.lock().unwrap();
+                    if let Some(w) = watches.get_mut(&zobrist) {
+                        w.current_depth = depth;
+                        if depth > w.baseline_depth {
+                            w.status = "landed".into();
+                            // Drop the stale (shallow) cached eval so the client's
+                            // next fetch of this position returns the fuller answer.
+                            shared().cache.lock().unwrap().remove(&zobrist);
+                        }
+                    }
+                }
+            }
+        }
+    });
 }
 
 // ── Lichess cloud evaluation (Stockfish) ───────────────────────────────────

@@ -1161,6 +1161,39 @@ async fn lichess_eval_handler(
     Ok(Json(crate::cloud_eval::query_lichess(&q.fen, zobrist).await))
 }
 
+#[derive(Deserialize)]
+struct WatchQuery {
+    fen: String,
+    /// Optional short human label (e.g. the move list) shown in the activity panel.
+    #[serde(default)]
+    label: String,
+}
+
+/// Start a "deepen watch": queue the position for deeper chessdb analysis and
+/// poll in the background, notifying the activity panel when the depth grows (#221).
+async fn cloud_watch_add_handler(
+    Query(q): Query<WatchQuery>,
+) -> ApiResult<crate::cloud_eval::Watch> {
+    let zobrist = fen_zobrist(&q.fen)?;
+    Ok(Json(crate::cloud_eval::add_watch(&q.fen, zobrist, &q.label).await))
+}
+
+/// List active/landed deepen watches.
+async fn cloud_watches_handler() -> Json<Vec<crate::cloud_eval::Watch>> {
+    Json(crate::cloud_eval::list_watches())
+}
+
+/// Dismiss a deepen watch for a position.
+async fn cloud_watch_delete_handler(Query(q): Query<CloudEvalQuery>) -> StatusCode {
+    match fen_zobrist(&q.fen) {
+        Ok(zobrist) => {
+            crate::cloud_eval::remove_watch(zobrist);
+            StatusCode::OK
+        }
+        Err((code, _)) => code,
+    }
+}
+
 async fn delete_game_handler(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<u32>,
@@ -2049,6 +2082,8 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         .route("/position/moves",                      get(position_moves_handler))
         .route("/cloud-eval",                          get(cloud_eval_handler))
         .route("/cloud-eval/queue",                    post(cloud_eval_queue_handler))
+        .route("/cloud-eval/watch",                    post(cloud_watch_add_handler).delete(cloud_watch_delete_handler))
+        .route("/cloud-eval/watches",                  get(cloud_watches_handler))
         .route("/lichess-eval",                        get(lichess_eval_handler))
         // Long-running mutation jobs with streamed progress.
         .route("/jobs",                                get(list_jobs_handler).post(create_job_handler))

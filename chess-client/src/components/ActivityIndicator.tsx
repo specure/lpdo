@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
-import { getJobs, cancelJob, retryJob } from "../api";
+import { getJobs, cancelJob, retryJob, getCloudWatches, deleteCloudWatch } from "../api";
 import type { Job } from "../types";
+import type { CloudWatch } from "../api";
 
 // ── Global background-activity view (#40 Phase C3) ────────────────────────────
 //
@@ -203,6 +204,37 @@ function RecentRow({ job }: { job: Job }) {
   );
 }
 
+/** Window event dispatched when a deepen watch lands (depth grew). The Games
+ *  engine panel listens for it to auto-refresh if it's on that position. */
+export const CLOUD_WATCH_LANDED = "lpdo:cloud-watch-landed";
+
+function WatchRow({ w, onDismiss }: { w: CloudWatch; onDismiss: (fen: string) => void }) {
+  const landed = w.status === "landed";
+  return (
+    <div className="px-4 py-2 flex items-start gap-2">
+      <span className={`text-base leading-5 shrink-0 ${landed ? "text-success" : "text-on-surface-variant"}`}>
+        {landed ? "✓" : "⌁"}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="text-body-sm text-on-surface line-clamp-2 break-words">
+          {landed ? "Deeper analysis ready" : "Watching for deeper analysis"}
+        </div>
+        {w.label && <div className="text-label-sm text-on-surface-variant line-clamp-1 break-words">{w.label}</div>}
+        <div className="text-label-sm text-on-surface-variant">
+          chessdb depth {landed ? `${w.baseline_depth} → ${w.current_depth}` : `${w.current_depth} (from ${w.baseline_depth})`}
+        </div>
+      </div>
+      <button
+        onClick={() => onDismiss(w.fen)}
+        className="shrink-0 text-label-sm text-on-surface-variant hover:text-on-surface transition-colors duration-short3 ease-standard"
+        title={landed ? "Dismiss" : "Stop watching"}
+      >
+        {landed ? "Dismiss" : "Stop"}
+      </button>
+    </div>
+  );
+}
+
 // `onSettled` fires once each time a job newly reaches a terminal state
 // (done/error/cancelled). The host uses it to refresh views that a background
 // job may have changed — notably the collection list, which imports populate
@@ -216,6 +248,10 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
   // meanwhile. Cleared once the job is no longer active (see the poll below).
   const [cancelling, setCancelling] = useState<Set<string>>(() => new Set());
   const [open, setOpen] = useState(false);
+  const [watches, setWatches] = useState<CloudWatch[]>([]);
+  // Zobrist keys already seen "landed", so a landing fires its notification once.
+  // Seeded on first poll so pre-existing landed watches don't fire on mount.
+  const landedSeenRef = useRef<Set<number> | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   // Per-job {time, value} anchor for a cumulative-rate ETA. Cumulative (since the
   // job was first seen running) is stable for a monotonic byte counter, and the
@@ -281,6 +317,24 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
           return changed ? next : prev;
         });
       }).catch(() => { /* offline — leave last known */ });
+      // Deepen watches (chessdb): poll alongside jobs; fire once per landing.
+      getCloudWatches().then((w) => {
+        if (stop) return;
+        const landedNow = w.filter((x) => x.status === "landed");
+        if (landedSeenRef.current === null) {
+          landedSeenRef.current = new Set(landedNow.map((x) => x.zobrist)); // seed
+        } else {
+          const seen = landedSeenRef.current;
+          for (const x of landedNow) {
+            if (!seen.has(x.zobrist)) {
+              seen.add(x.zobrist);
+              window.dispatchEvent(new CustomEvent(CLOUD_WATCH_LANDED, { detail: { fen: x.fen, zobrist: x.zobrist } }));
+              onSettledRef.current?.();
+            }
+          }
+        }
+        setWatches(w);
+      }).catch(() => { /* offline — leave last known */ });
     };
     poll();
     const id = setInterval(poll, POLL_MS);
@@ -306,7 +360,11 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
     .filter((j) => j.status === "done" || j.status === "error" || j.status === "cancelled")
     .slice(-8)
     .reverse();
-  const busy = active.length > 0;
+  const watching = watches.filter((w) => w.status === "watching");
+  const landed = watches.filter((w) => w.status === "landed");
+  // Watches count toward "busy" so the badge reflects the whole pipeline.
+  const activeCount = active.length + watching.length;
+  const busy = activeCount > 0;
 
   function handleCancel(id: string) {
     setCancelling((s) => new Set(s).add(id));
@@ -315,6 +373,11 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
 
   function handleRetry(id: string) {
     void retryJob(id);
+  }
+
+  function handleDismissWatch(fen: string) {
+    setWatches((prev) => prev.filter((w) => w.fen !== fen));
+    void deleteCloudWatch(fen);
   }
 
   return (
@@ -330,7 +393,7 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
         <span className={busy ? "inline-block animate-spin" : "inline-block"}>⟳</span>
         {busy && (
           <span className="absolute -top-0.5 -right-0.5 min-w-[1rem] h-4 px-1 inline-flex items-center justify-center rounded-full bg-primary text-on-primary text-[0.625rem] font-bold leading-none">
-            {active.length}
+            {activeCount}
           </span>
         )}
       </button>
@@ -340,13 +403,13 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
           <div className="px-4 py-3 border-b border-outline-variant flex items-center justify-between">
             <span className="text-title-sm text-on-surface">Activity</span>
             <span className="text-label-sm text-on-surface-variant">
-              {busy ? `${active.length} active` : "Idle"}
+              {busy ? `${activeCount} active` : "Idle"}
             </span>
           </div>
 
           {jobs === null ? (
             <div className="px-4 py-6 text-body-sm text-on-surface-variant">Loading…</div>
-          ) : active.length === 0 && recent.length === 0 ? (
+          ) : active.length === 0 && recent.length === 0 && watches.length === 0 ? (
             <div className="px-4 py-6 text-body-sm text-on-surface-variant">No background activity.</div>
           ) : (
             <>
@@ -354,6 +417,15 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
                 <div className="divide-y divide-outline-variant">
                   {active.map((j) => <ActiveRow key={j.id} job={j} eta={etas.get(j.id)} cancelling={cancelling.has(j.id)} onCancel={handleCancel} onRetry={handleRetry} />)}
                 </div>
+              )}
+              {(landed.length > 0 || watching.length > 0) && (
+                <>
+                  <div className="px-4 pt-3 pb-1 text-label-sm text-on-surface-variant uppercase tracking-wider">Deepen watches</div>
+                  <div className="divide-y divide-outline-variant">
+                    {landed.map((w) => <WatchRow key={w.zobrist} w={w} onDismiss={handleDismissWatch} />)}
+                    {watching.map((w) => <WatchRow key={w.zobrist} w={w} onDismiss={handleDismissWatch} />)}
+                  </div>
+                </>
               )}
               {recent.length > 0 && (
                 <>
