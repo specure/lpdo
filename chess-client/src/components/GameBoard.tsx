@@ -366,6 +366,9 @@ interface Props {
   /** Reports when the moves editor enters/leaves edit mode, so the host can
    * suspend list-level arrow-key navigation while editing. */
   onEditingChange?: (editing: boolean) => void;
+  /** Reports the current board FEN as the cursor moves — lets the Analysis board
+   * drive its reference-moves / related-games panels off this game's position. */
+  onPositionChange?: (fen: string) => void;
 }
 
 // Tags shown in the compact view always; rest only appear when expanded.
@@ -515,7 +518,7 @@ async function exportGameToPgn(detail: GameDetail): Promise<void> {
 // headers modal, delete-confirmation flow, export error, and the sidecar
 // progress used by soft-delete / restore.
 function GameActionsBar({
-  detail, onDetailChanged, onStartEditMoves, detailsOpen, onToggleDetails,
+  detail, onDetailChanged, onStartEditMoves, detailsOpen, onToggleDetails, unsavedEdits = false,
 }: {
   detail: GameDetail;
   onDetailChanged: () => void;
@@ -525,6 +528,9 @@ function GameActionsBar({
    *  directly above the panel it controls. */
   detailsOpen: boolean;
   onToggleDetails: () => void;
+  /** True when the moves editor has unsaved changes — export writes the last
+   *  saved version, so we warn before exporting. */
+  unsavedEdits?: boolean;
 }) {
   const isDeleted = detail.deleted_at != null;
   const progress = useSidecarProgress();
@@ -534,6 +540,10 @@ function GameActionsBar({
 
   async function handleExport() {
     setExportError(null);
+    // Export writes the saved game; unsaved edit-mode changes won't be included.
+    if (unsavedEdits && !window.confirm("You have unsaved changes that won't be included. Click \"Done\" first to save them, or export the last saved version anyway?")) {
+      return;
+    }
     try {
       await exportGameToPgn(detail);
     } catch (e) {
@@ -782,7 +792,7 @@ function DetailsPanel({
   );
 }
 
-export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange }: Props) {
+export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange }: Props) {
   const [detail, setDetail] = useState<GameDetail | null>(null);
   const [detailReloadKey, setDetailReloadKey] = useState(0);
   const [detailsOpen, setDetailsOpen] = useState<boolean>(
@@ -1096,6 +1106,8 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     }
     return fens[currentIndex] ?? "start";
   }, [movesEditor.active, movesEditor.fen, useAnnotated, annotatedGame, activeLine, activeIndex, fens, currentIndex]);
+
+  useEffect(() => { onPositionChange?.(currentFen); }, [currentFen, onPositionChange]);
 
   // Pre-warm the position-moves cache as the user browses, so entering edit
   // mode and clicking on an empty square shows the right arrow without a
@@ -1526,6 +1538,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             }}
             detailsOpen={detailsOpen}
             onToggleDetails={() => setDetailsOpen((o) => !o)}
+            unsavedEdits={movesEditor.active && movesEditor.dirty}
           />
         )}
 

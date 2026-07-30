@@ -9,10 +9,18 @@ export default function MiniBoard({
   game,
   ply,
   setPly,
+  id = "games-mini-board",
+  showHeader = true,
+  showNav = true,
 }: {
   game: LoadedGame;
   ply: number;
   setPly: (p: number) => void;
+  /** Unique react-chessboard id — required when several boards share a page,
+   *  or they resolve each other's squares (double-distance animation bug). */
+  id?: string;
+  showHeader?: boolean;
+  showNav?: boolean;
 }) {
   const last = game.fens.length - 1;
   const at = Math.min(Math.max(ply, 0), last);
@@ -40,19 +48,20 @@ export default function MiniBoard({
 
   return (
     <div className="flex flex-col h-full min-h-0 p-2 gap-2">
-      <div className="text-body-sm text-on-surface truncate shrink-0">
-        {game.white} – {game.black}
-        {game.result && <span className="text-on-surface-variant"> · {game.result === "1/2-1/2" ? "½-½" : game.result}</span>}
-      </div>
+      {showHeader && (
+        <div className="text-body-sm text-on-surface truncate shrink-0">
+          {game.white} – {game.black}
+          {game.result && <span className="text-on-surface-variant"> · {game.result === "1/2-1/2" ? "½-½" : game.result}</span>}
+        </div>
+      )}
       <div ref={boardBoxRef} className="flex-1 min-h-0 min-w-0 flex items-center justify-center overflow-hidden">
         <div style={{ width: squareSize, height: squareSize, flexShrink: 0 }}>
           <Chessboard
             options={{
               // Unique per instance: react-chessboard locates squares by
               // `${id}-square-…` via getElementById, and the default id is a shared
-              // constant — colliding with the position board made the mini board
-              // animate against the larger board's geometry (double-distance overshoot).
-              id: "games-mini-board",
+              // constant — colliding boards animate against each other's geometry.
+              id,
               position: fen,
               allowDragging: false,
               allowDrawingArrows: false,
@@ -65,12 +74,14 @@ export default function MiniBoard({
           />
         </div>
       </div>
-      <div className="shrink-0 flex flex-wrap items-center justify-center gap-1">
-        <button className={navBtn} disabled={at === 0} onClick={() => setPly(0)} title="Rewind to start">⏮</button>
-        <button className={navBtn} disabled={at === 0} onClick={() => setPly(at - 1)} title="Back">‹</button>
-        <button className={navBtn} disabled={at >= last} onClick={() => setPly(at + 1)} title="Forward">›</button>
-        <button className={navBtn} disabled={at >= last} onClick={() => setPly(last)} title="Fast-forward to end">⏭</button>
-      </div>
+      {showNav && (
+        <div className="shrink-0 flex flex-wrap items-center justify-center gap-1">
+          <button className={navBtn} disabled={at === 0} onClick={() => setPly(0)} title="Rewind to start">⏮</button>
+          <button className={navBtn} disabled={at === 0} onClick={() => setPly(at - 1)} title="Back">‹</button>
+          <button className={navBtn} disabled={at >= last} onClick={() => setPly(at + 1)} title="Forward">›</button>
+          <button className={navBtn} disabled={at >= last} onClick={() => setPly(last)} title="Fast-forward to end">⏭</button>
+        </div>
+      )}
     </div>
   );
 }

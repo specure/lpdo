@@ -11,6 +11,8 @@ import PrepPlayerList from "./components/prep/PrepPlayerList";
 import DirectoryBrowser from "./components/local/DirectoryBrowser";
 import LocalGameList from "./components/local/LocalGameList";
 import GamesPage from "./components/GamesPage";
+import AnalysisPage, { AnalysisTab } from "./components/AnalysisPage";
+import { loadGamePgn } from "./lib/useGamePgn";
 import HomeEmptyState from "./components/HomeEmptyState";
 import UpdateBanner from "./components/UpdateBanner";
 import ActivityIndicator from "./components/ActivityIndicator";
@@ -236,9 +238,57 @@ export default function App() {
   // Additional players Ctrl/Cmd-clicked alongside the anchor (for merging two).
   const [selectedExtras, setSelectedExtras] = useState<PlayerInfo[]>([]);
   const [playersCollapsed, setPlayersCollapsed] = useState(false);
+
+  // Analysis board (#220): several games open at once as mini-board tabs.
+  const [analysisTabs, setAnalysisTabs] = useState<AnalysisTab[]>([]);
+  const [activeAnalysisKey, setActiveAnalysisKey] = useState<string | null>(null);
+  async function openInAnalysis(game: GameSummary) {
+    const key = `g${game.id}`;
+    setActiveAnalysisKey(key);
+    setMode("analysis");
+    if (analysisTabs.some((t) => t.key === key)) return;   // already open → just focus
+    try {
+      const loaded = await loadGamePgn(game.id);
+      setAnalysisTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, game, loaded, ply: 0 }]));
+    } catch { /* load failure → tab simply doesn't appear */ }
+  }
+  function closeAnalysisTab(key: string) {
+    setAnalysisTabs((prev) => {
+      const next = prev.filter((t) => t.key !== key);
+      setActiveAnalysisKey((cur) => (cur === key ? next[next.length - 1]?.key ?? null : cur));
+      return next;
+    });
+  }
+  // Persist open Analysis tabs across restarts. We store just the game summaries
+  // + active tab; the parsed PGN (loaded) is re-fetched on restore. Edits persist
+  // via the DB (saved on Done/switch); in-progress unsaved edits are not restored.
+  const analysisRestored = useRef(false);
+  useEffect(() => {
+    const raw = localStorage.getItem("analysisTabs");
+    let persisted: { tabs: { key: string; game: GameSummary }[]; activeKey: string | null } | null = null;
+    try { persisted = raw ? JSON.parse(raw) : null; } catch { /* ignore */ }
+    if (!persisted?.tabs?.length) { analysisRestored.current = true; return; }
+    Promise.all(persisted.tabs.map(async (p) => {
+      try { return { key: p.key, game: p.game, loaded: await loadGamePgn(p.game.id), ply: 0 } as AnalysisTab; }
+      catch { return null; }
+    })).then((results) => {
+      const tabs = results.filter((t): t is AnalysisTab => t !== null);
+      setAnalysisTabs(tabs);
+      const wanted = persisted!.activeKey;
+      setActiveAnalysisKey(wanted && tabs.some((t) => t.key === wanted) ? wanted : tabs[0]?.key ?? null);
+      analysisRestored.current = true;
+    });
+  }, []);
+  useEffect(() => {
+    if (!analysisRestored.current) return;
+    localStorage.setItem("analysisTabs", JSON.stringify({
+      tabs: analysisTabs.map((t) => ({ key: t.key, game: t.game })),
+      activeKey: activeAnalysisKey,
+    }));
+  }, [analysisTabs, activeAnalysisKey]);
   const [showSetup, setShowSetup] = useState(false);
   const [showAddGame, setShowAddGame] = useState(false);
-  const [mode, setMode] = useState<"home" | "players" | "prep" | "games" | "local" | "maintenance">("home");
+  const [mode, setMode] = useState<"home" | "players" | "prep" | "games" | "analysis" | "local" | "maintenance">("home");
   // When set, focuses the player search input on the next render (used so the
   // Home screen's "Search a player" card can switch tabs and focus in one step).
   const [pendingSearchFocus, setPendingSearchFocus] = useState(false);
@@ -418,7 +468,7 @@ export default function App() {
 
           {/* Segmented mode switcher — outlined pill */}
           <div className="inline-flex items-center h-9 rounded-full border border-outline overflow-hidden">
-            {(["home", "players", "prep", "games", "local"] as const).map((m) => (
+            {(["home", "players", "prep", "games", "analysis", "local"] as const).map((m) => (
               <button
                 key={m}
                 onClick={() => setMode(m)}
@@ -428,7 +478,7 @@ export default function App() {
                     : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
                 }`}
               >
-                {m === "home" ? "Home" : m === "players" ? "Players" : m === "prep" ? "Prep" : m === "games" ? "Games" : "PGNs"}
+                {m === "home" ? "Home" : m === "players" ? "Players" : m === "prep" ? "Prep" : m === "games" ? "Games" : m === "analysis" ? "Analysis" : "PGNs"}
               </button>
             ))}
           </div>
@@ -587,7 +637,7 @@ export default function App() {
         />
       )}
 
-      {status === "disconnected" && (mode === "players" || mode === "prep" || mode === "games") ? (
+      {status === "disconnected" && (mode === "players" || mode === "prep" || mode === "games" || mode === "analysis") ? (
         <div className="flex-1 flex items-center justify-center bg-surface-dim">
           {/* M3 outlined card — Expressive uses xl (28px) corners */}
           <div className="max-w-md p-8 rounded-xl bg-surface-container-high text-center space-y-3">
@@ -662,6 +712,7 @@ export default function App() {
                 scopePublicOnly={scopePublicOnly}
                 scopeCollectionId={scopeCollectionId}
                 scopeIncludeDeleted={scopeIncludeDeleted}
+                onOpenInAnalysis={openInAnalysis}
               />
             ) : (
               <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md">
@@ -675,6 +726,16 @@ export default function App() {
           scopePublicOnly={scopePublicOnly}
           scopeCollectionId={scopeCollectionId}
           scopeIncludeDeleted={scopeIncludeDeleted}
+          onOpenInAnalysis={openInAnalysis}
+        />
+      ) : mode === "analysis" ? (
+        <AnalysisPage
+          tabs={analysisTabs}
+          activeKey={activeAnalysisKey}
+          onActivate={setActiveAnalysisKey}
+          onClose={closeAnalysisTab}
+          onOpenGame={openInAnalysis}
+          onGameMutated={onGameMutated}
         />
       ) : null}
       {/* Each of these dialogs can mutate database contents (import/dedup/purge),
