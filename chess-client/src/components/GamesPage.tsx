@@ -39,9 +39,11 @@ interface Props {
   /** Players mode: locks Player 1 to this player (chosen via the external player
    *  list) and scopes the games + explorer to them. Undefined on the Games page. */
   player?: PlayerInfo | null;
+  /** Open the selected game in the editable Analysis board (#220). */
+  onOpenInAnalysis?: (game: GameSummary) => void;
 }
 
-export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, player }: Props) {
+export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, player, onOpenInAnalysis }: Props) {
   const playerScoped = player !== undefined;
   // ── Filters ───────────────────────────────────────────────────────────────
   const [p1, setP1] = useState<PlayerInfo | null>(player ?? null);
@@ -457,7 +459,20 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                       <Panel defaultSize={55} minSize={20}>
                         <div className={panel}>
                           {loadedGame ? (
-                            <MiniBoard game={loadedGame} ply={selectedPly} setPly={setSelectedPly} />
+                            <>
+                              {onOpenInAnalysis && selectedGame && (
+                                <div className="shrink-0 px-2 py-1 border-b border-outline/40 flex justify-end">
+                                  <button
+                                    onClick={() => onOpenInAnalysis(selectedGame)}
+                                    className="text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 px-2.5 h-7 rounded-full transition-colors duration-short3 ease-standard"
+                                    title="Open this game in the editable Analysis board"
+                                  >
+                                    Open in Analysis ↗
+                                  </button>
+                                </div>
+                              )}
+                              <MiniBoard game={loadedGame} ply={selectedPly} setPly={setSelectedPly} />
+                            </>
                           ) : (
                             <div className="flex-1 flex items-center justify-center text-center text-on-surface-variant text-body-sm px-3">
                               {gameLoading ? "Loading…" : "Select a game"}
