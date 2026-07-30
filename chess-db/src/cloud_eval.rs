@@ -14,6 +14,11 @@ use serde::Serialize;
 
 const BASE: &str = "https://www.chessdb.cn/cdb.php";
 const CACHE_TTL: Duration = Duration::from_secs(6 * 3600);
+/// chessdb keeps *deepening* positions in the background, so a freshly-seen
+/// position can return a shallow, partial move list that grows minutes later.
+/// Cache those only briefly so the panel picks up the fuller answer on revisit,
+/// rather than pinning the first (possibly 1-move) response for hours.
+const CHESSDB_TTL: Duration = Duration::from_secs(15 * 60);
 const CACHE_CAP: usize = 8192;
 
 #[derive(Clone, Serialize)]
@@ -41,6 +46,9 @@ pub struct CloudEval {
     /// `"offline"` (couldn't reach chessdb.cn).
     pub status: String,
     pub moves: Vec<CloudMove>,
+    /// chessdb's search depth for this position (from `querypv`), if known — lets
+    /// the UI show how deep the cloud analysis is before offering to deepen it.
+    pub depth: Option<i32>,
 }
 
 struct Shared {
@@ -79,25 +87,29 @@ fn parse_mate(note: &str) -> Option<i32> {
 pub async fn query(fen: &str, zobrist: i64) -> CloudEval {
     let s = shared();
     if let Some((t, eval)) = s.cache.lock().unwrap().get(&zobrist) {
-        if t.elapsed() < CACHE_TTL {
+        if t.elapsed() < CHESSDB_TTL {
             return eval.clone();
         }
     }
 
-    let eval = match s
-        .client
-        .get(BASE)
-        .query(&[("action", "queryall"), ("board", fen), ("json", "1")])
-        .send()
-        .await
-    {
+    // queryall (the move table) + querypv (the position's search depth), together.
+    let all_fut = s.client.get(BASE).query(&[("action", "queryall"), ("board", fen), ("json", "1")]).send();
+    let pv_fut = s.client.get(BASE).query(&[("action", "querypv"), ("board", fen), ("json", "1")]).send();
+    let (all_res, pv_res) = tokio::join!(all_fut, pv_fut);
+
+    let mut eval = match all_res {
         Ok(resp) => match resp.json::<serde_json::Value>().await {
             Ok(v) => parse_queryall(&v),
-            Err(_) => CloudEval { status: "unknown".into(), moves: vec![] },
+            Err(_) => CloudEval { status: "unknown".into(), moves: vec![], depth: None },
         },
         // Network failure — don't cache; the panel shows "offline".
-        Err(_) => return CloudEval { status: "offline".into(), moves: vec![] },
+        Err(_) => return CloudEval { status: "offline".into(), moves: vec![], depth: None },
     };
+    if let Ok(resp) = pv_res {
+        if let Ok(v) = resp.json::<serde_json::Value>().await {
+            eval.depth = v.get("depth").and_then(|d| d.as_i64()).map(|d| d as i32);
+        }
+    }
 
     let mut cache = s.cache.lock().unwrap();
     if cache.len() >= CACHE_CAP {
@@ -109,7 +121,7 @@ pub async fn query(fen: &str, zobrist: i64) -> CloudEval {
 
 fn parse_queryall(v: &serde_json::Value) -> CloudEval {
     if v.get("status").and_then(|s| s.as_str()) != Some("ok") {
-        return CloudEval { status: "unknown".into(), moves: vec![] };
+        return CloudEval { status: "unknown".into(), moves: vec![], depth: None };
     }
     let moves = v
         .get("moves")
@@ -131,7 +143,7 @@ fn parse_queryall(v: &serde_json::Value) -> CloudEval {
                 .collect()
         })
         .unwrap_or_default();
-    CloudEval { status: "ok".into(), moves }
+    CloudEval { status: "ok".into(), moves, depth: None }
 }
 
 /// Ask chessdb.cn to analyse an as-yet-unknown position (best-effort).
