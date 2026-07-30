@@ -467,18 +467,29 @@ fn fill_positions(
     max_position_depth: Option<i16>,
     fast: bool,
 ) -> Result<()> {
+    // Incremental runs must skip games already in `positions`. Doing that as a
+    // correlated `NOT EXISTS` in *every* read batch re-scans the whole (unindexed,
+    // multi-million-row) positions table each time — pathologically slower than a
+    // full rebuild, and a single slow batch SELECT also blocks the between-batch
+    // cancel check, so the job appears uncancellable (#212). Instead resolve the
+    // pending game ids ONCE into a temp table (a single anti-join) and page through
+    // it joined to `games` for the PGN — turning N anti-joins into one.
     let select_sql = if rebuild {
         "SELECT id, pgn FROM games WHERE id > ? ORDER BY id LIMIT ?"
     } else {
-        "SELECT g.id, g.pgn FROM games g
-         WHERE g.id > ?
-           AND NOT EXISTS (SELECT 1 FROM positions p WHERE p.game_id = g.id)
-         ORDER BY g.id LIMIT ?"
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS pending_index;
+             CREATE TEMP TABLE pending_index AS
+                 SELECT g.id FROM games g
+                 WHERE NOT EXISTS (SELECT 1 FROM positions p WHERE p.game_id = g.id);",
+        )?;
+        "SELECT g.id, g.pgn FROM games g JOIN pending_index pi ON pi.id = g.id
+         WHERE g.id > ? ORDER BY g.id LIMIT ?"
     };
 
     let mut last_id: u32 = 0;
 
-    loop {
+    'batches: loop {
         let mut stmt = conn.prepare(select_sql)?;
         let rows: Vec<(u32, String)> = stmt
             .query_map(duckdb::params![last_id, INDEX_READ_BATCH as i64], |r| {
@@ -493,7 +504,7 @@ fn fill_positions(
 
         // Cooperative cancellation (#140): stop between read batches. Positions
         // already flushed stay committed and are simply resumed on the next run
-        // (the WHERE-NOT-EXISTS filter skips indexed games).
+        // (the pending-id set is rebuilt smaller each time).
         if reporter.is_cancelled() {
             break;
         }
@@ -504,6 +515,11 @@ fn fill_positions(
         // Reporting only once per (large) read batch left the GUI bar at 0% until
         // the whole batch — often the entire database — had finished.
         for chunk in rows.chunks(INDEX_REPORT_CHUNK) {
+            // Also honor cancellation mid-batch (a read batch can be many chunks),
+            // so a cancel is observed within a chunk rather than only per batch.
+            if reporter.is_cancelled() {
+                break 'batches;
+            }
             // Parse this sub-chunk in parallel — each task gets its own
             // GameVisitor (cheap: just holds max_position_depth).
             let position_batch: Vec<PositionRow> = chunk
@@ -532,6 +548,11 @@ fn fill_positions(
         }
     }
 
+    // Free the pending-id temp table (per-connection, and the ConnActor reuses the
+    // connection across jobs). Harmless if the run was cancelled mid-way.
+    if !rebuild {
+        conn.execute_batch("DROP TABLE IF EXISTS pending_index;")?;
+    }
     Ok(())
 }
 
@@ -1929,6 +1950,46 @@ mod bulk_index_tests {
         };
         assert_eq!(got(1), (111, Some(112), false), "appender path");
         assert_eq!(got(2), (222, Some(223), false), "prepared-insert path");
+    }
+
+    fn game_row(id: u32) -> GameRow {
+        GameRow {
+            id, issue_id: 1, visibility: "public", white_id: 1, black_id: 2,
+            white_elo: None, black_elo: None, event: None, site: None,
+            date: Some("2024-01-01".into()), round: None, result: Some("1-0".into()),
+            eco: None, move_count: 3,
+            pgn: "[Event \"?\"]\n[White \"a\"]\n[Black \"b\"]\n[Result \"1-0\"]\n\n1. e4 e5 2. Nf3 1-0\n".into(),
+            opening_line: "e4 e5 Nf3".into(), chessbase_id: None,
+            move_hash: id as i64, move_hash_short: Some(id as i64 + 100),
+        }
+    }
+
+    /// #212: incremental `index_positions` (rebuild = false) must index only the
+    /// games not yet in `positions` and leave the rest untouched — the pending set
+    /// is resolved once into a temp table rather than re-scanned per batch.
+    #[test]
+    fn incremental_index_only_processes_pending_games() {
+        let conn = setup();
+        flush_games(&conn, &[game_row(1), game_row(2)], false).unwrap();
+
+        let count = |id: u32| -> i64 {
+            conn.query_row("SELECT COUNT(*) FROM positions WHERE game_id = ?", duckdb::params![id], |r| r.get(0)).unwrap()
+        };
+
+        // First incremental run indexes both games.
+        index_positions(&conn, Some(40), false, false, &Reporter::silent()).unwrap();
+        assert!(count(1) > 0 && count(2) > 0, "both games indexed");
+        let g1 = count(1);
+
+        // Add a third game — only it is pending now.
+        flush_games(&conn, &[game_row(3)], false).unwrap();
+        assert_eq!(pending_position_count(&conn, false).unwrap(), 1, "only the new game is pending");
+
+        // Second incremental run indexes the new game and leaves the others as-is.
+        index_positions(&conn, Some(40), false, false, &Reporter::silent()).unwrap();
+        assert!(count(3) > 0, "the new game is indexed on the incremental re-run");
+        assert_eq!(count(1), g1, "an already-indexed game is not reprocessed/duplicated");
+        assert_eq!(pending_position_count(&conn, false).unwrap(), 0, "nothing left pending");
     }
 
     /// Appender-insert `n` players, bulk-style. fide_id alternates NULL/value to
