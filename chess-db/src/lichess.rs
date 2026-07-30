@@ -36,6 +36,9 @@ pub async fn list_items(_from: Option<u32>, _to: Option<u32>) -> Result<Vec<Feed
         };
         items.push(FeedItem {
             external_id: month.clone(),
+            // Placeholder — the index carries no publish date. The newest file gets
+            // its real Last-Modified below; older months keep this start-of-month
+            // value (they're never shown as the "Latest" date).
             published: Some(format!("{month}-01")),
             url: url.to_string(),
             filename,
@@ -45,6 +48,24 @@ pub async fn list_items(_from: Option<u32>, _to: Option<u32>) -> Result<Vec<Feed
             covers: Some((format!("{month}-01"), format!("{month}-31"))),
         });
     }
+
+    // A monthly file is updated throughout its month, so start-of-month is wrong
+    // for the "Latest" display. Fetch the newest file's real Last-Modified via a
+    // single HEAD and use that. Best-effort: any failure leaves the placeholder.
+    if let Some(idx) = items.iter().enumerate().max_by(|a, b| a.1.external_id.cmp(&b.1.external_id)).map(|(i, _)| i) {
+        if let Ok(resp) = client.head(&items[idx].url).send().await {
+            if let Some(date) = resp
+                .headers()
+                .get(reqwest::header::LAST_MODIFIED)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| chrono::DateTime::parse_from_rfc2822(s).ok())
+                .map(|dt| dt.format("%Y-%m-%d").to_string())
+            {
+                items[idx].published = Some(date);
+            }
+        }
+    }
+
     Ok(items)
 }
 
