@@ -183,7 +183,9 @@ pub async fn query_lichess(fen: &str, zobrist: i64) -> LichessEval {
     let eval = match s
         .client
         .get(LICHESS_URL)
-        .query(&[("fen", fen), ("multiPv", "5")])
+        // Lichess returns up to this many PV lines (it caps at however many it has
+        // cached for the position — popular positions have more).
+        .query(&[("fen", fen), ("multiPv", "10")])
         .send()
         .await
     {
