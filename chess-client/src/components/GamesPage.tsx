@@ -9,7 +9,7 @@ import MiniBoard from "./games/MiniBoard";
 import MoveList from "./games/MoveList";
 import { useGamePgn } from "../lib/useGamePgn";
 import { addCloudWatch, getCloudWatches } from "../api";
-import { CLOUD_WATCH_LANDED, CLOUD_WATCH_REMOVED, CLOUD_WATCH_UPDATED } from "./ActivityIndicator";
+import { CLOUD_WATCH_REMOVED, CLOUD_WATCH_UPDATED } from "./ActivityIndicator";
 
 // The Games page: a DB-wide analysis layout with every panel visible at once
 // (#219). Six areas — A main position board, B opening-explorer moves, C engine
@@ -168,7 +168,6 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const [engineSource, setEngineSource] = useState<EngineSource>(() => (localStorage.getItem("engineSource") === "lichess" ? "lichess" : "chessdb"));
   useEffect(() => { localStorage.setItem("engineSource", engineSource); }, [engineSource]);
   const [engineMoves, setEngineMoves] = useState<CloudMove[]>([]);          // chessdb
-  const [chessdbDepth, setChessdbDepth] = useState<number | null>(null);
   const [lichessEval, setLichessEval] = useState<LichessEval | null>(null); // lichess
   const [engineStatus, setEngineStatus] = useState<EngineStatus>("ok");
   const [engineQueuing, setEngineQueuing] = useState(false);
@@ -316,8 +315,8 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     const t = setTimeout(() => {
       if (engineSource === "chessdb") {
         fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}`, { signal: ctrl.signal })
-          .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<{ status: EngineStatus; moves: CloudMove[]; depth: number | null }>; })
-          .then((d) => { setEngineMoves(d.moves ?? []); setChessdbDepth(d.depth ?? null); setEngineStatus(d.moves?.length ? "ok" : (d.status ?? "unknown")); })
+          .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<{ status: EngineStatus; moves: CloudMove[] }>; })
+          .then((d) => { setEngineMoves(d.moves ?? []); setEngineStatus(d.moves?.length ? "ok" : (d.status ?? "unknown")); })
           .catch((e) => { if (!(e instanceof DOMException && e.name === "AbortError")) { setEngineMoves([]); setEngineStatus("offline"); } });
       } else {
         fetch(`/api/lichess-eval?fen=${encodeURIComponent(fen)}`, { signal: ctrl.signal })
@@ -340,48 +339,41 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     return () => { stop = true; };
   }, []);
 
-  // Keep the watched-set live, and whenever a watch's depth changes for the
-  // position on screen, silently refresh the panel (move table + depth number) so
-  // it always shows the same value the activity panel does — one source of truth.
-  // The daemon has already refreshed its cache, so this is a cheap cache hit.
+  // When a watch fires (chessdb revised the evals) for the position on screen,
+  // silently refresh the move table so it reflects the update; and re-enable Deepen
+  // (dropping the position from the watched set) on either a fire or a cancel.
   useEffect(() => {
     const currentFenNow = fenFromMoves(moveSequence);
     const drop = (fen?: string) => {
       if (!fen) return;
       setWatchedFens((prev) => { if (!prev.has(fen)) return prev; const next = new Set(prev); next.delete(fen); return next; });
     };
-    const refresh = (fen?: string) => {
+    function onUpdated(e: Event) {
+      const fen = (e as CustomEvent<{ fen: string }>).detail?.fen;
+      drop(fen); // watch fired — allow deepening again
       if (!fen || fen !== currentFenNow || engineSource !== "chessdb") return;
       fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}`)
-        .then((r) => r.json() as Promise<{ status: EngineStatus; moves: CloudMove[]; depth: number | null }>)
+        .then((r) => r.json() as Promise<{ status: EngineStatus; moves: CloudMove[] }>)
         .then((d) => {
           // Don't let a transient degraded response blank the panel; keep what's shown.
           if (d.status === "offline" || !d.moves?.length) return;
-          setEngineMoves(d.moves); setChessdbDepth(d.depth ?? null); setEngineStatus("ok");
+          setEngineMoves(d.moves); setEngineStatus("ok");
         })
         .catch(() => {});
-    };
-    function onUpdated(e: Event) { refresh((e as CustomEvent<{ fen: string }>).detail?.fen); }
-    function onLanded(e: Event) {
-      const fen = (e as CustomEvent<{ fen: string }>).detail?.fen;
-      drop(fen); // watch is done — allow deepening further
-      refresh(fen);
     }
     function onRemoved(e: Event) {
       drop((e as CustomEvent<{ fen: string }>).detail?.fen); // cancelled — re-enable Deepen
     }
     window.addEventListener(CLOUD_WATCH_UPDATED, onUpdated);
-    window.addEventListener(CLOUD_WATCH_LANDED, onLanded);
     window.addEventListener(CLOUD_WATCH_REMOVED, onRemoved);
     return () => {
       window.removeEventListener(CLOUD_WATCH_UPDATED, onUpdated);
-      window.removeEventListener(CLOUD_WATCH_LANDED, onLanded);
       window.removeEventListener(CLOUD_WATCH_REMOVED, onRemoved);
     };
   }, [moveSequence, engineSource]);
 
   // Deepen: queue the position for deeper chessdb analysis *and* start a watch,
-  // so the activity panel notifies when the depth grows (and this panel refetches
+  // so the activity panel notifies when its evaluation changes (and this panel refetches
   // if it's still on screen). A quick refetch also picks up any immediate gain.
   function requestAnalysis() {
     const fen = fenFromMoves(moveSequence);
@@ -391,8 +383,8 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     addCloudWatch(fen, label) // add_watch queues the position and captures the baseline
       .then(() => new Promise((res) => setTimeout(res, 2500)))
       .then(() => fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}`))
-      .then((r) => r.json() as Promise<{ status: EngineStatus; moves: CloudMove[]; depth: number | null }>)
-      .then((d) => { setEngineMoves(d.moves ?? []); setChessdbDepth(d.depth ?? null); setEngineStatus(d.moves?.length ? "ok" : (d.status ?? "unknown")); })
+      .then((r) => r.json() as Promise<{ status: EngineStatus; moves: CloudMove[] }>)
+      .then((d) => { setEngineMoves(d.moves ?? []); setEngineStatus(d.moves?.length ? "ok" : (d.status ?? "unknown")); })
       .catch(() => {})
       .finally(() => setEngineQueuing(false));
   }
@@ -549,12 +541,12 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                     ) : (
                       <div className="flex-1 flex flex-col min-h-0">
                         <div className="px-3 py-1 shrink-0 flex items-center justify-between text-label-sm text-on-surface-variant border-b border-outline/40">
-                          <span>chessdb{chessdbDepth !== null ? ` · depth ${chessdbDepth}` : ""}</span>
+                          <span>chessdb</span>
                           <button
                             onClick={requestAnalysis}
                             disabled={engineQueuing || watchedFens.has(currentFen)}
                             className="h-6 px-2 rounded-full text-primary hover:bg-primary/8 active:bg-primary/12 disabled:opacity-50 transition-colors duration-short3 ease-standard"
-                            title="Ask chessdb.cn to analyse this position more deeply and watch for the result — the activity panel notifies you when the depth grows"
+                            title="Ask chessdb.cn to analyse this position more deeply and watch for the result — the activity panel notifies you when its evaluation changes"
                           >
                             {engineQueuing ? "Requested…" : watchedFens.has(currentFen) ? "Watching…" : "Deepen"}
                           </button>

@@ -204,40 +204,36 @@ function RecentRow({ job }: { job: Job }) {
   );
 }
 
-/** Window event dispatched when a deepen watch lands (depth grew). The Games
- *  engine panel listens for it to auto-refresh if it's on that position. */
-export const CLOUD_WATCH_LANDED = "lpdo:cloud-watch-landed";
+/** Window event dispatched when a watch fires — chessdb revised the position's
+ *  evaluations. The Games panel refreshes its move table (if on that position)
+ *  and re-enables Deepen. */
+export const CLOUD_WATCH_UPDATED = "lpdo:cloud-watch-updated";
 /** Window event dispatched when a watch is dismissed/cancelled, so the Games
  *  panel can re-enable its Deepen button for that position. */
 export const CLOUD_WATCH_REMOVED = "lpdo:cloud-watch-removed";
-/** Window event dispatched when a watched position's depth changes, so the Games
- *  panel shows the same depth as this activity view (one source of truth). */
-export const CLOUD_WATCH_UPDATED = "lpdo:cloud-watch-updated";
 
 function WatchRow({ w, onDismiss }: { w: CloudWatch; onDismiss: (fen: string) => void }) {
-  const landed = w.status === "landed";
+  const updated = w.status === "updated";
   return (
     <div className="px-4 py-2 flex items-start gap-2">
-      <span className={`text-base leading-5 shrink-0 ${landed ? "text-success" : "text-on-surface-variant"}`}>
-        {landed ? "✓" : "⌁"}
+      <span className={`text-base leading-5 shrink-0 ${updated ? "text-success" : "text-on-surface-variant"}`}>
+        {updated ? "✓" : "⌁"}
       </span>
       <div className="min-w-0 flex-1">
         <div className="text-body-sm text-on-surface line-clamp-2 break-words">
-          {landed ? "Deeper analysis ready" : "Watching for deeper analysis"}
+          {updated ? "Evaluation updated" : "Watching for evaluation changes"}
         </div>
         {w.label && <div className="text-label-sm text-on-surface-variant break-words">{w.label}</div>}
-        <div className="text-label-sm text-on-surface-variant">
-          chessdb depth {w.current_depth}
-          {w.current_depth > w.baseline_depth ? ` (from ${w.baseline_depth})` : ""}
-          {landed && w.elapsed_secs != null ? ` · after ${formatDuration(w.elapsed_secs * 1000)}` : ""}
-        </div>
+        {updated && w.elapsed_secs != null && (
+          <div className="text-label-sm text-on-surface-variant">after {formatDuration(w.elapsed_secs * 1000)}</div>
+        )}
       </div>
       <button
         onClick={() => onDismiss(w.fen)}
         className="shrink-0 text-label-sm text-on-surface-variant hover:text-on-surface transition-colors duration-short3 ease-standard"
-        title={landed ? "Dismiss" : "Cancel watching"}
+        title={updated ? "Dismiss" : "Cancel watching"}
       >
-        {landed ? "Dismiss" : "Cancel"}
+        {updated ? "Dismiss" : "Cancel"}
       </button>
     </div>
   );
@@ -257,12 +253,9 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
   const [cancelling, setCancelling] = useState<Set<string>>(() => new Set());
   const [open, setOpen] = useState(false);
   const [watches, setWatches] = useState<CloudWatch[]>([]);
-  // Zobrist keys already seen "landed", so a landing fires its notification once.
-  // Seeded on first poll so pre-existing landed watches don't fire on mount.
-  const landedSeenRef = useRef<Set<number> | null>(null);
-  // Last depth seen per watch, so a depth change broadcasts once (the engine panel
-  // refreshes its move table + number to match).
-  const watchDepthRef = useRef<Map<number, number>>(new Map());
+  // Zobrist keys already seen "updated", so a watch fires its notification once.
+  // Seeded on first poll so pre-existing updated watches don't fire on mount.
+  const firedSeenRef = useRef<Set<number> | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   // Per-job {time, value} anchor for a cumulative-rate ETA. Cumulative (since the
   // job was first seen running) is stable for a monotonic byte counter, and the
@@ -328,30 +321,20 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
           return changed ? next : prev;
         });
       }).catch(() => { /* offline — leave last known */ });
-      // Deepen watches (chessdb): poll alongside jobs; fire once per landing.
+      // Deepen watches (chessdb): poll alongside jobs; fire once per update.
       getCloudWatches().then((w) => {
         if (stop) return;
-        const landedNow = w.filter((x) => x.status === "landed");
-        if (landedSeenRef.current === null) {
-          landedSeenRef.current = new Set(landedNow.map((x) => x.zobrist)); // seed
+        const updatedNow = w.filter((x) => x.status === "updated");
+        if (firedSeenRef.current === null) {
+          firedSeenRef.current = new Set(updatedNow.map((x) => x.zobrist)); // seed
         } else {
-          const seen = landedSeenRef.current;
-          for (const x of landedNow) {
+          const seen = firedSeenRef.current;
+          for (const x of updatedNow) {
             if (!seen.has(x.zobrist)) {
               seen.add(x.zobrist);
-              window.dispatchEvent(new CustomEvent(CLOUD_WATCH_LANDED, { detail: { fen: x.fen, zobrist: x.zobrist } }));
+              window.dispatchEvent(new CustomEvent(CLOUD_WATCH_UPDATED, { detail: { fen: x.fen, zobrist: x.zobrist } }));
               onSettledRef.current?.();
             }
-          }
-        }
-        // Broadcast depth changes so the engine panel refreshes to the same value.
-        const depths = watchDepthRef.current;
-        const live = new Set(w.map((x) => x.zobrist));
-        for (const z of depths.keys()) if (!live.has(z)) depths.delete(z);
-        for (const x of w) {
-          if (depths.get(x.zobrist) !== x.current_depth) {
-            depths.set(x.zobrist, x.current_depth);
-            window.dispatchEvent(new CustomEvent(CLOUD_WATCH_UPDATED, { detail: { fen: x.fen, depth: x.current_depth } }));
           }
         }
         setWatches(w);
@@ -382,7 +365,7 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
     .slice(-8)
     .reverse();
   const watching = watches.filter((w) => w.status === "watching");
-  const landed = watches.filter((w) => w.status === "landed");
+  const updatedWatches = watches.filter((w) => w.status === "updated");
   // Watches count toward "busy" so the badge reflects the whole pipeline.
   const activeCount = active.length + watching.length;
   const busy = activeCount > 0;
@@ -440,11 +423,11 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
                   {active.map((j) => <ActiveRow key={j.id} job={j} eta={etas.get(j.id)} cancelling={cancelling.has(j.id)} onCancel={handleCancel} onRetry={handleRetry} />)}
                 </div>
               )}
-              {(landed.length > 0 || watching.length > 0) && (
+              {(updatedWatches.length > 0 || watching.length > 0) && (
                 <>
                   <div className="px-4 pt-3 pb-1 text-label-sm text-on-surface-variant uppercase tracking-wider">Deepen watches</div>
                   <div className="divide-y divide-outline-variant">
-                    {landed.map((w) => <WatchRow key={w.zobrist} w={w} onDismiss={handleDismissWatch} />)}
+                    {updatedWatches.map((w) => <WatchRow key={w.zobrist} w={w} onDismiss={handleDismissWatch} />)}
                     {watching.map((w) => <WatchRow key={w.zobrist} w={w} onDismiss={handleDismissWatch} />)}
                   </div>
                 </>

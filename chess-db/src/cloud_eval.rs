@@ -47,9 +47,21 @@ pub struct CloudEval {
     /// `"offline"` (couldn't reach chessdb.cn).
     pub status: String,
     pub moves: Vec<CloudMove>,
-    /// chessdb's search depth for this position (from `querypv`), if known — lets
-    /// the UI show how deep the cloud analysis is before offering to deepen it.
-    pub depth: Option<i32>,
+}
+
+/// An order-independent hash of the position's move evaluations: sorted
+/// `(uci, score, mate)`. chessdb's per-move scores are stable across queries (only
+/// the returned move *order* and the PV-length "depth" are noisy), so this changes
+/// only when chessdb genuinely revises the position — the watch's trigger.
+fn eval_signature(eval: &CloudEval) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut items: Vec<(&str, i32, Option<i32>)> =
+        eval.moves.iter().map(|m| (m.uci.as_str(), m.score_cp, m.mate)).collect();
+    items.sort();
+    let mut h = DefaultHasher::new();
+    items.hash(&mut h);
+    h.finish()
 }
 
 struct Shared {
@@ -100,24 +112,20 @@ pub async fn query(fen: &str, zobrist: i64) -> CloudEval {
         }
     }
 
-    // queryall (the move table) + querypv (the position's search depth), together.
-    let all_fut = s.client.get(BASE).query(&[("action", "queryall"), ("board", fen), ("json", "1")]).send();
-    let pv_fut = s.client.get(BASE).query(&[("action", "querypv"), ("board", fen), ("json", "1")]).send();
-    let (all_res, pv_res) = tokio::join!(all_fut, pv_fut);
-
-    let mut eval = match all_res {
+    let eval = match s
+        .client
+        .get(BASE)
+        .query(&[("action", "queryall"), ("board", fen), ("json", "1")])
+        .send()
+        .await
+    {
         Ok(resp) => match resp.json::<serde_json::Value>().await {
             Ok(v) => parse_queryall(&v),
-            Err(_) => CloudEval { status: "unknown".into(), moves: vec![], depth: None },
+            Err(_) => CloudEval { status: "unknown".into(), moves: vec![] },
         },
         // Network failure — don't cache; the panel shows "offline".
-        Err(_) => return CloudEval { status: "offline".into(), moves: vec![], depth: None },
+        Err(_) => return CloudEval { status: "offline".into(), moves: vec![] },
     };
-    if let Ok(resp) = pv_res {
-        if let Ok(v) = resp.json::<serde_json::Value>().await {
-            eval.depth = v.get("depth").and_then(|d| d.as_i64()).map(|d| d as i32);
-        }
-    }
 
     let mut cache = s.cache.lock().unwrap();
     if cache.len() >= CACHE_CAP {
@@ -129,7 +137,7 @@ pub async fn query(fen: &str, zobrist: i64) -> CloudEval {
 
 fn parse_queryall(v: &serde_json::Value) -> CloudEval {
     if v.get("status").and_then(|s| s.as_str()) != Some("ok") {
-        return CloudEval { status: "unknown".into(), moves: vec![], depth: None };
+        return CloudEval { status: "unknown".into(), moves: vec![] };
     }
     let moves = v
         .get("moves")
@@ -151,7 +159,7 @@ fn parse_queryall(v: &serde_json::Value) -> CloudEval {
                 .collect()
         })
         .unwrap_or_default();
-    CloudEval { status: "ok".into(), moves, depth: None }
+    CloudEval { status: "ok".into(), moves }
 }
 
 /// Ask chessdb.cn to analyse an as-yet-unknown position (best-effort).
@@ -166,11 +174,11 @@ pub async fn queue(fen: &str) {
 }
 
 // ── Deepen watches (#221) ───────────────────────────────────────────────────
-// After you queue a position for deeper crowd analysis, a watch polls chessdb's
-// `querypv` depth in the background and flips to "landed" the moment the depth
-// rises above where it was when you clicked Watch. Watches live in memory (they
-// keep running with the GUI closed, as long as the daemon is up) and surface in
-// the activity panel. No DB involvement — this is a pure external-API poller.
+// After you queue a position for deeper crowd analysis, a watch polls chessdb in
+// the background and flips to "updated" the moment its move *evaluations* change
+// (the real, measurable effect of the crowd's work — see eval_signature). Watches
+// live in memory (they keep running with the GUI closed, as long as the daemon is
+// up) and surface in the activity panel. No DB involvement — pure API poller.
 
 const WATCH_POLL: Duration = Duration::from_secs(60);
 
@@ -181,36 +189,33 @@ pub struct Watch {
     pub fen: String,
     /// Short human label supplied by the client (e.g. the move list).
     pub label: String,
-    /// chessdb depth captured when the watch started.
-    pub baseline_depth: i32,
-    /// Latest observed depth.
-    pub current_depth: i32,
-    /// `"watching"` (still polling) or `"landed"` (depth grew — done).
+    /// `"watching"` (still polling) or `"updated"` (chessdb revised the evals).
     pub status: String,
-    /// Wall-clock seconds from starting the watch to it landing (set on landing).
+    /// Wall-clock seconds from starting the watch to the evaluation changing.
     pub elapsed_secs: Option<u64>,
     /// When the watch started — for computing `elapsed_secs`. Not serialized.
     #[serde(skip)]
     started: Instant,
+    /// Eval signature at start; the watch fires when this changes. Not serialized.
+    #[serde(skip)]
+    baseline_sig: u64,
 }
 
 /// Start (or refresh) a watch for a position. Queues the position for deeper
-/// analysis and captures the current depth as the baseline. Returns the watch.
+/// analysis and captures the current evaluation signature as the baseline.
 pub async fn add_watch(fen: &str, zobrist: i64, label: &str) -> Watch {
     queue(fen).await; // nudge chessdb to work on it
-    // Baseline from a fresh full query() (which also (re)populates the shared cache)
-    // so the watch and the engine panel report the same depth from the same source.
+    // Fresh baseline (also (re)populates the shared cache so the panel matches).
     shared().cache.lock().unwrap().remove(&zobrist);
-    let baseline = query(fen, zobrist).await.depth.unwrap_or(0);
+    let baseline_sig = eval_signature(&query(fen, zobrist).await);
     let watch = Watch {
         zobrist,
         fen: fen.to_string(),
         label: label.to_string(),
-        baseline_depth: baseline,
-        current_depth: baseline,
         status: "watching".into(),
         elapsed_secs: None,
         started: Instant::now(),
+        baseline_sig,
     };
     let s = shared();
     s.watches.lock().unwrap().insert(zobrist, watch.clone());
@@ -249,20 +254,20 @@ fn ensure_poller() {
                 .map(|w| (w.zobrist, w.fen.clone()))
                 .collect();
             for (zobrist, fen) in pending {
-                // Refresh with a full query() so the watch depth and the engine
-                // panel's move table come from the SAME cached query (they must
-                // agree) and the table reflects the deeper analysis. Bust first so
-                // the query actually re-fetches instead of returning the old entry.
+                // Refresh with a full query() (cache-busted) so the panel's move
+                // table reflects any change, then compare the eval signature.
                 shared().cache.lock().unwrap().remove(&zobrist);
-                // Only commit a depth the poll actually returned — a transient
-                // failure (offline / no querypv depth) must not clobber the last
-                // good value to 0.
-                let Some(depth) = query(&fen, zobrist).await.depth else { continue };
+                let fresh = query(&fen, zobrist).await;
+                // Only a real, non-empty result can signal a change — a transient
+                // failure (offline / unknown) must not fire a spurious update.
+                if fresh.status != "ok" || fresh.moves.is_empty() {
+                    continue;
+                }
+                let sig = eval_signature(&fresh);
                 let mut watches = shared().watches.lock().unwrap();
                 if let Some(w) = watches.get_mut(&zobrist) {
-                    w.current_depth = depth;
-                    if depth > w.baseline_depth && w.status != "landed" {
-                        w.status = "landed".into();
+                    if sig != w.baseline_sig && w.status != "updated" {
+                        w.status = "updated".into();
                         w.elapsed_secs = Some(w.started.elapsed().as_secs());
                     }
                 }

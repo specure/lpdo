@@ -75,15 +75,13 @@ export function getJobs(): Promise<Job[]> {
 
 // ── Deepen watches (chessdb depth, #221) ──────────────────────────────────────
 
-/** A background poller that notifies when chessdb's depth for a position grows. */
+/** A background poller that notifies when chessdb revises a position's evaluations. */
 export interface CloudWatch {
   zobrist: number;
   fen: string;
   label: string;
-  baseline_depth: number;
-  current_depth: number;
-  status: "watching" | "landed";
-  /** Seconds from starting the watch to landing (set once landed). */
+  status: "watching" | "updated";
+  /** Seconds from starting the watch to the evaluation changing (set once updated). */
   elapsed_secs: number | null;
 }
 
