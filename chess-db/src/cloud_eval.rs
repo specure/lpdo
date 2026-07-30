@@ -343,7 +343,7 @@ pub async fn query_lichess(fen: &str, zobrist: i64) -> LichessEval {
 }
 
 fn parse_lichess(v: &serde_json::Value) -> LichessEval {
-    let lines = v
+    let mut lines: Vec<LichessLine> = v
         .get("pvs")
         .and_then(|p| p.as_array())
         .map(|arr| {
@@ -362,6 +362,11 @@ fn parse_lichess(v: &serde_json::Value) -> LichessEval {
                 .collect()
         })
         .unwrap_or_default();
+    // Lichess can return duplicate PV lines (the same root move repeated) when
+    // multiPv exceeds what's meaningfully cached. Keep one line per distinct first
+    // move; the response is sorted best-first, so this keeps the best of each.
+    let mut seen = std::collections::HashSet::new();
+    lines.retain(|l| l.pv_uci.first().map(|m| seen.insert(m.clone())).unwrap_or(false));
     LichessEval {
         status: "ok".into(),
         depth: v.get("depth").and_then(|d| d.as_i64()).unwrap_or(0) as i32,
