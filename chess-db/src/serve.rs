@@ -1123,6 +1123,35 @@ async fn position_moves_handler(
     }).await
 }
 
+#[derive(Deserialize)]
+struct CloudEvalQuery {
+    fen: String,
+}
+
+/// FEN → Zobrist hash (same scheme as the positions index), the cloud-eval cache key.
+fn fen_zobrist(fen: &str) -> std::result::Result<i64, (StatusCode, String)> {
+    let parsed: Fen = fen.parse()
+        .map_err(|e: shakmaty::fen::ParseFenError| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let board: Chess = parsed.into_position(shakmaty::CastlingMode::Standard)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(board.zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64)
+}
+
+/// Cloud engine evaluation (chessdb.cn) for a FEN — a multi-move table with
+/// per-move scores, cached in the daemon (#221).
+async fn cloud_eval_handler(
+    Query(q): Query<CloudEvalQuery>,
+) -> ApiResult<crate::cloud_eval::CloudEval> {
+    let zobrist = fen_zobrist(&q.fen)?;
+    Ok(Json(crate::cloud_eval::query(&q.fen, zobrist).await))
+}
+
+/// Ask chessdb.cn to analyse an as-yet-unknown position (best-effort).
+async fn cloud_eval_queue_handler(Query(q): Query<CloudEvalQuery>) -> StatusCode {
+    crate::cloud_eval::queue(&q.fen).await;
+    StatusCode::OK
+}
+
 async fn delete_game_handler(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<u32>,
@@ -2009,6 +2038,8 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         .route("/setup/reset",                         post(setup_reset_handler))
         .route("/position",                            get(position_handler))
         .route("/position/moves",                      get(position_moves_handler))
+        .route("/cloud-eval",                          get(cloud_eval_handler))
+        .route("/cloud-eval/queue",                    post(cloud_eval_queue_handler))
         // Long-running mutation jobs with streamed progress.
         .route("/jobs",                                get(list_jobs_handler).post(create_job_handler))
         // Streamed PGN upload (#154): disable the default body-size cap so a

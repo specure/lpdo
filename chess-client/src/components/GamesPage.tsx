@@ -32,6 +32,21 @@ function fenFromMoves(moves: string[]): string {
   return chess.fen();
 }
 
+// Cloud engine (chessdb.cn) — one candidate move + its score (#221).
+interface CloudMove { san: string; uci: string; scoreCp: number; mate: number | null; winrate: number | null; rank: number; }
+type EngineStatus = "loading" | "ok" | "unknown" | "offline";
+
+/** Score from the side-to-move's perspective, e.g. "+0.30", "-1.15", "M3". */
+function fmtEval(m: CloudMove): string {
+  if (m.mate !== null) return m.mate > 0 ? `M${m.mate}` : `-M${-m.mate}`;
+  const p = m.scoreCp / 100;
+  return (p > 0 ? "+" : "") + p.toFixed(2);
+}
+function evalColor(m: CloudMove): string {
+  const v = m.mate !== null ? m.mate : m.scoreCp;
+  return v > 0 ? "text-success" : v < 0 ? "text-error" : "text-on-surface-variant";
+}
+
 interface Props {
   scopePublicOnly: boolean;
   scopeCollectionId: number | null;
@@ -82,6 +97,12 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const [moveStats, setMoveStats] = useState<MoveStats[]>([]);
   const [movesLoading, setMovesLoading] = useState(false);
   const movesAbortRef = useRef<AbortController | null>(null);
+
+  // ── Cloud engine (C), chessdb.cn via the daemon (#221) ──────────────────────
+  const [engineMoves, setEngineMoves] = useState<CloudMove[]>([]);
+  const [engineStatus, setEngineStatus] = useState<EngineStatus>("ok");
+  const [engineQueuing, setEngineQueuing] = useState(false);
+  const engineAbort = useRef<AbortController | null>(null);
 
   // ── Selected game (E + F), independent of the explorer ──────────────────────
   const [selectedGame, setSelectedGame] = useState<GameSummary | null>(null);
@@ -200,6 +221,36 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [firstMovesStr, dateFrom, dateTo, scopePublicOnly, p1?.id, p1Color, p2?.id, p2Color]);
 
+  // Cloud engine evaluation for the current position (debounced — it hits the
+  // free chessdb.cn service through the daemon, which caches by position).
+  useEffect(() => {
+    engineAbort.current?.abort();
+    const ctrl = new AbortController();
+    engineAbort.current = ctrl;
+    setEngineStatus("loading");
+    const fen = fenFromMoves(moveSequence);
+    const t = setTimeout(() => {
+      fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}`, { signal: ctrl.signal })
+        .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<{ status: EngineStatus; moves: CloudMove[] }>; })
+        .then((d) => { setEngineMoves(d.moves ?? []); setEngineStatus(d.moves?.length ? "ok" : (d.status ?? "unknown")); })
+        .catch((e) => { if (!(e instanceof DOMException && e.name === "AbortError")) { setEngineMoves([]); setEngineStatus("offline"); } });
+    }, 350);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firstMovesStr]);
+
+  function requestAnalysis() {
+    const fen = fenFromMoves(moveSequence);
+    setEngineQueuing(true);
+    fetch(`/api/cloud-eval/queue?fen=${encodeURIComponent(fen)}`, { method: "POST" })
+      .then(() => new Promise((res) => setTimeout(res, 2500)))
+      .then(() => fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}`))
+      .then((r) => r.json() as Promise<{ status: EngineStatus; moves: CloudMove[] }>)
+      .then((d) => { setEngineMoves(d.moves ?? []); setEngineStatus(d.moves?.length ? "ok" : (d.status ?? "unknown")); })
+      .catch(() => {})
+      .finally(() => setEngineQueuing(false));
+  }
+
   // Explorer move-number prefix: White to move → "N.", Black to move → "N...".
   const moveNo = Math.floor(moveSequence.length / 2) + 1;
   const movePrefix = moveSequence.length % 2 === 0 ? `${moveNo}.` : `${moveNo}...`;
@@ -314,13 +365,48 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                 </div>
               </Panel>
               <PanelResizeHandle className={hHandle} />
-              {/* C — engine evaluation (placeholder, #221) */}
+              {/* C — cloud engine evaluation (chessdb.cn, #221) */}
               <Panel defaultSize={40} minSize={12}>
                 <div className={panel}>
-                  <div className="px-3 py-2 shrink-0 text-label-md text-on-surface-variant uppercase tracking-wider border-b border-outline/40">Engine</div>
-                  <div className="flex-1 flex items-center justify-center text-center text-on-surface-variant text-body-sm px-3">
-                    Engine evaluation — coming soon
+                  <div className="px-3 py-2 shrink-0 flex items-center justify-between text-label-md text-on-surface-variant uppercase tracking-wider border-b border-outline/40">
+                    <span>Engine</span>
+                    <span className="normal-case tracking-normal text-on-surface-variant/70 cursor-help" title="Cloud analysis provided by chessdb.cn">chessdb.cn ⓘ</span>
                   </div>
+                  {engineStatus === "loading" ? (
+                    <div className="p-3 text-center text-on-surface-variant text-body-sm">Analysing…</div>
+                  ) : engineStatus === "offline" ? (
+                    <div className="flex-1 flex items-center justify-center text-center text-on-surface-variant text-body-sm px-3">Engine unavailable (offline)</div>
+                  ) : engineStatus === "unknown" || engineMoves.length === 0 ? (
+                    <div className="flex-1 flex flex-col items-center justify-center gap-2 p-3 text-center">
+                      <span className="text-on-surface-variant text-body-sm">Not in the cloud database yet.</span>
+                      <button
+                        onClick={requestAnalysis}
+                        disabled={engineQueuing}
+                        className="h-8 px-3 rounded-full text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 disabled:opacity-50 transition-colors duration-short3 ease-standard"
+                      >
+                        {engineQueuing ? "Requested — analysing…" : "Request analysis"}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex-1 overflow-y-auto p-2">
+                      <div className="flex items-center text-label-sm text-on-surface-variant px-2 mb-1 select-none">
+                        <span className="w-24">Move</span>
+                        <span className="w-16 text-right">Eval</span>
+                        <span className="flex-1 text-right">Win%</span>
+                      </div>
+                      {engineMoves.map((m) => (
+                        <button
+                          key={m.uci || m.san}
+                          onClick={() => appendMove(m.san.replace(/[+#]+$/, ""))}
+                          className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
+                        >
+                          <span className="w-24 font-mono truncate text-left">{movePrefix}{m.san}</span>
+                          <span className={`w-16 text-right tabular-nums ${evalColor(m)}`}>{fmtEval(m)}</span>
+                          <span className="flex-1 text-right text-on-surface-variant">{m.winrate !== null ? `${Math.round(m.winrate)}%` : "—"}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </Panel>
             </PanelGroup>
