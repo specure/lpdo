@@ -210,6 +210,9 @@ export const CLOUD_WATCH_LANDED = "lpdo:cloud-watch-landed";
 /** Window event dispatched when a watch is dismissed/cancelled, so the Games
  *  panel can re-enable its Deepen button for that position. */
 export const CLOUD_WATCH_REMOVED = "lpdo:cloud-watch-removed";
+/** Window event dispatched when a watched position's depth changes, so the Games
+ *  panel shows the same depth as this activity view (one source of truth). */
+export const CLOUD_WATCH_UPDATED = "lpdo:cloud-watch-updated";
 
 function WatchRow({ w, onDismiss }: { w: CloudWatch; onDismiss: (fen: string) => void }) {
   const landed = w.status === "landed";
@@ -224,7 +227,8 @@ function WatchRow({ w, onDismiss }: { w: CloudWatch; onDismiss: (fen: string) =>
         </div>
         {w.label && <div className="text-label-sm text-on-surface-variant break-words">{w.label}</div>}
         <div className="text-label-sm text-on-surface-variant">
-          chessdb depth {landed ? `${w.baseline_depth} → ${w.current_depth}` : `${w.current_depth} (from ${w.baseline_depth})`}
+          chessdb depth {w.current_depth}
+          {w.current_depth > w.baseline_depth ? ` (from ${w.baseline_depth})` : ""}
           {landed && w.elapsed_secs != null ? ` · after ${formatDuration(w.elapsed_secs * 1000)}` : ""}
         </div>
       </div>
@@ -256,6 +260,9 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
   // Zobrist keys already seen "landed", so a landing fires its notification once.
   // Seeded on first poll so pre-existing landed watches don't fire on mount.
   const landedSeenRef = useRef<Set<number> | null>(null);
+  // Last depth seen per watch, so a depth change broadcasts once (the engine panel
+  // refreshes its move table + number to match).
+  const watchDepthRef = useRef<Map<number, number>>(new Map());
   const ref = useRef<HTMLDivElement>(null);
   // Per-job {time, value} anchor for a cumulative-rate ETA. Cumulative (since the
   // job was first seen running) is stable for a monotonic byte counter, and the
@@ -335,6 +342,16 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
               window.dispatchEvent(new CustomEvent(CLOUD_WATCH_LANDED, { detail: { fen: x.fen, zobrist: x.zobrist } }));
               onSettledRef.current?.();
             }
+          }
+        }
+        // Broadcast depth changes so the engine panel refreshes to the same value.
+        const depths = watchDepthRef.current;
+        const live = new Set(w.map((x) => x.zobrist));
+        for (const z of depths.keys()) if (!live.has(z)) depths.delete(z);
+        for (const x of w) {
+          if (depths.get(x.zobrist) !== x.current_depth) {
+            depths.set(x.zobrist, x.current_depth);
+            window.dispatchEvent(new CustomEvent(CLOUD_WATCH_UPDATED, { detail: { fen: x.fen, depth: x.current_depth } }));
           }
         }
         setWatches(w);

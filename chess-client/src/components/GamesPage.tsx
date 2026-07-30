@@ -9,7 +9,7 @@ import MiniBoard from "./games/MiniBoard";
 import MoveList from "./games/MoveList";
 import { useGamePgn } from "../lib/useGamePgn";
 import { addCloudWatch, getCloudWatches } from "../api";
-import { CLOUD_WATCH_LANDED, CLOUD_WATCH_REMOVED } from "./ActivityIndicator";
+import { CLOUD_WATCH_LANDED, CLOUD_WATCH_REMOVED, CLOUD_WATCH_UPDATED } from "./ActivityIndicator";
 
 // The Games page: a DB-wide analysis layout with every panel visible at once
 // (#219). Six areas — A main position board, B opening-explorer moves, C engine
@@ -176,8 +176,6 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   // click can't restart the watch (which would reset its baseline). Seeded from
   // the daemon on mount, then kept live via the landed/removed window events.
   const [watchedFens, setWatchedFens] = useState<Set<string>>(() => new Set());
-  // Bumped when a deepen watch lands on the current position, to force a refetch.
-  const [engineRefetch, setEngineRefetch] = useState(0);
   const engineAbort = useRef<AbortController | null>(null);
 
   // ── Selected game (E + F), independent of the explorer ──────────────────────
@@ -330,7 +328,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     }, 350);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [firstMovesStr, engineSource, engineRefetch]);
+  }, [firstMovesStr, engineSource]);
 
   // Seed the set of actively-watched positions on mount (a watch may still be
   // running from before this page was last left).
@@ -342,28 +340,41 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     return () => { stop = true; };
   }, []);
 
-  // Keep the watched-set live and refetch on a landing for the position on screen
-  // (the daemon has already busted its cache for it).
+  // Keep the watched-set live, and whenever a watch's depth changes for the
+  // position on screen, silently refresh the panel (move table + depth number) so
+  // it always shows the same value the activity panel does — one source of truth.
+  // The daemon has already refreshed its cache, so this is a cheap cache hit.
   useEffect(() => {
+    const currentFenNow = fenFromMoves(moveSequence);
     const drop = (fen?: string) => {
       if (!fen) return;
       setWatchedFens((prev) => { if (!prev.has(fen)) return prev; const next = new Set(prev); next.delete(fen); return next; });
     };
+    const refresh = (fen?: string) => {
+      if (!fen || fen !== currentFenNow || engineSource !== "chessdb") return;
+      fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}`)
+        .then((r) => r.json() as Promise<{ status: EngineStatus; moves: CloudMove[]; depth: number | null }>)
+        .then((d) => { setEngineMoves(d.moves ?? []); setChessdbDepth(d.depth ?? null); setEngineStatus(d.moves?.length ? "ok" : (d.status ?? "unknown")); })
+        .catch(() => {});
+    };
+    function onUpdated(e: Event) { refresh((e as CustomEvent<{ fen: string }>).detail?.fen); }
     function onLanded(e: Event) {
       const fen = (e as CustomEvent<{ fen: string }>).detail?.fen;
       drop(fen); // watch is done — allow deepening further
-      if (fen && fen === fenFromMoves(moveSequence)) setEngineRefetch((n) => n + 1);
+      refresh(fen);
     }
     function onRemoved(e: Event) {
       drop((e as CustomEvent<{ fen: string }>).detail?.fen); // cancelled — re-enable Deepen
     }
+    window.addEventListener(CLOUD_WATCH_UPDATED, onUpdated);
     window.addEventListener(CLOUD_WATCH_LANDED, onLanded);
     window.addEventListener(CLOUD_WATCH_REMOVED, onRemoved);
     return () => {
+      window.removeEventListener(CLOUD_WATCH_UPDATED, onUpdated);
       window.removeEventListener(CLOUD_WATCH_LANDED, onLanded);
       window.removeEventListener(CLOUD_WATCH_REMOVED, onRemoved);
     };
-  }, [moveSequence]);
+  }, [moveSequence, engineSource]);
 
   // Deepen: queue the position for deeper chessdb analysis *and* start a watch,
   // so the activity panel notifies when the depth grows (and this panel refetches

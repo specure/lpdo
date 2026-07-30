@@ -194,25 +194,14 @@ pub struct Watch {
     started: Instant,
 }
 
-/// Fetch just chessdb's search depth for a position (`querypv`), best-effort.
-async fn query_depth(fen: &str) -> Option<i32> {
-    let s = shared();
-    let resp = s
-        .client
-        .get(BASE)
-        .query(&[("action", "querypv"), ("board", fen), ("json", "1")])
-        .send()
-        .await
-        .ok()?;
-    let v = resp.json::<serde_json::Value>().await.ok()?;
-    v.get("depth").and_then(|d| d.as_i64()).map(|d| d as i32)
-}
-
 /// Start (or refresh) a watch for a position. Queues the position for deeper
 /// analysis and captures the current depth as the baseline. Returns the watch.
 pub async fn add_watch(fen: &str, zobrist: i64, label: &str) -> Watch {
     queue(fen).await; // nudge chessdb to work on it
-    let baseline = query_depth(fen).await.unwrap_or(0);
+    // Baseline from a fresh full query() (which also (re)populates the shared cache)
+    // so the watch and the engine panel report the same depth from the same source.
+    shared().cache.lock().unwrap().remove(&zobrist);
+    let baseline = query(fen, zobrist).await.depth.unwrap_or(0);
     let watch = Watch {
         zobrist,
         fen: fen.to_string(),
@@ -260,17 +249,18 @@ fn ensure_poller() {
                 .map(|w| (w.zobrist, w.fen.clone()))
                 .collect();
             for (zobrist, fen) in pending {
-                if let Some(depth) = query_depth(&fen).await {
-                    let mut watches = shared().watches.lock().unwrap();
-                    if let Some(w) = watches.get_mut(&zobrist) {
-                        w.current_depth = depth;
-                        if depth > w.baseline_depth {
-                            w.status = "landed".into();
-                            w.elapsed_secs = Some(w.started.elapsed().as_secs());
-                            // Drop the stale (shallow) cached eval so the client's
-                            // next fetch of this position returns the fuller answer.
-                            shared().cache.lock().unwrap().remove(&zobrist);
-                        }
+                // Refresh with a full query() so the watch depth and the engine
+                // panel's move table come from the SAME cached query (they must
+                // agree) and the table reflects the deeper analysis. Bust first so
+                // the query actually re-fetches instead of returning the old entry.
+                shared().cache.lock().unwrap().remove(&zobrist);
+                let depth = query(&fen, zobrist).await.depth.unwrap_or(0);
+                let mut watches = shared().watches.lock().unwrap();
+                if let Some(w) = watches.get_mut(&zobrist) {
+                    w.current_depth = depth;
+                    if depth > w.baseline_depth && w.status != "landed" {
+                        w.status = "landed".into();
+                        w.elapsed_secs = Some(w.started.elapsed().as_secs());
                     }
                 }
             }
