@@ -518,7 +518,7 @@ async function exportGameToPgn(detail: GameDetail): Promise<void> {
 // headers modal, delete-confirmation flow, export error, and the sidecar
 // progress used by soft-delete / restore.
 function GameActionsBar({
-  detail, onDetailChanged, onStartEditMoves, detailsOpen, onToggleDetails,
+  detail, onDetailChanged, onStartEditMoves, detailsOpen, onToggleDetails, unsavedEdits = false,
 }: {
   detail: GameDetail;
   onDetailChanged: () => void;
@@ -528,6 +528,9 @@ function GameActionsBar({
    *  directly above the panel it controls. */
   detailsOpen: boolean;
   onToggleDetails: () => void;
+  /** True when the moves editor has unsaved changes — export writes the last
+   *  saved version, so we warn before exporting. */
+  unsavedEdits?: boolean;
 }) {
   const isDeleted = detail.deleted_at != null;
   const progress = useSidecarProgress();
@@ -537,6 +540,10 @@ function GameActionsBar({
 
   async function handleExport() {
     setExportError(null);
+    // Export writes the saved game; unsaved edit-mode changes won't be included.
+    if (unsavedEdits && !window.confirm("You have unsaved changes that won't be included. Click \"Done\" first to save them, or export the last saved version anyway?")) {
+      return;
+    }
     try {
       await exportGameToPgn(detail);
     } catch (e) {
@@ -1531,6 +1538,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             }}
             detailsOpen={detailsOpen}
             onToggleDetails={() => setDetailsOpen((o) => !o)}
+            unsavedEdits={movesEditor.active && movesEditor.dirty}
           />
         )}
 
