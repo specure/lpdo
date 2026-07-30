@@ -259,9 +259,6 @@ export default function App() {
       return next;
     });
   }
-  function setAnalysisPly(key: string, ply: number) {
-    setAnalysisTabs((prev) => prev.map((t) => (t.key === key ? { ...t, ply } : t)));
-  }
   const [showSetup, setShowSetup] = useState(false);
   const [showAddGame, setShowAddGame] = useState(false);
   const [mode, setMode] = useState<"home" | "players" | "prep" | "games" | "analysis" | "local" | "maintenance">("home");
@@ -710,8 +707,8 @@ export default function App() {
           activeKey={activeAnalysisKey}
           onActivate={setActiveAnalysisKey}
           onClose={closeAnalysisTab}
-          onSetPly={setAnalysisPly}
           onOpenGame={openInAnalysis}
+          onGameMutated={onGameMutated}
         />
       ) : null}
       {/* Each of these dialogs can mutate database contents (import/dedup/purge),

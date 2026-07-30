@@ -366,6 +366,9 @@ interface Props {
   /** Reports when the moves editor enters/leaves edit mode, so the host can
    * suspend list-level arrow-key navigation while editing. */
   onEditingChange?: (editing: boolean) => void;
+  /** Reports the current board FEN as the cursor moves — lets the Analysis board
+   * drive its reference-moves / related-games panels off this game's position. */
+  onPositionChange?: (fen: string) => void;
 }
 
 // Tags shown in the compact view always; rest only appear when expanded.
@@ -782,7 +785,7 @@ function DetailsPanel({
   );
 }
 
-export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange }: Props) {
+export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange }: Props) {
   const [detail, setDetail] = useState<GameDetail | null>(null);
   const [detailReloadKey, setDetailReloadKey] = useState(0);
   const [detailsOpen, setDetailsOpen] = useState<boolean>(
@@ -1096,6 +1099,8 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     }
     return fens[currentIndex] ?? "start";
   }, [movesEditor.active, movesEditor.fen, useAnnotated, annotatedGame, activeLine, activeIndex, fens, currentIndex]);
+
+  useEffect(() => { onPositionChange?.(currentFen); }, [currentFen, onPositionChange]);
 
   // Pre-warm the position-moves cache as the user browses, so entering edit
   // mode and clicking on an empty square shows the right arrow without a
