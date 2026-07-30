@@ -96,6 +96,20 @@ function evalColor(m: CloudMove): string {
   return v > 0 ? "text-success" : v < 0 ? "text-error" : "text-on-surface-variant";
 }
 
+// Games-page state that should survive leaving and returning to the page (and a
+// restart) — the analysed line + applied filters. Persisted to localStorage; only
+// for the Games page, not the player-scoped Players view (#—).
+const GAMES_STATE_KEY = "gamesPageState";
+interface PersistedGamesState {
+  p1: PlayerInfo | null; p1Color: ColorFilter; p2: PlayerInfo | null; p2Color: ColorFilter;
+  event: string; dateFrom: string; dateTo: string; filtersCollapsed: boolean;
+  line: string[]; ply: number;
+  selectedGame: GameSummary | null; selectedPly: number;
+}
+function loadGamesState(): Partial<PersistedGamesState> | null {
+  try { const raw = localStorage.getItem(GAMES_STATE_KEY); return raw ? (JSON.parse(raw) as Partial<PersistedGamesState>) : null; } catch { return null; }
+}
+
 interface Props {
   scopePublicOnly: boolean;
   scopeCollectionId: number | null;
@@ -109,18 +123,21 @@ interface Props {
 
 export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, player, onOpenInAnalysis }: Props) {
   const playerScoped = player !== undefined;
+  // Restore the Games page's last analysed line + filters (once, on mount). Never
+  // for the player-scoped view — that always locks to the externally-chosen player.
+  const restored = useRef<Partial<PersistedGamesState> | null>(playerScoped ? null : loadGamesState()).current;
   // ── Filters ───────────────────────────────────────────────────────────────
-  const [p1, setP1] = useState<PlayerInfo | null>(player ?? null);
-  const [p1Color, setP1Color] = useState<ColorFilter>("any");
-  const [p2, setP2] = useState<PlayerInfo | null>(null);
-  const [p2Color, setP2Color] = useState<ColorFilter>("any");
-  const [eventInput, setEventInput] = useState("");
-  const [dateFromInput, setDateFromInput] = useState("");
-  const [dateToInput, setDateToInput] = useState("");
-  const [event, setEvent] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-  const [filtersCollapsed, setFiltersCollapsed] = useState(true);
+  const [p1, setP1] = useState<PlayerInfo | null>(player ?? restored?.p1 ?? null);
+  const [p1Color, setP1Color] = useState<ColorFilter>(restored?.p1Color ?? "any");
+  const [p2, setP2] = useState<PlayerInfo | null>(restored?.p2 ?? null);
+  const [p2Color, setP2Color] = useState<ColorFilter>(restored?.p2Color ?? "any");
+  const [eventInput, setEventInput] = useState(restored?.event ?? "");
+  const [dateFromInput, setDateFromInput] = useState(restored?.dateFrom ?? "");
+  const [dateToInput, setDateToInput] = useState(restored?.dateTo ?? "");
+  const [event, setEvent] = useState(restored?.event ?? "");
+  const [dateFrom, setDateFrom] = useState(restored?.dateFrom ?? "");
+  const [dateTo, setDateTo] = useState(restored?.dateTo ?? "");
+  const [filtersCollapsed, setFiltersCollapsed] = useState(restored?.filtersCollapsed ?? true);
 
   // ── Game list (infinite scroll) ─────────────────────────────────────────────
   const [games, setGames] = useState<GameSummary[]>([]);
@@ -136,8 +153,8 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   // Cursor model: `line` is the full explored line, `ply` the current depth. The
   // active sequence (board position, filters, move-stats) is line[0..ply]. Back/
   // forward just move the cursor; clicking a new move from B branches from here.
-  const [line, setLine] = useState<string[]>([]);
-  const [ply, setPly] = useState(0);
+  const [line, setLine] = useState<string[]>(restored?.line ?? []);
+  const [ply, setPly] = useState(restored?.ply ?? 0);
   const moveSequence = line.slice(0, ply);
   function appendMove(mv: string) {
     setLine((prev) => (prev[ply] === mv ? prev : [...prev.slice(0, ply), mv]));
@@ -161,8 +178,8 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const engineAbort = useRef<AbortController | null>(null);
 
   // ── Selected game (E + F), independent of the explorer ──────────────────────
-  const [selectedGame, setSelectedGame] = useState<GameSummary | null>(null);
-  const [selectedPly, setSelectedPly] = useState(0);
+  const [selectedGame, setSelectedGame] = useState<GameSummary | null>(restored?.selectedGame ?? null);
+  const [selectedPly, setSelectedPly] = useState(restored?.selectedPly ?? 0);
   const { game: loadedGame, loading: gameLoading } = useGamePgn(selectedGame?.id ?? null);
   useEffect(() => { setSelectedPly(0); }, [selectedGame?.id]);
 
@@ -184,6 +201,16 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   useEffect(() => { const t = setTimeout(() => setEvent(eventInput), 400); return () => clearTimeout(t); }, [eventInput]);
   useEffect(() => { const t = setTimeout(() => setDateFrom(dateFromInput), 400); return () => clearTimeout(t); }, [dateFromInput]);
   useEffect(() => { const t = setTimeout(() => setDateTo(dateToInput), 400); return () => clearTimeout(t); }, [dateToInput]);
+
+  // Persist the analysed line + filters so leaving and returning to the Games page
+  // (or restarting) restores them. Not for the player-scoped view (#—).
+  useEffect(() => {
+    if (playerScoped) return;
+    const snapshot: PersistedGamesState = {
+      p1, p1Color, p2, p2Color, event, dateFrom, dateTo, filtersCollapsed, line, ply, selectedGame, selectedPly,
+    };
+    try { localStorage.setItem(GAMES_STATE_KEY, JSON.stringify(snapshot)); } catch { /* quota — ignore */ }
+  }, [playerScoped, p1, p1Color, p2, p2Color, event, dateFrom, dateTo, filtersCollapsed, line, ply, selectedGame, selectedPly]);
 
   // Build the games query at a given offset (shared by first page + load-more).
   function buildParams(off: number): URLSearchParams {

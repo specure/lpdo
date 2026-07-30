@@ -222,6 +222,7 @@ function WatchRow({ w, onDismiss }: { w: CloudWatch; onDismiss: (fen: string) =>
         {w.label && <div className="text-label-sm text-on-surface-variant line-clamp-1 break-words">{w.label}</div>}
         <div className="text-label-sm text-on-surface-variant">
           chessdb depth {landed ? `${w.baseline_depth} → ${w.current_depth}` : `${w.current_depth} (from ${w.baseline_depth})`}
+          {landed && w.elapsed_secs != null ? ` · after ${formatDuration(w.elapsed_secs * 1000)}` : ""}
         </div>
       </div>
       <button

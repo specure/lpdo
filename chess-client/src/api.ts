@@ -83,6 +83,8 @@ export interface CloudWatch {
   baseline_depth: number;
   current_depth: number;
   status: "watching" | "landed";
+  /** Seconds from starting the watch to landing (set once landed). */
+  elapsed_secs: number | null;
 }
 
 /** Start watching a position for deeper chessdb analysis (also queues it). */

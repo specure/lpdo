@@ -187,6 +187,11 @@ pub struct Watch {
     pub current_depth: i32,
     /// `"watching"` (still polling) or `"landed"` (depth grew — done).
     pub status: String,
+    /// Wall-clock seconds from starting the watch to it landing (set on landing).
+    pub elapsed_secs: Option<u64>,
+    /// When the watch started — for computing `elapsed_secs`. Not serialized.
+    #[serde(skip)]
+    started: Instant,
 }
 
 /// Fetch just chessdb's search depth for a position (`querypv`), best-effort.
@@ -215,6 +220,8 @@ pub async fn add_watch(fen: &str, zobrist: i64, label: &str) -> Watch {
         baseline_depth: baseline,
         current_depth: baseline,
         status: "watching".into(),
+        elapsed_secs: None,
+        started: Instant::now(),
     };
     let s = shared();
     s.watches.lock().unwrap().insert(zobrist, watch.clone());
@@ -259,6 +266,7 @@ fn ensure_poller() {
                         w.current_depth = depth;
                         if depth > w.baseline_depth {
                             w.status = "landed".into();
+                            w.elapsed_secs = Some(w.started.elapsed().as_secs());
                             // Drop the stale (shallow) cached eval so the client's
                             // next fetch of this position returns the fuller answer.
                             shared().cache.lock().unwrap().remove(&zobrist);
