@@ -16,6 +16,16 @@ description: |
   (local or remote), falling back to direct access when no server is running.
 depends:
   - libc6 (>= 2.34)
+# The pre-0.5.0 build was a single monolithic `lpdo` package that owned
+# /usr/bin/chess-db. That binary now lives in lpdo-cli, so declare the takeover:
+# Replaces lets dpkg overwrite the file, and Conflicts makes apt remove the
+# obsolete monolith automatically instead of erroring with "trying to overwrite
+# /usr/bin/chess-db, which is also in package lpdo 0.3.0" (#208 / #215). Both are
+# version-restricted to < 0.5.0, so the current `lpdo` GUI package is unaffected.
+replaces:
+  - lpdo (<< 0.5.0)
+conflicts:
+  - lpdo (<< 0.5.0)
 contents:
   - src: target/release/chess-db
     dst: /usr/bin/chess-db
