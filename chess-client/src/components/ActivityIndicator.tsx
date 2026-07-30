@@ -219,7 +219,7 @@ function WatchRow({ w, onDismiss }: { w: CloudWatch; onDismiss: (fen: string) =>
         <div className="text-body-sm text-on-surface line-clamp-2 break-words">
           {landed ? "Deeper analysis ready" : "Watching for deeper analysis"}
         </div>
-        {w.label && <div className="text-label-sm text-on-surface-variant line-clamp-1 break-words">{w.label}</div>}
+        {w.label && <div className="text-label-sm text-on-surface-variant break-words">{w.label}</div>}
         <div className="text-label-sm text-on-surface-variant">
           chessdb depth {landed ? `${w.baseline_depth} → ${w.current_depth}` : `${w.current_depth} (from ${w.baseline_depth})`}
           {landed && w.elapsed_secs != null ? ` · after ${formatDuration(w.elapsed_secs * 1000)}` : ""}
@@ -228,9 +228,9 @@ function WatchRow({ w, onDismiss }: { w: CloudWatch; onDismiss: (fen: string) =>
       <button
         onClick={() => onDismiss(w.fen)}
         className="shrink-0 text-label-sm text-on-surface-variant hover:text-on-surface transition-colors duration-short3 ease-standard"
-        title={landed ? "Dismiss" : "Stop watching"}
+        title={landed ? "Dismiss" : "Cancel watching"}
       >
-        {landed ? "Dismiss" : "Stop"}
+        {landed ? "Dismiss" : "Cancel"}
       </button>
     </div>
   );

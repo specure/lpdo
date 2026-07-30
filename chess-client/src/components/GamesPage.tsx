@@ -172,7 +172,6 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const [lichessEval, setLichessEval] = useState<LichessEval | null>(null); // lichess
   const [engineStatus, setEngineStatus] = useState<EngineStatus>("ok");
   const [engineQueuing, setEngineQueuing] = useState(false);
-  const [watchStarted, setWatchStarted] = useState(false);
   // Bumped when a deepen watch lands on the current position, to force a refetch.
   const [engineRefetch, setEngineRefetch] = useState(0);
   const engineAbort = useRef<AbortController | null>(null);
@@ -340,26 +339,20 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     return () => window.removeEventListener(CLOUD_WATCH_LANDED, onLanded);
   }, [moveSequence]);
 
+  // Deepen: queue the position for deeper chessdb analysis *and* start a watch,
+  // so the activity panel notifies when the depth grows (and this panel refetches
+  // if it's still on screen). A quick refetch also picks up any immediate gain.
   function requestAnalysis() {
     const fen = fenFromMoves(moveSequence);
+    const label = moveSequence.length ? pvString(new Chess().fen(), moveSequence) : "Starting position";
     setEngineQueuing(true);
-    fetch(`/api/cloud-eval/queue?fen=${encodeURIComponent(fen)}`, { method: "POST" })
+    addCloudWatch(fen, label) // add_watch queues the position and captures the baseline
       .then(() => new Promise((res) => setTimeout(res, 2500)))
       .then(() => fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}`))
       .then((r) => r.json() as Promise<{ status: EngineStatus; moves: CloudMove[]; depth: number | null }>)
       .then((d) => { setEngineMoves(d.moves ?? []); setChessdbDepth(d.depth ?? null); setEngineStatus(d.moves?.length ? "ok" : (d.status ?? "unknown")); })
       .catch(() => {})
       .finally(() => setEngineQueuing(false));
-  }
-
-  // Watch this position for deeper chessdb analysis; the activity panel notifies
-  // when the depth grows (and this panel refetches if it's still on screen).
-  function startWatch() {
-    const label = moveSequence.length ? pvString(new Chess().fen(), moveSequence) : "Starting position";
-    setWatchStarted(true);
-    addCloudWatch(fenFromMoves(moveSequence), label)
-      .catch(() => {})
-      .finally(() => setTimeout(() => setWatchStarted(false), 1500));
   }
 
   // Explorer move-number prefix: White to move → "N.", Black to move → "N...".
@@ -515,24 +508,14 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                       <div className="flex-1 flex flex-col min-h-0">
                         <div className="px-3 py-1 shrink-0 flex items-center justify-between text-label-sm text-on-surface-variant border-b border-outline/40">
                           <span>chessdb{chessdbDepth !== null ? ` · depth ${chessdbDepth}` : ""}</span>
-                          <div className="flex items-center gap-1">
-                            <button
-                              onClick={requestAnalysis}
-                              disabled={engineQueuing}
-                              className="h-6 px-2 rounded-full text-primary hover:bg-primary/8 active:bg-primary/12 disabled:opacity-50 transition-colors duration-short3 ease-standard"
-                              title="Ask chessdb.cn to analyse this position more deeply — asynchronous; re-query later to see it grow"
-                            >
-                              {engineQueuing ? "Requested…" : "Deepen"}
-                            </button>
-                            <button
-                              onClick={startWatch}
-                              disabled={watchStarted}
-                              className="h-6 px-2 rounded-full text-primary hover:bg-primary/8 active:bg-primary/12 disabled:opacity-50 transition-colors duration-short3 ease-standard"
-                              title="Watch this position — the activity panel notifies you when chessdb's depth grows"
-                            >
-                              {watchStarted ? "Watching ✓" : "Watch"}
-                            </button>
-                          </div>
+                          <button
+                            onClick={requestAnalysis}
+                            disabled={engineQueuing}
+                            className="h-6 px-2 rounded-full text-primary hover:bg-primary/8 active:bg-primary/12 disabled:opacity-50 transition-colors duration-short3 ease-standard"
+                            title="Ask chessdb.cn to analyse this position more deeply and watch for the result — the activity panel notifies you when the depth grows"
+                          >
+                            {engineQueuing ? "Requested…" : "Deepen"}
+                          </button>
                         </div>
                         <div className="flex-1 overflow-y-auto p-2">
                         <div className="flex items-center text-label-sm text-on-surface-variant px-2 mb-1 select-none">
