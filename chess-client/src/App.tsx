@@ -259,6 +259,33 @@ export default function App() {
       return next;
     });
   }
+  // Persist open Analysis tabs across restarts. We store just the game summaries
+  // + active tab; the parsed PGN (loaded) is re-fetched on restore. Edits persist
+  // via the DB (saved on Done/switch); in-progress unsaved edits are not restored.
+  const analysisRestored = useRef(false);
+  useEffect(() => {
+    const raw = localStorage.getItem("analysisTabs");
+    let persisted: { tabs: { key: string; game: GameSummary }[]; activeKey: string | null } | null = null;
+    try { persisted = raw ? JSON.parse(raw) : null; } catch { /* ignore */ }
+    if (!persisted?.tabs?.length) { analysisRestored.current = true; return; }
+    Promise.all(persisted.tabs.map(async (p) => {
+      try { return { key: p.key, game: p.game, loaded: await loadGamePgn(p.game.id), ply: 0 } as AnalysisTab; }
+      catch { return null; }
+    })).then((results) => {
+      const tabs = results.filter((t): t is AnalysisTab => t !== null);
+      setAnalysisTabs(tabs);
+      const wanted = persisted!.activeKey;
+      setActiveAnalysisKey(wanted && tabs.some((t) => t.key === wanted) ? wanted : tabs[0]?.key ?? null);
+      analysisRestored.current = true;
+    });
+  }, []);
+  useEffect(() => {
+    if (!analysisRestored.current) return;
+    localStorage.setItem("analysisTabs", JSON.stringify({
+      tabs: analysisTabs.map((t) => ({ key: t.key, game: t.game })),
+      activeKey: activeAnalysisKey,
+    }));
+  }, [analysisTabs, activeAnalysisKey]);
   const [showSetup, setShowSetup] = useState(false);
   const [showAddGame, setShowAddGame] = useState(false);
   const [mode, setMode] = useState<"home" | "players" | "prep" | "games" | "analysis" | "local" | "maintenance">("home");
