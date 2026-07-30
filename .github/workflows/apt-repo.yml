@@ -1,0 +1,103 @@
+name: APT repository
+
+# Publishes the Linux .debs to a signed APT repository hosted on GitHub Pages, so
+# users can install once and then just `sudo apt update && sudo apt upgrade` (#216).
+#
+# Runs automatically when a release is published (draft → published fires this),
+# and can be run manually (workflow_dispatch) to (re)publish a given tag — use that
+# once to seed the repo from an already-published release.
+#
+# One-time setup (see packaging/APT-REPO.md):
+#   - Add repo secrets APT_GPG_PRIVATE_KEY (armored private key) and, if the key has
+#     one, APT_GPG_PASSPHRASE.
+#   - Enable GitHub Pages (Settings → Pages → Deploy from branch → gh-pages / root).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to (re)publish, e.g. v0.13.0
+        required: true
+
+permissions:
+  contents: write   # push to the gh-pages branch
+
+concurrency:
+  group: apt-repo
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    steps:
+      # Bring the existing repository state (old .debs in the pool) so releases
+      # accumulate instead of replacing each other. First run: branch is absent.
+      - name: Check out existing gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: gh-pages
+        continue-on-error: true
+
+      - name: Prepare repo skeleton
+        run: mkdir -p gh-pages/pool/main gh-pages/dists/stable/main/binary-amd64
+
+      - name: Install tooling
+        run: sudo apt-get update && sudo apt-get install -y apt-utils gnupg
+
+      - name: Download release .debs into the pool
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" -R "${{ github.repository }}" -p 'lpdo*_amd64.deb' -D incoming
+          cp incoming/*.deb gh-pages/pool/main/
+
+      - name: Import signing key + export the public key
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APT_GPG_PRIVATE_KEY:-}" ]; then
+            echo "::error::APT_GPG_PRIVATE_KEY secret is not set — add it (see packaging/APT-REPO.md)."; exit 1
+          fi
+          echo "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          KEYID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec:/{print $5; exit}')
+          echo "KEYID=$KEYID" >> "$GITHUB_ENV"
+          # Public key users add to their keyring (binary format for signed-by).
+          gpg --export "$KEYID" > gh-pages/lpdo.gpg
+
+      - name: Build + sign the indexes
+        working-directory: gh-pages
+        env:
+          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          apt-ftparchive packages pool > dists/stable/main/binary-amd64/Packages
+          gzip -9c dists/stable/main/binary-amd64/Packages > dists/stable/main/binary-amd64/Packages.gz
+          cat > /tmp/release.conf <<'EOF'
+          APT::FTPArchive::Release::Origin "LPDO";
+          APT::FTPArchive::Release::Label "LPDO";
+          APT::FTPArchive::Release::Suite "stable";
+          APT::FTPArchive::Release::Codename "stable";
+          APT::FTPArchive::Release::Architectures "amd64";
+          APT::FTPArchive::Release::Components "main";
+          EOF
+          apt-ftparchive -c /tmp/release.conf release dists/stable > dists/stable/Release
+          gpg --batch --yes --pinentry-mode loopback --passphrase "${APT_GPG_PASSPHRASE:-}" \
+              --default-key "$KEYID" -abs -o dists/stable/Release.gpg dists/stable/Release
+          gpg --batch --yes --pinentry-mode loopback --passphrase "${APT_GPG_PASSPHRASE:-}" \
+              --default-key "$KEYID" --clearsign -o dists/stable/InRelease dists/stable/Release
+          touch .nojekyll   # serve dotfiles / underscore paths verbatim
+
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./gh-pages
+          publish_branch: gh-pages
+          force_orphan: false
+          commit_message: "apt repo: publish ${{ github.event.release.tag_name || inputs.tag }}"
