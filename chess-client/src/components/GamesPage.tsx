@@ -8,8 +8,8 @@ import PositionMoves from "./PositionMoves";
 import MiniBoard from "./games/MiniBoard";
 import MoveList from "./games/MoveList";
 import { useGamePgn } from "../lib/useGamePgn";
-import { addCloudWatch } from "../api";
-import { CLOUD_WATCH_LANDED } from "./ActivityIndicator";
+import { addCloudWatch, getCloudWatches } from "../api";
+import { CLOUD_WATCH_LANDED, CLOUD_WATCH_REMOVED } from "./ActivityIndicator";
 
 // The Games page: a DB-wide analysis layout with every panel visible at once
 // (#219). Six areas — A main position board, B opening-explorer moves, C engine
@@ -172,6 +172,10 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const [lichessEval, setLichessEval] = useState<LichessEval | null>(null); // lichess
   const [engineStatus, setEngineStatus] = useState<EngineStatus>("ok");
   const [engineQueuing, setEngineQueuing] = useState(false);
+  // FENs with an active deepen watch — keep Deepen disabled for them so a second
+  // click can't restart the watch (which would reset its baseline). Seeded from
+  // the daemon on mount, then kept live via the landed/removed window events.
+  const [watchedFens, setWatchedFens] = useState<Set<string>>(() => new Set());
   // Bumped when a deepen watch lands on the current position, to force a refetch.
   const [engineRefetch, setEngineRefetch] = useState(0);
   const engineAbort = useRef<AbortController | null>(null);
@@ -328,15 +332,37 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [firstMovesStr, engineSource, engineRefetch]);
 
-  // A watch landed somewhere: if it's the position on screen, refetch so the
-  // deeper result appears live (the daemon has already busted its cache for it).
+  // Seed the set of actively-watched positions on mount (a watch may still be
+  // running from before this page was last left).
   useEffect(() => {
+    let stop = false;
+    getCloudWatches()
+      .then((ws) => { if (!stop) setWatchedFens(new Set(ws.filter((w) => w.status === "watching").map((w) => w.fen))); })
+      .catch(() => {});
+    return () => { stop = true; };
+  }, []);
+
+  // Keep the watched-set live and refetch on a landing for the position on screen
+  // (the daemon has already busted its cache for it).
+  useEffect(() => {
+    const drop = (fen?: string) => {
+      if (!fen) return;
+      setWatchedFens((prev) => { if (!prev.has(fen)) return prev; const next = new Set(prev); next.delete(fen); return next; });
+    };
     function onLanded(e: Event) {
       const fen = (e as CustomEvent<{ fen: string }>).detail?.fen;
+      drop(fen); // watch is done — allow deepening further
       if (fen && fen === fenFromMoves(moveSequence)) setEngineRefetch((n) => n + 1);
     }
+    function onRemoved(e: Event) {
+      drop((e as CustomEvent<{ fen: string }>).detail?.fen); // cancelled — re-enable Deepen
+    }
     window.addEventListener(CLOUD_WATCH_LANDED, onLanded);
-    return () => window.removeEventListener(CLOUD_WATCH_LANDED, onLanded);
+    window.addEventListener(CLOUD_WATCH_REMOVED, onRemoved);
+    return () => {
+      window.removeEventListener(CLOUD_WATCH_LANDED, onLanded);
+      window.removeEventListener(CLOUD_WATCH_REMOVED, onRemoved);
+    };
   }, [moveSequence]);
 
   // Deepen: queue the position for deeper chessdb analysis *and* start a watch,
@@ -346,6 +372,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     const fen = fenFromMoves(moveSequence);
     const label = moveSequence.length ? pvString(new Chess().fen(), moveSequence) : "Starting position";
     setEngineQueuing(true);
+    setWatchedFens((prev) => new Set(prev).add(fen)); // keep Deepen disabled until it lands/cancels
     addCloudWatch(fen, label) // add_watch queues the position and captures the baseline
       .then(() => new Promise((res) => setTimeout(res, 2500)))
       .then(() => fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}`))
@@ -510,11 +537,11 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                           <span>chessdb{chessdbDepth !== null ? ` · depth ${chessdbDepth}` : ""}</span>
                           <button
                             onClick={requestAnalysis}
-                            disabled={engineQueuing}
+                            disabled={engineQueuing || watchedFens.has(currentFen)}
                             className="h-6 px-2 rounded-full text-primary hover:bg-primary/8 active:bg-primary/12 disabled:opacity-50 transition-colors duration-short3 ease-standard"
                             title="Ask chessdb.cn to analyse this position more deeply and watch for the result — the activity panel notifies you when the depth grows"
                           >
-                            {engineQueuing ? "Requested…" : "Deepen"}
+                            {engineQueuing ? "Requested…" : watchedFens.has(currentFen) ? "Watching…" : "Deepen"}
                           </button>
                         </div>
                         <div className="flex-1 overflow-y-auto p-2">

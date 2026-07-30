@@ -207,6 +207,9 @@ function RecentRow({ job }: { job: Job }) {
 /** Window event dispatched when a deepen watch lands (depth grew). The Games
  *  engine panel listens for it to auto-refresh if it's on that position. */
 export const CLOUD_WATCH_LANDED = "lpdo:cloud-watch-landed";
+/** Window event dispatched when a watch is dismissed/cancelled, so the Games
+ *  panel can re-enable its Deepen button for that position. */
+export const CLOUD_WATCH_REMOVED = "lpdo:cloud-watch-removed";
 
 function WatchRow({ w, onDismiss }: { w: CloudWatch; onDismiss: (fen: string) => void }) {
   const landed = w.status === "landed";
@@ -378,6 +381,7 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
 
   function handleDismissWatch(fen: string) {
     setWatches((prev) => prev.filter((w) => w.fen !== fen));
+    window.dispatchEvent(new CustomEvent(CLOUD_WATCH_REMOVED, { detail: { fen } }));
     void deleteCloudWatch(fen);
   }
 
