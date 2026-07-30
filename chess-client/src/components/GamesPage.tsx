@@ -40,6 +40,47 @@ function parseNote(note: string): { mark: string; opp: string; oppStrong: string
   const m = note.match(/^\s*(\S*)\s*\((\d+)-(\d+)\)/);
   return m ? { mark: m[1], opp: m[2], oppStrong: m[3] } : null;
 }
+
+type EngineSource = "chessdb" | "lichess";
+
+// Lichess (Stockfish) cloud eval — a few deep PV lines, White-relative eval + depth.
+interface LichessLine { evalCp: number | null; mate: number | null; pvUci: string[]; }
+interface LichessEval { status: EngineStatus; depth: number; knodes: number; lines: LichessLine[]; }
+
+/** Convert a UCI principal variation to SAN by replaying it from `fen`. */
+function pvToSan(fen: string, pvUci: string[]): string[] {
+  const chess = new Chess(fen);
+  const sans: string[] = [];
+  for (const uci of pvUci) {
+    try {
+      const mv = chess.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: (uci.slice(4, 5) || undefined) as ("q" | "r" | "b" | "n" | undefined) });
+      if (!mv) break;
+      sans.push(mv.san);
+    } catch { break; }
+  }
+  return sans;
+}
+
+/** Render a SAN line with move numbers starting from `fen`'s move/side. */
+function pvString(fen: string, sans: string[]): string {
+  const parts = fen.split(" ");
+  let n = parseInt(parts[5] || "1", 10);
+  let white = parts[1] !== "b";
+  const toks: string[] = [];
+  sans.forEach((s, i) => {
+    if (white) toks.push(`${n}.${s}`);
+    else { toks.push(i === 0 ? `${n}...${s}` : s); n += 1; }
+    white = !white;
+  });
+  return toks.join(" ");
+}
+
+/** Lichess eval (White-relative): "+0.14", "-2.36", "M1" / "-M1". */
+function fmtLichess(l: LichessLine): string {
+  if (l.mate !== null) return l.mate > 0 ? `M${l.mate}` : `-M${-l.mate}`;
+  const p = (l.evalCp ?? 0) / 100;
+  return (p > 0 ? "+" : "") + p.toFixed(2);
+}
 type EngineStatus = "loading" | "ok" | "unknown" | "offline";
 
 /** Score from the side-to-move's perspective, e.g. "+0.30", "-1.15", "M3". */
@@ -104,8 +145,11 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const [movesLoading, setMovesLoading] = useState(false);
   const movesAbortRef = useRef<AbortController | null>(null);
 
-  // ── Cloud engine (C), chessdb.cn via the daemon (#221) ──────────────────────
-  const [engineMoves, setEngineMoves] = useState<CloudMove[]>([]);
+  // ── Cloud engine (C): chessdb.cn or Lichess (Stockfish), via the daemon (#221) ─
+  const [engineSource, setEngineSource] = useState<EngineSource>(() => (localStorage.getItem("engineSource") === "lichess" ? "lichess" : "chessdb"));
+  useEffect(() => { localStorage.setItem("engineSource", engineSource); }, [engineSource]);
+  const [engineMoves, setEngineMoves] = useState<CloudMove[]>([]);          // chessdb
+  const [lichessEval, setLichessEval] = useState<LichessEval | null>(null); // lichess
   const [engineStatus, setEngineStatus] = useState<EngineStatus>("ok");
   const [engineQueuing, setEngineQueuing] = useState(false);
   const engineAbort = useRef<AbortController | null>(null);
@@ -227,8 +271,8 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [firstMovesStr, dateFrom, dateTo, scopePublicOnly, p1?.id, p1Color, p2?.id, p2Color]);
 
-  // Cloud engine evaluation for the current position (debounced — it hits the
-  // free chessdb.cn service through the daemon, which caches by position).
+  // Cloud engine evaluation for the current position (debounced — hits the free
+  // chessdb.cn / Lichess services through the daemon, which caches by position).
   useEffect(() => {
     engineAbort.current?.abort();
     const ctrl = new AbortController();
@@ -236,14 +280,21 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     setEngineStatus("loading");
     const fen = fenFromMoves(moveSequence);
     const t = setTimeout(() => {
-      fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}`, { signal: ctrl.signal })
-        .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<{ status: EngineStatus; moves: CloudMove[] }>; })
-        .then((d) => { setEngineMoves(d.moves ?? []); setEngineStatus(d.moves?.length ? "ok" : (d.status ?? "unknown")); })
-        .catch((e) => { if (!(e instanceof DOMException && e.name === "AbortError")) { setEngineMoves([]); setEngineStatus("offline"); } });
+      if (engineSource === "chessdb") {
+        fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}`, { signal: ctrl.signal })
+          .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<{ status: EngineStatus; moves: CloudMove[] }>; })
+          .then((d) => { setEngineMoves(d.moves ?? []); setEngineStatus(d.moves?.length ? "ok" : (d.status ?? "unknown")); })
+          .catch((e) => { if (!(e instanceof DOMException && e.name === "AbortError")) { setEngineMoves([]); setEngineStatus("offline"); } });
+      } else {
+        fetch(`/api/lichess-eval?fen=${encodeURIComponent(fen)}`, { signal: ctrl.signal })
+          .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<LichessEval>; })
+          .then((d) => { setLichessEval(d); setEngineStatus(d.lines?.length ? "ok" : (d.status ?? "unknown")); })
+          .catch((e) => { if (!(e instanceof DOMException && e.name === "AbortError")) { setLichessEval(null); setEngineStatus("offline"); } });
+      }
     }, 350);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [firstMovesStr]);
+  }, [firstMovesStr, engineSource]);
 
   function requestAnalysis() {
     const fen = fenFromMoves(moveSequence);
@@ -260,6 +311,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   // Explorer move-number prefix: White to move → "N.", Black to move → "N...".
   const moveNo = Math.floor(moveSequence.length / 2) + 1;
   const movePrefix = moveSequence.length % 2 === 0 ? `${moveNo}.` : `${moveNo}...`;
+  const currentFen = fenFromMoves(moveSequence);
 
   const colorBtn = (active: boolean) =>
     `text-label-md h-7 px-2.5 inline-flex items-center rounded-full transition-colors duration-short3 ease-standard ${
@@ -374,58 +426,77 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
               {/* C — cloud engine evaluation (chessdb.cn, #221) */}
               <Panel defaultSize={40} minSize={12}>
                 <div className={panel}>
-                  <div className="px-3 py-2 shrink-0 flex items-center justify-between text-label-md text-on-surface-variant uppercase tracking-wider border-b border-outline/40">
-                    <span>Engine</span>
-                    <span className="normal-case tracking-normal text-on-surface-variant/70 cursor-help" title="Free cloud analysis provided by the community database chessdb.cn">via chessdb.cn</span>
+                  <div className="px-3 py-2 shrink-0 flex items-center justify-between border-b border-outline/40">
+                    <div className="flex gap-0.5">
+                      {(["chessdb", "lichess"] as EngineSource[]).map((src) => (
+                        <button
+                          key={src}
+                          onClick={() => setEngineSource(src)}
+                          className={`h-6 px-2 rounded-full text-label-sm transition-colors duration-short3 ease-standard ${engineSource === src ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8"}`}
+                        >
+                          {src === "chessdb" ? "chessdb" : "Lichess"}
+                        </button>
+                      ))}
+                    </div>
+                    <span
+                      className="text-label-sm text-on-surface-variant/70 cursor-help"
+                      title={engineSource === "chessdb" ? "Free cloud analysis from the community database chessdb.cn" : "Cloud Stockfish evaluations from lichess.org — only popular positions are cached"}
+                    >
+                      via {engineSource === "chessdb" ? "chessdb.cn" : "lichess.org"}
+                    </span>
                   </div>
                   {engineStatus === "loading" ? (
                     <div className="p-3 text-center text-on-surface-variant text-body-sm">Analysing…</div>
                   ) : engineStatus === "offline" ? (
                     <div className="flex-1 flex items-center justify-center text-center text-on-surface-variant text-body-sm px-3">Engine unavailable (offline)</div>
-                  ) : engineStatus === "unknown" || engineMoves.length === 0 ? (
-                    <div className="flex-1 flex flex-col items-center justify-center gap-2 p-3 text-center">
-                      <span className="text-on-surface-variant text-body-sm">Not in the cloud database yet.</span>
-                      <button
-                        onClick={requestAnalysis}
-                        disabled={engineQueuing}
-                        className="h-8 px-3 rounded-full text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 disabled:opacity-50 transition-colors duration-short3 ease-standard"
-                      >
-                        {engineQueuing ? "Requested — analysing…" : "Request analysis"}
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="flex-1 overflow-y-auto p-2">
-                      <div className="flex items-center text-label-sm text-on-surface-variant px-2 mb-1 select-none">
-                        <span className="w-24">Move</span>
-                        <span className="w-16 text-right">Eval</span>
-                        <span
-                          className="flex-1 text-right cursor-help underline decoration-dotted underline-offset-2"
-                          title="chessdb note: a quality mark (! = a strong / 'power' move) plus (opponent's total legal moves, then strong moves) after this move. Few strong replies means a forcing line."
-                        >Replies</span>
+                  ) : engineSource === "chessdb" ? (
+                    engineStatus === "unknown" || engineMoves.length === 0 ? (
+                      <div className="flex-1 flex flex-col items-center justify-center gap-2 p-3 text-center">
+                        <span className="text-on-surface-variant text-body-sm">Not in the cloud database yet.</span>
+                        <button onClick={requestAnalysis} disabled={engineQueuing} className="h-8 px-3 rounded-full text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 disabled:opacity-50 transition-colors duration-short3 ease-standard">
+                          {engineQueuing ? "Requested — analysing…" : "Request analysis"}
+                        </button>
                       </div>
-                      {engineMoves.map((m) => {
-                        const nn = parseNote(m.note);
-                        return (
-                          <button
-                            key={m.uci || m.san}
-                            onClick={() => appendMove(m.san.replace(/[+#]+$/, ""))}
-                            className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
-                          >
-                            <span className="w-24 font-mono truncate text-left">
-                              {movePrefix}{m.san}{nn && nn.mark && nn.mark !== "*" && <span className="text-primary">{nn.mark}</span>}
-                            </span>
-                            <span className={`w-16 text-right tabular-nums ${evalColor(m)}`}>{fmtEval(m)}</span>
-                            <span className="flex-1 text-right font-mono tabular-nums">
-                              {nn ? (
-                                <><span className="text-on-surface-variant">{Number(nn.opp)}-</span><span className="text-on-surface">{Number(nn.oppStrong)}</span></>
-                              ) : (
-                                <span className="text-on-surface-variant">{m.note || "—"}</span>
-                              )}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
+                    ) : (
+                      <div className="flex-1 overflow-y-auto p-2">
+                        <div className="flex items-center text-label-sm text-on-surface-variant px-2 mb-1 select-none">
+                          <span className="flex-1 min-w-0">Move</span>
+                          <span className="w-14 text-right">Eval</span>
+                          <span className="w-14 text-right cursor-help underline decoration-dotted underline-offset-2" title="Opponent's total legal moves after this move.">Replies</span>
+                          <span className="w-14 text-right cursor-help underline decoration-dotted underline-offset-2" title="Opponent's strong ('power') replies after this move — a low number means a forcing line.">Strong</span>
+                        </div>
+                        {engineMoves.map((m) => {
+                          const nn = parseNote(m.note);
+                          return (
+                            <button key={m.uci || m.san} onClick={() => appendMove(m.san.replace(/[+#]+$/, ""))} className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard">
+                              <span className="flex-1 min-w-0 font-mono truncate text-left">{movePrefix}{m.san}{nn && nn.mark && nn.mark !== "*" && <span className="text-primary">{nn.mark}</span>}</span>
+                              <span className={`w-14 text-right tabular-nums ${evalColor(m)}`}>{fmtEval(m)}</span>
+                              <span className="w-14 text-right tabular-nums text-on-surface-variant">{nn ? Number(nn.opp) : "—"}</span>
+                              <span className="w-14 text-right tabular-nums text-on-surface">{nn ? Number(nn.oppStrong) : "—"}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )
+                  ) : (
+                    engineStatus === "unknown" || !lichessEval?.lines.length ? (
+                      <div className="flex-1 flex items-center justify-center text-center text-on-surface-variant text-body-sm px-3">Not in Lichess's cloud (only popular positions are cached).</div>
+                    ) : (
+                      <div className="flex-1 flex flex-col min-h-0">
+                        <div className="px-3 py-1 shrink-0 text-label-sm text-on-surface-variant border-b border-outline/40">Stockfish · depth {lichessEval.depth}</div>
+                        <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+                          {lichessEval.lines.map((l, i) => {
+                            const sans = pvToSan(currentFen, l.pvUci);
+                            return (
+                              <button key={i} onClick={() => { if (sans[0]) appendMove(sans[0].replace(/[+#]+$/, "")); }} className="w-full flex items-baseline gap-2 px-2 py-1 rounded-sm text-left hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard">
+                                <span className="w-14 shrink-0 text-right tabular-nums font-mono text-on-surface">{fmtLichess(l)}</span>
+                                <span className="flex-1 min-w-0 truncate font-mono text-body-sm text-on-surface-variant">{pvString(currentFen, sans)}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )
                   )}
                 </div>
               </Panel>

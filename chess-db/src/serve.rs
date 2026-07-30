@@ -1152,6 +1152,15 @@ async fn cloud_eval_queue_handler(Query(q): Query<CloudEvalQuery>) -> StatusCode
     StatusCode::OK
 }
 
+/// Lichess cloud evaluation (Stockfish) for a FEN — a few deep PV lines with a
+/// White-relative eval + engine depth, cached in the daemon (#221).
+async fn lichess_eval_handler(
+    Query(q): Query<CloudEvalQuery>,
+) -> ApiResult<crate::cloud_eval::LichessEval> {
+    let zobrist = fen_zobrist(&q.fen)?;
+    Ok(Json(crate::cloud_eval::query_lichess(&q.fen, zobrist).await))
+}
+
 async fn delete_game_handler(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<u32>,
@@ -2040,6 +2049,7 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         .route("/position/moves",                      get(position_moves_handler))
         .route("/cloud-eval",                          get(cloud_eval_handler))
         .route("/cloud-eval/queue",                    post(cloud_eval_queue_handler))
+        .route("/lichess-eval",                        get(lichess_eval_handler))
         // Long-running mutation jobs with streamed progress.
         .route("/jobs",                                get(list_jobs_handler).post(create_job_handler))
         // Streamed PGN upload (#154): disable the default body-size cap so a

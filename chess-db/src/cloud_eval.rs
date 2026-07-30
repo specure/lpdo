@@ -46,6 +46,7 @@ pub struct CloudEval {
 struct Shared {
     client: reqwest::Client,
     cache: Mutex<HashMap<i64, (Instant, CloudEval)>>,
+    lichess_cache: Mutex<HashMap<i64, (Instant, LichessEval)>>,
 }
 
 fn shared() -> &'static Shared {
@@ -57,6 +58,7 @@ fn shared() -> &'static Shared {
             .build()
             .expect("build reqwest client"),
         cache: Mutex::new(HashMap::new()),
+        lichess_cache: Mutex::new(HashMap::new()),
     })
 }
 
@@ -141,4 +143,92 @@ pub async fn queue(fen: &str) {
         .query(&[("action", "queue"), ("board", fen), ("json", "1")])
         .send()
         .await;
+}
+
+// ── Lichess cloud evaluation (Stockfish) ───────────────────────────────────
+// Different strength/shape from chessdb: a few deep PV lines with a White-relative
+// eval + engine depth. Only cached (popular) positions exist — no "queue". Moves
+// stay UCI here; the client renders them as SAN (it has the position).
+
+const LICHESS_URL: &str = "https://lichess.org/api/cloud-eval";
+
+#[derive(Clone, Serialize)]
+pub struct LichessLine {
+    /// Centipawns from White's perspective (Lichess convention).
+    #[serde(rename = "evalCp")]
+    pub eval_cp: Option<i32>,
+    /// Mate distance from White's perspective (`-1` = Black mates in 1).
+    pub mate: Option<i32>,
+    #[serde(rename = "pvUci")]
+    pub pv_uci: Vec<String>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct LichessEval {
+    /// `"ok"`, `"unknown"` (not in Lichess's cloud cache), or `"offline"`.
+    pub status: String,
+    pub depth: i32,
+    pub knodes: i64,
+    pub lines: Vec<LichessLine>,
+}
+
+pub async fn query_lichess(fen: &str, zobrist: i64) -> LichessEval {
+    let s = shared();
+    if let Some((t, eval)) = s.lichess_cache.lock().unwrap().get(&zobrist) {
+        if t.elapsed() < CACHE_TTL {
+            return eval.clone();
+        }
+    }
+
+    let eval = match s
+        .client
+        .get(LICHESS_URL)
+        .query(&[("fen", fen), ("multiPv", "5")])
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
+            LichessEval { status: "unknown".into(), depth: 0, knodes: 0, lines: vec![] }
+        }
+        Ok(resp) => match resp.json::<serde_json::Value>().await {
+            Ok(v) => parse_lichess(&v),
+            Err(_) => LichessEval { status: "unknown".into(), depth: 0, knodes: 0, lines: vec![] },
+        },
+        Err(_) => return LichessEval { status: "offline".into(), depth: 0, knodes: 0, lines: vec![] },
+    };
+
+    let mut cache = s.lichess_cache.lock().unwrap();
+    if cache.len() >= CACHE_CAP {
+        cache.clear();
+    }
+    cache.insert(zobrist, (Instant::now(), eval.clone()));
+    eval
+}
+
+fn parse_lichess(v: &serde_json::Value) -> LichessEval {
+    let lines = v
+        .get("pvs")
+        .and_then(|p| p.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|pv| LichessLine {
+                    eval_cp: pv.get("cp").and_then(|c| c.as_i64()).map(|c| c as i32),
+                    mate: pv.get("mate").and_then(|m| m.as_i64()).map(|m| m as i32),
+                    pv_uci: pv
+                        .get("moves")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("")
+                        .split_whitespace()
+                        .map(String::from)
+                        .collect(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    LichessEval {
+        status: "ok".into(),
+        depth: v.get("depth").and_then(|d| d.as_i64()).unwrap_or(0) as i32,
+        knodes: v.get("knodes").and_then(|k| k.as_i64()).unwrap_or(0),
+        lines,
+    }
 }
