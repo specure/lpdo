@@ -473,7 +473,7 @@ export default function App() {
         {filesCollapsed && (
           <button
             onClick={() => setFilesCollapsed(false)}
-            className="shrink-0 w-6 flex items-start pt-3 justify-center border-r border-zinc-700 bg-zinc-900 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+            className="shrink-0 w-6 flex items-start pt-3 justify-center border-r border-outline/40 bg-surface-container-low text-on-surface-variant hover:text-on-surface hover:bg-on-surface/4 transition-colors"
             title="Show files"
           >
             <span className="text-xs" style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}>Files</span>
@@ -489,7 +489,7 @@ export default function App() {
           </div>
           <button
             onClick={() => setFilesCollapsed(true)}
-            className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 z-10 w-5 h-8 flex items-center justify-center rounded bg-zinc-700 border border-zinc-600 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-600 transition-colors text-sm"
+            className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 z-10 w-5 h-8 flex items-center justify-center rounded bg-surface-container-high border border-outline/40 text-on-surface-variant hover:text-on-surface hover:bg-on-surface/8 transition-colors text-sm"
             title="Hide files"
           >‹</button>
         </div>
@@ -500,7 +500,7 @@ export default function App() {
             {localGameCount !== 1 && gameListCollapsed && (
               <button
                 onClick={() => setGameListCollapsed(false)}
-                className="shrink-0 w-6 flex items-start pt-3 justify-center border-r border-zinc-700 bg-zinc-900 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+                className="shrink-0 w-6 flex items-start pt-3 justify-center border-r border-outline/40 bg-surface-container-low text-on-surface-variant hover:text-on-surface hover:bg-on-surface/4 transition-colors"
                 title="Show games"
               >
                 <span className="text-xs" style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}>Games</span>
@@ -522,7 +522,7 @@ export default function App() {
               </div>
               <button
                 onClick={() => setGameListCollapsed(true)}
-                className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 z-10 w-5 h-8 flex items-center justify-center rounded bg-zinc-700 border border-zinc-600 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-600 transition-colors text-sm"
+                className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 z-10 w-5 h-8 flex items-center justify-center rounded bg-surface-container-high border border-outline/40 text-on-surface-variant hover:text-on-surface hover:bg-on-surface/8 transition-colors text-sm"
                 title="Hide games"
               >‹</button>
             </div>
