@@ -56,13 +56,16 @@ over the file instead of erroring.
      `gpg --armor --export-secret-keys <KEYID>` (paste the whole block).
    - `APT_GPG_PASSPHRASE` — only if the key has a passphrase.
 
-3. **Enable GitHub Pages**: Settings → Pages → *Deploy from a branch* →
-   branch `gh-pages`, folder `/ (root)`. (The `gh-pages` branch is created by the
-   first workflow run.)
+3. **Seed the repo** — Actions → *APT repository* → *Run workflow* → tag
+   `v0.13.1`. This first run **creates the `gh-pages` branch** (it won't exist in
+   the branch list before this).
 
-4. **Seed the repo** from the current release: Actions → *APT repository* → *Run
-   workflow* → tag `v0.13.0`. After it succeeds and Pages goes live, the user
-   setup above works.
+4. **Enable GitHub Pages** — *now* that `gh-pages` exists: Settings → Pages →
+   *Deploy from a branch* → branch `gh-pages`, folder `/ (root)` → Save. After
+   Pages goes live (~1 min) the user setup above works.
+
+Order matters: **secret (step 2) → run workflow (step 3) → enable Pages (step 4)**,
+because the branch you select in Pages is created by the workflow.
 
 After that it's automatic: every time a release is **published**, the workflow
 adds its `.debs` to the pool, rebuilds + re-signs the indexes, and republishes.
