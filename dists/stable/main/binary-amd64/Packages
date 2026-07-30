@@ -1,0 +1,59 @@
+Package: lpdo-cli
+Architecture: amd64
+Version: 0.13.0
+Priority: optional
+Section: utils
+Maintainer: SPECURE GmbH <jozef.svrcek@specure.com>
+Installed-Size: 61726
+Depends: libc6 (>= 2.34)
+Filename: pool/main/lpdo-cli_0.13.0_amd64.deb
+Size: 20905948
+MD5sum: bc3da0b08abf676694b70873ed509d6e
+SHA1: b21a0f179ba291adf1e5789430746b95f1e36f19
+SHA256: f964b0b7a0851dbaeec224be003700f2f5c7fdd782a7d1e7329ebb7b2f0e0c13
+SHA512: 126f357c33b5a1d7cda73a374fd3925cb40b28d6e3e13dc66dfbcb8345b34205476ec84b4aff69f5cc954fe606d2ab5f4f621b6e8dc3b09ce11a0729160fb8f6
+Homepage: https://github.com/specure/lpdo
+Description: LPDO chess database command-line tool and client.
+ The chess-db binary imports TWIC archives, searches games and players, edits
+ the database, and transparently proxies to a running lpdo-server over HTTP
+ (local or remote), falling back to direct access when no server is running.
+License: Apache-2.0
+
+Package: lpdo-server
+Architecture: amd64
+Version: 0.13.0
+Priority: optional
+Section: misc
+Maintainer: SPECURE GmbH <jozef.svrcek@specure.com>
+Installed-Size: 1
+Depends: lpdo-cli (= 0.13.0)
+Filename: pool/main/lpdo-server_0.13.0_amd64.deb
+Size: 2598
+MD5sum: 455597d06ac9dcf453a0ad468be4e44e
+SHA1: 65df31b2b569855b711368597d0b9dbdce3cf618
+SHA256: 50a6d06d2fe675c661ea2df981ae237b9ccd0aab33209fa2e939018fc5e45fc7
+SHA512: a873244f7a7797ce8d2d6603712f7ace46a25325dacaaf791129e5b9b28c5aca63f2dfdd765d7edbe77ae0bee6c9335d1875d3820798073467a4c3d4e041a155
+Homepage: https://github.com/specure/lpdo
+Description: LPDO chess database server (system daemon).
+ Runs `chess-db serve` as a systemd system service under the dedicated `lpdo`
+ user, owning the database under /var/lib/lpdo and running the in-process
+ TWIC update scheduler. Listens on 127.0.0.1:7777 for the GUI and CLI.
+License: Apache-2.0
+
+Package: lpdo
+Architecture: amd64
+Version: 0.13.0
+Priority: optional
+Maintainer: Specure
+Installed-Size: 22911
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Recommends: lpdo-server
+Filename: pool/main/lpdo_0.13.0_amd64.deb
+Size: 7947862
+MD5sum: 199e0681a7d23a3d7dc6ff6dac370d70
+SHA1: cbf105c338c24f088fa6e0c5763da07caafa0228
+SHA256: b6a5de3f4bf28ecc516f41d3325cbe266ccfd94f389ee3e81f3837a9ebdf5df5
+SHA512: 07f5b79bf803b615e85bed9005e864eb8e31414db14eb55acfc761e0664b71edee3e02433659d705d8930bd25b8ed1483d71159a60a10295c6f17277b65647e0
+Description: LPDO — desktop chess database for managing your games and preparing for tournaments
+ (none)
+

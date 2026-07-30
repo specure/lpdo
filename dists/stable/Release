@@ -1,0 +1,23 @@
+Architectures: amd64
+Codename: stable
+Components: main
+Date: Thu, 30 Jul 2026 14:54:31 +0000
+Label: LPDO
+Origin: LPDO
+Suite: stable
+MD5Sum:
+ 487af304b52a902b52056abe3b0a1ffc              132 Release
+ a1d34ed46f2460bcd848e4f6bb8b8216             2431 main/binary-amd64/Packages
+ 60d71321e1762116ac85101940ea962b             1289 main/binary-amd64/Packages.gz
+SHA1:
+ 1b4569cb77347cc8bf19389a08f102de8e6d3828              132 Release
+ f7c6b65580301795d683adce1dc8653ba6f2a37a             2431 main/binary-amd64/Packages
+ ce504d84dbb47f2d1542e63ea8890d023c7e0188             1289 main/binary-amd64/Packages.gz
+SHA256:
+ 049906a4ae5ed96ca30ee0d7b12a54115825690ce2f9733b0a9747d3cfd35bba              132 Release
+ 054db97cb3bc1af56a6899ddd01078d4708da8ccf014d4fa09446deb1bce8b07             2431 main/binary-amd64/Packages
+ a32abb2a756c826780751aacf365cf2b449303286c52451b672cb909f8f8e78d             1289 main/binary-amd64/Packages.gz
+SHA512:
+ 9f7103aa70e28c448f9e86873d7de1ebb79f9cc7664015391416073ed38deee327098406b5807aca3318e1752f5d5b73f595b7d30e759b0ee12196ac939c10a1              132 Release
+ 58e4c377c4678776520ff968cb82bb93f12391104a89ff9e73261392c8d6d65686e14c04d6b829019018bd9f6cefb517de80f238337a447b8aca53a781ea0b99             2431 main/binary-amd64/Packages
+ 379e06a6da02a44e5f02075c95063c7d6d4f027d1456ec8ccd3d07cdfcb925f377b3d5ef24c7b1051f27dd10df73082b46373df73d83e0454bb704181f059a40             1289 main/binary-amd64/Packages.gz
