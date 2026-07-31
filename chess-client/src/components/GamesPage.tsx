@@ -114,8 +114,9 @@ function fmtLichess(l: LichessLine): string {
 // position itself is lost (best move worse than ~-0.7, i.e. win% under ~45%),
 // chessdb marks *everything* "?": no point flagging the opponent's "good" replies
 // when you're already lost. These constants match that behaviour.
-const STRONG_CP = 5;    // ≤0.05 behind best = normal; >0.05 = weak (?). Measured boundary.
-const LOST_CP = -70;    // best move worse than -0.70 ⇒ position lost, all moves "?"
+const STRONG_MARK_CP = 1; // within 0.01 of best ⇒ "!" (chessdb marks equal-best near-ties too)
+const STRONG_CP = 5;      // ≤0.05 behind best = normal; >0.05 = weak (?). Measured boundary.
+const LOST_CP = -70;      // best move worse than -0.70 ⇒ position lost, all moves "?"
 /** Eval from the side-to-move's perspective, in centipawns (mate ⇒ ±huge, nearer
  *  mates ranked higher). Lichess evals are White-relative, so flip for Black. */
 function moverScore(evalCp: number | null, mate: number | null, whiteToMove: boolean): number {
@@ -132,7 +133,7 @@ function moverScore(evalCp: number | null, mate: number | null, whiteToMove: boo
 function moveMark(best: number, score: number): string {
   if (best < LOST_CP) return "?";
   const drop = best - score;
-  return drop === 0 ? "!" : drop <= STRONG_CP ? "" : "?";
+  return drop <= STRONG_MARK_CP ? "!" : drop <= STRONG_CP ? "" : "?";
 }
 type EngineStatus = "loading" | "ok" | "unknown" | "offline";
 
@@ -240,6 +241,11 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   // the daemon on mount, then kept live via the landed/removed window events.
   const [watchedFens, setWatchedFens] = useState<Set<string>>(() => new Set());
   const engineAbort = useRef<AbortController | null>(null);
+  // Reload button: bump the tick to re-run the engine fetch with refresh=true,
+  // which bypasses the daemon's (24h) cache and re-queries the source.
+  const [engineRefreshTick, setEngineRefreshTick] = useState(0);
+  const engineRefreshingRef = useRef(false);
+  function reloadEngine() { engineRefreshingRef.current = true; setEngineRefreshTick((t) => t + 1); }
 
   // ── Selected game (E + F), independent of the explorer ──────────────────────
   const [selectedGame, setSelectedGame] = useState<GameSummary | null>(restored?.selectedGame ?? null);
@@ -376,17 +382,19 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     engineAbort.current = ctrl;
     setEngineStatus("loading");
     const fen = fenFromMoves(moveSequence);
+    const rq = engineRefreshingRef.current ? "&refresh=true" : ""; // reload bypasses cache
+    engineRefreshingRef.current = false;
     const t = setTimeout(() => {
       if (engineSource === "chessdb") {
         setEngineLines({}); // clear stale continuation lines
-        fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}`, { signal: ctrl.signal })
+        fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}${rq}`, { signal: ctrl.signal })
           .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<{ status: EngineStatus; moves: CloudMove[] }>; })
           .then((d) => {
             setEngineMoves(d.moves ?? []); setEngineStatus(d.moves?.length ? "ok" : (d.status ?? "unknown"));
             // Lazy second pass: fetch the continuation lines (several querypv calls)
             // once the move table is on screen.
             if (d.moves?.length) {
-              fetch(`/api/cloud-eval/lines?fen=${encodeURIComponent(fen)}`, { signal: ctrl.signal })
+              fetch(`/api/cloud-eval/lines?fen=${encodeURIComponent(fen)}${rq}`, { signal: ctrl.signal })
                 .then((r) => (r.ok ? r.json() as Promise<{ uci: string; pvSan: string[] }[]> : []))
                 .then((ls) => { const map: Record<string, string[]> = {}; for (const l of ls) map[l.uci] = l.pvSan; setEngineLines(map); })
                 .catch(() => {});
@@ -394,7 +402,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
           })
           .catch((e) => { if (!(e instanceof DOMException && e.name === "AbortError")) { setEngineMoves([]); setEngineStatus("offline"); } });
       } else {
-        fetch(`/api/lichess-eval?fen=${encodeURIComponent(fen)}`, { signal: ctrl.signal })
+        fetch(`/api/lichess-eval?fen=${encodeURIComponent(fen)}${rq}`, { signal: ctrl.signal })
           .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<LichessEval>; })
           .then((d) => { setLichessEval(d); setEngineStatus(d.lines?.length ? "ok" : (d.status ?? "unknown")); })
           .catch((e) => { if (!(e instanceof DOMException && e.name === "AbortError")) { setLichessEval(null); setEngineStatus("offline"); } });
@@ -402,7 +410,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     }, 350);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [firstMovesStr, engineSource]);
+  }, [firstMovesStr, engineSource, engineRefreshTick]);
 
   // Power-move stats for Lichess (async, after the lines are on screen): for each
   // top line, fetch the child position's cloud eval and count the opponent's
@@ -414,7 +422,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     const oppWhite = fen.split(" ")[1] === "b"; // opponent (after our move) is White iff we're Black
     const ctrl = new AbortController();
     setLichessStats({});
-    for (const l of lichessEval.lines.slice(0, 8)) {
+    for (const l of lichessEval.lines.slice(0, 5)) {
       const uci = l.pvUci[0];
       if (!uci) continue;
       let childFen: string;
@@ -640,7 +648,10 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                   {engineStatus === "loading" ? (
                     <div className="p-3 text-center text-on-surface-variant text-body-sm">Analysing…</div>
                   ) : engineStatus === "offline" ? (
-                    <div className="flex-1 flex items-center justify-center text-center text-on-surface-variant text-body-sm px-3">Engine unavailable (offline)</div>
+                    <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center text-on-surface-variant text-body-sm px-3">
+                      <span>Engine unavailable — the free service may be busy or rate-limited.</span>
+                      <button onClick={reloadEngine} className="h-8 px-3 rounded-full text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard">Reload</button>
+                    </div>
                   ) : engineSource === "chessdb" ? (
                     engineStatus === "unknown" || engineMoves.length === 0 ? (
                       <div className="flex-1 flex flex-col items-center justify-center gap-2 p-3 text-center">
@@ -653,14 +664,21 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                       <div className="flex-1 flex flex-col min-h-0">
                         <div className="px-3 py-1 shrink-0 flex items-center justify-between text-label-sm text-on-surface-variant border-b border-outline/40">
                           <span>chessdb</span>
-                          <button
-                            onClick={requestAnalysis}
-                            disabled={engineQueuing || watchedFens.has(currentFen)}
-                            className="h-6 px-2 rounded-full text-primary hover:bg-primary/8 active:bg-primary/12 disabled:opacity-50 transition-colors duration-short3 ease-standard"
-                            title="Ask chessdb.cn to analyse this position more deeply and watch for the result — the activity panel notifies you when its evaluation changes"
-                          >
-                            {engineQueuing ? "Requested…" : watchedFens.has(currentFen) ? "Watching…" : "Deepen"}
-                          </button>
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={reloadEngine}
+                              className="w-6 h-6 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
+                              title="Discard the cached result and re-query chessdb.cn"
+                            >⟳</button>
+                            <button
+                              onClick={requestAnalysis}
+                              disabled={engineQueuing || watchedFens.has(currentFen)}
+                              className="h-6 px-2 rounded-full text-primary hover:bg-primary/8 active:bg-primary/12 disabled:opacity-50 transition-colors duration-short3 ease-standard"
+                              title="Ask chessdb.cn to analyse this position more deeply and watch for the result — the activity panel notifies you when its evaluation changes"
+                            >
+                              {engineQueuing ? "Requested…" : watchedFens.has(currentFen) ? "Watching…" : "Deepen"}
+                            </button>
+                          </div>
                         </div>
                         <div className="flex-1 overflow-y-auto p-2">
                         <div className="flex items-baseline gap-2 text-label-sm text-on-surface-variant px-2 mb-1 select-none">
@@ -696,7 +714,14 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                       const lmBest = lmScores.length ? Math.max(...lmScores) : 0;
                       return (
                       <div className="flex-1 flex flex-col min-h-0">
-                        <div className="px-3 py-1 shrink-0 text-label-sm text-on-surface-variant border-b border-outline/40">Stockfish · depth {lichessEval.depth}</div>
+                        <div className="px-3 py-1 shrink-0 flex items-center justify-between text-label-sm text-on-surface-variant border-b border-outline/40">
+                          <span>Stockfish · depth {lichessEval.depth}</span>
+                          <button
+                            onClick={reloadEngine}
+                            className="w-6 h-6 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
+                            title="Discard the cached result and re-query Lichess"
+                          >⟳</button>
+                        </div>
                         <div className="flex-1 overflow-y-auto p-2">
                         <div className="flex items-baseline gap-2 text-label-sm text-on-surface-variant px-2 mb-1 select-none">
                           <span className="flex-1 min-w-0"></span>

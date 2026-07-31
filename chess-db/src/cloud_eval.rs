@@ -19,12 +19,12 @@ const BASE: &str = "https://www.chessdb.cn/cdb.php";
 const PV_LINES: usize = 5;
 /// Cap the displayed continuation length (chessdb PVs can run 70+ plies).
 const PV_MAX_PLIES: usize = 12;
-const CACHE_TTL: Duration = Duration::from_secs(6 * 3600);
-/// chessdb keeps *deepening* positions in the background, so a freshly-seen
-/// position can return a shallow, partial move list that grows minutes later.
-/// Cache those only briefly so the panel picks up the fuller answer on revisit,
-/// rather than pinning the first (possibly 1-move) response for hours.
-const CHESSDB_TTL: Duration = Duration::from_secs(15 * 60);
+// A position's evaluation is stable for a long time, so cache aggressively (a
+// day) to stay fast and polite to the free services. The user can force a fresh
+// fetch with the panel's reload button (`refresh=1`), and a deepen watch busts
+// the entry the moment chessdb actually revises the evals.
+const CACHE_TTL: Duration = Duration::from_secs(24 * 3600);
+const CHESSDB_TTL: Duration = Duration::from_secs(24 * 3600);
 const CACHE_CAP: usize = 8192;
 
 #[derive(Clone, Serialize)]
@@ -90,7 +90,26 @@ struct Shared {
     watches: Mutex<HashMap<i64, Watch>>,
     /// Whether the single background poll loop has been spawned yet.
     poller_started: AtomicBool,
+    /// Timestamp of the last outbound request to each source, so we can space
+    /// requests out and never burst past a free service's rate limit (Lichess in
+    /// particular 429s a burst of cloud-eval calls).
+    lichess_gate: tokio::sync::Mutex<Instant>,
+    chessdb_gate: tokio::sync::Mutex<Instant>,
 }
+
+/// Space out requests to a source: wait so at least `min_gap` passes since the
+/// previous one. Runs only on cache misses (hits return before this).
+async fn throttle(gate: &tokio::sync::Mutex<Instant>, min_gap: Duration) {
+    let mut last = gate.lock().await;
+    let elapsed = last.elapsed();
+    if elapsed < min_gap {
+        tokio::time::sleep(min_gap - elapsed).await;
+    }
+    *last = Instant::now();
+}
+
+const LICHESS_MIN_GAP: Duration = Duration::from_millis(200);
+const CHESSDB_MIN_GAP: Duration = Duration::from_millis(80);
 
 fn shared() -> &'static Shared {
     static S: OnceLock<Shared> = OnceLock::new();
@@ -105,6 +124,8 @@ fn shared() -> &'static Shared {
         lichess_cache: Mutex::new(HashMap::new()),
         watches: Mutex::new(HashMap::new()),
         poller_started: AtomicBool::new(false),
+        lichess_gate: tokio::sync::Mutex::new(Instant::now()),
+        chessdb_gate: tokio::sync::Mutex::new(Instant::now()),
     })
 }
 
@@ -135,6 +156,7 @@ fn child_fen(parent: &str, san: &str) -> Option<String> {
 /// chessdb `querypv` for a position → the continuation in SAN, capped for display.
 async fn query_pv_san(fen: &str) -> Vec<String> {
     let s = shared();
+    throttle(&s.chessdb_gate, CHESSDB_MIN_GAP).await;
     let resp = match s
         .client
         .get(BASE)
@@ -158,14 +180,16 @@ async fn query_pv_san(fen: &str) -> Vec<String> {
 /// Continuation lines for the top `PV_LINES` moves of a position (one chessdb
 /// `querypv` each, concurrent). Fetched lazily by the client after the move table,
 /// and cached separately by Zobrist hash.
-pub async fn query_lines(fen: &str, zobrist: i64) -> Vec<MoveLine> {
+pub async fn query_lines(fen: &str, zobrist: i64, refresh: bool) -> Vec<MoveLine> {
     let s = shared();
-    if let Some((t, lines)) = s.lines_cache.lock().unwrap().get(&zobrist) {
-        if t.elapsed() < CHESSDB_TTL {
-            return lines.clone();
+    if !refresh {
+        if let Some((t, lines)) = s.lines_cache.lock().unwrap().get(&zobrist) {
+            if t.elapsed() < CHESSDB_TTL {
+                return lines.clone();
+            }
         }
     }
-    let eval = query(fen, zobrist).await; // cached move table
+    let eval = query(fen, zobrist, refresh).await; // cached move table
     if eval.status != "ok" {
         return Vec::new();
     }
@@ -194,14 +218,17 @@ pub async fn query_lines(fen: &str, zobrist: i64) -> Vec<MoveLine> {
 }
 
 /// Query chessdb.cn's `queryall` for a position (cached by Zobrist hash).
-pub async fn query(fen: &str, zobrist: i64) -> CloudEval {
+pub async fn query(fen: &str, zobrist: i64, refresh: bool) -> CloudEval {
     let s = shared();
-    if let Some((t, eval)) = s.cache.lock().unwrap().get(&zobrist) {
-        if t.elapsed() < CHESSDB_TTL {
-            return eval.clone();
+    if !refresh {
+        if let Some((t, eval)) = s.cache.lock().unwrap().get(&zobrist) {
+            if t.elapsed() < CHESSDB_TTL {
+                return eval.clone();
+            }
         }
     }
 
+    throttle(&s.chessdb_gate, CHESSDB_MIN_GAP).await;
     let eval = match s
         .client
         .get(BASE)
@@ -209,12 +236,15 @@ pub async fn query(fen: &str, zobrist: i64) -> CloudEval {
         .send()
         .await
     {
-        Ok(resp) => match resp.json::<serde_json::Value>().await {
+        // chessdb answers a genuinely-unknown position with 200 + {"status":
+        // "unknown"} (parse_queryall handles that, and it's fine to cache). Only a
+        // successful body is cacheable — a non-200 (429/5xx) or unparseable body is
+        // transient and must NOT be cached, or it poisons the position for a day.
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
             Ok(v) => parse_queryall(&v),
-            Err(_) => CloudEval { status: "unknown".into(), moves: vec![] },
+            Err(_) => return CloudEval { status: "offline".into(), moves: vec![] },
         },
-        // Network failure — don't cache; the panel shows "offline".
-        Err(_) => return CloudEval { status: "offline".into(), moves: vec![] },
+        _ => return CloudEval { status: "offline".into(), moves: vec![] },
     };
 
     let mut cache = s.cache.lock().unwrap();
@@ -297,7 +327,7 @@ pub async fn add_watch(fen: &str, zobrist: i64, label: &str) -> Watch {
     queue(fen).await; // nudge chessdb to work on it
     // Fresh baseline (also (re)populates the shared cache so the panel matches).
     shared().cache.lock().unwrap().remove(&zobrist);
-    let baseline_sig = eval_signature(&query(fen, zobrist).await);
+    let baseline_sig = eval_signature(&query(fen, zobrist, false).await);
     let watch = Watch {
         zobrist,
         fen: fen.to_string(),
@@ -347,7 +377,7 @@ fn ensure_poller() {
                 // Refresh with a full query() (cache-busted) so the panel's move
                 // table reflects any change, then compare the eval signature.
                 shared().cache.lock().unwrap().remove(&zobrist);
-                let fresh = query(&fen, zobrist).await;
+                let fresh = query(&fen, zobrist, false).await;
                 // Only a real, non-empty result can signal a change — a transient
                 // failure (offline / unknown) must not fire a spurious update.
                 if fresh.status != "ok" || fresh.moves.is_empty() {
@@ -393,14 +423,17 @@ pub struct LichessEval {
     pub lines: Vec<LichessLine>,
 }
 
-pub async fn query_lichess(fen: &str, zobrist: i64) -> LichessEval {
+pub async fn query_lichess(fen: &str, zobrist: i64, refresh: bool) -> LichessEval {
     let s = shared();
-    if let Some((t, eval)) = s.lichess_cache.lock().unwrap().get(&zobrist) {
-        if t.elapsed() < CACHE_TTL {
-            return eval.clone();
+    if !refresh {
+        if let Some((t, eval)) = s.lichess_cache.lock().unwrap().get(&zobrist) {
+            if t.elapsed() < CACHE_TTL {
+                return eval.clone();
+            }
         }
     }
 
+    throttle(&s.lichess_gate, LICHESS_MIN_GAP).await;
     let eval = match s
         .client
         .get(LICHESS_URL)
@@ -412,14 +445,19 @@ pub async fn query_lichess(fen: &str, zobrist: i64) -> LichessEval {
         .send()
         .await
     {
+        // 404 = genuinely not in Lichess's cloud — a real answer, safe to cache.
         Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
             LichessEval { status: "unknown".into(), depth: 0, knodes: 0, lines: vec![] }
         }
-        Ok(resp) => match resp.json::<serde_json::Value>().await {
+        // 200 with a parseable body = a real eval.
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
             Ok(v) => parse_lichess(&v),
-            Err(_) => LichessEval { status: "unknown".into(), depth: 0, knodes: 0, lines: vec![] },
+            Err(_) => return LichessEval { status: "offline".into(), depth: 0, knodes: 0, lines: vec![] },
         },
-        Err(_) => return LichessEval { status: "offline".into(), depth: 0, knodes: 0, lines: vec![] },
+        // 429 (rate-limited) / 5xx / network — transient. Do NOT cache: caching a
+        // 429 as "unknown" would wrongly show even popular positions (incl. the
+        // start position) as "not in Lichess's cloud" for a whole day.
+        _ => return LichessEval { status: "offline".into(), depth: 0, knodes: 0, lines: vec![] },
     };
 
     let mut cache = s.lichess_cache.lock().unwrap();
