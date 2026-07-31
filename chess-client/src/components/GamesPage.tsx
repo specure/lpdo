@@ -114,7 +114,7 @@ function fmtLichess(l: LichessLine): string {
 // position itself is lost (best move worse than ~-0.7, i.e. win% under ~45%),
 // chessdb marks *everything* "?": no point flagging the opponent's "good" replies
 // when you're already lost. These constants match that behaviour.
-const STRONG_CP = 5;    // within 0.05 of best → strong
+const STRONG_CP = 5;    // ≤0.05 behind best = normal; >0.05 = weak (?). Measured boundary.
 const LOST_CP = -70;    // best move worse than -0.70 ⇒ position lost, all moves "?"
 /** Eval from the side-to-move's perspective, in centipawns (mate ⇒ ±huge, nearer
  *  mates ranked higher). Lichess evals are White-relative, so flip for Black. */
@@ -126,11 +126,13 @@ function moverScore(evalCp: number | null, mate: number | null, whiteToMove: boo
   const cp = evalCp ?? 0;
   return whiteToMove ? cp : -cp;
 }
-/** "!" / "?" for a line, given the position's best score. Everything is "?" in a
- *  lost position; otherwise "!" within STRONG_CP of best, "?" beyond. */
+/** chessdb-style quality mark for a line, given the position's best score:
+ *  "!" = best (tied for top), "" = normal (within 0.05 of best), "?" = weak
+ *  (>0.05 behind). Everything is "?" in a lost position (best worse than LOST_CP). */
 function moveMark(best: number, score: number): string {
   if (best < LOST_CP) return "?";
-  return best - score <= STRONG_CP ? "!" : "?";
+  const drop = best - score;
+  return drop === 0 ? "!" : drop <= STRONG_CP ? "" : "?";
 }
 type EngineStatus = "loading" | "ok" | "unknown" | "offline";
 
