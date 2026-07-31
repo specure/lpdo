@@ -108,10 +108,14 @@ function fmtLichess(l: LichessLine): string {
   return (p > 0 ? "+" : "") + p.toFixed(2);
 }
 
-// Bringing chessdb's "power move" lens to Stockfish (#221): a move within
-// STRONG_CP of the best is strong ("!"); worse than DUBIOUS_CP is a mistake ("?").
-const STRONG_CP = 3;    // ≤ 0.03 worse than best → strong
-const DUBIOUS_CP = 10;  // > 0.10 worse than best → dubious
+// Bringing chessdb's "power move" lens to Stockfish (#221). Reverse-engineered
+// from chessdb: a move within ~0.05 of the best is "strong" (chessdb marks the
+// best "!" and treats anything >0.05 worse as "?"), AND — crucially — once the
+// position itself is lost (best move worse than ~-0.7, i.e. win% under ~45%),
+// chessdb marks *everything* "?": no point flagging the opponent's "good" replies
+// when you're already lost. These constants match that behaviour.
+const STRONG_CP = 5;    // within 0.05 of best → strong
+const LOST_CP = -70;    // best move worse than -0.70 ⇒ position lost, all moves "?"
 /** Eval from the side-to-move's perspective, in centipawns (mate ⇒ ±huge, nearer
  *  mates ranked higher). Lichess evals are White-relative, so flip for Black. */
 function moverScore(evalCp: number | null, mate: number | null, whiteToMove: boolean): number {
@@ -122,10 +126,11 @@ function moverScore(evalCp: number | null, mate: number | null, whiteToMove: boo
   const cp = evalCp ?? 0;
   return whiteToMove ? cp : -cp;
 }
-/** "!" / "" / "?" for how much a line's eval trails the best, from the mover's side. */
+/** "!" / "?" for a line, given the position's best score. Everything is "?" in a
+ *  lost position; otherwise "!" within STRONG_CP of best, "?" beyond. */
 function moveMark(best: number, score: number): string {
-  const drop = best - score;
-  return drop <= STRONG_CP ? "!" : drop <= DUBIOUS_CP ? "" : "?";
+  if (best < LOST_CP) return "?";
+  return best - score <= STRONG_CP ? "!" : "?";
 }
 type EngineStatus = "loading" | "ok" | "unknown" | "offline";
 
@@ -422,7 +427,9 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
           if (!ce || ce.status !== "ok" || !ce.lines.length) return;
           const scores = ce.lines.map((x) => moverScore(x.evalCp, x.mate, oppWhite));
           const best = Math.max(...scores);
-          const strong = scores.filter((s) => best - s <= STRONG_CP).length;
+          // If the opponent is lost after this move, none of their replies are
+          // "strong" — don't imply they have good options.
+          const strong = best < LOST_CP ? 0 : scores.filter((s) => best - s <= STRONG_CP).length;
           setLichessStats((prev) => ({ ...prev, [uci]: { replies: ce.lines.length, strong } }));
         })
         .catch(() => {});
