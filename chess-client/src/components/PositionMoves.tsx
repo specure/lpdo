@@ -3,6 +3,8 @@
 // Players page. Driven by a cursor model: `fullLine` is the explored line and
 // `moveSequence` is the active prefix (its length is the cursor).
 
+import { Fragment } from "react";
+
 interface Props {
   /** Active line up to the cursor (its length = current ply). */
   moveSequence: string[];
@@ -66,11 +68,16 @@ export default function PositionMoves({ moveSequence, onBack, onReset, onForward
           <span className="text-on-surface-variant">Starting position</span>
         ) : (
           rows.map((r) => (
-            <span key={r.no} className="mr-1 whitespace-nowrap">
-              <span className="text-on-surface-variant select-none">{r.no}.</span>{" "}
-              {r.w && <span className={moveCls(r.w.i)} onClick={moveClick(r.w.i)}>{r.w.san}</span>}
-              {r.b && <> <span className={moveCls(r.b.i)} onClick={moveClick(r.b.i)}>{r.b.san}</span></>}
-            </span>
+            // Keep "N. white black" together (whitespace-nowrap), but emit a real
+            // space between move-pairs so the list wraps to new lines instead of
+            // scrolling horizontally.
+            <Fragment key={r.no}>
+              <span className="whitespace-nowrap">
+                <span className="text-on-surface-variant select-none">{r.no}.</span>{" "}
+                {r.w && <span className={moveCls(r.w.i)} onClick={moveClick(r.w.i)}>{r.w.san}</span>}
+                {r.b && <> <span className={moveCls(r.b.i)} onClick={moveClick(r.b.i)}>{r.b.san}</span></>}
+              </span>{" "}
+            </Fragment>
           ))
         )}
       </div>

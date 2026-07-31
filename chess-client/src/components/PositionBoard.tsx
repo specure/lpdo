@@ -42,6 +42,7 @@ export default function PositionBoard({
   relatedGame, onSwitchToGame, moveStats, selectedMoveSan, showRelatedGame = true, showMoves = true,
 }: Props) {
   const [flipped, setFlipped] = useState(false);
+  const [copiedFen, setCopiedFen] = useState(false);
   const boardContainerRef = useRef<HTMLDivElement>(null);
   const [squareSize, setSquareSize] = useState(480);
 
@@ -94,6 +95,13 @@ export default function PositionBoard({
           title="Flip board"
         >
           <IconFlip />
+        </button>
+        <button
+          onClick={() => { navigator.clipboard?.writeText(fen).then(() => { setCopiedFen(true); window.setTimeout(() => setCopiedFen(false), 1200); }).catch(() => {}); }}
+          className="absolute top-8 right-0 z-10 h-7 px-1.5 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 text-label-sm transition-colors duration-short3 ease-standard"
+          title="Copy FEN of the current position to the clipboard"
+        >
+          {copiedFen ? "Copied" : "FEN"}
         </button>
         <div style={{ width: squareSize, height: squareSize, flexShrink: 0 }}>
           <Chessboard

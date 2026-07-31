@@ -9,6 +9,7 @@
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 mod ajedrez;
+mod cloud_eval;
 mod db;
 mod dedup;
 mod fide;

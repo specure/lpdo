@@ -1123,6 +1123,86 @@ async fn position_moves_handler(
     }).await
 }
 
+#[derive(Deserialize)]
+struct CloudEvalQuery {
+    fen: String,
+}
+
+/// FEN → Zobrist hash (same scheme as the positions index), the cloud-eval cache key.
+fn fen_zobrist(fen: &str) -> std::result::Result<i64, (StatusCode, String)> {
+    let parsed: Fen = fen.parse()
+        .map_err(|e: shakmaty::fen::ParseFenError| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let board: Chess = parsed.into_position(shakmaty::CastlingMode::Standard)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(board.zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64)
+}
+
+/// Cloud engine evaluation (chessdb.cn) for a FEN — a multi-move table with
+/// per-move scores, cached in the daemon (#221).
+async fn cloud_eval_handler(
+    Query(q): Query<CloudEvalQuery>,
+) -> ApiResult<crate::cloud_eval::CloudEval> {
+    let zobrist = fen_zobrist(&q.fen)?;
+    Ok(Json(crate::cloud_eval::query(&q.fen, zobrist).await))
+}
+
+/// Continuation lines for the top chessdb moves — fetched lazily by the client
+/// after the move table so the table shows immediately (#221).
+async fn cloud_eval_lines_handler(
+    Query(q): Query<CloudEvalQuery>,
+) -> ApiResult<Vec<crate::cloud_eval::MoveLine>> {
+    let zobrist = fen_zobrist(&q.fen)?;
+    Ok(Json(crate::cloud_eval::query_lines(&q.fen, zobrist).await))
+}
+
+/// Ask chessdb.cn to analyse an as-yet-unknown position (best-effort).
+async fn cloud_eval_queue_handler(Query(q): Query<CloudEvalQuery>) -> StatusCode {
+    crate::cloud_eval::queue(&q.fen).await;
+    StatusCode::OK
+}
+
+/// Lichess cloud evaluation (Stockfish) for a FEN — a few deep PV lines with a
+/// White-relative eval + engine depth, cached in the daemon (#221).
+async fn lichess_eval_handler(
+    Query(q): Query<CloudEvalQuery>,
+) -> ApiResult<crate::cloud_eval::LichessEval> {
+    let zobrist = fen_zobrist(&q.fen)?;
+    Ok(Json(crate::cloud_eval::query_lichess(&q.fen, zobrist).await))
+}
+
+#[derive(Deserialize)]
+struct WatchQuery {
+    fen: String,
+    /// Optional short human label (e.g. the move list) shown in the activity panel.
+    #[serde(default)]
+    label: String,
+}
+
+/// Start a "deepen watch": queue the position for deeper chessdb analysis and
+/// poll in the background, notifying the activity panel when the depth grows (#221).
+async fn cloud_watch_add_handler(
+    Query(q): Query<WatchQuery>,
+) -> ApiResult<crate::cloud_eval::Watch> {
+    let zobrist = fen_zobrist(&q.fen)?;
+    Ok(Json(crate::cloud_eval::add_watch(&q.fen, zobrist, &q.label).await))
+}
+
+/// List active/landed deepen watches.
+async fn cloud_watches_handler() -> Json<Vec<crate::cloud_eval::Watch>> {
+    Json(crate::cloud_eval::list_watches())
+}
+
+/// Dismiss a deepen watch for a position.
+async fn cloud_watch_delete_handler(Query(q): Query<CloudEvalQuery>) -> StatusCode {
+    match fen_zobrist(&q.fen) {
+        Ok(zobrist) => {
+            crate::cloud_eval::remove_watch(zobrist);
+            StatusCode::OK
+        }
+        Err((code, _)) => code,
+    }
+}
+
 async fn delete_game_handler(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<u32>,
@@ -2009,6 +2089,12 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         .route("/setup/reset",                         post(setup_reset_handler))
         .route("/position",                            get(position_handler))
         .route("/position/moves",                      get(position_moves_handler))
+        .route("/cloud-eval",                          get(cloud_eval_handler))
+        .route("/cloud-eval/lines",                    get(cloud_eval_lines_handler))
+        .route("/cloud-eval/queue",                    post(cloud_eval_queue_handler))
+        .route("/cloud-eval/watch",                    post(cloud_watch_add_handler).delete(cloud_watch_delete_handler))
+        .route("/cloud-eval/watches",                  get(cloud_watches_handler))
+        .route("/lichess-eval",                        get(lichess_eval_handler))
         // Long-running mutation jobs with streamed progress.
         .route("/jobs",                                get(list_jobs_handler).post(create_job_handler))
         // Streamed PGN upload (#154): disable the default body-size cap so a
