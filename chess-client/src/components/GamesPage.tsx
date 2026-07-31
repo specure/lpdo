@@ -35,7 +35,7 @@ function fenFromMoves(moves: string[]): string {
 }
 
 // Cloud engine (chessdb.cn) — one candidate move + its score (#221).
-interface CloudMove { san: string; uci: string; scoreCp: number; mate: number | null; winrate: number | null; rank: number; note: string; }
+interface CloudMove { san: string; uci: string; scoreCp: number; mate: number | null; winrate: number | null; rank: number; note: string; pvSan: string[]; }
 
 /** chessdb note "! (20-04)" → { mark:"!", opp:"20", oppStrong:"04" }; null for mate/odd notes. */
 function parseNote(note: string): { mark: string; opp: string; oppStrong: string } | null {
@@ -560,12 +560,20 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                         </div>
                         {engineMoves.map((m) => {
                           const nn = parseNote(m.note);
+                          // Continuation line (SAN after this move), numbered from the child position.
+                          let line = "";
+                          if (m.pvSan?.length) {
+                            try { const c = new Chess(currentFen); c.move(m.san); line = pvString(c.fen(), m.pvSan); } catch { line = ""; }
+                          }
                           return (
-                            <button key={m.uci || m.san} onClick={() => appendMove(m.san.replace(/[+#]+$/, ""))} className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard">
-                              <span className="flex-1 min-w-0 font-mono truncate text-left">{movePrefix}{m.san}{nn && nn.mark && nn.mark !== "*" && <span className="text-primary">{nn.mark}</span>}</span>
-                              <span className={`w-14 text-right tabular-nums ${evalColor(m)}`}>{fmtEval(m)}</span>
-                              <span className="w-14 text-right tabular-nums text-on-surface-variant">{nn ? Number(nn.opp) : "—"}</span>
-                              <span className="w-14 text-right tabular-nums text-on-surface">{nn ? Number(nn.oppStrong) : "—"}</span>
+                            <button key={m.uci || m.san} onClick={() => appendMove(m.san.replace(/[+#]+$/, ""))} className="w-full flex flex-col gap-0.5 text-body-sm px-2 py-1 rounded-sm text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard">
+                              <div className="w-full flex items-center">
+                                <span className="flex-1 min-w-0 font-mono truncate text-left">{movePrefix}{m.san}{nn && nn.mark && nn.mark !== "*" && <span className="text-primary">{nn.mark}</span>}</span>
+                                <span className={`w-14 text-right tabular-nums ${evalColor(m)}`}>{fmtEval(m)}</span>
+                                <span className="w-14 text-right tabular-nums text-on-surface-variant">{nn ? Number(nn.opp) : "—"}</span>
+                                <span className="w-14 text-right tabular-nums text-on-surface">{nn ? Number(nn.oppStrong) : "—"}</span>
+                              </div>
+                              {line && <div className="w-full font-mono text-label-sm text-on-surface-variant truncate text-left">{line}</div>}
                             </button>
                           );
                         })}

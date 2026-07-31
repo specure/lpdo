@@ -14,6 +14,11 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 const BASE: &str = "https://www.chessdb.cn/cdb.php";
+/// How many top moves get a fetched continuation line (Stockfish-style). Each is
+/// one extra chessdb `querypv` request, so keep it modest to stay polite.
+const PV_LINES: usize = 5;
+/// Cap the displayed continuation length (chessdb PVs can run 70+ plies).
+const PV_MAX_PLIES: usize = 12;
 const CACHE_TTL: Duration = Duration::from_secs(6 * 3600);
 /// chessdb keeps *deepening* positions in the background, so a freshly-seen
 /// position can return a shallow, partial move list that grows minutes later.
@@ -39,6 +44,10 @@ pub struct CloudMove {
     /// "power" move) plus, for a normal position, `(opponent's legal moves -
     /// opponent's strong moves)` after this move. Low second number ⇒ forcing.
     pub note: String,
+    /// Best continuation after this move, in SAN (chessdb `querypv` on the child
+    /// position). Populated only for the top few moves; empty otherwise.
+    #[serde(rename = "pvSan")]
+    pub pv_san: Vec<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -103,6 +112,40 @@ fn parse_mate(note: &str) -> Option<i32> {
     }
 }
 
+/// FEN of the position after playing SAN `san` from `parent` (shakmaty). Used to
+/// ask chessdb for the continuation line after a candidate move.
+fn child_fen(parent: &str, san: &str) -> Option<String> {
+    use shakmaty::{fen::Fen, san::San, CastlingMode, EnPassantMode, Position};
+    let pos: shakmaty::Chess = parent.parse::<Fen>().ok()?
+        .into_position(CastlingMode::Standard).ok()?;
+    let mv = san.parse::<San>().ok()?.to_move(&pos).ok()?;
+    let child = pos.play(mv).ok()?;
+    Some(Fen::from_position(&child, EnPassantMode::Legal).to_string())
+}
+
+/// chessdb `querypv` for a position → the continuation in SAN, capped for display.
+async fn query_pv_san(fen: &str) -> Vec<String> {
+    let s = shared();
+    let resp = match s
+        .client
+        .get(BASE)
+        .query(&[("action", "querypv"), ("board", fen), ("json", "1")])
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let v: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    v.get("pvSAN")
+        .and_then(|p| p.as_array())
+        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).take(PV_MAX_PLIES).collect())
+        .unwrap_or_default()
+}
+
 /// Query chessdb.cn's `queryall` for a position (cached by Zobrist hash).
 pub async fn query(fen: &str, zobrist: i64) -> CloudEval {
     let s = shared();
@@ -112,7 +155,7 @@ pub async fn query(fen: &str, zobrist: i64) -> CloudEval {
         }
     }
 
-    let eval = match s
+    let mut eval = match s
         .client
         .get(BASE)
         .query(&[("action", "queryall"), ("board", fen), ("json", "1")])
@@ -126,6 +169,22 @@ pub async fn query(fen: &str, zobrist: i64) -> CloudEval {
         // Network failure — don't cache; the panel shows "offline".
         Err(_) => return CloudEval { status: "offline".into(), moves: vec![] },
     };
+
+    // Fetch the continuation line for the top PV_LINES moves, concurrently.
+    if eval.status == "ok" {
+        let top = eval.moves.len().min(PV_LINES);
+        let mut set = tokio::task::JoinSet::new();
+        for i in 0..top {
+            if let Some(cf) = child_fen(fen, &eval.moves[i].san) {
+                set.spawn(async move { (i, query_pv_san(&cf).await) });
+            }
+        }
+        while let Some(res) = set.join_next().await {
+            if let Ok((i, pv)) = res {
+                eval.moves[i].pv_san = pv;
+            }
+        }
+    }
 
     let mut cache = s.cache.lock().unwrap();
     if cache.len() >= CACHE_CAP {
@@ -154,6 +213,7 @@ fn parse_queryall(v: &serde_json::Value) -> CloudEval {
                         winrate: m.get("winrate").and_then(|w| w.as_str()).and_then(|w| w.parse().ok()),
                         rank: m.get("rank").and_then(|r| r.as_i64()).unwrap_or(0) as i32,
                         note: note.to_string(),
+                        pv_san: Vec::new(),
                     })
                 })
                 .collect()
