@@ -165,8 +165,12 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const movesAbortRef = useRef<AbortController | null>(null);
 
   // ── Cloud engine (C): chessdb.cn or Lichess (Stockfish), via the daemon (#221) ─
-  const [engineSource, setEngineSource] = useState<EngineSource>(() => (localStorage.getItem("engineSource") === "lichess" ? "lichess" : "chessdb"));
-  useEffect(() => { localStorage.setItem("engineSource", engineSource); }, [engineSource]);
+  // Default to Lichess (Stockfish) — deep, real evals for popular positions. A
+  // versioned key so flipping the default from chessdb actually takes effect on
+  // existing installs (the old key was auto-written on every load). An explicit
+  // toggle to chessdb still persists.
+  const [engineSource, setEngineSource] = useState<EngineSource>(() => (localStorage.getItem("engineSourceV2") === "chessdb" ? "chessdb" : "lichess"));
+  useEffect(() => { localStorage.setItem("engineSourceV2", engineSource); }, [engineSource]);
   const [engineMoves, setEngineMoves] = useState<CloudMove[]>([]);          // chessdb
   const [lichessEval, setLichessEval] = useState<LichessEval | null>(null); // lichess
   const [engineStatus, setEngineStatus] = useState<EngineStatus>("ok");
