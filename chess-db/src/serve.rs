@@ -1126,6 +1126,9 @@ async fn position_moves_handler(
 #[derive(Deserialize)]
 struct CloudEvalQuery {
     fen: String,
+    /// `refresh=true` bypasses the cache and re-fetches (the panel's reload button).
+    #[serde(default)]
+    refresh: bool,
 }
 
 /// FEN → Zobrist hash (same scheme as the positions index), the cloud-eval cache key.
@@ -1143,7 +1146,7 @@ async fn cloud_eval_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<crate::cloud_eval::CloudEval> {
     let zobrist = fen_zobrist(&q.fen)?;
-    Ok(Json(crate::cloud_eval::query(&q.fen, zobrist).await))
+    Ok(Json(crate::cloud_eval::query(&q.fen, zobrist, q.refresh).await))
 }
 
 /// Continuation lines for the top chessdb moves — fetched lazily by the client
@@ -1152,7 +1155,7 @@ async fn cloud_eval_lines_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<Vec<crate::cloud_eval::MoveLine>> {
     let zobrist = fen_zobrist(&q.fen)?;
-    Ok(Json(crate::cloud_eval::query_lines(&q.fen, zobrist).await))
+    Ok(Json(crate::cloud_eval::query_lines(&q.fen, zobrist, q.refresh).await))
 }
 
 /// Ask chessdb.cn to analyse an as-yet-unknown position (best-effort).
@@ -1167,7 +1170,7 @@ async fn lichess_eval_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<crate::cloud_eval::LichessEval> {
     let zobrist = fen_zobrist(&q.fen)?;
-    Ok(Json(crate::cloud_eval::query_lichess(&q.fen, zobrist).await))
+    Ok(Json(crate::cloud_eval::query_lichess(&q.fen, zobrist, q.refresh).await))
 }
 
 #[derive(Deserialize)]
