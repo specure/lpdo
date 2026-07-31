@@ -80,7 +80,7 @@ function pvString(fen: string, sans: string[]): string {
 /** A numbered SAN line where each move is clickable — picking a move jumps to the
  *  position after it. Shared by the chessdb + Lichess engine views. Rendered on a
  *  single line by the parent (overflow-hidden), so the tail truncates to fit. */
-function PvLine({ startFen, sans, onPick }: { startFen: string; sans: string[]; onPick: (prefix: string[]) => void }) {
+function PvLine({ startFen, sans, onPick, mark }: { startFen: string; sans: string[]; onPick: (prefix: string[]) => void; mark?: string }) {
   const parts = startFen.split(" ");
   let n = parseInt(parts[5] || "1", 10);
   let white = parts[1] !== "b";
@@ -90,7 +90,9 @@ function PvLine({ startFen, sans, onPick }: { startFen: string; sans: string[]; 
     toks.push(
       <span key={i} className="whitespace-nowrap">
         {label && <span className="text-outline select-none">{label}</span>}
-        <span className="cursor-pointer hover:text-primary" onClick={(e) => { e.stopPropagation(); onPick(sans.slice(0, i + 1)); }}>{s}</span>{" "}
+        {/* The first move is the candidate — accent it, and hang its mark off it. */}
+        <span className={`cursor-pointer hover:text-primary ${i === 0 ? "font-semibold text-on-surface" : ""}`} onClick={(e) => { e.stopPropagation(); onPick(sans.slice(0, i + 1)); }}>{s}</span>
+        {i === 0 && mark && <span className={`font-semibold ${mark === "?" ? "text-error" : "text-primary"}`}>{mark}</span>}{" "}
       </span>,
     );
     if (!white) n += 1;
@@ -104,6 +106,26 @@ function fmtLichess(l: LichessLine): string {
   if (l.mate !== null) return l.mate > 0 ? `M${l.mate}` : `-M${-l.mate}`;
   const p = (l.evalCp ?? 0) / 100;
   return (p > 0 ? "+" : "") + p.toFixed(2);
+}
+
+// Bringing chessdb's "power move" lens to Stockfish (#221): a move within
+// STRONG_CP of the best is strong ("!"); worse than DUBIOUS_CP is a mistake ("?").
+const STRONG_CP = 3;    // ≤ 0.03 worse than best → strong
+const DUBIOUS_CP = 10;  // > 0.10 worse than best → dubious
+/** Eval from the side-to-move's perspective, in centipawns (mate ⇒ ±huge, nearer
+ *  mates ranked higher). Lichess evals are White-relative, so flip for Black. */
+function moverScore(evalCp: number | null, mate: number | null, whiteToMove: boolean): number {
+  if (mate != null && mate !== 0) {
+    const m = whiteToMove ? mate : -mate;
+    return m > 0 ? 100000 - m : -100000 - m;
+  }
+  const cp = evalCp ?? 0;
+  return whiteToMove ? cp : -cp;
+}
+/** "!" / "" / "?" for how much a line's eval trails the best, from the mover's side. */
+function moveMark(best: number, score: number): string {
+  const drop = best - score;
+  return drop <= STRONG_CP ? "!" : drop <= DUBIOUS_CP ? "" : "?";
 }
 type EngineStatus = "loading" | "ok" | "unknown" | "offline";
 
@@ -203,6 +225,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const [engineMoves, setEngineMoves] = useState<CloudMove[]>([]);          // chessdb
   const [engineLines, setEngineLines] = useState<Record<string, string[]>>({}); // uci → continuation SAN (lazy)
   const [lichessEval, setLichessEval] = useState<LichessEval | null>(null); // lichess
+  const [lichessStats, setLichessStats] = useState<Record<string, { replies: number; strong: number }>>({}); // uci → power-move stats (lazy)
   const [engineStatus, setEngineStatus] = useState<EngineStatus>("ok");
   const [engineQueuing, setEngineQueuing] = useState(false);
   // FENs with an active deepen watch — keep Deepen disabled for them so a second
@@ -373,6 +396,40 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [firstMovesStr, engineSource]);
+
+  // Power-move stats for Lichess (async, after the lines are on screen): for each
+  // top line, fetch the child position's cloud eval and count the opponent's
+  // replies + how many are "strong" (within STRONG_CP of the best). Sparse — only
+  // where Lichess has the child position cached.
+  useEffect(() => {
+    if (engineSource !== "lichess" || !lichessEval?.lines.length) { setLichessStats({}); return; }
+    const fen = fenFromMoves(moveSequence);
+    const oppWhite = fen.split(" ")[1] === "b"; // opponent (after our move) is White iff we're Black
+    const ctrl = new AbortController();
+    setLichessStats({});
+    for (const l of lichessEval.lines.slice(0, 8)) {
+      const uci = l.pvUci[0];
+      if (!uci) continue;
+      let childFen: string;
+      try {
+        const c = new Chess(fen);
+        c.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.slice(4, 5) || undefined });
+        childFen = c.fen();
+      } catch { continue; }
+      fetch(`/api/lichess-eval?fen=${encodeURIComponent(childFen)}`, { signal: ctrl.signal })
+        .then((r) => (r.ok ? (r.json() as Promise<LichessEval>) : null))
+        .then((ce) => {
+          if (!ce || ce.status !== "ok" || !ce.lines.length) return;
+          const scores = ce.lines.map((x) => moverScore(x.evalCp, x.mate, oppWhite));
+          const best = Math.max(...scores);
+          const strong = scores.filter((s) => best - s <= STRONG_CP).length;
+          setLichessStats((prev) => ({ ...prev, [uci]: { replies: ce.lines.length, strong } }));
+        })
+        .catch(() => {});
+    }
+    return () => ctrl.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firstMovesStr, engineSource, lichessEval]);
 
   // Seed the set of actively-watched positions on mount (a watch may still be
   // running from before this page was last left).
@@ -608,10 +665,9 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                           const sans = [m.san, ...(engineLines[m.uci] ?? [])]; // move + continuation (lazy)
                           return (
                             <div key={m.uci || m.san} className="w-full flex items-baseline gap-2 px-2 py-1 rounded-sm hover:bg-on-surface/8 transition-colors duration-short3 ease-standard">
-                              <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface">
-                                <PvLine startFen={currentFen} sans={sans} onPick={appendLine} />
+                              <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface-variant">
+                                <PvLine startFen={currentFen} sans={sans} onPick={appendLine} mark={nn && nn.mark && nn.mark !== "*" ? nn.mark : undefined} />
                               </div>
-                              {nn && nn.mark && nn.mark !== "*" && <span className="shrink-0 text-primary text-body-sm">{nn.mark}</span>}
                               <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface-variant">{nn ? Number(nn.opp) : "—"}</span>
                               <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface">{nn ? Number(nn.oppStrong) : "—"}</span>
                               <span className={`shrink-0 w-14 text-right tabular-nums text-body-sm ${evalColor(m)}`}>{fmtEval(m)}</span>
@@ -624,24 +680,39 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                   ) : (
                     engineStatus === "unknown" || !lichessEval?.lines.length ? (
                       <div className="flex-1 flex items-center justify-center text-center text-on-surface-variant text-body-sm px-3">Not in Lichess's cloud (only popular positions are cached).</div>
-                    ) : (
+                    ) : (() => {
+                      // Power-move marks (from the current position's own eval spread).
+                      const lmWhite = currentFen.split(" ")[1] !== "b";
+                      const lmScores = lichessEval.lines.map((l) => moverScore(l.evalCp, l.mate, lmWhite));
+                      const lmBest = lmScores.length ? Math.max(...lmScores) : 0;
+                      return (
                       <div className="flex-1 flex flex-col min-h-0">
                         <div className="px-3 py-1 shrink-0 text-label-sm text-on-surface-variant border-b border-outline/40">Stockfish · depth {lichessEval.depth}</div>
-                        <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+                        <div className="flex-1 overflow-y-auto p-2">
+                        <div className="flex items-baseline gap-2 text-label-sm text-on-surface-variant px-2 mb-1 select-none">
+                          <span className="flex-1 min-w-0"></span>
+                          <span className="w-12 text-right cursor-help underline decoration-dotted underline-offset-2" title="Opponent's replies Lichess has cached after this move.">Replies</span>
+                          <span className="w-12 text-right cursor-help underline decoration-dotted underline-offset-2" title="Opponent's strong replies — within 0.03 of their best. Low ⇒ forcing.">Strong</span>
+                          <span className="w-14 text-right">Eval</span>
+                        </div>
                           {lichessEval.lines.map((l, i) => {
                             const sans = pvToSan(currentFen, l.pvUci);
+                            const st = lichessStats[l.pvUci[0]];
                             return (
                               <div key={i} className="w-full flex items-baseline gap-2 px-2 py-1 rounded-sm hover:bg-on-surface/8 transition-colors duration-short3 ease-standard">
-                                <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface">
-                                  <PvLine startFen={currentFen} sans={sans} onPick={appendLine} />
+                                <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface-variant">
+                                  <PvLine startFen={currentFen} sans={sans} onPick={appendLine} mark={moveMark(lmBest, lmScores[i]) || undefined} />
                                 </div>
+                                <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface-variant">{st ? st.replies : "—"}</span>
+                                <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface">{st ? st.strong : "—"}</span>
                                 <span className="shrink-0 w-14 text-right tabular-nums font-mono text-body-sm text-on-surface">{fmtLichess(l)}</span>
                               </div>
                             );
                           })}
                         </div>
                       </div>
-                    )
+                      );
+                    })()
                   )}
                 </div>
               </Panel>
