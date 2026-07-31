@@ -1146,6 +1146,15 @@ async fn cloud_eval_handler(
     Ok(Json(crate::cloud_eval::query(&q.fen, zobrist).await))
 }
 
+/// Continuation lines for the top chessdb moves — fetched lazily by the client
+/// after the move table so the table shows immediately (#221).
+async fn cloud_eval_lines_handler(
+    Query(q): Query<CloudEvalQuery>,
+) -> ApiResult<Vec<crate::cloud_eval::MoveLine>> {
+    let zobrist = fen_zobrist(&q.fen)?;
+    Ok(Json(crate::cloud_eval::query_lines(&q.fen, zobrist).await))
+}
+
 /// Ask chessdb.cn to analyse an as-yet-unknown position (best-effort).
 async fn cloud_eval_queue_handler(Query(q): Query<CloudEvalQuery>) -> StatusCode {
     crate::cloud_eval::queue(&q.fen).await;
@@ -2081,6 +2090,7 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         .route("/position",                            get(position_handler))
         .route("/position/moves",                      get(position_moves_handler))
         .route("/cloud-eval",                          get(cloud_eval_handler))
+        .route("/cloud-eval/lines",                    get(cloud_eval_lines_handler))
         .route("/cloud-eval/queue",                    post(cloud_eval_queue_handler))
         .route("/cloud-eval/watch",                    post(cloud_watch_add_handler).delete(cloud_watch_delete_handler))
         .route("/cloud-eval/watches",                  get(cloud_watches_handler))

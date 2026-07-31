@@ -44,8 +44,13 @@ pub struct CloudMove {
     /// "power" move) plus, for a normal position, `(opponent's legal moves -
     /// opponent's strong moves)` after this move. Low second number ⇒ forcing.
     pub note: String,
-    /// Best continuation after this move, in SAN (chessdb `querypv` on the child
-    /// position). Populated only for the top few moves; empty otherwise.
+}
+
+/// A continuation line for one move (fetched lazily, after the move table).
+#[derive(Clone, Serialize)]
+pub struct MoveLine {
+    pub uci: String,
+    /// Best continuation after this move in SAN (chessdb `querypv` on the child).
     #[serde(rename = "pvSan")]
     pub pv_san: Vec<String>,
 }
@@ -76,6 +81,9 @@ fn eval_signature(eval: &CloudEval) -> u64 {
 struct Shared {
     client: reqwest::Client,
     cache: Mutex<HashMap<i64, (Instant, CloudEval)>>,
+    /// Continuation lines for the top moves, fetched lazily and cached separately
+    /// so the move table can return immediately.
+    lines_cache: Mutex<HashMap<i64, (Instant, Vec<MoveLine>)>>,
     lichess_cache: Mutex<HashMap<i64, (Instant, LichessEval)>>,
     /// Active "deepen watches" keyed by Zobrist — background pollers that notify
     /// (via the activity panel) when chessdb's depth for a position grows.
@@ -93,6 +101,7 @@ fn shared() -> &'static Shared {
             .build()
             .expect("build reqwest client"),
         cache: Mutex::new(HashMap::new()),
+        lines_cache: Mutex::new(HashMap::new()),
         lichess_cache: Mutex::new(HashMap::new()),
         watches: Mutex::new(HashMap::new()),
         poller_started: AtomicBool::new(false),
@@ -146,6 +155,44 @@ async fn query_pv_san(fen: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Continuation lines for the top `PV_LINES` moves of a position (one chessdb
+/// `querypv` each, concurrent). Fetched lazily by the client after the move table,
+/// and cached separately by Zobrist hash.
+pub async fn query_lines(fen: &str, zobrist: i64) -> Vec<MoveLine> {
+    let s = shared();
+    if let Some((t, lines)) = s.lines_cache.lock().unwrap().get(&zobrist) {
+        if t.elapsed() < CHESSDB_TTL {
+            return lines.clone();
+        }
+    }
+    let eval = query(fen, zobrist).await; // cached move table
+    if eval.status != "ok" {
+        return Vec::new();
+    }
+    let top = eval.moves.len().min(PV_LINES);
+    let mut set = tokio::task::JoinSet::new();
+    for i in 0..top {
+        let uci = eval.moves[i].uci.clone();
+        if let Some(cf) = child_fen(fen, &eval.moves[i].san) {
+            set.spawn(async move { (i, uci, query_pv_san(&cf).await) });
+        }
+    }
+    let mut out: Vec<(usize, MoveLine)> = Vec::new();
+    while let Some(res) = set.join_next().await {
+        if let Ok((i, uci, pv)) = res {
+            out.push((i, MoveLine { uci, pv_san: pv }));
+        }
+    }
+    out.sort_by_key(|(i, _)| *i);
+    let lines: Vec<MoveLine> = out.into_iter().map(|(_, l)| l).collect();
+    let mut cache = s.lines_cache.lock().unwrap();
+    if cache.len() >= CACHE_CAP {
+        cache.clear();
+    }
+    cache.insert(zobrist, (Instant::now(), lines.clone()));
+    lines
+}
+
 /// Query chessdb.cn's `queryall` for a position (cached by Zobrist hash).
 pub async fn query(fen: &str, zobrist: i64) -> CloudEval {
     let s = shared();
@@ -155,7 +202,7 @@ pub async fn query(fen: &str, zobrist: i64) -> CloudEval {
         }
     }
 
-    let mut eval = match s
+    let eval = match s
         .client
         .get(BASE)
         .query(&[("action", "queryall"), ("board", fen), ("json", "1")])
@@ -169,22 +216,6 @@ pub async fn query(fen: &str, zobrist: i64) -> CloudEval {
         // Network failure — don't cache; the panel shows "offline".
         Err(_) => return CloudEval { status: "offline".into(), moves: vec![] },
     };
-
-    // Fetch the continuation line for the top PV_LINES moves, concurrently.
-    if eval.status == "ok" {
-        let top = eval.moves.len().min(PV_LINES);
-        let mut set = tokio::task::JoinSet::new();
-        for i in 0..top {
-            if let Some(cf) = child_fen(fen, &eval.moves[i].san) {
-                set.spawn(async move { (i, query_pv_san(&cf).await) });
-            }
-        }
-        while let Some(res) = set.join_next().await {
-            if let Ok((i, pv)) = res {
-                eval.moves[i].pv_san = pv;
-            }
-        }
-    }
 
     let mut cache = s.cache.lock().unwrap();
     if cache.len() >= CACHE_CAP {
@@ -213,7 +244,6 @@ fn parse_queryall(v: &serde_json::Value) -> CloudEval {
                         winrate: m.get("winrate").and_then(|w| w.as_str()).and_then(|w| w.parse().ok()),
                         rank: m.get("rank").and_then(|r| r.as_i64()).unwrap_or(0) as i32,
                         note: note.to_string(),
-                        pv_san: Vec::new(),
                     })
                 })
                 .collect()

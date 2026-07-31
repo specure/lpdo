@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { Chess } from "chess.js";
 import { GameSummary, MoveStats, PlayerInfo } from "../types";
@@ -35,7 +35,7 @@ function fenFromMoves(moves: string[]): string {
 }
 
 // Cloud engine (chessdb.cn) — one candidate move + its score (#221).
-interface CloudMove { san: string; uci: string; scoreCp: number; mate: number | null; winrate: number | null; rank: number; note: string; pvSan: string[]; }
+interface CloudMove { san: string; uci: string; scoreCp: number; mate: number | null; winrate: number | null; rank: number; note: string; }
 
 /** chessdb note "! (20-04)" → { mark:"!", opp:"20", oppStrong:"04" }; null for mate/odd notes. */
 function parseNote(note: string): { mark: string; opp: string; oppStrong: string } | null {
@@ -75,6 +75,28 @@ function pvString(fen: string, sans: string[]): string {
     white = !white;
   });
   return toks.join(" ");
+}
+
+/** A numbered SAN line where each move is clickable — picking a move jumps to the
+ *  position after it. Shared by the chessdb + Lichess engine views. Rendered on a
+ *  single line by the parent (overflow-hidden), so the tail truncates to fit. */
+function PvLine({ startFen, sans, onPick }: { startFen: string; sans: string[]; onPick: (prefix: string[]) => void }) {
+  const parts = startFen.split(" ");
+  let n = parseInt(parts[5] || "1", 10);
+  let white = parts[1] !== "b";
+  const toks: ReactNode[] = [];
+  sans.forEach((s, i) => {
+    const label = white ? `${n}.` : i === 0 ? `${n}…` : "";
+    toks.push(
+      <span key={i} className="whitespace-nowrap">
+        {label && <span className="text-outline select-none">{label}</span>}
+        <span className="cursor-pointer hover:text-primary" onClick={(e) => { e.stopPropagation(); onPick(sans.slice(0, i + 1)); }}>{s}</span>{" "}
+      </span>,
+    );
+    if (!white) n += 1;
+    white = !white;
+  });
+  return <>{toks}</>;
 }
 
 /** Lichess eval (White-relative): "+0.14", "-2.36", "M1" / "-M1". */
@@ -160,6 +182,13 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     setLine((prev) => (prev[ply] === mv ? prev : [...prev.slice(0, ply), mv]));
     setPly((p) => p + 1);
   }
+  // Play a whole line prefix from the current position (clicking a move inside a
+  // displayed engine line jumps to the position after that move).
+  function appendLine(sans: string[]) {
+    const clean = sans.map((s) => s.replace(/[+#]+$/, ""));
+    setLine((prev) => [...prev.slice(0, ply), ...clean]);
+    setPly((p) => p + clean.length);
+  }
   const [moveStats, setMoveStats] = useState<MoveStats[]>([]);
   const [movesLoading, setMovesLoading] = useState(false);
   const movesAbortRef = useRef<AbortController | null>(null);
@@ -172,6 +201,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const [engineSource, setEngineSource] = useState<EngineSource>(() => (localStorage.getItem("engineSourceV2") === "chessdb" ? "chessdb" : "lichess"));
   useEffect(() => { localStorage.setItem("engineSourceV2", engineSource); }, [engineSource]);
   const [engineMoves, setEngineMoves] = useState<CloudMove[]>([]);          // chessdb
+  const [engineLines, setEngineLines] = useState<Record<string, string[]>>({}); // uci → continuation SAN (lazy)
   const [lichessEval, setLichessEval] = useState<LichessEval | null>(null); // lichess
   const [engineStatus, setEngineStatus] = useState<EngineStatus>("ok");
   const [engineQueuing, setEngineQueuing] = useState(false);
@@ -318,9 +348,20 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     const fen = fenFromMoves(moveSequence);
     const t = setTimeout(() => {
       if (engineSource === "chessdb") {
+        setEngineLines({}); // clear stale continuation lines
         fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}`, { signal: ctrl.signal })
           .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<{ status: EngineStatus; moves: CloudMove[] }>; })
-          .then((d) => { setEngineMoves(d.moves ?? []); setEngineStatus(d.moves?.length ? "ok" : (d.status ?? "unknown")); })
+          .then((d) => {
+            setEngineMoves(d.moves ?? []); setEngineStatus(d.moves?.length ? "ok" : (d.status ?? "unknown"));
+            // Lazy second pass: fetch the continuation lines (several querypv calls)
+            // once the move table is on screen.
+            if (d.moves?.length) {
+              fetch(`/api/cloud-eval/lines?fen=${encodeURIComponent(fen)}`, { signal: ctrl.signal })
+                .then((r) => (r.ok ? r.json() as Promise<{ uci: string; pvSan: string[] }[]> : []))
+                .then((ls) => { const map: Record<string, string[]> = {}; for (const l of ls) map[l.uci] = l.pvSan; setEngineLines(map); })
+                .catch(() => {});
+            }
+          })
           .catch((e) => { if (!(e instanceof DOMException && e.name === "AbortError")) { setEngineMoves([]); setEngineStatus("offline"); } });
       } else {
         fetch(`/api/lichess-eval?fen=${encodeURIComponent(fen)}`, { signal: ctrl.signal })
@@ -555,30 +596,18 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                             {engineQueuing ? "Requested…" : watchedFens.has(currentFen) ? "Watching…" : "Deepen"}
                           </button>
                         </div>
-                        <div className="flex-1 overflow-y-auto p-2">
-                        <div className="flex items-center text-label-sm text-on-surface-variant px-2 mb-1 select-none">
-                          <span className="flex-1 min-w-0">Move</span>
-                          <span className="w-14 text-right">Eval</span>
-                          <span className="w-14 text-right cursor-help underline decoration-dotted underline-offset-2" title="Opponent's total legal moves after this move.">Replies</span>
-                          <span className="w-14 text-right cursor-help underline decoration-dotted underline-offset-2" title="Opponent's strong ('power') replies after this move — a low number means a forcing line.">Strong</span>
-                        </div>
+                        <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
                         {engineMoves.map((m) => {
                           const nn = parseNote(m.note);
-                          // Continuation line (SAN after this move), numbered from the child position.
-                          let line = "";
-                          if (m.pvSan?.length) {
-                            try { const c = new Chess(currentFen); c.move(m.san); line = pvString(c.fen(), m.pvSan); } catch { line = ""; }
-                          }
+                          const sans = [m.san, ...(engineLines[m.uci] ?? [])]; // move + continuation (lazy)
+                          const tip = `${m.san}${nn && nn.mark && nn.mark !== "*" ? " " + nn.mark : ""}${nn ? `  ·  replies ${Number(nn.opp)} · strong ${Number(nn.oppStrong)}` : ""}`;
                           return (
-                            <button key={m.uci || m.san} onClick={() => appendMove(m.san.replace(/[+#]+$/, ""))} className="w-full flex flex-col gap-0.5 text-body-sm px-2 py-1 rounded-sm text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard">
-                              <div className="w-full flex items-center">
-                                <span className="flex-1 min-w-0 font-mono truncate text-left">{movePrefix}{m.san}{nn && nn.mark && nn.mark !== "*" && <span className="text-primary">{nn.mark}</span>}</span>
-                                <span className={`w-14 text-right tabular-nums ${evalColor(m)}`}>{fmtEval(m)}</span>
-                                <span className="w-14 text-right tabular-nums text-on-surface-variant">{nn ? Number(nn.opp) : "—"}</span>
-                                <span className="w-14 text-right tabular-nums text-on-surface">{nn ? Number(nn.oppStrong) : "—"}</span>
+                            <div key={m.uci || m.san} title={tip} className="w-full flex items-baseline gap-2 px-2 py-1 rounded-sm hover:bg-on-surface/8 transition-colors duration-short3 ease-standard">
+                              <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface">
+                                <PvLine startFen={currentFen} sans={sans} onPick={appendLine} />
                               </div>
-                              {line && <div className="w-full font-mono text-label-sm text-on-surface-variant truncate text-left">{line}</div>}
-                            </button>
+                              <span className={`shrink-0 w-14 text-right tabular-nums text-body-sm ${evalColor(m)}`}>{fmtEval(m)}</span>
+                            </div>
                           );
                         })}
                         </div>
@@ -594,10 +623,12 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                           {lichessEval.lines.map((l, i) => {
                             const sans = pvToSan(currentFen, l.pvUci);
                             return (
-                              <button key={i} onClick={() => { if (sans[0]) appendMove(sans[0].replace(/[+#]+$/, "")); }} className="w-full flex items-baseline gap-2 px-2 py-1 rounded-sm text-left hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard">
-                                <span className="w-14 shrink-0 text-right tabular-nums font-mono text-on-surface">{fmtLichess(l)}</span>
-                                <span className="flex-1 min-w-0 truncate font-mono text-body-sm text-on-surface-variant">{pvString(currentFen, sans)}</span>
-                              </button>
+                              <div key={i} className="w-full flex items-baseline gap-2 px-2 py-1 rounded-sm hover:bg-on-surface/8 transition-colors duration-short3 ease-standard">
+                                <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface">
+                                  <PvLine startFen={currentFen} sans={sans} onPick={appendLine} />
+                                </div>
+                                <span className="shrink-0 w-14 text-right tabular-nums font-mono text-body-sm text-on-surface">{fmtLichess(l)}</span>
+                              </div>
                             );
                           })}
                         </div>
