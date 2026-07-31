@@ -596,16 +596,24 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                             {engineQueuing ? "Requested…" : watchedFens.has(currentFen) ? "Watching…" : "Deepen"}
                           </button>
                         </div>
-                        <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+                        <div className="flex-1 overflow-y-auto p-2">
+                        <div className="flex items-baseline gap-2 text-label-sm text-on-surface-variant px-2 mb-1 select-none">
+                          <span className="flex-1 min-w-0"></span>
+                          <span className="w-12 text-right cursor-help underline decoration-dotted underline-offset-2" title="Opponent's total legal moves after this move.">Replies</span>
+                          <span className="w-12 text-right cursor-help underline decoration-dotted underline-offset-2" title="Opponent's strong ('power') replies after this move — a low number means a forcing line.">Strong</span>
+                          <span className="w-14 text-right">Eval</span>
+                        </div>
                         {engineMoves.map((m) => {
                           const nn = parseNote(m.note);
                           const sans = [m.san, ...(engineLines[m.uci] ?? [])]; // move + continuation (lazy)
-                          const tip = `${m.san}${nn && nn.mark && nn.mark !== "*" ? " " + nn.mark : ""}${nn ? `  ·  replies ${Number(nn.opp)} · strong ${Number(nn.oppStrong)}` : ""}`;
                           return (
-                            <div key={m.uci || m.san} title={tip} className="w-full flex items-baseline gap-2 px-2 py-1 rounded-sm hover:bg-on-surface/8 transition-colors duration-short3 ease-standard">
+                            <div key={m.uci || m.san} className="w-full flex items-baseline gap-2 px-2 py-1 rounded-sm hover:bg-on-surface/8 transition-colors duration-short3 ease-standard">
                               <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface">
                                 <PvLine startFen={currentFen} sans={sans} onPick={appendLine} />
                               </div>
+                              {nn && nn.mark && nn.mark !== "*" && <span className="shrink-0 text-primary text-body-sm">{nn.mark}</span>}
+                              <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface-variant">{nn ? Number(nn.opp) : "—"}</span>
+                              <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface">{nn ? Number(nn.oppStrong) : "—"}</span>
                               <span className={`shrink-0 w-14 text-right tabular-nums text-body-sm ${evalColor(m)}`}>{fmtEval(m)}</span>
                             </div>
                           );
