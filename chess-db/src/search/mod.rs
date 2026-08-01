@@ -514,6 +514,7 @@ pub fn position_moves(
         from,
         to,
         None, // visibility — CLI doesn't expose this filter yet
+        None, // collection — CLI doesn't expose this filter yet
     )?;
     render_position_moves(&stats, side, &pos_desc);
     Ok(())

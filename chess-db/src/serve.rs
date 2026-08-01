@@ -349,6 +349,8 @@ struct PositionMovesQuery {
     /// "public" or "private". Same semantics as on GamesQuery — when set,
     /// restricts the popularity aggregation to games of that visibility.
     visibility: Option<String>,
+    /// Restrict the popularity aggregation to a collection (matches the game list).
+    collection_id: Option<i32>,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1118,6 +1120,7 @@ async fn position_moves_handler(
             q.from.as_deref(),
             q.to.as_deref(),
             q.visibility.as_deref(),
+            q.collection_id,
         ).map_err(db_err)?;
         Ok(Json(stats.into_iter().map(MoveStats::from).collect()))
     }).await

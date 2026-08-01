@@ -48,6 +48,7 @@ pub fn position_moves(
     from: Option<&str>,
     to: Option<&str>,
     visibility: Option<&str>,
+    collection_id: Option<i32>,
 ) -> Result<Vec<MoveStats>> {
     let mut params: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
     params.push(Box::new(zobrist_hash));
@@ -102,9 +103,13 @@ pub fn position_moves(
     let date_from_filter  = if from.is_some()       { "AND g.date >= ?"      } else { "" };
     let date_to_filter    = if to.is_some()         { "AND g.date <= ?"      } else { "" };
     let visibility_filter = if visibility.is_some() { "AND g.visibility = ?" } else { "" };
+    let collection_filter = if collection_id.is_some() {
+        "AND EXISTS (SELECT 1 FROM game_collections gc WHERE gc.game_id = g.id AND gc.collection_id = ?)"
+    } else { "" };
     if let Some(f) = from       { params.push(Box::new(f.to_string())); }
     if let Some(t) = to         { params.push(Box::new(t.to_string())); }
     if let Some(v) = visibility { params.push(Box::new(v.to_string())); }
+    if let Some(cid) = collection_id { params.push(Box::new(cid)); }
 
     let sql = format!("
         WITH pos AS (
@@ -134,6 +139,7 @@ pub fn position_moves(
               {date_from_filter}
               {date_to_filter}
               {visibility_filter}
+              {collection_filter}
         ),
         agg AS (
             SELECT

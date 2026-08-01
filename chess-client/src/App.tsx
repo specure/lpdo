@@ -726,6 +726,8 @@ export default function App() {
           scopePublicOnly={scopePublicOnly}
           scopeCollectionId={scopeCollectionId}
           scopeIncludeDeleted={scopeIncludeDeleted}
+          collections={collectionsList}
+          onCollectionChange={setScopeCollectionId}
           onOpenInAnalysis={openInAnalysis}
         />
       ) : mode === "analysis" ? (
