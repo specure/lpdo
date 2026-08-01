@@ -234,6 +234,23 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const [engineLines, setEngineLines] = useState<Record<string, string[]>>({}); // uci → continuation SAN (lazy)
   const [lichessEval, setLichessEval] = useState<LichessEval | null>(null); // lichess
   const [lichessStats, setLichessStats] = useState<Record<string, { replies: number; strong: number }>>({}); // uci → power-move stats (lazy)
+  // Lichess analysis settings (persisted): chessdb-style Replies/Strong (extra
+  // per-move requests) vs plain lines, and how many lines to show/analyse.
+  const [lichessShowStats, setLichessShowStats] = useState(() => localStorage.getItem("lichessShowStats") !== "false");
+  const [lichessLineCount, setLichessLineCount] = useState(() => {
+    const n = parseInt(localStorage.getItem("lichessLineCount") ?? "", 10);
+    return Number.isFinite(n) && n > 0 ? Math.min(n, 20) : 5;
+  });
+  const [lichessSettingsOpen, setLichessSettingsOpen] = useState(false);
+  const lichessSettingsRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => { localStorage.setItem("lichessShowStats", String(lichessShowStats)); }, [lichessShowStats]);
+  useEffect(() => { localStorage.setItem("lichessLineCount", String(lichessLineCount)); }, [lichessLineCount]);
+  useEffect(() => {
+    if (!lichessSettingsOpen) return;
+    function onDown(e: MouseEvent) { if (lichessSettingsRef.current && !lichessSettingsRef.current.contains(e.target as Node)) setLichessSettingsOpen(false); }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [lichessSettingsOpen]);
   const [engineStatus, setEngineStatus] = useState<EngineStatus>("ok");
   const [engineQueuing, setEngineQueuing] = useState(false);
   // FENs with an active deepen watch — keep Deepen disabled for them so a second
@@ -417,12 +434,12 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   // replies + how many are "strong" (within STRONG_CP of the best). Sparse — only
   // where Lichess has the child position cached.
   useEffect(() => {
-    if (engineSource !== "lichess" || !lichessEval?.lines.length) { setLichessStats({}); return; }
+    if (engineSource !== "lichess" || !lichessShowStats || !lichessEval?.lines.length) { setLichessStats({}); return; }
     const fen = fenFromMoves(moveSequence);
     const oppWhite = fen.split(" ")[1] === "b"; // opponent (after our move) is White iff we're Black
     const ctrl = new AbortController();
     setLichessStats({});
-    for (const l of lichessEval.lines.slice(0, 5)) {
+    for (const l of lichessEval.lines.slice(0, lichessLineCount)) {
       const uci = l.pvUci[0];
       if (!uci) continue;
       let childFen: string;
@@ -446,7 +463,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     }
     return () => ctrl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [firstMovesStr, engineSource, lichessEval]);
+  }, [firstMovesStr, engineSource, lichessEval, lichessShowStats, lichessLineCount]);
 
   // Seed the set of actively-watched positions on mount (a watch may still be
   // running from before this page was last left).
@@ -716,20 +733,55 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                       <div className="flex-1 flex flex-col min-h-0">
                         <div className="px-3 py-1 shrink-0 flex items-center justify-between text-label-sm text-on-surface-variant border-b border-outline/40">
                           <span>Stockfish · depth {lichessEval.depth}</span>
-                          <button
-                            onClick={reloadEngine}
-                            className="w-6 h-6 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
-                            title="Discard the cached result and re-query Lichess"
-                          >⟳</button>
+                          <div className="flex items-center gap-1">
+                            <div className="relative" ref={lichessSettingsRef}>
+                              <button
+                                onClick={() => setLichessSettingsOpen((o) => !o)}
+                                className={`w-6 h-6 inline-flex items-center justify-center rounded-full hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard ${lichessSettingsOpen ? "bg-on-surface/12" : ""}`}
+                                title="Lichess analysis settings"
+                              >⚙</button>
+                              {lichessSettingsOpen && (
+                                <div className="absolute right-0 top-7 z-20 w-60 rounded-xl border border-outline-variant bg-surface-container-high shadow-lg p-3 text-body-sm text-on-surface">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span>Replies &amp; Strong</span>
+                                    <button
+                                      onClick={() => setLichessShowStats((v) => !v)}
+                                      className={`px-2.5 h-6 rounded-full text-label-sm ${lichessShowStats ? "bg-primary text-on-primary" : "bg-on-surface/8 text-on-surface-variant"}`}
+                                    >{lichessShowStats ? "On" : "Off"}</button>
+                                  </div>
+                                  <div className="text-label-sm text-on-surface-variant mt-1">chessdb-style power-move columns — a few extra requests per move.</div>
+                                  <div className="mt-3 flex items-center justify-between gap-2">
+                                    <span>Lines</span>
+                                    <div className="flex items-center gap-1">
+                                      {[3, 5, 8, 12].map((n) => (
+                                        <button
+                                          key={n}
+                                          onClick={() => setLichessLineCount(n)}
+                                          className={`w-7 h-6 rounded-md text-label-sm ${lichessLineCount === n ? "bg-primary text-on-primary" : "hover:bg-on-surface/8 text-on-surface-variant"}`}
+                                        >{n}</button>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                            <button
+                              onClick={reloadEngine}
+                              className="w-6 h-6 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
+                              title="Discard the cached result and re-query Lichess"
+                            >⟳</button>
+                          </div>
                         </div>
                         <div className="flex-1 overflow-y-auto p-2">
-                        <div className="flex items-baseline gap-2 text-label-sm text-on-surface-variant px-2 mb-1 select-none">
-                          <span className="flex-1 min-w-0"></span>
-                          <span className="w-12 text-right cursor-help underline decoration-dotted underline-offset-2" title="Opponent's replies Lichess has cached after this move.">Replies</span>
-                          <span className="w-12 text-right cursor-help underline decoration-dotted underline-offset-2" title="Opponent's strong replies — within 0.03 of their best. Low ⇒ forcing.">Strong</span>
-                          <span className="w-14 text-right">Eval</span>
-                        </div>
-                          {lichessEval.lines.map((l, i) => {
+                        {lichessShowStats && (
+                          <div className="flex items-baseline gap-2 text-label-sm text-on-surface-variant px-2 mb-1 select-none">
+                            <span className="flex-1 min-w-0"></span>
+                            <span className="w-12 text-right cursor-help underline decoration-dotted underline-offset-2" title="Opponent's replies Lichess has cached after this move.">Replies</span>
+                            <span className="w-12 text-right cursor-help underline decoration-dotted underline-offset-2" title="Opponent's strong replies — within 0.05 of their best. Low ⇒ forcing.">Strong</span>
+                            <span className="w-14 text-right">Eval</span>
+                          </div>
+                        )}
+                          {lichessEval.lines.slice(0, lichessLineCount).map((l, i) => {
                             const sans = pvToSan(currentFen, l.pvUci);
                             const st = lichessStats[l.pvUci[0]];
                             return (
@@ -737,8 +789,8 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                                 <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface-variant">
                                   <PvLine startFen={currentFen} sans={sans} onPick={appendLine} mark={moveMark(lmBest, lmScores[i]) || undefined} />
                                 </div>
-                                <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface-variant">{st ? st.replies : "—"}</span>
-                                <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface">{st ? st.strong : "—"}</span>
+                                {lichessShowStats && <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface-variant">{st ? st.replies : "—"}</span>}
+                                {lichessShowStats && <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface">{st ? st.strong : "—"}</span>}
                                 <span className="shrink-0 w-14 text-right tabular-nums font-mono text-body-sm text-on-surface">{fmtLichess(l)}</span>
                               </div>
                             );
