@@ -171,9 +171,12 @@ interface Props {
   player?: PlayerInfo | null;
   /** Open the selected game in the editable Analysis board (#220). */
   onOpenInAnalysis?: (game: GameSummary) => void;
+  /** Available collections + a setter, to offer a collection filter in the rail. */
+  collections?: { id: number; name: string; game_count: number }[];
+  onCollectionChange?: (id: number | null) => void;
 }
 
-export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, player, onOpenInAnalysis }: Props) {
+export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, player, onOpenInAnalysis, collections, onCollectionChange }: Props) {
   const playerScoped = player !== undefined;
   // Restore the Games page's last analysed line + filters (once, on mount). Never
   // for the player-scoped view — that always locks to the externally-chosen player.
@@ -379,6 +382,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     if (dateFrom) params.set("from", fromISO(dateFrom));
     if (dateTo) params.set("to", toISO(dateTo));
     if (scopePublicOnly) params.set("visibility", "public");
+    if (scopeCollectionId !== null) params.set("collection_id", String(scopeCollectionId));
     // Scope the explorer to the selected player (their repertoire), matching the
     // game list — DB-wide only when no player is chosen.
     const primary = p1 ?? p2;
@@ -389,7 +393,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
       .then((data) => { setMoveStats(data); setMovesLoading(false); })
       .catch((e) => { if (e instanceof DOMException && e.name === "AbortError") return; setMoveStats([]); setMovesLoading(false); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [firstMovesStr, dateFrom, dateTo, scopePublicOnly, p1?.id, p1Color, p2?.id, p2Color]);
+  }, [firstMovesStr, dateFrom, dateTo, scopePublicOnly, scopeCollectionId, p1?.id, p1Color, p2?.id, p2Color]);
 
   // Cloud engine evaluation for the current position (debounced — hits the free
   // chessdb.cn / Lichess services through the daemon, which caches by position).
@@ -615,6 +619,21 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
               <input type="text" value={dateFromInput} onChange={(e) => setDateFromInput(e.target.value)} placeholder="From (YYYY)" className={`flex-1 min-w-0 ${textInput}`} />
               <input type="text" value={dateToInput} onChange={(e) => setDateToInput(e.target.value)} placeholder="To (YYYY)" className={`flex-1 min-w-0 ${textInput}`} />
             </div>
+            {onCollectionChange && collections && (
+              <div>
+                <div className="text-label-md text-on-surface-variant mb-1.5">Collection</div>
+                <select
+                  value={scopeCollectionId ?? ""}
+                  onChange={(e) => onCollectionChange(e.target.value === "" ? null : Number(e.target.value))}
+                  className={`w-full ${textInput} cursor-pointer`}
+                >
+                  <option value="">All collections</option>
+                  {collections.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name} ({c.game_count})</option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
         </div>
       )}
