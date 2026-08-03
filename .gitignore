@@ -26,6 +26,10 @@ node_modules/
 *.duckdb
 *.db
 
+# Built Debian packages — release CI builds these into dist-deb/; they must not
+# be versioned (stale ones once shipped alongside a release, see v0.14.10).
+/dist-deb/
+
 # Local dev/debug helper scripts (per-machine, hardcoded paths) — not for the repo
 /rebuild.sh
 /rebuild-v2.sh
