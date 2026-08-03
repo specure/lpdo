@@ -87,12 +87,29 @@ pub async fn list_directory(path: String) -> Result<DirectoryListing, String> {
     })
 }
 
+/// File types the daemon's `/import/upload` accepts (its own allow-list, mirrored
+/// here so the folder expansion below picks exactly the files it can ingest).
+/// Note this is narrower than `is_browsable_pgn` — the upload path can't take
+/// `.gz`.
+fn is_uploadable(name: &str) -> bool {
+    let n = name.to_lowercase();
+    [".pgn", ".zip", ".zst", ".zstd", ".7z"].iter().any(|ext| n.ends_with(ext))
+}
+
 /// Stream a PGN file (plain or compressed) straight to the daemon's
 /// `POST /import/upload` (#154), without reading it into memory — so a multi-GB
 /// import works, isn't subject to the read_pgn_file 100 MB cap, and can target a
 /// daemon on another machine (a client-local path is meaningless there). The
 /// original filename's extension is forwarded so the importer decompresses
 /// .zip/.zst/.7z. Returns the daemon job id; the caller follows /jobs/{id}/events.
+///
+/// A directory is expanded (non-recursively) into its uploadable files, each
+/// streamed as its own import job — restoring the "Folder…" picker (#236), which
+/// broke when GUI import switched from the folder-aware sidecar to streaming a
+/// single file (#154). Progress is aggregated across all files into one bar; the
+/// returned job id is the last file's (the caller only needs one to follow the
+/// upload→background handoff, and the daemon coalesces post-import maintenance
+/// across the whole batch).
 #[tauri::command]
 pub async fn upload_pgn_file(
     app: tauri::AppHandle,
@@ -103,27 +120,99 @@ pub async fn upload_pgn_file(
     fast: bool,
     private: bool,
 ) -> Result<String, String> {
-    use futures_util::StreamExt;
     use tauri::Emitter;
 
     let p = PathBuf::from(&path);
     let meta = std::fs::metadata(&p).map_err(|e| format!("{path}: {e}"))?;
-    if !meta.is_file() {
-        return Err(format!("{path}: not a file"));
+
+    let files: Vec<PathBuf> = if meta.is_file() {
+        vec![p]
+    } else if meta.is_dir() {
+        let mut v: Vec<PathBuf> = std::fs::read_dir(&p)
+            .map_err(|e| format!("{path}: {e}"))?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|q| q.file_name().and_then(|n| n.to_str()).is_some_and(is_uploadable))
+            .collect();
+        v.sort();
+        if v.is_empty() {
+            return Err(format!("{path}: no .pgn/.zip/.zst/.7z files in folder"));
+        }
+        v
+    } else {
+        return Err(format!("{path}: not a file or folder"));
+    };
+
+    // Total bytes across every file → one aggregate progress bar for the batch.
+    let total: u64 = files
+        .iter()
+        .filter_map(|f| std::fs::metadata(f).ok())
+        .map(|m| m.len())
+        .sum();
+
+    let client = reqwest::Client::new();
+    let mut done_bytes: u64 = 0; // bytes fully uploaded in prior files
+    let mut last_job: Option<String> = None;
+    for f in &files {
+        let job = upload_one(
+            &app,
+            &client,
+            f,
+            &base_url,
+            &collection,
+            &on_duplicate,
+            fast,
+            private,
+            total,
+            done_bytes,
+        )
+        .await?;
+        done_bytes += std::fs::metadata(f).map(|m| m.len()).unwrap_or(0);
+        last_job = Some(job);
     }
-    let total = meta.len();
-    let filename = p
+
+    // All uploads finished; signal 100% so the GUI switches from "uploading" to
+    // following the import job.
+    let _ = app.emit(
+        "import-upload-progress",
+        serde_json::json!({ "sent": total, "total": total }),
+    );
+
+    last_job.ok_or_else(|| "no files uploaded".to_string())
+}
+
+/// Stream one file to `/import/upload`, emitting aggregate progress: the running
+/// byte count is `offset` (bytes from earlier files in a folder batch) plus this
+/// file's sent bytes, reported against the batch `total`. Returns the job id.
+#[allow(clippy::too_many_arguments)]
+async fn upload_one(
+    app: &tauri::AppHandle,
+    client: &reqwest::Client,
+    path: &std::path::Path,
+    base_url: &str,
+    collection: &str,
+    on_duplicate: &str,
+    fast: bool,
+    private: bool,
+    total: u64,
+    offset: u64,
+) -> Result<String, String> {
+    use futures_util::StreamExt;
+    use tauri::Emitter;
+
+    let display = path.display().to_string();
+    let filename = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("upload.pgn")
         .to_string();
 
-    let file = tokio::fs::File::open(&p)
+    let file = tokio::fs::File::open(path)
         .await
-        .map_err(|e| format!("{path}: {e}"))?;
+        .map_err(|e| format!("{display}: {e}"))?;
 
-    // Emit upload progress (~1% steps) so the GUI shows the streaming phase
-    // rather than a blank 0% while a multi-GB file uploads.
+    // Emit progress (~1% of the whole batch) so the GUI shows the streaming
+    // phase rather than a blank 0% while a multi-GB file uploads.
     let app_ev = app.clone();
     let step = (total / 100).max(1);
     let mut sent: u64 = 0;
@@ -131,11 +220,11 @@ pub async fn upload_pgn_file(
     let stream = tokio_util::io::ReaderStream::new(file).map(move |chunk| {
         if let Ok(ref bytes) = chunk {
             sent += bytes.len() as u64;
-            if sent >= next_emit {
-                next_emit = sent + step;
+            if offset + sent >= next_emit {
+                next_emit = offset + sent + step;
                 let _ = app_ev.emit(
                     "import-upload-progress",
-                    serde_json::json!({ "sent": sent, "total": total }),
+                    serde_json::json!({ "sent": offset + sent, "total": total }),
                 );
             }
         }
@@ -144,28 +233,21 @@ pub async fn upload_pgn_file(
     let body = reqwest::Body::wrap_stream(stream);
 
     let query: Vec<(&str, String)> = vec![
-        ("collection", collection),
+        ("collection", collection.to_string()),
         ("filename", filename),
         ("fast", fast.to_string()),
         ("private", private.to_string()),
-        ("on_duplicate", on_duplicate),
+        ("on_duplicate", on_duplicate.to_string()),
     ];
 
     let url = format!("{}/import/upload", base_url.trim_end_matches('/'));
-    let resp = reqwest::Client::new()
+    let resp = client
         .post(url)
         .query(&query)
         .body(body)
         .send()
         .await
         .map_err(|e| format!("upload request failed: {e}"))?;
-
-    // Upload finished; signal 100% so the GUI switches from "uploading" to
-    // following the import job.
-    let _ = app.emit(
-        "import-upload-progress",
-        serde_json::json!({ "sent": total, "total": total }),
-    );
 
     if !resp.status().is_success() {
         let status = resp.status();
