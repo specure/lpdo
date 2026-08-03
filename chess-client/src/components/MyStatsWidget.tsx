@@ -447,21 +447,26 @@ interface MyStatsWidgetProps {
    *  Defaults to true so other callers are unaffected. An already-set profile
    *  still shows its stats regardless. */
   dbReady?: boolean;
+  /** Notifies the parent when the profile player is set or cleared, so it can
+   *  react (e.g. Home enabling/disabling its "My games" card). */
+  onPlayerChange?: (player: PlayerInfo | null) => void;
 }
 
-export default function MyStatsWidget({ countStartDelayMs, status, dbReady = true }: MyStatsWidgetProps = {}) {
+export default function MyStatsWidget({ countStartDelayMs, status, dbReady = true, onPlayerChange }: MyStatsWidgetProps = {}) {
   const [myPlayer, setMyPlayer] = useState<PlayerInfo | null>(loadMyPlayer);
 
   function save(player: PlayerInfo) {
     saveMyPlayer(player);
     setMyPlayer(player);
+    onPlayerChange?.(player);
   }
 
   // Stable identity so the memoised StatsView isn't re-rendered by a new closure.
   const clear = useCallback(() => {
     localStorage.removeItem(MY_PLAYER_KEY);
     setMyPlayer(null);
-  }, []);
+    onPlayerChange?.(null);
+  }, [onPlayerChange]);
 
   // Collapse the polling `status` object to the one stable boolean StatsView
   // needs, so a status change during an import doesn't churn the memoised tiles.

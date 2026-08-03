@@ -440,15 +440,17 @@ export default function App() {
     handleSelectPlayer(fresh, additive);
   }
 
-  // Home "My games" card: open the Players view scoped to the user's own games —
-  // their profile player plus the private "My games" collection filter.
+  // Home "My games" card: open the Players view scoped to the user's configured
+  // profile player. No longer filters by a "My games" collection — that
+  // collection may not exist — so this is just the player's games. The Home card
+  // is disabled when no profile is set, so myPlayer is normally present; the
+  // guard keeps it safe if that ever changes.
   function handleMyGames() {
     const myPlayer = loadMyPlayer();
-    const myGames = collectionsList.find((c) => c.name === "My games");
-    setScopePublicOnly(false);                              // My games is private
-    setScopeCollectionId(myGames ? myGames.id : null);
-    if (myPlayer) handleSelectPlayer(myPlayer);
-    else setPendingSearchFocus(true);                       // no profile yet → let them pick
+    if (!myPlayer) return;
+    setScopePublicOnly(false);      // include the user's own private games
+    setScopeCollectionId(null);     // no collection scoping — just the player
+    handleSelectPlayer(myPlayer);
     setMode("players");
   }
 

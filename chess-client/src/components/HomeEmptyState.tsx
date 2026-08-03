@@ -7,10 +7,10 @@
 // M3 Expressive moves: tonal containers per action role, larger 28px/32px
 // corners, display-scale typography, asymmetric icon emphasis.
 
-import { useState, useEffect, useRef } from "react";
+import { useCallback, useState, useEffect, useRef } from "react";
 import DatabaseStats from "./DatabaseStats";
-import MyStatsWidget from "./MyStatsWidget";
-import { StatusInfo, Job } from "../types";
+import MyStatsWidget, { loadMyPlayer } from "./MyStatsWidget";
+import { StatusInfo, Job, PlayerInfo } from "../types";
 import { getStatus, getJobs, resetSetup } from "../api";
 
 interface Props {
@@ -231,7 +231,7 @@ const TONE_CLASSES: Record<Tone, { card: string; iconBg: string }> = {
 };
 
 function ActionCard({
-  tone, icon, iconHoverClass, title, description, onClick, delayMs,
+  tone, icon, iconHoverClass, title, description, onClick, delayMs, disabled,
 }: {
   tone: Tone;
   icon: React.ReactNode;
@@ -243,6 +243,9 @@ function ActionCard({
   onClick: () => void;
   /** Stagger offset for the entrance rise-in. */
   delayMs?: number;
+  /** Dim + block the card (no hover morph, not clickable). Used by "My games"
+   *  when no profile player is configured yet. */
+  disabled?: boolean;
 }) {
   const t = TONE_CLASSES[tone];
   // M3 Expressive moves:
@@ -254,11 +257,15 @@ function ActionCard({
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
       style={delayMs !== undefined ? { animationDelay: `${delayMs}ms` } : undefined}
-      className={`group flex flex-col items-start gap-5 p-6 ${t.card} text-left h-full cursor-pointer
+      className={`group flex flex-col items-start gap-5 p-6 ${t.card} text-left h-full
         rounded-2xl
-        hover:rounded-tl-[2.5rem] hover:rounded-br-[2.5rem] hover:rounded-tr-md hover:rounded-bl-md
-        hover:brightness-110 active:brightness-95
+        ${disabled
+          ? "opacity-40 cursor-not-allowed"
+          : `cursor-pointer
+             hover:rounded-tl-[2.5rem] hover:rounded-br-[2.5rem] hover:rounded-tr-md hover:rounded-bl-md
+             hover:brightness-110 active:brightness-95`}
         transition-all duration-medium2 ease-spring
         motion-reduce:transition-none motion-reduce:hover:rounded-2xl
         lpdo-rise-in`}
@@ -292,6 +299,13 @@ export default function HomeEmptyState({
   // / empty (wizard CTA) / Database stats. "offline" (status === null) falls
   // through to DatabaseStats, which handles it.
   const { status: live, active } = useReadiness(status);
+  // Whether a profile player is configured (in the widget below). Gates the
+  // "My games" card — with no profile there's nothing to scope to, so it's
+  // disabled. Kept in sync via MyStatsWidget's onPlayerChange.
+  const [hasMyPlayer, setHasMyPlayer] = useState(() => loadMyPlayer() !== null);
+  // Stable identity so MyStatsWidget's memoised StatsView (which takes its
+  // `clear` handler, derived from this) isn't re-rendered every parent render.
+  const handleMyPlayerChange = useCallback((p: PlayerInfo | null) => setHasMyPlayer(p !== null), []);
   const setupStatus = live?.setup_status;
   const view =
     setupStatus === "preparing" ? "preparing"
@@ -342,8 +356,11 @@ export default function HomeEmptyState({
             icon={<IconBoard />}
             iconHoverClass="group-hover:scale-110"
             title="My games"
-            description="Jump to your games in the database — your name with the “My games” collection."
+            description={hasMyPlayer
+              ? "Jump to your games in the database — filtered to your player."
+              : "Set your player in the profile panel below to enable this."}
             onClick={onMyGames}
+            disabled={!hasMyPlayer}
             delayMs={60}
           />
           <ActionCard
@@ -401,7 +418,7 @@ export default function HomeEmptyState({
             two bottom sections don't appear simultaneously). Wrapped so the
             rise-in lives on the outer element, not inside MyStatsWidget. */}
         <div className="lpdo-rise-in" style={{ animationDelay: "520ms" }}>
-          <MyStatsWidget countStartDelayMs={520} status={live} dbReady={dbReady} />
+          <MyStatsWidget countStartDelayMs={520} status={live} dbReady={dbReady} onPlayerChange={handleMyPlayerChange} />
         </div>
 
       </div>
