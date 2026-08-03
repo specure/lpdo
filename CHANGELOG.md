@@ -7,6 +7,266 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.10] - 2026-08-03
+
+### Added
+- **Collection filter on the Players page** — the same collection selector from
+  the Games filters rail now appears on the Players page, scoping the player
+  search (and the selected player's games and opening explorer) to a chosen
+  collection. (#219)
+
+### Changed
+- **Home "My games" opens your player, not a collection** — the quick link now
+  scopes the Players view to your configured profile player only, instead of
+  also filtering by a "My games" collection that may not exist. It's disabled
+  until a profile player is set, with a hint to configure one.
+
+### Fixed
+- **Importing a folder works again** — selecting a folder in the Add-games
+  dialog failed with "not a file"; the client now expands the folder into its
+  PGN / `.zip` / `.zst` / `.7z` files and imports each. (#236)
+- **Recent players list drops stale entries** — opening the Players view now
+  reconciles the Recent list against the database, removing players that were
+  merged or purged and collapsing duplicate rows that resolve to the same
+  player.
+
+## [0.14.5] - 2026-08-01
+
+### Added
+- **Collection filter in the Games filters rail** — pick a collection to
+  restrict both the game list and the opening explorer to it (or "All
+  collections"); the explorer's popularity stats now respect the selected
+  collection too, matching the game list. (#219)
+- **Lichess analysis settings** — a ⚙ popover in the Lichess panel to toggle the
+  chessdb-style Replies/Strong per-move fetches on or off (off gives plain
+  Stockfish lines with no child-position requests) and to choose how many lines
+  to show (3/5/8/12); both persist, letting you dial Lichess request volume
+  down. (#221)
+
+## [0.14.1] - 2026-07-31
+
+### Changed
+- **Faithful Lichess power-move marks** — the `!`/`?` marks now use chessdb's
+  real, measured constants: a three-tier scale (`!` best, no mark within ~0.05,
+  `?` beyond), plus a lost-position gate that marks everything `?` once the best
+  move is clearly losing so the opponent isn't implied to have good options.
+  (#221)
+- **Steadier, lighter Lichess requests** — outbound requests are throttled per
+  source, the top-move Replies/Strong fan-out is capped at 5, and cloud evals
+  are cached for 24h with a reload (⟳) button to refresh on demand. (#221)
+
+### Fixed
+- **Lichess rate-limit poison** — bursts of per-move fetches were tripping
+  Lichess's 429, and the daemon cached that as "unknown", so even popular
+  positions (including the start position) wrongly showed "not in Lichess's
+  cloud" for the whole cache window; non-answers (429/5xx/parse failures) are no
+  longer cached. (#221)
+
+## [0.14.0] - 2026-07-31
+
+### Added
+- **Cloud engine in the Games engine panel** — analyse the explorer's current
+  position against chessdb.cn (crowd evals) or Lichess/Stockfish, toggled per
+  source and persisted; unknown positions offer a "Request analysis" queue.
+  (#221)
+- **Multi-move lines you can click into** — each candidate renders as a single
+  move-plus-continuation line with the eval right-aligned; every move in a line
+  is clickable and jumps to the position after it. chessdb top moves get
+  Stockfish-style continuation lines. (#221)
+- **Power-move Replies/Strong for both sources** — each move gets a quality mark
+  by eval loss, with Replies (opponent's legal moves) and Strong (how many are
+  near-best) shown for chessdb and brought to Lichess/Stockfish. (#221)
+- **Deepen and watch for deeper analysis** — queue a position for further
+  chessdb crowd analysis and watch it in the background; when a deeper result
+  lands you get an in-app notification and the panel refreshes live. (#221)
+- **Copy FEN** — a button below the board flip control copies the current
+  position's FEN to the clipboard. (#221)
+- **Games-page state persistence** — the Games page restores your last analysed
+  line, cursor, applied filters, rail state, and selected game when you leave
+  and return, surviving a restart. (#221)
+
+### Changed
+- **Lichess/Stockfish is the default engine** — it gives deep, real Stockfish
+  evals for popular positions as the better first impression; chessdb stays one
+  toggle away, and an explicit switch still persists. (#221)
+
+## [0.13.1] - 2026-07-30
+
+### Added
+- **APT repository for easy Linux updates** — released `.deb` packages are now
+  published to a signed APT repo on GitHub Pages, so after a one-time setup
+  Linux users can update with `apt update && apt upgrade`. (#216)
+
+### Fixed
+- **Upgrading from pre-0.5.0 builds no longer errors** — `lpdo-cli` now takes
+  over `/usr/bin/chess-db` from the obsolete monolithic `lpdo` package and
+  removes it automatically instead of failing with a file conflict. (#216)
+
+## [0.13.0] - 2026-07-30
+
+### Added
+- **New Analysis workbench** — a top-level Analysis tab for working across
+  several games at once: one mini-board tab per open game, the active game as a
+  fully editable board (comments, NAGs, graphical annotations, notation),
+  reference-DB moves and related games that follow the current position
+  (transposition-aware), and resizable panels throughout. Open a game via "Open
+  in Analysis" from the Games or Players lists. Open tabs and the active tab
+  persist across restarts. (#220)
+- **Players page analysis layout** — the Players view now shows the full
+  analysis mosaic (position board, opening explorer, game list, mini board, move
+  list) scoped to the selected player, with a collapsible player list, and shows
+  the player's name in the game-list header even when the list is collapsed.
+  (#219)
+
+### Changed
+- **Export warns about unsaved edits** — exporting a game while the moves editor
+  has unsaved changes now asks you to confirm first, offering to save via Done
+  so the edits are included.
+
+### Fixed
+- **Faster, cancellable position-index rebuild** — the incremental index pass no
+  longer re-scans the multi-million-row positions table on every batch, turning
+  a multi-hour job back into roughly three minutes, and a cancel is now honored
+  mid-batch instead of requiring a server restart. (#212)
+- **PGNs page collapse toggles and dividers respect light mode** — they used
+  hardcoded dark colors and stayed dark; they now follow the active theme.
+- **Lichess Broadcast shows the real publish date** — the "Latest" date now
+  comes from the newest file's actual Last-Modified time instead of a synthetic
+  start-of-month placeholder.
+
+## [0.12.0] - 2026-07-29
+
+### Added
+- **New Games analysis layout** — the Games page is reorganized into a six-panel
+  analysis board showing everything at once: position board with opening
+  explorer, DB move stats, game list, and a read-only mini board plus move list
+  for the selected game. Panels are resizable with drag handles that persist
+  their sizes, and a collapsible filter rail (players, colour, event, year) sits
+  on the left. The explorer and the selected game are independent, so exploring
+  moves no longer clears the selected game. (#219, #222)
+
+### Changed
+- **Unified board navigation and move lists** — both boards use the same
+  ⏮ ‹ › ⏭ controls, move lists are scrollable and clickable, focused move lists
+  respond to ←/→ and Home/End, and the game list uses aligned columns you can
+  drag to resize (widths persisted). Future moves are no longer greyed out.
+  (#219)
+
+### Fixed
+- **Mini-board move animations are correct** — pieces no longer overshoot to
+  double distance and snap back; each board now has a unique id and explicit
+  sizing so react-chessboard animates the right squares. (#219)
+
+## [0.11.0] - 2026-07-28
+
+### Added
+- **Games page** — a new database-wide game browser: search the whole database
+  without picking a player first, with Player 1 / Player 2 autocomplete, event
+  and year-range filters, and infinite scroll. It includes an always-on opening
+  explorer that shows move statistics over all matching games and filters the
+  list to games reaching the current position.
+- **`chess-db --system` flag and empty-database hint** — `--system` resolves the
+  database path to the server's system-service database so you can read it while
+  the daemon is stopped, and a stderr hint now points there when a local command
+  would otherwise show a confusing "0 games". (#214)
+
+### Changed
+- **Opening explorers now number their moves** — the Games and Players explorers
+  prefix each move-stats row with its move number (White "N.", Black "N...").
+- **`search games --moves-stats` is now proxyable** — it works while the daemon
+  holds the database lock, proxied to the server's `/position/moves` instead of
+  returning "not proxyable". (#213)
+
+## [0.10.0] - 2026-07-27
+
+### Added
+- **Open large and compressed PGN files locally** — a new DuckDB-free engine
+  opens huge PGN files (including `.zip` / `.zst` / `.gz`) instantly, with a
+  header index that grows while you browse, an LRU cache so flipping between
+  files is instant, and header search/replay. Validated on an 11M-game / 12 GB
+  database. (#104)
+- **`.pgn` file association** — double-clicking a `.pgn` (or `.pgn.gz` /
+  `.pgn.zst`) file opens it in LPDO's PGN browser; registered as a handler so
+  ChessX/SCID and other apps keep working. (#104, #210)
+- **Job timestamps and durations in the activity panel** — recent jobs show when
+  they finished and how long they took, and a running job shows its elapsed
+  time. (#170)
+
+### Changed
+- **Offline network jobs pause and retry instead of failing** — downloads and
+  syncs that fail because the machine is offline now pause and offer "Retry now"
+  rather than erroring, using a cluster/network dependency-ordered queue so
+  unrelated local work no longer stalls behind a paused job. (#206)
+- **Clearer sync completion message** — reports the actual number of games
+  imported (with thousands separators) instead of a vague "preparing the
+  database in the background".
+- **Home "preparing" banner shows overall progress** — the bar now climbs across
+  the whole pipeline instead of resetting as each task finishes.
+
+## [0.9.3] - 2026-07-26
+
+### Added
+- **Feeds now import every game with no date cutoff** — TWIC and Lichess pull
+  all games from each issue (a weekly/monthly issue can carry games dated in an
+  earlier period); only Ajedrez still caps at 2012-12-31. The coverage timeline
+  still draws each feed from roughly its first-issue date.
+
+### Changed
+- **Much faster deduplication** — duplicates are now matched by move fingerprints
+  in SQL and removed set-based, with no per-game PGN parsing; on a
+  heavily-overlapping dataset a dedup run drops from minutes to seconds. The
+  longer (more complete or annotated) copy is kept as the survivor.
+- **"Latest update" per source shows the newest published item** — rather than
+  the last imported one, so it no longer counts backwards during an initial
+  import or sticks on the oldest month.
+
+### Fixed
+- **Player game counts refresh after deduplication** — removing duplicate games
+  no longer leaves a player's total overstated. (#205)
+
+## [0.9.2] - 2026-07-26
+
+### Added
+- **Enabling a feed starts an immediate sync** — turning on TWIC or Lichess
+  Broadcasts kicks off a download and import right away instead of waiting for
+  the scheduler's next tick, and the enabled state stays responsive even while
+  another source is still importing. (#195)
+- **Ajedrez has a one-shot "Download & import" action** — the deep-history base
+  uses a single download-and-import button (with licence acknowledgment) instead
+  of an enable/disable toggle, is excluded from the daily scheduler, and re-runs
+  import only the parts not yet imported. (#196)
+- **Configurable daily update-check time** — set one time for all feeds to be
+  checked for updates, with a readout of the next check and the FIDE-list
+  refresh status. (#194)
+- **Per-source metrics on each source card** — each card shows its own latest
+  item, date, and games imported, replacing the aggregated Home and Maintenance
+  blocks. (#197)
+- **Incremental/Full switch for manual deduplication** — the Maintenance
+  deduplication panel lets you re-check every game (Full) or only games added
+  since the last pass (Incremental).
+
+### Changed
+- **Deduplication is incremental and unified into one maintenance pass** — a
+  `deduped` marker lets a run examine only games added since the last pass, and
+  identity-first maintenance (resolve FIDE, dedup players, normalise, dedup
+  games, index) now runs once in the background for every source.
+- **Deduplication matches the same game across differently-annotated sources** —
+  a game shipped as bare SAN by TWIC now matches its Lichess broadcast copy
+  (with eval/clock comments and NAGs) via a canonical move comparison; the
+  manual "Run deduplication" re-checks all games to clean up copies earlier
+  passes missed.
+
+### Fixed
+- **Sync progress bar no longer sticks at 100%** — the bar switches to an
+  indeterminate animation during an import's initialization instead of lingering
+  at the download stage's final 100%.
+- **Source enable/disable state survives navigation** — toggling a feed while
+  another is importing no longer reverts the toggle after switching pages and
+  back.
+- **FIDE card reflects background refreshes** — the player-list card updates its
+  last-refreshed date and due status after a scheduled or post-sync refresh,
+  without needing a manual page reload.
+
 ## [0.9.1] - 2026-07-25
 
 ### Added
@@ -244,6 +504,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An interrupted source sync no longer leaves the source recorded with zero
   imported items. (#163)
 
+## [0.5.2] - 2026-07-23
+
+### Added
+- **Filter game searches by collection** — `search games --collection <name>`
+  restricts results to a single source's collection, available locally, through
+  the daemon proxy, and on the server. (#144)
+- **Reference-source overlap diagnostics** — new read-only CLI commands to judge
+  how much two sources duplicate each other before importing: `sources overlap`
+  (per-bucket duplicate counts and coverage), `sources items` (each tracked
+  item's dates, import status, and game-date span), and `sources fide-coverage`
+  (how many games and players carry FIDE IDs). (#142)
+
+### Changed
+- **Bulk-import mode is chosen by download size, not item count** —
+  coarse-grained sources like Lichess monthly packages, and single multi-GB
+  PGNs, now correctly take the fast bulk path instead of appearing stuck at 100%
+  on the slow inline one. (#146)
+- **A freshly synced source is searchable right away** — the position indexing
+  and player normalisation that a large sync defers now run immediately after
+  it, instead of waiting for the next daily update. (#146)
+
+### Fixed
+- **Adding games from a file or paste works against the hardened daemon again** —
+  the GUI now uploads the PGN content itself rather than a path the sandboxed
+  system daemon can't read under your home directory or `/tmp`. (#153)
+
+## [0.5.1] - 2026-07-23
+
+### Added
+- **Multi-source import with a Sources catalog** — the database can now be built
+  from a curated catalog of sources beyond TWIC, including the Lichess
+  Broadcasts monthly feed and the Ajedrez OTB deep-history archive, each managed
+  from a new Sources screen with enable toggles, an attribution acknowledgment,
+  and a configurable per-source game-date window so sources partition the
+  timeline instead of re-importing overlapping games. (#40)
+- **Onboarding wizard rebuilt around the multi-source model** — a simple
+  populate-vs-empty choice with a deep-history option, and a first-run pipeline
+  that imports and prepares the database as a visible background queue with a
+  live readiness banner. (#98, #109)
+- **Background auto-sync and an activity dashboard** — enabling a source is
+  enough; the daemon picks it up and syncs it in the background (even with the
+  GUI closed), and a header activity panel shows the whole job pipeline with the
+  ability to cancel running work. (#99)
+- **The CLI works while the daemon is running** — long-running jobs, quick edits,
+  and read/query commands now transparently proxy to the daemon over HTTP
+  (previously every command failed on the database writer lock), falling back to
+  direct access when no daemon is running. (#58)
+- **Cross-platform system-service installers** — a Windows installer that sets up
+  the server as a service and puts the CLI on PATH, a signed and notarized macOS
+  `.pkg` that registers a launchd daemon (plus a `chess-db service` command), and
+  a Linux apt package family split into `lpdo` / `lpdo-server` / `lpdo-cli`.
+  (#65, #67, #68)
+- **`chess-db --version`** — the CLI now reports its version instead of erroring
+  on the flag. (#77)
+
+### Changed
+- **Backups are compressed** — `backup` (and the GUI Backup action) now writes a
+  timestamped `.pgn.zip` instead of a plain `.pgn`, typically several times
+  smaller, opening natively on every OS and round-tripping back through the
+  importer. (#91)
+- **Large PGN imports stream instead of loading the whole file into memory** —
+  memory is now bounded by the parse batch rather than the file size, so a
+  multi-GB import no longer spikes memory by the file's size. (#95)
+- **Position indexing is fast by default and crash-safe** — the fast path is now
+  guarded by a safety snapshot; the CLI's `index-positions` runs fast by
+  default, with the old `--fast` opt-in replaced by an opt-out `--safe`. (#139)
+- **Fresh installs no longer import the same games twice** — Ajedrez and TWIC
+  ship complementary default date windows that dovetail at their coverage
+  boundary instead of both importing the full span. (#126)
+
+### Fixed
+- **The daemon recovers from a database invalidation instead of staying dead
+  until restart** — a fatal DuckDB error now triggers an in-process reconnect,
+  so the server keeps serving rather than requiring a manual `systemctl restart`.
+  (#82)
+- **The GUI no longer creates a hidden second database** — it is now a pure
+  client of the OS-managed system daemon rather than spawning its own embedded
+  server against a separate data directory. (#79)
+- **A single corrupt archive no longer fails an entire feed sync** — bad items
+  are skipped with a warning and summarised at the end, and stay unimported so a
+  re-sync retries them, instead of flipping the whole sync to failed. (#133)
+- **Add-games surfaces import failures** — a failed submission now shows an
+  "Import failed" banner instead of silently reappearing the button and looking
+  like a no-op. (#132)
+- **Upgrading the CLI package restarts the server** — `lpdo-server` is now
+  restarted when `lpdo-cli` is upgraded, so it runs the new binary immediately
+  instead of the old one until the next reboot. (#120)
+
 ## [0.4.0] - 2026-06-21
 
 Player merge in the app, a reorganised Maintenance screen, and a smarter
@@ -386,9 +734,24 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.14.10...HEAD
+[0.14.10]: https://github.com/specure/lpdo/compare/v0.14.5...v0.14.10
+[0.14.5]: https://github.com/specure/lpdo/compare/v0.14.1...v0.14.5
+[0.14.1]: https://github.com/specure/lpdo/compare/v0.14.0...v0.14.1
+[0.14.0]: https://github.com/specure/lpdo/compare/v0.13.1...v0.14.0
+[0.13.1]: https://github.com/specure/lpdo/compare/v0.13.0...v0.13.1
+[0.13.0]: https://github.com/specure/lpdo/compare/v0.12.0...v0.13.0
+[0.12.0]: https://github.com/specure/lpdo/compare/v0.11.0...v0.12.0
+[0.11.0]: https://github.com/specure/lpdo/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/specure/lpdo/compare/v0.9.3...v0.10.0
+[0.9.3]: https://github.com/specure/lpdo/compare/v0.9.2...v0.9.3
+[0.9.2]: https://github.com/specure/lpdo/compare/v0.9.1...v0.9.2
+[0.9.1]: https://github.com/specure/lpdo/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/specure/lpdo/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/specure/lpdo/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/specure/lpdo/compare/v0.5.2...v0.7.0
+[0.5.2]: https://github.com/specure/lpdo/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/specure/lpdo/compare/v0.4.0...v0.5.1
 [0.4.0]: https://github.com/specure/lpdo/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/specure/lpdo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/specure/lpdo/compare/v0.1.1...v0.2.0
