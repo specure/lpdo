@@ -160,7 +160,64 @@ function useRecentPlayers() {
     });
   }
 
-  return { recent, add, remove };
+  // Re-resolve every stored entry against the live DB so the list reflects
+  // merges/purges: a merged-away or deleted player is dropped, a renamed one is
+  // refreshed, and duplicate entries that now resolve to the same player (e.g.
+  // two rows sharing a FIDE id) collapse into one. Names/counts are refreshed
+  // too. A network error on an entry leaves it untouched — an offline blip must
+  // never wipe the list. Runs when the Players view opens (see App effect).
+  const reconcile = useCallback(async () => {
+    let stored: PlayerInfo[];
+    try {
+      const raw = localStorage.getItem(RECENT_PLAYERS_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      stored = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return;
+    }
+    if (stored.length === 0) return;
+
+    // Per entry: a fresh PlayerInfo (resolved), null (server says it's gone), or
+    // "keep" (couldn't reach the server — preserve the stored snapshot).
+    const resolved = await Promise.all(
+      stored.map(async (p): Promise<PlayerInfo | null | "keep"> => {
+        try {
+          const url = p.fide_id != null
+            ? `/api/players?fide_id=${p.fide_id}`
+            : `/api/players?name=${encodeURIComponent(p.name)}`;
+          const resp = await fetch(url);
+          if (!resp.ok) return "keep";
+          const list = (await resp.json()) as PlayerInfo[];
+          return p.fide_id != null
+            ? (list[0] ?? null)
+            : (list.find((x) => x.name === p.name) ?? null);
+        } catch {
+          return "keep";
+        }
+      }),
+    );
+
+    const seen = new Set<number>();
+    const next: PlayerInfo[] = [];
+    resolved.forEach((r, i) => {
+      const p = r === "keep" ? stored[i] : r;
+      if (!p || p.id === 0 || seen.has(p.id)) return;
+      seen.add(p.id);
+      next.push(p);
+    });
+
+    // Only touch state/storage if something actually changed, so a no-op
+    // reconcile doesn't trigger a needless re-render.
+    const changed =
+      next.length !== stored.length ||
+      next.some((p, i) => p.id !== stored[i].id || p.name !== stored[i].name || p.game_count !== stored[i].game_count);
+    if (changed) {
+      setRecent(next);
+      localStorage.setItem(RECENT_PLAYERS_KEY, JSON.stringify(next));
+    }
+  }, []);
+
+  return { recent, add, remove, reconcile };
 }
 
 /** Re-resolve a (possibly stale) player against the current DB by a STABLE key —
@@ -231,7 +288,7 @@ export default function App() {
   const { hc, toggle: toggleHc } = useHighContrast();
   const { scheme, toggle: toggleScheme } = useColorScheme();
   const { show: showUpdate, state: updateState, dismiss: dismissUpdate } = useUpdateCheck(info);
-  const { recent: recentPlayers, add: addRecentPlayer, remove: removeRecentPlayer } = useRecentPlayers();
+  const { recent: recentPlayers, add: addRecentPlayer, remove: removeRecentPlayer, reconcile: reconcileRecentPlayers } = useRecentPlayers();
   const { recent: recentPgnFiles, add: addRecentPgnFile } = useRecentPgnFiles();
   const playerSearchRef = useRef<HTMLInputElement | null>(null);
   const [selectedPlayer, setSelectedPlayer] = useState<PlayerInfo | null>(null);
@@ -412,6 +469,14 @@ export default function App() {
       setPendingSearchFocus(false);
     }
   }, [pendingSearchFocus, mode]);
+
+  // Prune/refresh the Recent players list against the live DB whenever the
+  // Players view opens (and once connected): drops entries merged or purged
+  // away and collapses duplicates that now resolve to the same player, so the
+  // list can't show stale rows (e.g. pre-merge Karpov variants). See reconcile.
+  useEffect(() => {
+    if (mode === "players" && status === "connected") void reconcileRecentPlayers();
+  }, [mode, status, reconcileRecentPlayers]);
 
   // Entering the Players view with nothing selected: auto-select the most
   // recent player so the board area isn't empty. The recent list on the left
@@ -700,6 +765,7 @@ export default function App() {
                     recentPlayers={recentPlayers}
                     onRemoveRecent={removeRecentPlayer}
                     reloadKey={playerReloadKey}
+                    collectionId={scopeCollectionId}
                   />
                 )}
               </div>
@@ -712,6 +778,8 @@ export default function App() {
                 scopePublicOnly={scopePublicOnly}
                 scopeCollectionId={scopeCollectionId}
                 scopeIncludeDeleted={scopeIncludeDeleted}
+                collections={collectionsList}
+                onCollectionChange={setScopeCollectionId}
                 onOpenInAnalysis={openInAnalysis}
               />
             ) : (

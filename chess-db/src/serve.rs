@@ -277,6 +277,10 @@ impl From<crate::db::queries::PlayerStats> for PlayerStats {
 struct PlayersQuery {
     name: Option<String>,
     fide_id: Option<u32>,
+    /// Restrict the player list to players with games in this collection, and
+    /// report each player's game count *within* it — mirrors the Games page's
+    /// Collection filter (#—).
+    collection_id: Option<i32>,
 }
 
 #[derive(Deserialize, Default)]
@@ -886,14 +890,45 @@ async fn players_handler(
     state.reads.run(move |conn| {
         let mut params: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
 
-        let sql = if let Some(id) = q.fide_id {
-            params.push(Box::new(id));
-            "SELECT id, name, fide_id, game_count FROM players WHERE fide_id = ? LIMIT 50".to_string()
-        } else if let Some(ref name) = q.name {
-            params.push(Box::new(format!("{}%", normalize_name(name))));
-            "SELECT id, name, fide_id, game_count FROM players WHERE name_normalized LIKE ? ORDER BY game_count DESC LIMIT 50".to_string()
+        // Identity predicate on alias `p` (exact FIDE id, name prefix, or none).
+        // Its bound param is pushed below AFTER any collection_id, matching the
+        // order the SQL references them (collection_id sits in the JOIN).
+        let id_pred = if q.fide_id.is_some() {
+            "p.fide_id = ?"
+        } else if q.name.is_some() {
+            "p.name_normalized LIKE ?"
         } else {
-            "SELECT id, name, fide_id, game_count FROM players ORDER BY game_count DESC LIMIT 50".to_string()
+            ""
+        };
+
+        let sql = if let Some(cid) = q.collection_id {
+            // Collection-scoped (mirrors the Games page's Collection filter): keep
+            // only players with games in the collection, and count/order by their
+            // games *within* it so the count matches the scoped game list.
+            params.push(Box::new(cid));
+            if let Some(id) = q.fide_id {
+                params.push(Box::new(id));
+            } else if let Some(ref name) = q.name {
+                params.push(Box::new(format!("{}%", normalize_name(name))));
+            }
+            let where_extra = if id_pred.is_empty() { String::new() } else { format!("AND {id_pred}") };
+            format!("
+                SELECT p.id, p.name, p.fide_id, COUNT(*) AS game_count
+                FROM players p
+                JOIN games g ON (g.white_id = p.id OR g.black_id = p.id)
+                JOIN game_collections gc ON gc.game_id = g.id AND gc.collection_id = ?
+                WHERE 1=1 {where_extra}
+                GROUP BY p.id, p.name, p.fide_id
+                ORDER BY game_count DESC LIMIT 50")
+        } else {
+            // Unscoped: the pre-aggregated players.game_count is fastest.
+            if let Some(id) = q.fide_id {
+                params.push(Box::new(id));
+            } else if let Some(ref name) = q.name {
+                params.push(Box::new(format!("{}%", normalize_name(name))));
+            }
+            let where_clause = if id_pred.is_empty() { String::new() } else { format!("WHERE {id_pred}") };
+            format!("SELECT p.id, p.name, p.fide_id, p.game_count FROM players p {where_clause} ORDER BY p.game_count DESC LIMIT 50")
         };
 
         let params_ref: Vec<&dyn duckdb::ToSql> = params.iter().map(|p| p.as_ref()).collect();

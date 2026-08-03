@@ -22,6 +22,10 @@ interface Props {
   onRemoveRecent?: (id: number) => void;
   /** Bumped externally to force a re-fetch of search results (e.g. after a merge). */
   reloadKey?: number;
+  /** Current collection scope (driven by the Collection filter in the Games
+   *  filters rail): when set, the player search is restricted to players with
+   *  games in that collection, with in-collection counts. */
+  collectionId?: number | null;
 }
 
 // Single-line player row — used both for search results and Recent shortcuts.
@@ -68,7 +72,7 @@ function PlayerRow({
   );
 }
 
-export default function PlayerList({ selectedId, selectedIds, onSelect, onSelectRecent, inputRef, recentPlayers, onRemoveRecent, reloadKey }: Props) {
+export default function PlayerList({ selectedId, selectedIds, onSelect, onSelectRecent, inputRef, recentPlayers, onRemoveRecent, reloadKey, collectionId }: Props) {
   const selSet = selectedIds ?? (selectedId != null ? [selectedId] : []);
   const isSelected = (id: number) => selSet.includes(id);
   const [query, setQuery] = useState("");
@@ -77,6 +81,10 @@ export default function PlayerList({ selectedId, selectedIds, onSelect, onSelect
   const [error, setError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // Read the collection scope through a ref so `search` stays identity-stable
+  // (the debounce effect keys off it); a change re-fetches via its own effect.
+  const collectionIdRef = useRef(collectionId);
+  collectionIdRef.current = collectionId;
 
   const search = useCallback((name: string) => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -93,6 +101,7 @@ export default function PlayerList({ selectedId, selectedIds, onSelect, onSelect
     setError(null);
 
     const params = new URLSearchParams({ name: name.trim() });
+    if (collectionIdRef.current != null) params.set("collection_id", String(collectionIdRef.current));
     fetch(`/api/players?${params}`, { signal: abortRef.current.signal })
       .then((res) => {
         if (!res.ok) throw new Error(`Server error ${res.status}`);
@@ -119,6 +128,15 @@ export default function PlayerList({ selectedId, selectedIds, onSelect, onSelect
     if (reloadKey) search(query);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadKey]);
+
+  // Re-search immediately when the collection scope changes — it's a deliberate
+  // filter toggle, so don't wait out the typing debounce. Skip the initial mount.
+  const collFirstRef = useRef(true);
+  useEffect(() => {
+    if (collFirstRef.current) { collFirstRef.current = false; return; }
+    if (query.trim().length >= 2) search(query);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collectionId]);
 
   return (
     <div className="flex flex-col h-full bg-surface">
