@@ -345,7 +345,7 @@ pub async fn add_watch(fen: &str, zobrist: i64, label: &str) -> Watch {
 
 pub fn list_watches() -> Vec<Watch> {
     let mut v: Vec<Watch> = shared().watches.lock().unwrap().values().cloned().collect();
-    v.sort_by(|a, b| a.zobrist.cmp(&b.zobrist));
+    v.sort_by_key(|a| a.zobrist);
     v
 }
 
