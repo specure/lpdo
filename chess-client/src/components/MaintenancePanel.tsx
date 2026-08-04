@@ -766,8 +766,8 @@ function MergePlayersSection({ onMutated }: { onMutated?: () => void }) {
   return (
     <SectionCard title="Merge players">
       <p className="text-body-sm text-on-surface-variant">
-        Combine duplicate player records — e.g. a full name (“Krejcar, Walter”) and a surname-only
-        entry (“Krejcar”) for the same person — into one. All games move to the player you keep.
+        Combine duplicate player records — e.g. a full name (“Karpov, Anatoly”) and a surname-only
+        entry (“Karpov”) for the same person — into one. All games move to the player you keep.
       </p>
       <ActionButton onClick={() => setOpen(true)}>Merge players…</ActionButton>
       {open && (
