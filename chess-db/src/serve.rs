@@ -2067,7 +2067,42 @@ async fn purge_handler(State(state): State<AppState>) -> ApiResult<serde_json::V
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
+/// Delete stale `upload-*` spool + staged-decompression entries a manual import
+/// (`/import/upload`, #154) leaked. A clean import removes its own spool (jobs.rs)
+/// and its staged file (a `Drop` guard), but a hard crash or kill skips both, so
+/// they leak — some are multi-GB. Safe to run at startup: no import is in flight,
+/// so every `upload-*` entry is orphaned. Covers `upload-<stamp>.{pgn,zip,zst,7z}`,
+/// the `.import-tmp.pgn` staged `.zip` decode, and the `.7z-import-tmp` directory
+/// (all share the `upload-` prefix; the DB's own `chess.db*` files never match).
+fn sweep_orphan_uploads(dir: &std::path::Path) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let mut removed = 0u32;
+    for entry in rd.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with("upload-") {
+            continue;
+        }
+        let path = entry.path();
+        let ok = if path.is_dir() {
+            std::fs::remove_dir_all(&path).is_ok()
+        } else {
+            std::fs::remove_file(&path).is_ok()
+        };
+        if ok {
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        eprintln!("Removed {removed} orphaned upload file(s) left by a previously-interrupted import.");
+    }
+}
+
 pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Result<()> {
+    // Clear any upload spool/temp files leaked by an import that crashed or was
+    // killed before its own cleanup ran — none are in use at startup.
+    if let Some(dir) = db_path.parent() {
+        sweep_orphan_uploads(dir);
+    }
+
     // The passed connection opened the database read-write. Clone it into a pool
     // of read connections (concurrent SELECTs via DuckDB in-process MVCC); the
     // original becomes the single writer that runs all mutations and jobs.
@@ -2220,5 +2255,42 @@ mod setup_resume_tests {
         assert_eq!(next_setup_attempt(1, 100, 50), 2);
         // Give-up boundary.
         assert!(next_setup_attempt(SETUP_RESUME_CAP - 1, 100, 100) >= SETUP_RESUME_CAP);
+    }
+}
+
+#[cfg(test)]
+mod sweep_orphan_uploads_tests {
+    use super::sweep_orphan_uploads;
+    use std::fs;
+
+    // Every `upload-*` form (spool, staged decode, 7z temp dir) is removed, while
+    // the database and its WAL — which never carry the prefix — are left alone.
+    #[test]
+    fn removes_upload_leftovers_but_keeps_the_database() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("lpdo-sweep-test-{stamp}"));
+        fs::create_dir_all(&dir).unwrap();
+
+        fs::write(dir.join("upload-1.pgn"), b"x").unwrap();
+        fs::write(dir.join("upload-2.zip"), b"x").unwrap();
+        fs::write(dir.join("upload-3.import-tmp.pgn"), b"x").unwrap();
+        fs::create_dir_all(dir.join("upload-4.7z-import-tmp")).unwrap();
+        fs::write(dir.join("upload-4.7z-import-tmp").join("inner.pgn"), b"x").unwrap();
+        fs::write(dir.join("chess.db"), b"db").unwrap();
+        fs::write(dir.join("chess.db.wal"), b"wal").unwrap();
+
+        sweep_orphan_uploads(&dir);
+
+        assert!(!dir.join("upload-1.pgn").exists());
+        assert!(!dir.join("upload-2.zip").exists());
+        assert!(!dir.join("upload-3.import-tmp.pgn").exists());
+        assert!(!dir.join("upload-4.7z-import-tmp").exists());
+        assert!(dir.join("chess.db").exists(), "database must survive");
+        assert!(dir.join("chess.db.wal").exists(), "WAL must survive");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
