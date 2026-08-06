@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { useSidecarProgress } from "../hooks/useSidecarProgress";
 import SourcesPanel from "./SourcesPanel";
@@ -34,6 +35,21 @@ function LogBox({ lines }: { lines: string[] }) {
   return (
     <div ref={ref} className="mt-2 bg-surface-container-lowest rounded-sm p-2 text-label-sm font-mono text-on-surface-variant max-h-24 overflow-y-auto space-y-0.5">
       {lines.map((l, i) => <div key={i}>{l}</div>)}
+    </div>
+  );
+}
+
+/** Discreet "what am I running?" line at the bottom of the Maintenance page:
+ *  GUI version (Tauri app), server version (from GET /status), API contract. */
+function VersionFooter({ status }: { status: StatusInfo | null }) {
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  useEffect(() => { getVersion().then(setAppVersion).catch(() => {}); }, []);
+  const server = status?.version
+    ? `Server ${status.version}${status.api_version != null ? ` · API ${status.api_version}` : ""}`
+    : "Server unreachable";
+  return (
+    <div className="pt-2 text-center text-label-md text-on-surface-variant select-text">
+      LPDO {appVersion ?? "…"} · {server}
     </div>
   );
 }
@@ -876,6 +892,11 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated }: Pro
             <PurgeSection status={status} onMutated={onMutated} />
           </div>
         </div>
+
+        {/* Version footer — which build am I actually running? GUI and server
+            are separate binaries (separate .debs on Linux), so show both: a
+            mismatch is the classic "updated but didn't restart the daemon". */}
+        <VersionFooter status={status} />
       </div>
     </div>
   );
