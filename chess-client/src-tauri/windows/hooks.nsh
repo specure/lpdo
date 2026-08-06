@@ -29,10 +29,31 @@
 !define LPDO_ENV_KEY "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
 
 !macro NSIS_HOOK_PREINSTALL
-  ; On an upgrade, stop the running service before Tauri replaces the locked exe.
-  ; On a fresh install LPDOServer.exe isn't extracted yet, so this is a silent
-  ; no-op (nothing to stop).
-  nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" stop'
+  ; On an upgrade, stop the running service before Tauri replaces the locked
+  ; exes. On a fresh install LPDOServer.exe isn't extracted yet → silent no-op.
+  ;
+  ; Stop must WAIT, not fire-and-forget: with seamless upgrades the installer
+  ; copies over the live files moments later, and `chess-db serve` shuts down
+  ; gracefully (a DuckDB checkpoint of a multi-GB database takes seconds,
+  ; especially on Windows) — losing that race yields "Error opening file for
+  ; writing". `net stop` blocks until the SCM reports stopped; then poll the
+  ; service exe for writability (the definitive unlock signal) up to ~60s.
+  nsExec::Exec 'sc query LPDOServer'
+  Pop $1
+  ${If} $1 == 0
+    nsExec::ExecToLog 'net stop LPDOServer'
+    StrCpy $2 0
+    ${Do}
+      ClearErrors
+      FileOpen $3 "$INSTDIR\windows\service\LPDOServer.exe" a
+      ${IfNot} ${Errors}
+        FileClose $3
+        ${Break}
+      ${EndIf}
+      Sleep 1000
+      IntOp $2 $2 + 1
+    ${LoopUntil} $2 >= 60
+  ${EndIf}
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
