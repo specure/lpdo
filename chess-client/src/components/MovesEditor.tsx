@@ -162,14 +162,11 @@ export interface MovesEditor {
 }
 
 /**
- * Run `chess-db games set-moves` through the Tauri sidecar, passing the full
- * PGN movetext (with any variations) over stdin so we don't hit Windows
- * command-line length limits or special-char escaping issues. Standalone so the
- * editor's "Done" button and the GameBoard's game-switch autosave share one
- * code path. Resolves the terminal event explicitly to avoid the listen/invoke
- * race.
+ * Save the full PGN movetext (with any variations) via the daemon's
+ * `POST /games/{id}/moves`. Standalone so the editor's "Done" button and the
+ * GameBoard's game-switch autosave share one code path.
  */
-export async function saveMovetextViaSidecar(
+export async function saveMovetextViaServer(
   gameId: number,
   movetext: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -886,7 +883,7 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     setSaving(true);
     setError(null);
     const movetext = serializeMovetext(game);
-    const result = await saveMovetextViaSidecar(gameId, movetext);
+    const result = await saveMovetextViaServer(gameId, movetext);
     if (result.ok) {
       const focusIndex = activeLine === game.mainLine ? activeIndex : game.mainLine.length;
       onSaved?.(focusIndex);

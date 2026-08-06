@@ -4,11 +4,11 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
-import { useSidecarProgress } from "../hooks/useSidecarProgress";
+import { useJobProgress } from "../hooks/useJobProgress";
 import SourcesPanel from "./SourcesPanel";
 import MergePlayersDialog from "./MergePlayersDialog";
 import { StatusInfo, ScheduleInfo } from "../types";
-import { SIDECAR, getSchedule, getJobs } from "../api";
+import { SERVER_URL, getSchedule, getJobs } from "../api";
 
 interface Props {
   onRunWizard: () => void;
@@ -86,7 +86,7 @@ function ActionButton({ onClick, disabled, children }: {
 }
 
 function ProgressSection({ progress, label, extra, quiet }: {
-  progress: ReturnType<typeof useSidecarProgress>;
+  progress: ReturnType<typeof useJobProgress>;
   label: string;
   /** Optional action rendered alongside Dismiss in the done row (e.g. "Reveal"). */
   extra?: React.ReactNode;
@@ -185,8 +185,8 @@ function PlayersSection() {
   const [exportDir, setExportDir] = useState(
     () => localStorage.getItem(PLAYERS_EXPORT_DIR_KEY) || PLAYERS_EXPORT_DIR,
   );
-  const importProgress = useSidecarProgress("maint-players-import");
-  const exportProgress = useSidecarProgress("maint-players-export");
+  const importProgress = useJobProgress("maint-players-import");
+  const exportProgress = useJobProgress("maint-players-export");
 
   // Remember the export folder whenever the user edits or picks a new one.
   useEffect(() => { localStorage.setItem(PLAYERS_EXPORT_DIR_KEY, exportDir); }, [exportDir]);
@@ -286,7 +286,7 @@ function PlayersSection() {
 // ── Fetch missing FIDE IDs (reverse resolution) ───────────────────────────────
 
 function ResolveFideSection({ onMutated }: { onMutated?: () => void }) {
-  const progress = useSidecarProgress("maint-resolve-fide");
+  const progress = useJobProgress("maint-resolve-fide");
   useEffect(() => { if (progress.done) onMutated?.(); }, [progress.done]);
   return (
     <SectionCard title="Fetch missing FIDE IDs">
@@ -310,7 +310,7 @@ function ResolveFideSection({ onMutated }: { onMutated?: () => void }) {
 // ── Merge duplicate players (same FIDE ID) ────────────────────────────────────
 
 function DedupPlayersSection({ onMutated }: { onMutated?: () => void }) {
-  const progress = useSidecarProgress("maint-dedup-players");
+  const progress = useJobProgress("maint-dedup-players");
   useEffect(() => { if (progress.done) onMutated?.(); }, [progress.done]);
   return (
     <SectionCard title="Merge duplicate players">
@@ -333,16 +333,16 @@ function DedupPlayersSection({ onMutated }: { onMutated?: () => void }) {
 // ── Update the local FIDE player list ─────────────────────────────────────────
 
 function FideRefreshSection() {
-  const progress = useSidecarProgress("maint-fide-refresh");
+  const progress = useJobProgress("maint-fide-refresh");
   // Last-refreshed + due status (#194): the FIDE list is scheduled housekeeping
   // like the feeds, so surface when it last updated and whether one's due.
   const [sched, setSched] = useState<ScheduleInfo | null>(null);
   const loadSched = useCallback(() => { getSchedule().then(setSched).catch(() => {}); }, []);
-  // Refetch on mount and when a MANUAL (sidecar) refresh finishes.
+  // Refetch on mount and when a MANUAL refresh (submitted by this panel) finishes.
   useEffect(() => { loadSched(); }, [loadSched, progress.done]);
   // Also pick up BACKGROUND refreshes — the monthly scheduler run and the
-  // post-sync maintenance pipeline run `fide_refresh` as a daemon job, which the
-  // sidecar `progress` hook never sees. Poll the job list and re-load the
+  // post-sync maintenance pipeline run `fide_refresh` as a daemon job, which this
+  // panel's own `progress` hook never sees. Poll the job list and re-load the
   // schedule whenever a fide_refresh job finishes, so "last refreshed / update
   // due" reflects it without a manual page reload.
   useEffect(() => {
@@ -392,7 +392,7 @@ function FideRefreshSection() {
 // ── Deduplication section ─────────────────────────────────────────────────────
 
 function DeduplicationSection({ onMutated }: { onMutated?: () => void }) {
-  const progress = useSidecarProgress("maint-dedup");
+  const progress = useJobProgress("maint-dedup");
   // Full re-checks every game (cleans duplicates an earlier pass missed, e.g. the
   // same game across TWIC and a Lichess broadcast); incremental only checks games
   // added since the last pass — the same cheap sweep the automatic post-sync
@@ -452,7 +452,7 @@ function DeduplicationSection({ onMutated }: { onMutated?: () => void }) {
 // ── Position index section ────────────────────────────────────────────────────
 
 function IndexSection() {
-  const progress = useSidecarProgress("maint-index");
+  const progress = useJobProgress("maint-index");
   const [rebuild, setRebuild] = useState(false);
 
   function run() {
@@ -504,7 +504,7 @@ function IndexSection() {
 // ── Player name normalisation section ─────────────────────────────────────────
 
 function NormaliseSection({ onMutated }: { onMutated?: () => void }) {
-  const progress = useSidecarProgress("maint-normalise");
+  const progress = useJobProgress("maint-normalise");
 
   // Player names change here, so refresh server status + any open game lists
   // once it finishes (so renamed players show their canonical form).
@@ -600,7 +600,7 @@ function BackupSection() {
     try {
       // download_backup returns the resolved absolute path (leading `~/`
       // expanded) — use it for Reveal, which needs a real path, not `~/…`.
-      const resolved = await invoke<string>("download_backup", { baseUrl: SIDECAR, collection, destPath: dest });
+      const resolved = await invoke<string>("download_backup", { baseUrl: SERVER_URL, collection, destPath: dest });
       setSavedPath(resolved || dest);
       setPhase("done");
     } catch (e: unknown) {
@@ -716,7 +716,7 @@ function BackupSection() {
 // ── Purge soft-deleted section ────────────────────────────────────────────────
 
 function PurgeSection({ status, onMutated }: { status: StatusInfo | null; onMutated?: () => void }) {
-  const progress = useSidecarProgress();
+  const progress = useJobProgress();
   const [confirming, setConfirming] = useState(false);
   const count = status?.deleted_games ?? 0;
 

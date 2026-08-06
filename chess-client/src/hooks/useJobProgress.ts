@@ -27,7 +27,7 @@ interface ChessDbEvent {
   path?: string;
 }
 
-export interface SidecarProgress {
+export interface JobProgress {
   percent: number;
   running: boolean;
   /** The followed job exists but is still queued behind other jobs (not yet
@@ -189,7 +189,7 @@ function planFromArgs(args: string[]): Plan {
  * panel): the running job id is remembered at module scope and the hook
  * reconnects to it on mount. Without a key, progress is purely local.
  */
-export function useSidecarProgress(key?: string): SidecarProgress {
+export function useJobProgress(key?: string): JobProgress {
   const [percent, setPercent] = useState(0);
   const [running, setRunning] = useState(false);
   const [queued, setQueued] = useState(false);

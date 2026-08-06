@@ -6,7 +6,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { GameSummary } from "../types";
 import { parsePgnTree, AnnotatedGame, MoveNode } from "../lib/parsePgnTree";
 import { ensureMoveNumbers, parseBlockTags } from "../lib/pgnEditor";
-import { useSidecarProgress } from "../hooks/useSidecarProgress";
+import { useJobProgress } from "../hooks/useJobProgress";
 import EditDbHeadersModal from "./EditDbHeadersModal";
 import CollectionPicker from "./CollectionPicker";
 import {
@@ -16,7 +16,7 @@ import {
   MovesEditorPromotionChooser,
   MovesEditorDivergenceChoice,
   MovesEditorAnnotation,
-  saveMovetextViaSidecar,
+  saveMovetextViaServer,
 } from "./MovesEditor";
 import { serializeMovetext } from "../lib/serializeMovetext";
 import type { CalArrow, CslCircle } from "../lib/parseAnnotations";
@@ -515,7 +515,7 @@ async function exportGameToPgn(detail: GameDetail): Promise<void> {
 //
 // Always visible above the (collapsible) Details panel so the user doesn't have
 // to expand Details to access game-level actions. Owns the state for the Edit
-// headers modal, delete-confirmation flow, export error, and the sidecar
+// headers modal, delete-confirmation flow, export error, and the job
 // progress used by soft-delete / restore.
 function GameActionsBar({
   detail, onDetailChanged, onStartEditMoves, detailsOpen, onToggleDetails, unsavedEdits = false,
@@ -533,7 +533,7 @@ function GameActionsBar({
   unsavedEdits?: boolean;
 }) {
   const isDeleted = detail.deleted_at != null;
-  const progress = useSidecarProgress();
+  const progress = useJobProgress();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [editing, setEditing] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -683,8 +683,8 @@ function GameActionsBar({
 
 // Details panel — collapsible. Owns the visibility/collection mutation flow:
 // chips here are interactive (click visibility to flip; × to remove a
-// collection; "+ Add to collection" opens a picker). Each mutation invokes a
-// chess-db sidecar subcommand and asks the parent to refetch on completion.
+// collection; "+ Add to collection" opens a picker). Each mutation is a
+// daemon job/mutation; the parent refetches on completion.
 function DetailsPanel({
   detail, onClose, onDetailChanged,
 }: {
@@ -694,10 +694,10 @@ function DetailsPanel({
   onDetailChanged: () => void;
 }) {
   const isDeleted = detail.deleted_at != null;
-  const progress = useSidecarProgress();
+  const progress = useJobProgress();
   const [pickerOpen, setPickerOpen] = useState(false);
 
-  // When a sidecar mutation completes, refetch the detail and clear the
+  // When a mutation job completes, refetch the detail and clear the
   // hook so the next click starts fresh. Mirrors the pattern in GameActionsBar.
   useEffect(() => {
     if (progress.done) {
@@ -879,7 +879,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     if (ed.active && ed.dirty && ed.game) {
       const movetext = serializeMovetext(ed.game);
       ed.cancel();
-      saveMovetextViaSidecar(prevId, movetext).then((res) => {
+      saveMovetextViaServer(prevId, movetext).then((res) => {
         if (!res.ok) {
           // Surface enough to debug, without blocking the new game's UI.
           // eslint-disable-next-line no-console
@@ -904,7 +904,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
       const id = prevGameIdRef.current;
       if (id != null && ed.active && ed.dirty && ed.game) {
         const movetext = serializeMovetext(ed.game);
-        saveMovetextViaSidecar(id, movetext).then((res) => {
+        saveMovetextViaServer(id, movetext).then((res) => {
           if (!res.ok) {
             // eslint-disable-next-line no-console
             console.error(`Autosave on unmount (game ${id}) failed: ${res.error}`);

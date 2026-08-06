@@ -2,8 +2,8 @@
 //
 // Pre-loads the game's PGN, parses tags, mounts PgnHeaderForm with player
 // names locked (per-game name edits would desync from the player record).
-// On Save runs `chess-db games set-headers <id> --tags <json>` via the
-// sidecar — Tauri's parent handles the read-only-serve / writer-lock dance.
+// On Save submits the tag update as a daemon mutation (postJson) — the
+// daemon's single writer serialises it with any running jobs.
 
 import { useEffect, useState } from "react";
 import { postJson } from "../api";

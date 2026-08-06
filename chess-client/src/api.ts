@@ -1,14 +1,14 @@
 // Central helpers for talking to the chess-db server over HTTP.
 //
 // fetch() calls use the relative "/api" prefix: in dev the Vite proxy forwards
-// "/api/*" to the sidecar (stripping "/api"); in a packaged app the fetch
+// "/api/*" to the server (stripping "/api"); in a packaged app the fetch
 // override in main.tsx rewrites it to http://127.0.0.1:7777. EventSource is NOT
 // covered by that override, so SSE URLs are built explicitly here.
 
 // The daemon's real origin. `apiUrl` fetches go through the "/api" proxy/override,
 // but native (Tauri) HTTP calls — e.g. the streamed import upload (#154) — must
 // hit the server directly, so expose it.
-export const SIDECAR = "http://127.0.0.1:7777";
+export const SERVER_URL = "http://127.0.0.1:7777";
 
 export function apiUrl(path: string): string {
   return "/api" + path;
@@ -41,10 +41,10 @@ export async function postJson<T>(path: string, body?: unknown): Promise<T> {
 }
 
 /** Absolute SSE URL for a job's event stream (EventSource bypasses the
- *  fetch override, so it needs the real sidecar URL in a packaged app). */
+ *  fetch override, so it needs the real server URL in a packaged app). */
 export function jobEventsUrl(jobId: string): string {
   const path = `/jobs/${encodeURIComponent(jobId)}/events`;
-  return import.meta.env.DEV ? "/api" + path : SIDECAR + path;
+  return import.meta.env.DEV ? "/api" + path : SERVER_URL + path;
 }
 
 export interface JobRequest {

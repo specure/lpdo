@@ -5,18 +5,18 @@
 //   - Paste PGN:    paste one or more PGN games (e.g. from lichess).
 //   - From file:    point at a .pgn file or a folder of .pgn files.
 //
-// All three modes feed the same `import-pgn` sidecar pipeline (dedup, FIDE-id
-// resolution, position indexing). For scratch/paste the content is written to
-// a temp file via `write_temp_pgn_file` so the sidecar can ingest a path.
+// All three modes feed the daemon's import pipeline (dedup, FIDE-id
+// resolution, position indexing): file mode streams the upload to the daemon
+// (#154); scratch/paste submit an import-pgn job with the content inline.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { SIDECAR } from "../api";
+import { SERVER_URL } from "../api";
 import { Tag, buildBlock, defaultNewGameTags, rememberPgnSite } from "../lib/pgnEditor";
 import { splitPgnFile } from "../lib/pgnSplitter";
-import { useSidecarProgress } from "../hooks/useSidecarProgress";
+import { useJobProgress } from "../hooks/useJobProgress";
 import PgnHeaderForm from "./local/PgnHeaderForm";
 
 // "replace" is supported by the CLI's value-parser but not actually implemented,
@@ -53,7 +53,7 @@ interface Props {
   /** Prefilled tag set for "From scratch" mode. Falls back to `defaultNewGameTags`. */
   initialTags?: Tag[];
   onClose: () => void;
-  /** Fires once the sidecar reports done (or on Done click in modal mode). */
+  /** Fires once the daemon job reports done (or on Done click in modal mode). */
   onImported?: () => void;
   /** Fires when the running flag flips. Used by SetupWizard to disable nav. */
   onRunningChange?: (running: boolean) => void;
@@ -105,7 +105,7 @@ export default function AddGameDialog({
   const [collections, setCollections] = useState<CollectionInfo[]>([]);
   const [lastAction, setLastAction] = useState<"import" | "normalise">("import");
 
-  const progress = useSidecarProgress();
+  const progress = useJobProgress();
   const importedFiredRef = useRef(false);
   // Streaming-upload phase (#154): the file uploads to the daemon, then the
   // import runs entirely on the daemon. The dialog follows only the *upload*;
@@ -217,7 +217,7 @@ export default function AddGameDialog({
       // than block the dialog on a multi-hour import.
       invoke<string>("upload_pgn_file", {
         path: p,
-        baseUrl: SIDECAR,
+        baseUrl: SERVER_URL,
         collection: collectionName.trim(),
         onDuplicate: dedup,
         fast: bulk,
