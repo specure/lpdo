@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.15] - 2026-08-06
+
+### Fixed
+- **First-run setup on Windows is hours faster** — the "Merge duplicate
+  players" step dropped from ~45 minutes to ~30 seconds (and from ~3 minutes to
+  ~6 seconds on Linux). Root cause, found via CLI benchmarks on the real
+  database: updating an ART-indexed column pays a per-row incremental index
+  delete+insert (~4,600× slower than the same update without the index), so the
+  player merge and game dedup now drop the affected `games` indexes and
+  bulk-rebuild them afterwards. Game deduplication and name normalisation
+  roughly halved on Windows too; feed imports run ~2× faster via a larger WAL
+  checkpoint threshold. Position indexing improved ~3× on Windows (further work
+  tracked in #244). (#244)
+- **A fatal "Failed to delete all rows from index" during first-run dedup no
+  longer invalidates the database** — collection reassignment avoids the
+  composite-key upsert that corrupted the index, and the orphan sweep rebuilds
+  `game_collections` instead of row-deleting from it (which also repairs a
+  previously-corrupted index). (#244)
+- **Interrupted manual imports no longer leak multi-GB `upload-*` spool files**
+  — the daemon sweeps them from its data directory at startup.
+
+### Changed
+- **Source syncs show as separate Download and Import tasks** — each feed
+  refresh (wizard, Sources page, daily scheduler) enqueues a Download + Import
+  pair with individual durations in the activity panel, instead of one combined
+  "Sync" entry. (#244)
+- **The activity panel keeps the whole session's history** — the Recent list no
+  longer trims to the last 8 entries; the panel scrolls through every job since
+  the daemon started.
+- **Windows: upgrades are seamless** — installing a newer version no longer
+  asks about uninstalling the previous one or about application data (whose
+  checkbox could delete the database mid-update); it updates in place, keeping
+  all data. Same-version repair and downgrades keep the interactive flow.
+- **Windows: the installer offers a components page** — the background database
+  server (Windows service) is now an optional, default-on component, and
+  `chess-db.exe` is added to the system PATH. (#67)
+
 ## [0.14.10] - 2026-08-03
 
 ### Added
@@ -734,7 +771,8 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.14.10...HEAD
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.14.15...HEAD
+[0.14.15]: https://github.com/specure/lpdo/compare/v0.14.10...v0.14.15
 [0.14.10]: https://github.com/specure/lpdo/compare/v0.14.5...v0.14.10
 [0.14.5]: https://github.com/specure/lpdo/compare/v0.14.1...v0.14.5
 [0.14.1]: https://github.com/specure/lpdo/compare/v0.14.0...v0.14.1
