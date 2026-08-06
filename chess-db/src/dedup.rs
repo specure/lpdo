@@ -112,6 +112,46 @@ pub fn dedup_players(conn: &Connection, reporter: &Reporter) -> Result<()> {
         app.flush()?;
     }
 
+    // Drop the player-column indexes for the duration of the UPDATE passes and
+    // rebuild them afterwards. Updating an ART-indexed column pays a per-row
+    // incremental index delete+insert — measured at ~88s per 1M-id range on the
+    // real table vs 0.02s with the indexes dropped (#244): single-threaded,
+    // allocation-bound CPU work that made this step take ~45 min on Windows.
+    // A bulk CREATE INDEX after the fact is parallel and fast. Queries running
+    // during the window fall back to scans, which DuckDB handles fine briefly.
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_games_white;
+         DROP INDEX IF EXISTS idx_games_black;",
+    )?;
+    let merge_result = run_player_merge_updates(conn, reporter);
+    // Rebuild the indexes on EVERY exit (success, cancel, or error) — reads
+    // depend on them. Then surface whichever failure happened first.
+    let rebuild_result = conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_games_white ON games(white_id);
+         CREATE INDEX IF NOT EXISTS idx_games_black ON games(black_id);",
+    );
+    let finished = merge_result?;
+    rebuild_result?;
+    if !finished {
+        // Cancelled mid-merge: reassignment is idempotent and a re-run rebuilds
+        // the same map, so a partial merge is safe — the next run finishes it.
+        reporter.done("Cancelled — player merge partially applied; re-run to finish.");
+        return Ok(());
+    }
+
+    reporter.done(format!(
+        "Removed {} duplicate player record(s) across {} FIDE ID(s).",
+        mapping.len(),
+        fide_ids,
+    ));
+    Ok(())
+}
+
+/// The UPDATE/DELETE body of the player merge, run while the games player-column
+/// indexes are dropped (see dedup_players). Reads the prepared `merge_map` temp
+/// table. Returns Ok(false) if cancelled between range chunks (merge_map is
+/// cleaned up; old player rows are kept for the re-run), Ok(true) on completion.
+fn run_player_merge_updates(conn: &Connection, reporter: &Reporter) -> Result<bool> {
     let max_id: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) FROM games", [], |r| r.get(0))?;
     const RANGE: i64 = 1_000_000; // games per progress step
     let ranges: Vec<(i64, i64)> = {
@@ -137,12 +177,8 @@ pub fn dedup_players(conn: &Connection, reporter: &Reporter) -> Result<()> {
         );
         for &(lo, hi) in &ranges {
             if reporter.is_cancelled() {
-                // Reassignment is idempotent and re-run rebuilds the same map, so a
-                // partial merge is safe — just don't delete the (still-referenced)
-                // old rows; the next run finishes it.
                 conn.execute_batch("DROP TABLE IF EXISTS merge_map;")?;
-                reporter.done("Cancelled — player merge partially applied; re-run to finish.");
-                return Ok(());
+                return Ok(false);
             }
             conn.execute(&sql, duckdb::params![lo, hi])?;
             step += 1;
@@ -153,13 +189,7 @@ pub fn dedup_players(conn: &Connection, reporter: &Reporter) -> Result<()> {
     step += 1;
     reporter.progress(step, total_steps, "Merging duplicate players…".to_string());
     conn.execute_batch("DROP TABLE IF EXISTS merge_map;")?;
-
-    reporter.done(format!(
-        "Removed {} duplicate player record(s) across {} FIDE ID(s).",
-        mapping.len(),
-        fide_ids,
-    ));
-    Ok(())
+    Ok(true)
 }
 
 /// Score a player row for survivor selection. Higher = better candidate to keep.
@@ -268,8 +298,29 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
         // Reassign each loser's collections to its winner and delete the losers —
         // all set-based (one INSERT, one DELETE), then sweep their now-orphaned
         // positions/game_collections rows and refresh player game counts (#205).
-        apply_dedup(conn, &losers)?;
-        sweep_deleted_game_refs(conn)?;
+        //
+        // Drop the games secondary indexes around the mass DELETE: removing rows
+        // pays a per-row incremental ART delete on every index over the table
+        // (#244) — the same allocation-bound cost that dominated the player merge.
+        // A bulk CREATE INDEX afterwards is parallel and fast. Rebuild on every
+        // exit so reads always get their indexes back.
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_games_white;
+             DROP INDEX IF EXISTS idx_games_black;
+             DROP INDEX IF EXISTS idx_games_date;
+             DROP INDEX IF EXISTS idx_games_eco;
+             DROP INDEX IF EXISTS idx_games_chessbase_id;",
+        )?;
+        let apply_result = apply_dedup(conn, &losers).and_then(|()| sweep_deleted_game_refs(conn));
+        let rebuild_result = conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_games_white ON games(white_id);
+             CREATE INDEX IF NOT EXISTS idx_games_black ON games(black_id);
+             CREATE INDEX IF NOT EXISTS idx_games_date  ON games(date);
+             CREATE INDEX IF NOT EXISTS idx_games_eco   ON games(eco);
+             CREATE INDEX IF NOT EXISTS idx_games_chessbase_id ON games(chessbase_id);",
+        );
+        apply_result?;
+        rebuild_result?;
         crate::db::queries::recalculate_game_counts(conn)?;
         spinner.finish_and_clear();
     }
@@ -362,11 +413,18 @@ fn apply_dedup(conn: &Connection, losers: &[(u32, u32)]) -> Result<()> {
         }
         app.flush()?;
     }
+    // Move each loser's collection memberships onto its winner via an anti-join
+    // rather than `ON CONFLICT DO NOTHING`: the upsert against the composite-PK
+    // ART index could leave it inconsistent, and a later DELETE then died with
+    // "Failed to delete all rows from index", invalidating the whole DB (#244).
     conn.execute_batch(
         "INSERT INTO game_collections (game_id, collection_id)
-             SELECT m.winner, gc.collection_id
+             SELECT DISTINCT m.winner, gc.collection_id
              FROM game_collections gc JOIN dedup_map m ON gc.game_id = m.loser
-             ON CONFLICT (game_id, collection_id) DO NOTHING;
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM game_collections x
+                 WHERE x.game_id = m.winner AND x.collection_id = gc.collection_id
+             );
          DELETE FROM games WHERE id IN (SELECT loser FROM dedup_map);
          DROP TABLE IF EXISTS dedup_map;",
     )?;
@@ -381,11 +439,32 @@ fn apply_dedup(conn: &Connection, losers: &[(u32, u32)]) -> Result<()> {
 /// leave games-without-positions (which `index_positions` refills), never the
 /// reverse — and the next run's sweep clears anything a kill left behind.
 fn sweep_deleted_game_refs(conn: &Connection) -> Result<()> {
+    // `positions` has no index at all, so deleting orphans is a plain scan-delete.
     conn.execute_batch(
         "DELETE FROM positions
-           WHERE NOT EXISTS (SELECT 1 FROM games g WHERE g.id = positions.game_id);
-         DELETE FROM game_collections
-           WHERE NOT EXISTS (SELECT 1 FROM games g WHERE g.id = game_collections.game_id);",
+           WHERE NOT EXISTS (SELECT 1 FROM games g WHERE g.id = positions.game_id);",
+    )?;
+
+    // `game_collections` is cleared by REBUILD, not DELETE: a plain delete removes
+    // entries from its composite-PK ART index one row at a time — both slow (#244,
+    // the incremental ART-maintenance cost) and the trigger of DuckDB's "Failed to
+    // delete all rows from index" fatal on a large first-run. Recreating from a
+    // SELECT DISTINCT of still-referenced rows builds a fresh index in bulk, drops
+    // orphans, and collapses any duplicate rows a prior inconsistent index hid.
+    conn.execute_batch(
+        "CREATE TABLE game_collections_rebuild (
+             game_id        UINTEGER NOT NULL,
+             collection_id  INTEGER NOT NULL,
+             PRIMARY KEY (game_id, collection_id)
+         );
+         INSERT INTO game_collections_rebuild (game_id, collection_id)
+             SELECT DISTINCT gc.game_id, gc.collection_id
+             FROM game_collections gc
+             WHERE EXISTS (SELECT 1 FROM games g WHERE g.id = gc.game_id);
+         DROP TABLE game_collections;
+         ALTER TABLE game_collections_rebuild RENAME TO game_collections;
+         CREATE INDEX IF NOT EXISTS idx_game_collections_collection
+             ON game_collections(collection_id);",
     )?;
     Ok(())
 }

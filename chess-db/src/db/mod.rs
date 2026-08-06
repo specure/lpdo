@@ -65,7 +65,14 @@ pub fn open(path: &Path) -> Result<Connection> {
     conn.execute_batch(&format!(
         "SET threads=4;
          SET memory_limit='{mem_limit}';
-         SET preserve_insertion_order=false;",
+         SET preserve_insertion_order=false;
+         -- 16 MiB default → 1 GB: a bulk import commits multi-MB batches, so the
+         -- default threshold checkpoints constantly; each checkpoint synchronously
+         -- flushes the main DB file, which is far costlier on Windows
+         -- (FlushFileBuffers) than Linux (fdatasync). Measured ~35% off the
+         -- multi-file feed imports on Windows (#244). Durability unchanged —
+         -- still checkpoints at the threshold, on CHECKPOINT, and on shutdown.
+         SET checkpoint_threshold='1GB';",
     ))?;
     Ok(conn)
 }
