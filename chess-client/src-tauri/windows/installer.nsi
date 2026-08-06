@@ -72,6 +72,21 @@ ${StrLoc}
 
 Var PassiveMode
 Var UpdateMode
+
+; ── LPDO component model (#67) ──────────────────────────────────────────────
+; Mirrors the Linux packaging split (lpdo / lpdo-cli / lpdo-server): the GUI is
+; a real optional component; the chess-db.exe binary always ships in a single
+; installer payload (the server service executes it), so the CLI component
+; governs PATH exposure and the server component governs service registration
+; (both in hooks.nsh). Declared this early so ${SecApp}/${SecServer}/${SecCli}
+; resolve everywhere below (NSIS is single-pass). Bodies are empty markers —
+; the gated work happens in the sections/hooks further down.
+Section "LPDO application (GUI)" SecApp
+SectionEnd
+Section "Database server (recommended)" SecServer
+SectionEnd
+Section "Command-line tools (chess-db on PATH)" SecCli
+SectionEnd
 Var NoShortcutMode
 Var WixMode
 Var OldMainBinaryName
@@ -445,6 +460,10 @@ Var AppStartMenuFolder
 !insertmacro MUI_PAGE_FINISH
 
 Function RunMainBinary
+  ; GUI component unticked → nothing to run.
+  SectionGetFlags ${SecApp} $9
+  IntOp $9 $9 & ${SF_SELECTED}
+  ${IfThen} $9 = 0 ${|} Return ${|}
   nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" ""
 FunctionEnd
 
@@ -572,6 +591,11 @@ Section "-EarlyChecks"
 SectionEnd
 
 Section "-WebView2"
+  ; WebView2 is a GUI-only dependency — skip when the LPDO application
+  ; component is unticked (server/CLI-only install).
+  SectionGetFlags ${SecApp} $9
+  IntOp $9 $9 & ${SF_SELECTED}
+  ${IfThen} $9 = 0 ${|} Return ${|}
   ; Check if Webview2 is already installed and skip this section
   ${If} ${RunningX64}
     ReadRegStr $4 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\${WEBVIEW2APPGUID}" "pv"
@@ -667,21 +691,6 @@ SectionEnd
 ; actual WinSW registration lives in NSIS_HOOK_POSTINSTALL (hooks.nsh), which
 ; reads this section's selection — keeping all service logic in one reviewable
 ; hooks file. Runs (as a no-op) before the main install section.
-; The application row is informational: visible, ticked, and locked (the GUI +
-; core files are the hidden required "-Install" section below). It exists so
-; the components page reads as the full Client / Server / CLI picture (#67).
-Section "!LPDO application (required)" SecApp
-  SectionIn RO
-SectionEnd
-
-Section "Database server (recommended)" SecServer
-SectionEnd
-
-; Marker only — gates the PATH registration in NSIS_HOOK_POSTINSTALL. The
-; chess-db.exe binary itself always installs (the server component runs it).
-Section "Command-line tools (chess-db on PATH)" SecCli
-SectionEnd
-
 Section "-Install"
   SetOutPath $INSTDIR
 
@@ -691,8 +700,12 @@ Section "-Install"
 
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
 
-  ; Copy main executable
-  File "${MAINBINARYSRCPATH}"
+  ; Copy main executable — GUI component only (server/CLI installs skip it).
+  SectionGetFlags ${SecApp} $9
+  IntOp $9 $9 & ${SF_SELECTED}
+  ${If} $9 <> 0
+    File "${MAINBINARYSRCPATH}"
+  ${EndIf}
 
   ; Copy resources
   {{#each resources_dirs}}
@@ -707,20 +720,25 @@ Section "-Install"
     File /a "/oname={{this}}" "{{no-escape @key}}"
   {{/each}}
 
-  ; Create file associations
+  ; Create file associations — GUI component only (handlers point at the GUI exe).
+  SectionGetFlags ${SecApp} $9
+  IntOp $9 $9 & ${SF_SELECTED}
+  ${If} $9 <> 0
   {{#each file_associations as |association| ~}}
     {{#each association.ext as |ext| ~}}
        !insertmacro APP_ASSOCIATE "{{ext}}" "{{or association.name ext}}" "{{association-description association.description ext}}" "$INSTDIR\${MAINBINARYNAME}.exe,0" "Open with ${PRODUCTNAME}" "$INSTDIR\${MAINBINARYNAME}.exe $\"%1$\""
     {{/each}}
   {{/each}}
 
-  ; Register deep links
+  ; Register deep links (still GUI-only, same guard)
   {{#each deep_link_protocols as |protocol| ~}}
     WriteRegStr SHCTX "Software\Classes\\{{protocol}}" "URL Protocol" ""
     WriteRegStr SHCTX "Software\Classes\\{{protocol}}" "" "URL:${BUNDLEID} protocol"
     WriteRegStr SHCTX "Software\Classes\\{{protocol}}\DefaultIcon" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\",0"
     WriteRegStr SHCTX "Software\Classes\\{{protocol}}\shell\open\command" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" $\"%1$\""
   {{/each}}
+
+  ${EndIf}
 
   ; Create uninstaller
   WriteUninstaller "$INSTDIR\uninstall.exe"
@@ -765,10 +783,14 @@ Section "-Install"
     WriteRegStr SHCTX "${UNINSTKEY}" "HelpLink" "${HOMEPAGE}"
   !endif
 
-  ; Create start menu shortcut
-  !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
-    Call CreateOrUpdateStartMenuShortcut
-  !insertmacro MUI_STARTMENU_WRITE_END
+  ; Create start menu shortcut — GUI component only.
+  SectionGetFlags ${SecApp} $9
+  IntOp $9 $9 & ${SF_SELECTED}
+  ${If} $9 <> 0
+    !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
+      Call CreateOrUpdateStartMenuShortcut
+    !insertmacro MUI_STARTMENU_WRITE_END
+  ${EndIf}
 
   ; Create desktop shortcut for silent and passive installers
   ; because finish page will be skipped
@@ -789,7 +811,7 @@ SectionEnd
 
 ; Components-page mouseover descriptions (#67).
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecApp} "The LPDO desktop application and its core files. Always installed."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecApp} "The LPDO desktop application (GUI). Untick for a server-only or command-line-only machine."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecCli} "Adds the chess-db command-line tool to the system PATH, so scripts and terminals can query and manage the database."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecServer} "Runs the LPDO database server in the background as a Windows service (LPDOServer), so your database stays up to date even when the app is closed. Recommended. Untick only if this machine connects to a server elsewhere."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
@@ -1008,6 +1030,9 @@ Function CreateOrUpdateStartMenuShortcut
 FunctionEnd
 
 Function CreateOrUpdateDesktopShortcut
+  SectionGetFlags ${SecApp} $9
+  IntOp $9 $9 & ${SF_SELECTED}
+  ${IfThen} $9 = 0 ${|} Return ${|}
   ; We used to use product name as MAINBINARYNAME
   ; migrate old shortcuts to target the new MAINBINARYNAME
   !insertmacro IsShortcutTarget "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\$OldMainBinaryName"
