@@ -28,6 +28,8 @@ function jobLabel(j: Job): string {
   const src = p.source ? SOURCE_NAMES[p.source] ?? p.source : "";
   switch (j.type) {
     case "sources_sync":       return `Sync ${src}`;
+    case "sources_download":   return `Download ${src}`;
+    case "sources_import":     return `Import ${src}`;
     case "sources_set_enabled": {
       const enabled = (j.params as Record<string, unknown> | undefined)?.enabled;
       return `${enabled === false ? "Disable" : "Enable"} ${src || "source"}`;

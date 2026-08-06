@@ -397,6 +397,8 @@ fn uses_appender(job_type: &str, params: &serde_json::Value) -> bool {
         "import" | "import_pgn" | "index_positions" => fast,
         // The update job runs `import --fast` and `index-positions --fast`.
         "update" => true,
+        // sources_sync / sources_import run `import` with fast=true internally.
+        "sources_sync" | "sources_import" => true,
         // fide_refresh bulk-appends ~1.9M rows into fide_players.
         "fide_refresh" => true,
         _ => false,
@@ -547,8 +549,8 @@ struct MaintenanceNeeds {
 fn is_cancellable(job_type: &str) -> bool {
     matches!(
         job_type,
-        "import" | "import_pgn" | "sources_sync" | "update" | "download"
-            | "index_positions" | "dedup_games" | "dedup_players"
+        "import" | "import_pgn" | "sources_sync" | "sources_download" | "sources_import"
+            | "update" | "download" | "index_positions" | "dedup_games" | "dedup_players"
     )
 }
 
@@ -559,7 +561,7 @@ const OFFLINE_RETRY_MS: u64 = 15 * 60 * 1000;
 /// Job types that make network requests, so a connectivity failure should pause
 /// and retry rather than fail (#206). Local jobs (import/dedup/index/…) never do.
 fn job_uses_network(job_type: &str) -> bool {
-    matches!(job_type, "download" | "sources_sync" | "update" | "fide_refresh")
+    matches!(job_type, "download" | "sources_sync" | "sources_download" | "update" | "fide_refresh")
 }
 
 /// The offline-gate dependency predicate in pure form (#206): does any earlier
@@ -584,7 +586,8 @@ fn offline_gate_blocks(
 fn blocks_maintenance(job_type: &str) -> bool {
     matches!(
         job_type,
-        "import" | "import_pgn" | "sources_sync" | "download" | "update"
+        "import" | "import_pgn" | "sources_sync" | "sources_download" | "sources_import"
+            | "download" | "update"
             | "fide_refresh" | "resolve_fide" | "dedup_players" | "dedup_games"
             | "index_positions" | "normalise"
     )
@@ -1182,6 +1185,84 @@ fn run_job(
             reporter.done(format!("Updated date window for '{}'.", key));
         }
         // Download + import one source in a single job (CLI `sources sync`, GUI).
+        // The wizard / Sources page / scheduler submit a source refresh as a
+        // sources_download + sources_import PAIR in one cluster (#244 benchmark
+        // transparency): the two phases show as separate activity entries with
+        // their own durations, like the pre-#195 Download/Import split. The
+        // cluster keeps the import behind an offline-paused download (#206), and
+        // the FIFO queue keeps it behind a completed one. `sources_sync` below
+        // stays as the combined single-job form (CLI `sources sync`).
+        "sources_download" => {
+            let source_key = p.get("source").and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("sources_download: 'source' required"))?;
+            let src = crate::sources::get(source_key)
+                .ok_or_else(|| anyhow!("unknown source '{}'", source_key))?;
+            let dir = crate::source_dir(source_key);
+            std::fs::create_dir_all(&dir)?;
+            let step = reporter.sub_step();
+            let res = rt.block_on(crate::sources::download_feed(conn, src, None, None, &dir, &step));
+            if reporter.is_cancelled() {
+                // The paired import still runs and ingests what completed —
+                // download is per-item resumable, a later sync fetches the rest.
+                reporter.done(format!("{}: download cancelled.", src.name));
+                return Ok(());
+            }
+            if let Err(e) = res {
+                let _ = crate::sources::record_run(conn, src.key, &format!("error: {e}"));
+                return Err(e);
+            }
+            let ready: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM source_items
+                 WHERE source_key = ? AND downloaded = TRUE AND imported = FALSE",
+                duckdb::params![src.key],
+                |r| r.get(0),
+            ).unwrap_or(0);
+            reporter.done(if ready == 0 {
+                format!("{}: already up to date — nothing to download.", src.name)
+            } else {
+                format!("{}: {} item(s) downloaded, ready to import.", src.name, ready)
+            });
+        }
+        "sources_import" => {
+            let source_key = p.get("source").and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("sources_import: 'source' required"))?;
+            let src = crate::sources::get(source_key)
+                .ok_or_else(|| anyhow!("unknown source '{}'", source_key))?;
+            let dir = crate::source_dir(source_key);
+            std::fs::create_dir_all(&dir)?;
+            let step = reporter.sub_step();
+            reporter.log(format!("{}: import (fast)", src.name));
+            // Snapshot-guard a bulk source import (e.g. Ajedrez) so a fatal
+            // appender fault rolls back cleanly instead of half-importing (#82).
+            let bulk = importer::source_import_is_bulk(conn, &dir, src.key, 10)?;
+            let res = run_import_guarded(conn, db, bulk, &step, || {
+                importer::import(conn, &dir, src.key, src.collection, None, 10, true, true, &step)
+            });
+            if reporter.is_cancelled() {
+                let _ = crate::sources::record_run(conn, src.key, "cancelled");
+                return Ok(());
+            }
+            match res {
+                Ok(imported) => {
+                    // Record the run BEFORE maintenance (see sources_sync).
+                    crate::sources::record_run(conn, src.key, "ok")?;
+                    reporter.done(if imported == 0 {
+                        format!("{}: already up to date — no new games.", src.name)
+                    } else {
+                        format!(
+                            "{}: {} games imported.",
+                            src.name,
+                            crate::progress::thousands(imported as i64)
+                        )
+                    });
+                    jm.request_maintenance();
+                }
+                Err(e) => {
+                    let _ = crate::sources::record_run(conn, src.key, &format!("error: {e}"));
+                    return Err(e);
+                }
+            }
+        }
         "sources_sync" => {
             let source_key = p.get("source").and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow!("sources_sync: 'source' required"))?;

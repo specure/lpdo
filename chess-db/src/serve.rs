@@ -668,7 +668,10 @@ async fn set_source_enabled_handler(
     if !body.enabled {
         for j in state.jobs.list() {
             let touches_this = j.params.get("source").and_then(|v| v.as_str()) == Some(key.as_str());
-            let is_sync = matches!(j.job_type.as_str(), "sources_sync" | "download" | "import");
+            let is_sync = matches!(
+                j.job_type.as_str(),
+                "sources_sync" | "sources_download" | "sources_import" | "download" | "import"
+            );
             let active = matches!(j.status.as_str(), "queued" | "running" | "waiting");
             if touches_this && is_sync && active {
                 state.jobs.cancel(&j.id);
@@ -728,13 +731,24 @@ async fn set_source_enabled_handler(
             .map(|s| s.kind == crate::sources::SourceKind::Feed)
             .unwrap_or(false);
         let already_syncing = state.jobs.list().iter().any(|j| {
-            j.job_type == "sources_sync"
+            matches!(j.job_type.as_str(), "sources_sync" | "sources_download" | "sources_import")
                 && j.params.get("source").and_then(|v| v.as_str()) == Some(key.as_str())
                 && matches!(j.status.as_str(), "queued" | "running" | "waiting")
         });
         if is_feed {
             if !already_syncing {
-                state.jobs.submit("sources_sync".into(), serde_json::json!({ "source": key }));
+                // Download + Import pair in one cluster (see spawn_first_run_pipeline).
+                let cluster = state.jobs.next_cluster_id();
+                state.jobs.submit_in_cluster(
+                    "sources_download".into(),
+                    serde_json::json!({ "source": key }),
+                    Some(cluster.clone()),
+                );
+                state.jobs.submit_in_cluster(
+                    "sources_import".into(),
+                    serde_json::json!({ "source": key }),
+                    Some(cluster),
+                );
             }
             // Pin the coalesced maintenance the moment a feed is enabled, so the
             // "Prepare database" row appears at the tail of the queue right away —
@@ -1663,11 +1677,18 @@ fn spawn_first_run_pipeline(
     // the others wait behind it rather than each running and pausing too (#206).
     let cluster = state.jobs.next_cluster_id();
     for s in sources {
-        // One `sources_sync` per source — the SAME job the Sources page uses when
-        // a feed is enabled, so onboarding shows a single "Sync <source>" entry
-        // rather than a separate "Download …" + "Import …" pair (#195 follow-up).
+        // A Download + Import pair per source (#244): separate activity entries
+        // with their own durations, so the network phase and the DB phase are
+        // individually measurable. FIFO keeps each import behind its download;
+        // the shared cluster keeps everything behind an offline-paused download
+        // (#206).
         ids.push(state.jobs.submit_in_cluster(
-            "sources_sync".into(),
+            "sources_download".into(),
+            serde_json::json!({ "source": s.key }),
+            Some(cluster.clone()),
+        ));
+        ids.push(state.jobs.submit_in_cluster(
+            "sources_import".into(),
             serde_json::json!({ "source": s.key }),
             Some(cluster.clone()),
         ));

@@ -101,8 +101,16 @@ async fn tick(jobs: &Arc<JobManager>, reads: &ReadPool, db_path: &Path) -> anyho
         let cluster = jobs.next_cluster_id();
         for src in candidates {
             if !in_flight.contains(src.key) {
+                // Download + Import pair (#244): separate, individually-timed
+                // activity entries; the cluster keeps the import behind an
+                // offline-paused download (#206).
                 jobs.submit_in_cluster(
-                    "sources_sync".into(),
+                    "sources_download".into(),
+                    serde_json::json!({ "source": src.key }),
+                    Some(cluster.clone()),
+                );
+                jobs.submit_in_cluster(
+                    "sources_import".into(),
                     serde_json::json!({ "source": src.key }),
                     Some(cluster.clone()),
                 );
@@ -146,7 +154,10 @@ async fn setup_gate_open(reads: &ReadPool) -> anyhow::Result<bool> {
 fn sources_sync_in_flight(jobs: &Arc<JobManager>) -> std::collections::HashSet<String> {
     jobs.list()
         .into_iter()
-        .filter(|j| j.job_type == "sources_sync" && matches!(j.status.as_str(), "queued" | "running" | "waiting"))
+        .filter(|j| {
+            matches!(j.job_type.as_str(), "sources_sync" | "sources_download" | "sources_import")
+                && matches!(j.status.as_str(), "queued" | "running" | "waiting")
+        })
         .filter_map(|j| j.params.get("source").and_then(|v| v.as_str()).map(str::to_owned))
         .collect()
 }
