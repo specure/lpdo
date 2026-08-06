@@ -667,7 +667,19 @@ SectionEnd
 ; actual WinSW registration lives in NSIS_HOOK_POSTINSTALL (hooks.nsh), which
 ; reads this section's selection — keeping all service logic in one reviewable
 ; hooks file. Runs (as a no-op) before the main install section.
+; The application row is informational: visible, ticked, and locked (the GUI +
+; core files are the hidden required "-Install" section below). It exists so
+; the components page reads as the full Client / Server / CLI picture (#67).
+Section "!LPDO application (required)" SecApp
+  SectionIn RO
+SectionEnd
+
 Section "Database server (recommended)" SecServer
+SectionEnd
+
+; Marker only — gates the PATH registration in NSIS_HOOK_POSTINSTALL. The
+; chess-db.exe binary itself always installs (the server component runs it).
+Section "Command-line tools (chess-db on PATH)" SecCli
 SectionEnd
 
 Section "-Install"
@@ -777,6 +789,8 @@ SectionEnd
 
 ; Components-page mouseover descriptions (#67).
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecApp} "The LPDO desktop application and its core files. Always installed."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecCli} "Adds the chess-db command-line tool to the system PATH, so scripts and terminals can query and manage the database."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecServer} "Runs the LPDO database server in the background as a Windows service (LPDOServer), so your database stays up to date even when the app is closed. Recommended. Untick only if this machine connects to a server elsewhere."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 

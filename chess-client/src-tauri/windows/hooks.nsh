@@ -57,23 +57,28 @@
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
-  ; 1. chess-db.exe on the system PATH (#67) — append $INSTDIR if not present.
+  ; 1. chess-db.exe on the system PATH (#67) — only when the "Command-line
+  ;    tools" component is selected. Append $INSTDIR if not present.
   ;    Registry-based (WriteRegExpandStr + settings-change broadcast): Tauri's
   ;    NSIS bundles no EnVar plugin, and this avoids vendoring binary DLLs.
   ;    SAFETY: if the PATH value exceeds NSIS's string limit, ReadRegStr sets
   ;    the error flag and returns "" — writing back would then WIPE the system
   ;    PATH, so skip the edit entirely in that case (chess-db just won't be on
   ;    PATH; everything else works).
-  ClearErrors
-  ReadRegStr $0 HKLM "${LPDO_ENV_KEY}" "Path"
-  ${If} ${Errors}
-  ${OrIf} $0 == ""
-    DetailPrint "PATH not modified (value unreadable or too long for NSIS)."
-  ${Else}
-    ${StrLoc} $1 $0 "$INSTDIR" ">"
-    ${If} $1 == ""
-      WriteRegExpandStr HKLM "${LPDO_ENV_KEY}" "Path" "$0;$INSTDIR"
-      SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000
+  SectionGetFlags ${SecCli} $1
+  IntOp $1 $1 & ${SF_SELECTED}
+  ${If} $1 <> 0
+    ClearErrors
+    ReadRegStr $0 HKLM "${LPDO_ENV_KEY}" "Path"
+    ${If} ${Errors}
+    ${OrIf} $0 == ""
+      DetailPrint "PATH not modified (value unreadable or too long for NSIS)."
+    ${Else}
+      ${StrLoc} $1 $0 "$INSTDIR" ">"
+      ${If} $1 == ""
+        WriteRegExpandStr HKLM "${LPDO_ENV_KEY}" "Path" "$0;$INSTDIR"
+        SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000
+      ${EndIf}
     ${EndIf}
   ${EndIf}
 
