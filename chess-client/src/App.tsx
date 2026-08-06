@@ -22,37 +22,48 @@ import { GameSummary, LocalGame, PlayerInfo, PrepContext, StatusInfo } from "./t
 
 type ServerStatus = "checking" | "connected" | "disconnected";
 
-// Status polling cadence: the displayed numbers (games / players / TWIC count)
-// change after explicit user actions (imports, dedup, purge), not on a tick —
-// so polling every few seconds is wasted work. 30 minutes catches drift after
-// long sessions while keeping the heartbeat indicator meaningfully responsive.
+// Status polling cadence: while CONNECTED the displayed numbers (games /
+// players / counts) change after explicit user actions, not on a tick, so a
+// slow 30-minute heartbeat suffices. While DISCONNECTED, retry fast: the
+// server may simply still be starting (opening a multi-GB DuckDB takes
+// seconds — e.g. launched from the installer's finish page right after the
+// service was registered), and a single failed probe used to pin "Server
+// offline" for up to 30 minutes until the app was restarted.
 const STATUS_POLL_INTERVAL_MS = 30 * 60 * 1000;
+const STATUS_RETRY_OFFLINE_MS = 3 * 1000;
 
 function useServerStatus() {
   const [status, setStatus] = useState<ServerStatus>("checking");
   const [info, setInfo] = useState<StatusInfo | null>(null);
   // Holds the latest `check` closure so callers (e.g. dialog onClose handlers)
-  // can trigger an out-of-band refresh without waiting for the next 30-min tick.
+  // can trigger an out-of-band refresh without waiting for the next tick.
   const checkRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
     async function check() {
+      // Single self-rescheduling chain: a manual refresh() mid-wait replaces
+      // the pending tick instead of forking a second polling chain.
+      if (timer) clearTimeout(timer);
+      let ok = false;
       try {
         const res = await fetch("/api/status");
         if (!res.ok) throw new Error();
         const data: StatusInfo = await res.json();
-        if (!cancelled) { setStatus("connected"); setInfo(data); }
+        if (!cancelled) { setStatus("connected"); setInfo(data); ok = true; }
       } catch {
         if (!cancelled) { setStatus("disconnected"); setInfo(null); }
+      }
+      if (!cancelled) {
+        timer = setTimeout(check, ok ? STATUS_POLL_INTERVAL_MS : STATUS_RETRY_OFFLINE_MS);
       }
     }
 
     checkRef.current = check;
     check();
-    const interval = setInterval(check, STATUS_POLL_INTERVAL_MS);
-    return () => { cancelled = true; clearInterval(interval); };
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, []);
 
   // Stable identity so consumers can safely include `refresh` in dep arrays.
