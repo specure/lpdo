@@ -715,10 +715,20 @@ Section "-Install"
     File /a "/oname={{this.[1]}}" "{{no-escape @key}}"
   {{/each}}
 
-  ; Copy external binaries
+  ; Copy external binaries — chess-db.exe is the server/CLI binary. The GUI is
+  ; a pure HTTP client of the daemon and never executes it (the old "sidecar"
+  ; concept is gone — #79/#121), so skip when neither the server nor the CLI
+  ; component is selected: GUI-only becomes a true thin client.
+  SectionGetFlags ${SecServer} $9
+  IntOp $9 $9 & ${SF_SELECTED}
+  SectionGetFlags ${SecCli} $8
+  IntOp $8 $8 & ${SF_SELECTED}
+  IntOp $9 $9 | $8
+  ${If} $9 <> 0
   {{#each binaries}}
     File /a "/oname={{this}}" "{{no-escape @key}}"
   {{/each}}
+  ${EndIf}
 
   ; Create file associations — GUI component only (handlers point at the GUI exe).
   SectionGetFlags ${SecApp} $9
