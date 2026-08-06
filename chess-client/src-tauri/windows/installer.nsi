@@ -667,7 +667,7 @@ SectionEnd
 ; actual WinSW registration lives in NSIS_HOOK_POSTINSTALL (hooks.nsh), which
 ; reads this section's selection — keeping all service logic in one reviewable
 ; hooks file. Runs (as a no-op) before the main install section.
-Section "Background database server (recommended)" SecServer
+Section "Database server (recommended)" SecServer
 SectionEnd
 
 Section "-Install"
@@ -774,6 +774,11 @@ Section "-Install"
     SetAutoClose true
   ${EndIf}
 SectionEnd
+
+; Components-page mouseover descriptions (#67).
+!insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecServer} "Runs the LPDO database server in the background as a Windows service (LPDOServer), so your database stays up to date even when the app is closed. Recommended. Untick only if this machine connects to a server elsewhere."
+!insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 Function .onInstSuccess
   ; Check for `/R` flag only in silent and passive installers because
