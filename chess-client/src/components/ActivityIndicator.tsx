@@ -362,9 +362,13 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
   // recent newest-first so the latest finish is on top. "waiting" (offline-
   // paused, #206) is active — it's still in the pipeline, just retrying.
   const active = all.filter((j) => j.status === "running" || j.status === "queued" || j.status === "waiting");
+  // The FULL session history, newest-first — no cap. The daemon keeps every
+  // job of the live session in its registry, and the panel body scrolls
+  // (max-h + overflow-y on the container), so a first-run's whole pipeline
+  // stays reviewable/copyable end to end (a -8 cap used to trim it, #244
+  // benchmarks). History still resets when the daemon restarts (in-memory).
   const recent = all
     .filter((j) => j.status === "done" || j.status === "error" || j.status === "cancelled")
-    .slice(-8)
     .reverse();
   const watching = watches.filter((w) => w.status === "watching");
   const updatedWatches = watches.filter((w) => w.status === "updated");
