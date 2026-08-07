@@ -447,13 +447,23 @@ pub fn index_positions(
 
     let pb = reporter.bar_with_eta(pending as u64);
 
+    // Time the fill alone. A guarded run may spend minutes on the safety
+    // snapshot first, and the activity panel only shows one "took X" for the
+    // whole job — so state the indexing time explicitly (the snapshot reports
+    // its own; together they account for the total).
+    let started = std::time::Instant::now();
     let insert_result = fill_positions(conn, &pb, reporter, pending as u64, rebuild, max_position_depth, fast);
+    let elapsed = started.elapsed();
 
     pb.finish_and_clear();
     if insert_result.is_ok() && reporter.is_cancelled() {
         reporter.cancelled("Position indexing cancelled — resumes on the next run.");
     } else if insert_result.is_ok() {
-        reporter.done(format!("Indexing complete. {} games indexed.", pending));
+        reporter.done(format!(
+            "Indexing complete. {} games indexed in {}.",
+            crate::progress::thousands(pending),
+            crate::progress::short_duration(elapsed),
+        ));
     }
     insert_result
 }

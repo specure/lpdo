@@ -17,6 +17,21 @@ pub fn thousands(n: i64) -> String {
     out.chars().rev().collect()
 }
 
+/// Format a duration compactly for human-facing summaries: `"45s"`,
+/// `"5m 38s"`, `"1h 07m"`. Used to attribute time to the phases of a composite
+/// job (e.g. snapshot vs indexing), which the activity panel's single
+/// per-job "took X" can't distinguish.
+pub fn short_duration(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs >= 3600 {
+        format!("{}h {:02}m", secs / 3600, (secs % 3600) / 60)
+    } else if secs >= 60 {
+        format!("{}m {:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::thousands;
@@ -58,4 +73,19 @@ pub fn spinner_style() -> ProgressStyle {
     ProgressStyle::default_spinner()
         .template("{spinner:.cyan} {msg}")
         .unwrap()
+}
+
+#[cfg(test)]
+mod short_duration_tests {
+    use super::short_duration;
+    use std::time::Duration;
+
+    #[test]
+    fn formats_by_magnitude() {
+        assert_eq!(short_duration(Duration::from_secs(45)), "45s");
+        assert_eq!(short_duration(Duration::from_secs(338)), "5m 38s"); // the index fill
+        assert_eq!(short_duration(Duration::from_secs(139)), "2m 19s"); // the snapshot
+        assert_eq!(short_duration(Duration::from_secs(3600)), "1h 00m");
+        assert_eq!(short_duration(Duration::from_secs(4020)), "1h 07m");
+    }
 }

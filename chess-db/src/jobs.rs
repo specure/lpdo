@@ -1619,8 +1619,11 @@ fn run_import_guarded<T>(
     if snapshotted {
         match &res {
             Ok(_) => {
+                // Silent: this runs after the operation's done() message, and a
+                // later log would replace it in the activity row (the row shows
+                // the last message). The creation line already records that a
+                // snapshot existed.
                 remove_snapshot(db);
-                reporter.log("Safety snapshot removed.");
             }
             Err(e) if is_invalidation_error(&format!("{e:#}")) => reporter.log(
                 "Import failed fatally — the safety snapshot will be restored, rolling back this import.",
@@ -1648,8 +1651,11 @@ pub fn run_index_positions_guarded(
     if snapshotted {
         match &res {
             Ok(_) => {
+                // Silent: this runs after the operation's done() message, and a
+                // later log would replace it in the activity row (the row shows
+                // the last message). The creation line already records that a
+                // snapshot existed.
                 remove_snapshot(db);
-                reporter.log("Safety snapshot removed.");
             }
             Err(_) => reporter.log(
                 "Indexing did not complete — the safety snapshot will be restored on next start.",
@@ -1718,6 +1724,7 @@ fn make_safety_snapshot(conn: &Connection, db: &Path, reporter: &Reporter) -> bo
     // real progress by watching the destination file grow against the source's
     // size — a 12 GB copy otherwise sits on an indeterminate bar for minutes.
     let src_len = std::fs::metadata(db).map(|m| m.len()).unwrap_or(0);
+    let started = std::time::Instant::now();
     let mut copied_bytes = true;
     let outcome = with_copy_progress(reporter, &tmp, src_len, || match copy_file(db, &tmp) {
         Ok(()) => Ok(()),
@@ -1750,7 +1757,15 @@ fn make_safety_snapshot(conn: &Connection, db: &Path, reporter: &Reporter) -> bo
     } else {
         let _ = std::fs::remove_file(snapshot_wal_path(db));
     }
-    reporter.log("Safety snapshot created.");
+    // Report size + how long it took: the activity panel shows one "took X" for
+    // the whole job, so without this the (multi-minute) snapshot phase is
+    // invisible and the indexing time looks inflated.
+    let written = std::fs::metadata(snapshot_path(db)).map(|m| m.len()).unwrap_or(src_len);
+    reporter.log(format!(
+        "Safety snapshot created ({} in {}).",
+        indicatif::HumanBytes(written),
+        crate::progress::short_duration(started.elapsed()),
+    ));
     true
 }
 
