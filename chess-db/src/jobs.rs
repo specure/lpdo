@@ -1678,7 +1678,33 @@ fn copy_file(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
     std::fs::copy(src, dst).map(|_| ())
 }
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn copy_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+    // `std::fs::copy` calls CopyFileEx, which opens the source allowing only
+    // other *readers* — that collides with DuckDB's own writer handle on the
+    // live database, so every snapshot failed with "os error 32 … used by
+    // another process" and the guard silently degraded to none (#246).
+    // Open it ourselves with a share mode that tolerates the existing writer
+    // (the way backup tools read open files) and stream the bytes.
+    //
+    // Consistency: the daemon has a SINGLE writer thread and it is the one
+    // taking this snapshot, so no writes can land mid-copy; the caller has also
+    // just CHECKPOINTed. (A concurrent writer would risk a torn copy — there
+    // isn't one by construction.)
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const FILE_SHARE_DELETE: u32 = 0x0000_0004;
+    let mut reader = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(src)?;
+    let mut writer = std::fs::File::create(dst)?;
+    std::io::copy(&mut reader, &mut writer)?;
+    writer.sync_all()
+}
+
+#[cfg(all(not(unix), not(windows)))]
 fn copy_file(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::copy(src, dst).map(|_| ())
 }
