@@ -2140,7 +2140,15 @@ fn raise_process_priority() {
 #[cfg(not(windows))]
 fn raise_process_priority() {}
 
-pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Result<()> {
+/// Serve the API on `bind` (e.g. `127.0.0.1:7777`). `token`, when present, is
+/// required on every request except `/status`; `main` supplies it exactly when
+/// the bind address is reachable from other machines (#247).
+pub async fn run(
+    conn: Connection,
+    bind: String,
+    token: Option<String>,
+    db_path: std::path::PathBuf,
+) -> Result<()> {
     raise_process_priority();
 
     // Clear any upload spool/temp files leaked by an import that crashed or was
@@ -2233,11 +2241,52 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         // in a packaged app the frontend hits http://127.0.0.1:7777 directly.
         .layer(CorsLayer::permissive());
 
-    let addr = format!("127.0.0.1:{}", port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    println!("chess-db server listening on http://{}", addr);
+    // Reaching beyond loopback requires a token (#247): the API has no auth and
+    // several endpoints are destructive (purge, setup reset, delete), so a bare
+    // LAN bind would hand the database to the whole network. `serve()` refuses
+    // to start otherwise, so this pairing can't be bypassed by configuration.
+    let app = match token {
+        Some(t) => app.layer(axum::middleware::from_fn_with_state(
+            std::sync::Arc::new(t),
+            require_token,
+        )),
+        None => app,
+    };
+
+    let listener = tokio::net::TcpListener::bind(&bind).await?;
+    println!("chess-db server listening on http://{}", bind);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Reject requests without the shared token. `/status` stays open so a client
+/// can tell "server unreachable" from "wrong token" (it exposes only version and
+/// counters), and CORS preflights must pass or browsers never send the header.
+async fn require_token(
+    axum::extract::State(expected): axum::extract::State<std::sync::Arc<String>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let open = req.uri().path() == "/status" || req.method() == axum::http::Method::OPTIONS;
+    if open {
+        return next.run(req).await;
+    }
+    let provided = req
+        .headers()
+        .get(crate::auth::TOKEN_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    if crate::auth::matches(&expected, provided) {
+        next.run(req).await
+    } else {
+        // Fully qualified: bare `StatusCode` in this module is reqwest's.
+        use axum::response::IntoResponse;
+        (
+            axum::http::StatusCode::UNAUTHORIZED,
+            "missing or invalid access token — set it in the client's server settings",
+        )
+            .into_response()
+    }
 }
 
 #[cfg(test)]

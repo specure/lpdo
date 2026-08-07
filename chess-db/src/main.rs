@@ -9,6 +9,7 @@
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 mod ajedrez;
+mod auth;
 mod cloud_eval;
 mod db;
 mod dedup;
@@ -283,6 +284,13 @@ enum Commands {
         /// Port to listen on
         #[arg(long, default_value_t = 7777)]
         port: u16,
+        /// Address to listen on (default 127.0.0.1 — this machine only). Use
+        /// 0.0.0.0 to accept clients from the local network; that REQUIRES an
+        /// access token, which is generated beside the database on first use
+        /// and must be entered in the client's server settings (#247).
+        /// Do not expose this port to the internet: there is no TLS.
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
         /// Wipe the database before serving, starting from an empty schema. For a
         /// clean test run — combine with a stopped daemon or systemd override.
         #[arg(long)]
@@ -2401,12 +2409,28 @@ async fn main() -> Result<()> {
                 do_sources_fide_coverage(&conn, collection.as_deref(), &by, cli.json)?;
             }
         },
-        Commands::Serve { port, .. } => {
+        Commands::Serve { port, bind, .. } => {
+            let addr = format!("{bind}:{port}");
+            // A LAN-reachable server gets a mandatory access token (#247) — the
+            // API has no other auth and can purge/reset the database. Loopback
+            // keeps today's behaviour exactly: no token, no file, nothing to
+            // configure for existing installs.
+            let token = if auth::is_loopback_bind(&addr) {
+                None
+            } else {
+                let t = auth::load_or_create(&cli.db)?;
+                eprintln!(
+                    "Listening beyond this machine ({addr}); clients must supply the access token from {}.\n\
+                     There is no TLS — use this on a trusted local network only, never exposed to the internet.",
+                    auth::token_path(&cli.db).display()
+                );
+                Some(t)
+            };
             // The server owns the database read-write: it runs every mutation as
             // an in-process job and serves queries from a pool of cloned read
             // connections (DuckDB MVCC). No separate writer process exists, so
             // there is no read-only reopen.
-            serve::run(conn, port, cli.db.clone()).await?;
+            serve::run(conn, addr, token, cli.db.clone()).await?;
         }
         // Handled before the database is opened (see the early returns above).
         Commands::Service { .. } | Commands::Reset { .. } => unreachable!(),

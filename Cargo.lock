@@ -872,6 +872,7 @@ dependencies = [
  "csv",
  "dirs",
  "duckdb",
+ "getrandom 0.3.4",
  "indicatif",
  "pgn-reader",
  "rayon",
