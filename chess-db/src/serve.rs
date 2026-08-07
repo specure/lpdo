@@ -2235,11 +2235,7 @@ pub async fn run(
         .route("/jobs/{id}/events",                    get(job_events_handler))
         .route("/jobs/{id}/cancel",                    post(cancel_job_handler))
         .route("/jobs/{id}/retry",                     post(retry_job_handler))
-        .with_state(state)
-        // Allow the bundled webview (a cross-origin caller, e.g. tauri://localhost)
-        // to reach this local server. In dev the Vite proxy makes calls same-origin;
-        // in a packaged app the frontend hits http://127.0.0.1:7777 directly.
-        .layer(CorsLayer::permissive());
+        .with_state(state);
 
     // Reaching beyond loopback requires a token (#247): the API has no auth and
     // several endpoints are destructive (purge, setup reset, delete), so a bare
@@ -2252,6 +2248,14 @@ pub async fn run(
         )),
         None => app,
     };
+
+    // Allow the bundled webview (a cross-origin caller, e.g. tauri://localhost)
+    // to reach this local server. Applied OUTSIDE the auth middleware — layers
+    // added later wrap earlier ones — so 401 responses carry CORS headers too.
+    // Otherwise the webview blocks the 401 at the network layer and the client
+    // sees an opaque "TypeError: Load failed" instead of an auth failure it can
+    // explain to the user (found in the first two-machine test).
+    let app = app.layer(CorsLayer::permissive());
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     println!("chess-db server listening on http://{}", bind);

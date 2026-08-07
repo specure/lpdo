@@ -20,7 +20,7 @@ import { loadMyPlayer } from "./components/MyStatsWidget";
 import { useUpdateCheck } from "./hooks/useUpdateCheck";
 import { GameSummary, LocalGame, PlayerInfo, PrepContext, StatusInfo } from "./types";
 
-type ServerStatus = "checking" | "connected" | "disconnected";
+type ServerStatus = "checking" | "connected" | "disconnected" | "unauthorized";
 
 // Status polling cadence: while CONNECTED the displayed numbers (games /
 // players / counts) change after explicit user actions, not on a tick, so a
@@ -52,7 +52,17 @@ function useServerStatus() {
         const res = await fetch("/api/status");
         if (!res.ok) throw new Error();
         const data: StatusInfo = await res.json();
-        if (!cancelled) { setStatus("connected"); setInfo(data); ok = true; }
+        // /status is deliberately unauthenticated (so "down" and "wrong token"
+        // are distinguishable) — reaching it proves nothing about the token.
+        // Probe one cheap authenticated endpoint; a 401 means the server is up
+        // but rejecting us, which must NOT show as "Online" (#247 test finding:
+        // wrong token displayed a green badge and cryptic per-panel errors).
+        const authed = await fetch("/api/collections");
+        if (authed.status === 401) {
+          if (!cancelled) { setStatus("unauthorized"); setInfo(data); }
+        } else if (!cancelled) {
+          setStatus("connected"); setInfo(data); ok = true;
+        }
       } catch {
         if (!cancelled) { setStatus("disconnected"); setInfo(null); }
       }
@@ -80,16 +90,19 @@ function StatusBadge({ status }: { status: ServerStatus }) {
     checking: "bg-warning-container text-on-warning-container",
     connected: "bg-success-container text-on-success-container",
     disconnected: "bg-error-container text-on-error-container",
+    unauthorized: "bg-warning-container text-on-warning-container",
   };
   const dots: Record<ServerStatus, string> = {
     checking: "bg-warning animate-pulse",
     connected: "bg-success",
     disconnected: "bg-error",
+    unauthorized: "bg-warning",
   };
   const label: Record<ServerStatus, string> = {
     checking: "Connecting…",
     connected: "Online",
     disconnected: "Server offline",
+    unauthorized: "Access denied",
   };
 
   return (
@@ -715,17 +728,32 @@ export default function App() {
         />
       )}
 
-      {status === "disconnected" && (mode === "players" || mode === "prep" || mode === "games" || mode === "analysis") ? (
+      {(status === "disconnected" || status === "unauthorized") && (mode === "players" || mode === "prep" || mode === "games" || mode === "analysis") ? (
         <div className="flex-1 flex items-center justify-center bg-surface-dim">
           {/* M3 outlined card — Expressive uses xl (28px) corners */}
           <div className="max-w-md p-8 rounded-xl bg-surface-container-high text-center space-y-3">
-            <div className="text-headline-sm text-on-surface">LPDO server not reachable</div>
-            <div className="text-body-md text-on-surface-variant">
-              The app connects to the LPDO server, which runs as a background
-              service. Make sure it's running — on Linux:{" "}
-              <code className="bg-surface-container-highest text-on-surface px-2 py-0.5 rounded-sm">sudo systemctl start lpdo-server</code>
-              {" "}— or install the LPDO server if it isn't installed.
-            </div>
+            {status === "unauthorized" ? (
+              <>
+                <div className="text-headline-sm text-on-surface">The server rejected the access token</div>
+                <div className="text-body-md text-on-surface-variant">
+                  The server is reachable but requires a valid access token. Enter the
+                  value from its <code className="bg-surface-container-highest text-on-surface px-2 py-0.5 rounded-sm">access-token</code>{" "}
+                  file under <span className="text-on-surface">Maintenance → Others → Server connection</span>.
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="text-headline-sm text-on-surface">LPDO server not reachable</div>
+                <div className="text-body-md text-on-surface-variant">
+                  The app connects to the LPDO server, which runs as a background
+                  service. Make sure it's running — on Linux:{" "}
+                  <code className="bg-surface-container-highest text-on-surface px-2 py-0.5 rounded-sm">sudo systemctl start lpdo-server</code>
+                  {" "}— or install the LPDO server if it isn't installed. For a server
+                  on another machine, check the address under{" "}
+                  <span className="text-on-surface">Maintenance → Others → Server connection</span>.
+                </div>
+              </>
+            )}
           </div>
         </div>
       ) : (mode === "players" || mode === "prep") ? (
