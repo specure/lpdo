@@ -1,10 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
-    "externalBin": ["binaries/chess-db"],
+    "externalBin": [
+      "binaries/chess-db"
+    ],
     "resources": [
       "windows/service/LPDOServer.exe",
-      "windows/service/LPDOServer.xml"
+      "windows/service/LPDOServer.xml",
+      "windows/service/LPDOServer-lan.xml"
     ],
     "windows": {
       "nsis": {

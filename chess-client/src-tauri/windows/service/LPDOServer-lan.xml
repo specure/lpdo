@@ -1,0 +1,48 @@
+<!--
+  WinSW descriptor for the LPDO Windows system service — LAN VARIANT.
+
+  Identical to LPDOServer.xml except that it sets LPDO_BIND=0.0.0.0. The
+  installer copies this over LPDOServer.xml when the user ticks the LAN-mode
+  component, which is more robust than rewriting XML in NSIS.
+
+  WinSW (the renamed LPDOServer.exe sitting next to this file) supervises
+  `chess-db serve` as a child process, is SCM-aware, and restarts it on failure.
+  `chess-db serve` is a plain console app (no SCM support), so it can't be a
+  Windows service directly — WinSW provides that.
+
+  Data lives under C:\ProgramData\LPDO (the system equivalent of Linux's
+  /var/lib/lpdo); `chess-db` honours $LPDO_DATA_DIR for this (see data_root()).
+
+  NOTE (verify on Windows): `%BASE%` is the directory of LPDOServer.exe. The
+  relative path to chess-db.exe depends on where Tauri stages bundled resources
+  vs the sidecar. chess-db.exe (an externalBin sidecar) installs next to the
+  app exe in $INSTDIR; this file installs under $INSTDIR\windows\service\, so
+  chess-db.exe is two levels up. Adjust if the staged layout differs.
+-->
+<service>
+  <id>LPDOServer</id>
+  <name>LPDO Chess Database Server</name>
+  <description>Runs the LPDO chess database server (chess-db serve) on 127.0.0.1:7777, owning the database under C:\ProgramData\LPDO.</description>
+
+  <executable>%BASE%\..\..\chess-db.exe</executable>
+  <arguments>serve</arguments>
+
+  <env name="LPDO_DATA_DIR" value="C:\ProgramData\LPDO"/>
+  <!-- LAN mode (#247): listen on every interface so clients on other machines
+       can connect. chess-db then REQUIRES an access token, which it generates at
+       C:\ProgramData\LPDO\access-token on first start; enter that in the
+       client's Maintenance -> Server connection. No TLS — trusted local networks
+       only, never port-forwarded to the internet. -->
+  <env name="LPDO_BIND" value="0.0.0.0"/>
+  <workingdirectory>C:\ProgramData\LPDO</workingdirectory>
+
+  <startmode>Automatic</startmode>
+  <onfailure action="restart" delay="5 sec"/>
+  <resetfailure>1 hour</resetfailure>
+
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>3</keepFiles>
+  </log>
+  <logpath>C:\ProgramData\LPDO\logs</logpath>
+</service>

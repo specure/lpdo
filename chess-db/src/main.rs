@@ -296,13 +296,13 @@ enum Commands {
         /// Port to listen on
         #[arg(long, default_value_t = 7777)]
         port: u16,
-        /// Address to listen on (default 127.0.0.1 — this machine only). Use
-        /// 0.0.0.0 to accept clients from the local network; that REQUIRES an
-        /// access token, which is generated beside the database on first use
-        /// and must be entered in the client's server settings (#247).
-        /// Do not expose this port to the internet: there is no TLS.
-        #[arg(long, default_value = "127.0.0.1")]
-        bind: String,
+        /// Address to listen on (default 127.0.0.1 — this machine only, or
+        /// $LPDO_BIND). Use 0.0.0.0 to accept clients from the local network;
+        /// that REQUIRES an access token, generated beside the database on first
+        /// use and entered in the client's server settings (#247). Do not expose
+        /// this port to the internet: there is no TLS.
+        #[arg(long)]
+        bind: Option<String>,
         /// Wipe the database before serving, starting from an empty schema. For a
         /// clean test run — combine with a stopped daemon or systemd override.
         #[arg(long)]
@@ -2463,6 +2463,13 @@ async fn main() -> Result<()> {
             }
         },
         Commands::Serve { port, bind, .. } => {
+            // Flag > $LPDO_BIND (how the packaged services configure it, since
+            // editing a service descriptor by hand is worse than an env entry)
+            // > loopback.
+            let bind = bind
+                .clone()
+                .or_else(|| std::env::var("LPDO_BIND").ok().filter(|v| !v.is_empty()))
+                .unwrap_or_else(|| "127.0.0.1".to_string());
             let addr = format!("{bind}:{port}");
             // A LAN-reachable server gets a mandatory access token (#247) — the
             // API has no other auth and can purge/reset the database. Loopback
