@@ -475,7 +475,7 @@ fn fill_positions(
     // pending game ids ONCE into a temp table (a single anti-join) and page through
     // it joined to `games` for the PGN — turning N anti-joins into one.
     let select_sql = if rebuild {
-        "SELECT id, pgn FROM games WHERE id > ? ORDER BY id LIMIT ?"
+        "SELECT id, pgn FROM games WHERE id > ? AND id <= ?"
     } else {
         conn.execute_batch(
             "DROP TABLE IF EXISTS pending_index;
@@ -484,67 +484,104 @@ fn fill_positions(
                  WHERE NOT EXISTS (SELECT 1 FROM positions p WHERE p.game_id = g.id);",
         )?;
         "SELECT g.id, g.pgn FROM games g JOIN pending_index pi ON pi.id = g.id
-         WHERE g.id > ? ORDER BY g.id LIMIT ?"
+         WHERE g.id > ? AND g.id <= ?"
     };
 
-    let mut last_id: u32 = 0;
+    // Page by FIXED id-windows, not `id > last ORDER BY id LIMIT n` (#245): the
+    // old form top-N-scanned the tail of the multi-GB, PGN-bearing games table on
+    // EVERY batch (~140 re-scans per full run). A closed window needs no sort and
+    // lets DuckDB's id zone maps prune to just that window — one effective pass
+    // over the table for the whole run. Sparse windows (dedup-deleted ids,
+    // already-indexed games) simply return few/no rows and cost almost nothing.
+    let max_id: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) FROM games", [], |r| r.get(0))?;
 
-    'batches: loop {
-        let mut stmt = conn.prepare(select_sql)?;
-        let rows: Vec<(u32, String)> = stmt
-            .query_map(duckdb::params![last_id, INDEX_READ_BATCH as i64], |r| {
+    // Parse one 2k-game chunk in parallel — each task gets its own GameVisitor
+    // (cheap: just holds max_position_depth).
+    let parse_chunk = |chunk: &[(u32, String)]| -> Vec<PositionRow> {
+        chunk
+            .par_iter()
+            .flat_map(|(game_id, pgn)| {
+                let repaired = repair_pgn_header_quotes(pgn);
+                let mut visitor = GameVisitor::new(max_position_depth);
+                let mut reader = Reader::new(std::io::Cursor::new(repaired.as_bytes()));
+                match reader.read_game(&mut visitor) {
+                    Ok(Some(Some(game))) => game.positions.into_iter().map(|(move_num, hash, next_move)| {
+                        PositionRow {
+                            game_id: *game_id,
+                            move_number: move_num,
+                            zobrist_hash: hash,
+                            next_move,
+                        }
+                    }).collect(),
+                    _ => vec![],
+                }
+            })
+            .collect()
+    };
+
+    let mut lo: i64 = 0;
+    'windows: while lo < max_id {
+        let hi = lo + INDEX_READ_BATCH as i64;
+        let rows: Vec<(u32, String)> = {
+            let mut stmt = conn.prepare(select_sql)?;
+            stmt.query_map(duckdb::params![lo, hi], |r| {
                 Ok((r.get::<_, u32>(0)?, r.get::<_, String>(1)?))
             })?
             .filter_map(|r| r.ok())
-            .collect();
+            .collect()
+        };
+        lo = hi;
 
-        if rows.is_empty() {
-            break;
-        }
-
-        // Cooperative cancellation (#140): stop between read batches. Positions
-        // already flushed stay committed and are simply resumed on the next run
-        // (the pending-id set is rebuilt smaller each time).
+        // Cooperative cancellation (#140): stop between windows. Positions
+        // already committed stay committed and are simply resumed on the next
+        // run (the pending-id set is rebuilt smaller each time).
         if reporter.is_cancelled() {
             break;
         }
+        if rows.is_empty() {
+            continue;
+        }
 
-        last_id = rows.last().map(|(id, _)| *id).unwrap_or(last_id);
-
-        // Parse/flush/report in sub-chunks so the progress bar advances smoothly.
-        // Reporting only once per (large) read batch left the GUI bar at 0% until
-        // the whole batch — often the entire database — had finished.
-        for chunk in rows.chunks(INDEX_REPORT_CHUNK) {
-            // Also honor cancellation mid-batch (a read batch can be many chunks),
-            // so a cancel is observed within a chunk rather than only per batch.
-            if reporter.is_cancelled() {
-                break 'batches;
+        // ONE transaction per window (#245) — the fill used to commit per
+        // 2k-game chunk (~3,550 commits per full run), and every commit is a WAL
+        // flush, which is brutally expensive on Windows. Parsing/progress still
+        // happens per chunk so the bar stays smooth; a cancel between chunks
+        // commits the chunks appended so far (always whole games), which the
+        // next run's pending-set skips.
+        if fast {
+            let mut app = conn.appender("positions")?;
+            for chunk in rows.chunks(INDEX_REPORT_CHUNK) {
+                if reporter.is_cancelled() {
+                    break;
+                }
+                for p in parse_chunk(chunk) {
+                    app.append_row(duckdb::params![p.game_id, p.move_number, p.zobrist_hash, p.next_move])?;
+                }
+                pb.inc(chunk.len() as u64);
+                reporter.progress(pb.position(), total, format!("Indexed {} / {} games", pb.position(), total));
             }
-            // Parse this sub-chunk in parallel — each task gets its own
-            // GameVisitor (cheap: just holds max_position_depth).
-            let position_batch: Vec<PositionRow> = chunk
-                .par_iter()
-                .flat_map(|(game_id, pgn)| {
-                    let repaired = repair_pgn_header_quotes(pgn);
-                    let mut visitor = GameVisitor::new(max_position_depth);
-                    let mut reader = Reader::new(std::io::Cursor::new(repaired.as_bytes()));
-                    match reader.read_game(&mut visitor) {
-                        Ok(Some(Some(game))) => game.positions.into_iter().map(|(move_num, hash, next_move)| {
-                            PositionRow {
-                                game_id: *game_id,
-                                move_number: move_num,
-                                zobrist_hash: hash,
-                                next_move,
-                            }
-                        }).collect(),
-                        _ => vec![],
+            app.flush()?;
+        } else {
+            conn.execute_batch("BEGIN")?;
+            {
+                let mut stmt = conn.prepare(
+                    "INSERT INTO positions (game_id, move_number, zobrist_hash, next_move) VALUES (?, ?, ?, ?)",
+                )?;
+                for chunk in rows.chunks(INDEX_REPORT_CHUNK) {
+                    if reporter.is_cancelled() {
+                        break;
                     }
-                })
-                .collect();
-
-            flush_positions(conn, &position_batch, fast)?;
-            pb.inc(chunk.len() as u64);
-            reporter.progress(pb.position(), total, format!("Indexed {} / {} games", pb.position(), total));
+                    for p in parse_chunk(chunk) {
+                        stmt.execute(duckdb::params![p.game_id, p.move_number, p.zobrist_hash, p.next_move])?;
+                    }
+                    pb.inc(chunk.len() as u64);
+                    reporter.progress(pb.position(), total, format!("Indexed {} / {} games", pb.position(), total));
+                }
+            }
+            conn.execute_batch("COMMIT")?;
+        }
+        if reporter.is_cancelled() {
+            break 'windows;
         }
     }
 

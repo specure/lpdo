@@ -2117,7 +2117,32 @@ fn sweep_orphan_uploads(dir: &std::path::Path) {
     }
 }
 
+/// Raise the daemon's process priority on Windows (#245). The service context
+/// runs write-heavy maintenance (position indexing, dedup) measurably slower
+/// than a foreground console at default priority. ABOVE_NORMAL is deliberate:
+/// High gave only a modest further gain in testing, and Realtime catastrophically
+/// starved the OS's own I/O threads (a measured 10x slowdown) — never use it.
+/// No-op (with a note) if the call fails; harmless on a machine where the user
+/// lowered it manually.
+#[cfg(windows)]
+fn raise_process_priority() {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, SetPriorityClass, ABOVE_NORMAL_PRIORITY_CLASS,
+    };
+    // SAFETY: GetCurrentProcess returns a pseudo-handle that needs no cleanup;
+    // SetPriorityClass on it affects only our own process.
+    let ok = unsafe { SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS) };
+    if ok == 0 {
+        eprintln!("note: could not raise process priority (continuing at default)");
+    }
+}
+
+#[cfg(not(windows))]
+fn raise_process_priority() {}
+
 pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Result<()> {
+    raise_process_priority();
+
     // Clear any upload spool/temp files leaked by an import that crashed or was
     // killed before its own cleanup ran — none are in use at startup.
     if let Some(dir) = db_path.parent() {
