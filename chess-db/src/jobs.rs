@@ -1714,17 +1714,22 @@ fn make_safety_snapshot(conn: &Connection, db: &Path, reporter: &Reporter) -> bo
     // live connection, which needs no second handle. Measured ~2m19s for a 12 GB
     // database vs ~0s for a reflink — acceptable because snapshots only guard
     // rare, user-initiated heavy jobs (first-run setup skips them entirely).
+    // Both copy routes are single blocking calls with no callbacks, so report
+    // real progress by watching the destination file grow against the source's
+    // size — a 12 GB copy otherwise sits on an indeterminate bar for minutes.
+    let src_len = std::fs::metadata(db).map(|m| m.len()).unwrap_or(0);
     let mut copied_bytes = true;
-    if let Err(e) = copy_file(db, &tmp) {
-        copied_bytes = false;
-        reporter.progress(0, 0, "Creating a safety snapshot (copying the database)…");
-        if let Err(sql_err) = sql_copy_database(conn, &tmp) {
-            reporter.log(format!(
-                "Could not create safety snapshot (file copy: {e}; database copy: {sql_err}); proceeding without one."
-            ));
-            let _ = std::fs::remove_file(&tmp);
-            return false;
+    let outcome = with_copy_progress(reporter, &tmp, src_len, || match copy_file(db, &tmp) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            copied_bytes = false;
+            sql_copy_database(conn, &tmp).map_err(|sql_err| format!("file copy: {e}; database copy: {sql_err}"))
         }
+    });
+    if let Err(why) = outcome {
+        reporter.log(format!("Could not create safety snapshot ({why}); proceeding without one."));
+        let _ = std::fs::remove_file(&tmp);
+        return false;
     }
 
     // Publish atomically — a crash mid-copy leaves only the .tmp.
@@ -1747,6 +1752,45 @@ fn make_safety_snapshot(conn: &Connection, db: &Path, reporter: &Reporter) -> bo
     }
     reporter.log("Safety snapshot created.");
     true
+}
+
+/// Run a blocking whole-database copy while reporting real progress: neither
+/// route (file copy, `COPY FROM DATABASE`) offers a callback, so a helper thread
+/// polls the destination's size against `total` — on a 12 GB database that's the
+/// difference between a live percentage and a two-minute frozen bar.
+fn with_copy_progress<T>(
+    reporter: &Reporter,
+    target: &Path,
+    total: u64,
+    copy: impl FnOnce() -> T,
+) -> T {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let finished = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !finished.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if finished.load(Ordering::Relaxed) {
+                    break;
+                }
+                let written = std::fs::metadata(target).map(|m| m.len()).unwrap_or(0);
+                // A logical copy can end up slightly larger than the source, so
+                // widen `total` rather than ever showing >100%.
+                reporter.progress(
+                    written,
+                    total.max(written),
+                    format!(
+                        "Creating a safety snapshot of the database… {} / {}",
+                        indicatif::HumanBytes(written),
+                        indicatif::HumanBytes(total.max(written)),
+                    ),
+                );
+            }
+        });
+        let out = copy();
+        finished.store(true, Ordering::Relaxed);
+        out
+    })
 }
 
 /// Write a standalone copy of the live database to `dst` THROUGH the open
