@@ -477,11 +477,24 @@ pub fn acknowledge(conn: &Connection, key: &str) -> Result<()> {
 }
 
 /// Record the outcome of a source's sync.
+///
+/// `last_run` is stamped in LOCAL wall-clock time (bound from Rust), NOT
+/// DuckDB's NOW(): the scheduler's daily-refresh threshold is computed in local
+/// time (scheduler::most_recent_scheduled), while the bundled DuckDB (no ICU
+/// timezone data) evaluates NOW() in UTC. Mixing the two made every feed stay
+/// "due" from the scheduled time until UTC caught up with local — on a UTC+2
+/// machine the daily update looped back-to-back from 04:00 to 06:00 every day.
 pub fn record_run(conn: &Connection, key: &str, status: &str) -> Result<()> {
+    let now_local = chrono::Local::now()
+        .naive_local()
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
     conn.execute(
-        "INSERT INTO sources (key, last_run, last_status) VALUES (?, NOW(), ?)
-         ON CONFLICT (key) DO UPDATE SET last_run = NOW(), last_status = excluded.last_status",
-        duckdb::params![key, status],
+        "INSERT INTO sources (key, last_run, last_status)
+         VALUES (?, CAST(? AS TIMESTAMP), ?)
+         ON CONFLICT (key) DO UPDATE
+             SET last_run = excluded.last_run, last_status = excluded.last_status",
+        duckdb::params![key, now_local, status],
     )?;
     Ok(())
 }
@@ -840,6 +853,31 @@ mod auto_sync_tests {
 
     fn keys(conn: &Connection, threshold: &str) -> Vec<&'static str> {
         feeds_due_for_resync(conn, threshold).unwrap().iter().map(|s| s.key).collect()
+    }
+
+    // A completed sync must satisfy the scheduler's LOCAL-time daily threshold
+    // immediately. record_run once stamped last_run via DuckDB's NOW() (UTC in
+    // the bundled build) while the threshold is local wall-clock — so on a
+    // UTC+N machine every feed stayed "due" for N hours past the scheduled
+    // time, and the daily update looped back-to-back until UTC caught up.
+    #[test]
+    fn record_run_satisfies_a_just_passed_local_threshold() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        set_enabled(&conn, "twic", true).unwrap();
+
+        // Threshold = one minute ago in LOCAL time, exactly as the scheduler
+        // formats it (most_recent_scheduled + fmt_dt).
+        let threshold = (chrono::Local::now().naive_local() - chrono::Duration::minutes(1))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        assert_eq!(keys(&conn, &threshold), vec!["twic"], "never-synced feed is due");
+
+        record_run(&conn, "twic", "ok").unwrap();
+        assert!(
+            keys(&conn, &threshold).is_empty(),
+            "a just-synced feed must not remain due against a local-time threshold"
+        );
     }
 
     // #196: a bulk source (Ajedrez) is a one-shot deep-history import, never a
