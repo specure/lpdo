@@ -1513,6 +1513,11 @@ fn run_job(
                 reporter.done("No feed sources enabled — nothing to update.");
                 return Ok(());
             }
+            // Tally per-source imports so the final line says what the run
+            // actually did — this job runs unattended every night, so "complete"
+            // with no numbers tells the user nothing the next morning.
+            let mut imported_total = 0usize;
+            let mut sources_with_new = 0usize;
             for (i, src) in feeds.iter().enumerate() {
                 if reporter.is_cancelled() { return Ok(()); }
                 let dir = crate::source_dir(src.key);
@@ -1523,7 +1528,11 @@ fn run_job(
                 rt.block_on(crate::sources::download_feed(conn, src, None, None, &dir, &step))?;
                 if reporter.is_cancelled() { return Ok(()); }
                 reporter.log(format!("{}: import (fast)", src.name));
-                importer::import(conn, &dir, src.key, src.collection, None, 0, true, false, &step)?;
+                let n = importer::import(conn, &dir, src.key, src.collection, None, 0, true, false, &step)?;
+                if n > 0 {
+                    imported_total += n;
+                    sources_with_new += 1;
+                }
                 crate::sources::record_run(conn, src.key, "ok")?;
             }
             if reporter.is_cancelled() { return Ok(()); }
@@ -1538,7 +1547,19 @@ fn run_job(
                 reporter.log("Normalising players");
                 crate::fide::normalise_from_local(conn, false, &step)?;
             }
-            reporter.done("Database update complete");
+            reporter.done(if imported_total == 0 {
+                format!(
+                    "Update complete — no new games from {} source(s).",
+                    feeds.len()
+                )
+            } else {
+                format!(
+                    "Update complete: {} new game(s) from {} of {} source(s).",
+                    crate::progress::thousands(imported_total as i64),
+                    sources_with_new,
+                    feeds.len()
+                )
+            });
         }
         other => return Err(anyhow!("unknown job type: {}", other)),
     }

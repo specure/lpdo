@@ -294,6 +294,8 @@ pub async fn download_feed(
     let total = items.len() as u64;
     let pb = reporter.bar(total);
     let mut completed = 0u64;
+    let mut fetched = 0u64;
+    let mut skipped = 0u64;
 
     let client_label = src.name;
     for item in &items {
@@ -322,7 +324,7 @@ pub async fn download_feed(
 
         pb.set_message(item.external_id.clone());
         match feed.fetch_item(item, &dest).await {
-            Ok(()) => mark_downloaded(conn, src.key, item)?,
+            Ok(()) => { mark_downloaded(conn, src.key, item)?; fetched += 1; }
             // A connectivity failure means we're offline — abort so the job runner
             // pauses and retries the whole sync rather than skipping every item and
             // "succeeding" with nothing (#206). Already-downloaded items are kept,
@@ -334,6 +336,7 @@ pub async fn download_feed(
             // A single item failing for a NON-connectivity reason (a corrupt or
             // missing file) must never abort the whole run; log a warning and skip.
             Err(e) => {
+                skipped += 1;
                 let msg = format!("Skipping {} {} ({})", client_label, item.external_id, e);
                 pb.println(&msg);
                 reporter.log(&msg);
@@ -344,8 +347,20 @@ pub async fn download_feed(
         reporter.progress(completed, total, item.external_id.clone());
     }
 
-    pb.finish_with_message("Download complete");
-    reporter.done("Download complete");
+    // Say what actually happened rather than a bare "complete": how many files
+    // were fetched, and whether any were skipped as unusable.
+    let summary = if fetched == 0 && skipped == 0 {
+        format!("{}: nothing new to download.", src.name)
+    } else {
+        let mut m = format!("{}: {} new file(s) downloaded", src.name, fetched);
+        if skipped > 0 {
+            m.push_str(&format!(", {skipped} skipped as unreadable"));
+        }
+        m.push('.');
+        m
+    };
+    pb.finish_with_message(summary.clone());
+    reporter.done(summary);
     Ok(())
 }
 
