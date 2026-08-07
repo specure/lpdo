@@ -1706,23 +1706,76 @@ fn make_safety_snapshot(conn: &Connection, db: &Path, reporter: &Reporter) -> bo
 
     let tmp = snapshot_tmp_path(db);
     let _ = std::fs::remove_file(&tmp);
+
+    // Fast path: byte-copy the file (instant with a reflink on Btrfs/XFS/APFS).
+    // On Windows this ALWAYS fails — DuckDB holds an exclusive lock on the
+    // database file, so no outside handle can read it, whatever sharing flags
+    // are requested (#246, verified). Fall back to a logical copy through the
+    // live connection, which needs no second handle. Measured ~2m19s for a 12 GB
+    // database vs ~0s for a reflink — acceptable because snapshots only guard
+    // rare, user-initiated heavy jobs (first-run setup skips them entirely).
+    let mut copied_bytes = true;
     if let Err(e) = copy_file(db, &tmp) {
-        reporter.log(format!("Could not create safety snapshot ({e}); proceeding without one."));
-        let _ = std::fs::remove_file(&tmp);
-        return false;
+        copied_bytes = false;
+        reporter.progress(0, 0, "Creating a safety snapshot (copying the database)…");
+        if let Err(sql_err) = sql_copy_database(conn, &tmp) {
+            reporter.log(format!(
+                "Could not create safety snapshot (file copy: {e}; database copy: {sql_err}); proceeding without one."
+            ));
+            let _ = std::fs::remove_file(&tmp);
+            return false;
+        }
     }
+
     // Publish atomically — a crash mid-copy leaves only the .tmp.
     if let Err(e) = std::fs::rename(&tmp, snapshot_path(db)) {
         reporter.log(format!("Could not finalise safety snapshot ({e}); proceeding without one."));
         let _ = std::fs::remove_file(&tmp);
         return false;
     }
-    let wal = wal_path(db);
-    if wal.exists() {
-        let _ = copy_file(&wal, &snapshot_wal_path(db));
+    // Only meaningful for the byte copy: that snapshot is the file as it was, so
+    // a leftover WAL belongs with it. The logical copy already contains every
+    // committed row and is checkpointed, so pairing it with the SOURCE's WAL
+    // would corrupt it.
+    if copied_bytes {
+        let wal = wal_path(db);
+        if wal.exists() {
+            let _ = copy_file(&wal, &snapshot_wal_path(db));
+        }
+    } else {
+        let _ = std::fs::remove_file(snapshot_wal_path(db));
     }
     reporter.log("Safety snapshot created.");
     true
+}
+
+/// Write a standalone copy of the live database to `dst` THROUGH the open
+/// connection (`ATTACH` + `COPY FROM DATABASE`), for platforms where the file
+/// cannot be byte-copied while the server holds it open (#246). The result is a
+/// complete DuckDB database that `restore_snapshot_if_present` can rename into
+/// place exactly like a byte copy.
+fn sql_copy_database(conn: &Connection, dst: &Path) -> Result<()> {
+    // The live database's catalog name (derived from its filename), needed as the
+    // COPY source; quote it defensively in case the path yields an odd name.
+    let current: String = conn.query_row("SELECT current_database()", [], |r| r.get(0))?;
+    let src_ident = format!("\"{}\"", current.replace('"', "\"\""));
+    let dst_literal = dst.to_string_lossy().replace('\'', "''");
+
+    // Detach first in case a previous attempt died mid-way and left it attached.
+    let _ = conn.execute_batch("DETACH lpdo_snap;");
+    conn.execute_batch(&format!("ATTACH '{dst_literal}' AS lpdo_snap;"))?;
+    let copied = conn
+        .execute_batch(&format!("COPY FROM DATABASE {src_ident} TO lpdo_snap;"))
+        // Fold the attached database's own WAL into its file so the snapshot is
+        // a single self-contained file.
+        .and_then(|()| conn.execute_batch("CHECKPOINT lpdo_snap;"));
+    let detached = conn.execute_batch("DETACH lpdo_snap;");
+    copied?;
+    detached?;
+    // The attached database's WAL should be gone after CHECKPOINT + DETACH; make
+    // sure, so the published snapshot is exactly one file.
+    let _ = std::fs::remove_file(with_suffix(dst, ".wal"));
+    Ok(())
 }
 
 fn remove_snapshot(db: &Path) {
@@ -1922,6 +1975,52 @@ mod import_guard_tests {
             });
         assert!(r.is_err());
         assert!(!snapshot_path(&db).exists(), "a non-bulk import doesn't snapshot at all");
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    /// The logical-copy fallback (#246) must produce a standalone database that
+    /// restore_snapshot_if_present can simply rename into place. Exercised here
+    /// on every platform, since it's the ONLY snapshot route on Windows (DuckDB's
+    /// exclusive file lock rules out a byte copy) and there's no Windows CI.
+    #[test]
+    fn sql_copy_database_produces_a_restorable_snapshot() {
+        let dir = std::env::temp_dir().join(format!("lpdo-snapcopy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("t.db");
+        let snap = dir.join("t.db.snapshot");
+
+        {
+            let conn = crate::db::open(&db).unwrap();
+            conn.execute_batch("CREATE TABLE t(x INT); INSERT INTO t VALUES (1), (2), (3);")
+                .unwrap();
+            // Copy through the LIVE connection, exactly as the Windows path does.
+            sql_copy_database(&conn, &snap).unwrap();
+            // The source stays usable afterwards (ATTACH/DETACH left no residue).
+            conn.execute_batch("INSERT INTO t VALUES (4);").unwrap();
+        }
+
+        assert!(snap.exists(), "snapshot file was written");
+        assert!(
+            !with_suffix(&snap, ".wal").exists(),
+            "snapshot is self-contained (its WAL was checkpointed away)"
+        );
+
+        // Simulate the crash-recovery path: the snapshot replaces the database.
+        std::fs::remove_file(&db).unwrap();
+        let _ = std::fs::remove_file(wal_path(&db));
+        std::fs::rename(&snap, &db).unwrap();
+
+        let conn = crate::db::open(&db).unwrap();
+        let rows: i64 = conn.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 3, "restored snapshot holds the rows as of the copy, not the later insert");
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
