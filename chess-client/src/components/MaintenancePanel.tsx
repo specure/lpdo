@@ -8,7 +8,7 @@ import { useJobProgress } from "../hooks/useJobProgress";
 import SourcesPanel from "./SourcesPanel";
 import MergePlayersDialog from "./MergePlayersDialog";
 import { StatusInfo, ScheduleInfo } from "../types";
-import { SERVER_URL, getSchedule, getJobs } from "../api";
+import { serverUrl, serverToken, setServerSettings, DEFAULT_SERVER_URL, getSchedule, getJobs } from "../api";
 
 interface Props {
   onRunWizard: () => void;
@@ -36,6 +36,68 @@ function LogBox({ lines }: { lines: string[] }) {
     <div ref={ref} className="mt-2 bg-surface-container-lowest rounded-sm p-2 text-label-sm font-mono text-on-surface-variant max-h-24 overflow-y-auto space-y-0.5">
       {lines.map((l, i) => <div key={i}>{l}</div>)}
     </div>
+  );
+}
+
+/** Where the client looks for the server (#247). Lives on this page because it
+ *  renders even while disconnected — which is exactly when it's needed. */
+function ServerConnectionSection({ status }: { status: StatusInfo | null }) {
+  const [url, setUrl] = useState(serverUrl());
+  const [token, setToken] = useState(serverToken());
+  const [saved, setSaved] = useState(false);
+
+  const dirty = url.trim().replace(/\/+$/, "") !== serverUrl() || token.trim() !== serverToken();
+
+  function save() {
+    setServerSettings(url, token);
+    setSaved(true);
+    // Everything reads these per call, but a reload is the honest way to drop
+    // in-flight state (SSE streams, cached lists) tied to the previous server.
+    setTimeout(() => window.location.reload(), 400);
+  }
+
+  return (
+    <SectionCard title="Server connection" status={status ? "Connected" : "Not connected"}>
+      <p className="text-body-sm text-on-surface-variant">
+        The database server normally runs on this machine. To use one on another computer,
+        enter its address — and the access token shown in that server's data folder
+        (<span className="font-mono">access-token</span>). A server on this machine needs no token.
+      </p>
+      <div>
+        <div className="text-label-sm text-on-surface-variant uppercase tracking-wider mb-1">Server address</div>
+        <input
+          type="text"
+          value={url}
+          onChange={(e) => { setUrl(e.target.value); setSaved(false); }}
+          placeholder={DEFAULT_SERVER_URL}
+          spellCheck={false}
+          className="w-full h-9 px-3 rounded-sm bg-transparent text-on-surface placeholder:text-on-surface-variant text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
+        />
+      </div>
+      <div>
+        <div className="text-label-sm text-on-surface-variant uppercase tracking-wider mb-1">Access token (only for a server on another machine)</div>
+        <input
+          type="password"
+          value={token}
+          onChange={(e) => { setToken(e.target.value); setSaved(false); }}
+          placeholder="empty for a local server"
+          spellCheck={false}
+          className="w-full h-9 px-3 rounded-sm bg-transparent text-on-surface placeholder:text-on-surface-variant text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
+        />
+      </div>
+      <div className="flex items-center gap-2">
+        <ActionButton onClick={save} disabled={!dirty}>Save and reconnect</ActionButton>
+        {url.trim().replace(/\/+$/, "") !== DEFAULT_SERVER_URL && (
+          <button
+            onClick={() => { setUrl(DEFAULT_SERVER_URL); setToken(""); setSaved(false); }}
+            className="h-8 px-3 inline-flex items-center rounded-full text-primary text-label-md hover:bg-primary/8 transition-colors duration-short3 ease-standard"
+          >
+            Use this machine
+          </button>
+        )}
+        {saved && <span className="text-success text-body-sm">Saved — reconnecting…</span>}
+      </div>
+    </SectionCard>
   );
 }
 
@@ -602,7 +664,7 @@ function BackupSection() {
     try {
       // download_backup returns the resolved absolute path (leading `~/`
       // expanded) — use it for Reveal, which needs a real path, not `~/…`.
-      const resolved = await invoke<string>("download_backup", { baseUrl: SERVER_URL, collection, destPath: dest });
+      const resolved = await invoke<string>("download_backup", { baseUrl: serverUrl(), token: serverToken(), collection, destPath: dest });
       setSavedPath(resolved || dest);
       setPhase("done");
     } catch (e: unknown) {
@@ -890,6 +952,7 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated }: Pro
           </div>
 
           <div className={`${grid} ${tab === "others" ? "" : "hidden"}`}>
+            <ServerConnectionSection status={status} />
             <BackupSection />
             <PurgeSection status={status} onMutated={onMutated} />
           </div>

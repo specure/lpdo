@@ -2271,11 +2271,30 @@ async fn require_token(
     if open {
         return next.run(req).await;
     }
-    let provided = req
+    // Header is the normal channel. The query fallback exists for SSE: the
+    // browser EventSource API cannot set headers, so the job-progress stream
+    // has no other way to authenticate. A token in a URL can end up in logs,
+    // which is tolerable for a LAN server addressed by the client itself, and
+    // is the standard workaround.
+    let from_header = req
         .headers()
         .get(crate::auth::TOKEN_HEADER)
         .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
+        .map(str::to_owned);
+    let provided = from_header.unwrap_or_else(|| {
+        req.uri()
+            .query()
+            .and_then(|q| {
+                q.split('&').find_map(|kv| {
+                    kv.strip_prefix("token=").map(|v| {
+                        // Percent-decoding isn't needed: tokens are hex.
+                        v.to_owned()
+                    })
+                })
+            })
+            .unwrap_or_default()
+    });
+    let provided = provided.as_str();
     if crate::auth::matches(&expected, provided) {
         next.run(req).await
     } else {
