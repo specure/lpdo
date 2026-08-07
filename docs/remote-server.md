@@ -10,6 +10,8 @@ games, collections and activity.
 > **Local networks only.** The connection is **not encrypted** and the access
 > token is sent as-is. Use this on a network you trust. Do **not** port-forward
 > the server to the internet or expose it to a public/guest network.
+> For an encrypted connection — including reaching the server from outside your
+> home — see [Encrypted connections](#encrypted-connections) below.
 
 ## How access is controlled
 
@@ -135,6 +137,59 @@ fails rather than quietly falling back to a local database.
   saved where you ask for it on the client machine.
 - **No TLS, no user accounts.** One shared token per server; anyone holding it
   has full access.
+
+## Encrypted connections
+
+LPDO's own protocol is deliberately plain HTTP + token, scoped to a trusted
+LAN. When you want encryption — an untrusted network segment, or access from
+outside the house — put the connection inside a secure tunnel instead of
+exposing port 7777. This is not a workaround: tools like WireGuard use
+better-reviewed cryptography and identity handling than an application should
+hand-roll, and they compose cleanly with the token.
+
+### Tailscale (easiest, works from anywhere)
+
+[Tailscale](https://tailscale.com/) builds a private WireGuard mesh between
+your devices; free for personal use.
+
+1. Install Tailscale on the server machine and on each client machine, signed
+   into the same account.
+2. Server setup is exactly as above (`LPDO_BIND=0.0.0.0` + token). Traffic on
+   the tailnet is end-to-end encrypted, and machines outside your tailnet
+   cannot reach the port at all.
+3. In the client, use the server's Tailscale address:
+   `http://<server-tailscale-ip>:7777` (or its MagicDNS name).
+
+This also solves "use my database from anywhere" — a laptop on hotel Wi-Fi
+reaches the tailnet exactly as it would at home, still encrypted.
+
+For a plain **WireGuard** setup without Tailscale's account layer, the same
+applies: put both machines in the tunnel and use the tunnel addresses.
+
+### SSH tunnel (no LAN mode needed at all)
+
+If the server machine runs SSH, you can skip LAN mode entirely — the server
+stays loopback-only with **no open port and no token**, which is the most
+locked-down configuration possible:
+
+```bash
+# on the client machine — forwards local 7777 to the server's loopback
+ssh -N -L 7777:localhost:7777 user@server
+```
+
+Leave the client's server address at its default
+(`http://127.0.0.1:7777`); the tunnel delivers it to the server machine,
+encrypted and authenticated by your SSH keys.
+
+### What not to do
+
+- Don't port-forward 7777 on your router. There is no TLS and one shared
+  token; the internet is not a trusted network.
+- Don't put the server on a public/guest network segment, even with the token.
+
+Native in-app encryption (certificate pairing between client and server) is a
+possible future feature — tracked in the issue linked from #247 — but the
+tunnel approaches above are not a stopgap; they are what we recommend.
 
 ## Troubleshooting
 
