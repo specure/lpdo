@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.18] - 2026-08-07
+
+### Changed
+- **Long jobs report where the time went** — a guarded index rebuild now shows
+  the snapshot's size and duration ("Safety snapshot created (12.1 GB in
+  2m 19s).") and the indexing time separately ("Indexing complete. 7,109,634
+  games indexed in 5m 38s."), so the activity panel's single "took" is no longer
+  an unexplained lump.
+- **Copying the database shows real progress** — the multi-minute snapshot used
+  to sit on a frozen indeterminate bar; it now reports bytes copied against the
+  database size.
+- **The nightly update says what it did** — "Update complete: 12,043 new game(s)
+  from 2 of 3 source(s)." instead of a bare "Database update complete", and a
+  feed download reports files fetched (and any skipped as unreadable).
+
+### Fixed
+- **The result of a guarded job is no longer overwritten by housekeeping** — the
+  activity row showed "Safety snapshot removed." in place of the actual outcome,
+  because that line was logged after the job reported its result.
+- **"Rebuild from scratch" no longer claims it can't be cancelled** — it has
+  been cancellable for a while (a cancelled rebuild is finished by the next
+  "Update index" run); only the label said otherwise.
+
 ## [0.14.17] - 2026-08-07
 
 ### Fixed
@@ -817,7 +840,8 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.14.17...HEAD
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.14.18...HEAD
+[0.14.18]: https://github.com/specure/lpdo/compare/v0.14.17...v0.14.18
 [0.14.17]: https://github.com/specure/lpdo/compare/v0.14.16...v0.14.17
 [0.14.16]: https://github.com/specure/lpdo/compare/v0.14.15...v0.14.16
 [0.14.15]: https://github.com/specure/lpdo/compare/v0.14.10...v0.14.15
