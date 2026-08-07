@@ -136,6 +136,18 @@ struct Cli {
     #[arg(long, global = true)]
     port: Option<u16>,
 
+    /// Host of the lpdo-server daemon to proxy commands to (default 127.0.0.1,
+    /// or $LPDO_HOST). Use this to drive a server on another machine (#247);
+    /// it also needs --token, and implies --remote since there is no local
+    /// database to fall back to.
+    #[arg(long, global = true)]
+    host: Option<String>,
+
+    /// Access token for a server bound beyond loopback (also $LPDO_TOKEN). Find
+    /// it in the server's data directory as `access-token`.
+    #[arg(long, global = true)]
+    token: Option<String>,
+
     /// Force direct database access — never proxy to a running daemon. Also via
     /// $LPDO_LOCAL=1. (The command will fail if the daemon holds the DB lock.)
     #[arg(long, global = true)]
@@ -1854,8 +1866,28 @@ async fn main() -> Result<()> {
     // running we forward long-running "job" commands to it over HTTP rather than
     // open the file here. `serve` itself must always open directly.
     if !matches!(cli.command, Commands::Serve { .. }) {
-        let force_local = cli.local
-            || std::env::var("LPDO_LOCAL").map(|v| v == "1" || v == "true").unwrap_or(false);
+        // Point the proxy at a remote daemon when asked (#247). A remote host
+        // implies --remote: there is no local database to fall back to, and
+        // silently operating on a local one instead would be a nasty surprise.
+        let remote_host = cli
+            .host
+            .clone()
+            .or_else(|| std::env::var("LPDO_HOST").ok().filter(|v| !v.is_empty()));
+        let token = cli
+            .token
+            .clone()
+            .or_else(|| std::env::var("LPDO_TOKEN").ok().filter(|v| !v.is_empty()));
+        let targets_remote_host = remote_host.is_some();
+        if let Some(h) = remote_host {
+            if cli.local {
+                bail!("--host and --local are mutually exclusive: a remote server can only be reached over HTTP");
+            }
+            proxy::configure(h, token);
+        }
+
+        let force_local = !targets_remote_host
+            && (cli.local
+                || std::env::var("LPDO_LOCAL").map(|v| v == "1" || v == "true").unwrap_or(false));
         let port = cli
             .port
             .or_else(|| std::env::var("LPDO_PORT").ok().and_then(|v| v.parse().ok()))
@@ -1863,6 +1895,16 @@ async fn main() -> Result<()> {
 
         if !force_local {
             if let Some(daemon) = proxy::detect_daemon(port).await {
+                // /status is open, so reaching the daemon proves nothing about
+                // the token — check it once here rather than letting every
+                // later call fail while parsing a 401 body as JSON.
+                if targets_remote_host && !proxy::token_accepted(port).await {
+                    bail!(
+                        "the server at {}:{port} rejected the access token — pass --token \
+                         (or set $LPDO_TOKEN) with the value from its `access-token` file",
+                        proxy::configured_host()
+                    );
+                }
                 // Surface a CLI/daemon version mismatch — a common gotcha when a
                 // stale `chess-db` on PATH talks to a freshly-built daemon.
                 if daemon.version != env!("CARGO_PKG_VERSION") {
@@ -1891,8 +1933,19 @@ async fn main() -> Result<()> {
                      this command can't run directly, and it isn't proxyable yet. Stop the \
                      daemon (systemctl --user stop lpdo-server) and retry, or pass --local."
                 );
-            } else if cli.remote {
-                bail!("--remote: no lpdo-server daemon reachable on 127.0.0.1:{port}");
+            } else if cli.remote || targets_remote_host {
+                // An explicit --host must never silently fall back to THIS
+                // machine's database — that would quietly operate on the wrong
+                // data. Same for --remote.
+                bail!(
+                    "no lpdo-server daemon reachable on {}:{port}{}",
+                    proxy::configured_host(),
+                    if targets_remote_host {
+                        " — check the address, that the server was started with --bind, and that its firewall allows the port"
+                    } else {
+                        ""
+                    }
+                );
             }
             // No daemon and not --remote → fall through to direct database access.
         }

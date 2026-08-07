@@ -31,17 +31,72 @@ pub struct DaemonInfo {
     pub api_version: u32,
 }
 
+/// Where the CLI looks for the daemon, and the token to present (#247).
+/// Set once from the CLI flags/env; defaults keep the historical
+/// loopback-without-token behaviour.
+static REMOTE: std::sync::OnceLock<(String, Option<String>)> = std::sync::OnceLock::new();
+
+/// Point the CLI at a daemon on another machine. `host` is a bare hostname or
+/// IP (no scheme/port); `token` is required by a LAN-bound server.
+pub fn configure(host: String, token: Option<String>) {
+    let _ = REMOTE.set((host, token));
+}
+
+/// The host the CLI is pointed at, for error messages.
+pub fn configured_host() -> &'static str {
+    remote_host()
+}
+
+fn remote_host() -> &'static str {
+    REMOTE.get().map(|(h, _)| h.as_str()).unwrap_or("127.0.0.1")
+}
+
+fn remote_token() -> Option<&'static str> {
+    REMOTE.get().and_then(|(_, t)| t.as_deref())
+}
+
 fn base_url(port: u16) -> String {
-    format!("http://127.0.0.1:{port}")
+    format!("http://{}:{port}", remote_host())
+}
+
+/// Every proxied request goes through a client carrying the access token as a
+/// DEFAULT header — attaching it per call would mean touching ~20 request sites
+/// and would rot the moment one is added.
+fn http_client() -> reqwest::Client {
+    http_client_builder(reqwest::Client::builder())
+}
+
+fn http_client_builder(builder: reqwest::ClientBuilder) -> reqwest::Client {
+    let builder = match remote_token() {
+        Some(t) => {
+            let mut headers = reqwest::header::HeaderMap::new();
+            if let Ok(v) = reqwest::header::HeaderValue::from_str(t) {
+                headers.insert(crate::auth::TOKEN_HEADER, v);
+            }
+            builder.default_headers(headers)
+        }
+        None => builder,
+    };
+    builder.build().unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Is our token accepted? `/status` is deliberately unauthenticated, so a
+/// successful `detect_daemon` says nothing about the token — without this, a
+/// missing token surfaces later as "error decoding response body" when a 401
+/// text page is parsed as JSON.
+pub async fn token_accepted(port: u16) -> bool {
+    let client = http_client_builder(reqwest::Client::builder().timeout(Duration::from_millis(1500)));
+    match client.get(format!("{}/collections", base_url(port))).send().await {
+        Ok(r) => r.status() != reqwest::StatusCode::UNAUTHORIZED,
+        // A transport error isn't an auth problem; let the normal path report it.
+        Err(_) => true,
+    }
 }
 
 /// Probe for a running daemon by hitting `GET /status` with a short timeout.
 /// Returns its version info, or `None` if nothing is listening / it isn't ours.
 pub async fn detect_daemon(port: u16) -> Option<DaemonInfo> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(800))
-        .build()
-        .ok()?;
+    let client = http_client_builder(reqwest::Client::builder().timeout(Duration::from_millis(800)));
     let resp = client.get(format!("{}/status", base_url(port))).send().await.ok()?;
     if !resp.status().is_success() {
         return None;
@@ -85,7 +140,7 @@ enum Outcome {
 pub async fn run_job_proxied(port: u16, spec: JobSpec, json: bool) -> Result<()> {
     let base = base_url(port);
     // No global timeout: the events stream is long-lived.
-    let client = reqwest::Client::new();
+    let client = http_client();
 
     // 1. Start the job.
     let resp = client
@@ -331,7 +386,7 @@ pub async fn run_mutation(port: u16, m: MutationSpec) -> Result<()> {
             return Ok(());
         }
     }
-    let client = reqwest::Client::new();
+    let client = http_client();
     send_mutation(&client, port, m.method, &m.path, m.body.as_ref(), m.success.as_deref()).await
 }
 
@@ -369,7 +424,7 @@ async fn send_mutation(
 /// `games delete <ids…>` — show each game, confirm (unless `yes_all`), then
 /// hard-delete via `DELETE /games/{id}`.
 pub async fn run_delete(port: u16, ids: &[u32], yes_all: bool) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !yes_all {
         for id in ids {
             match get_json::<GameSummaryDto>(&client, port, &format!("/games/{id}")).await {
@@ -405,7 +460,7 @@ pub async fn run_delete(port: u16, ids: &[u32], yes_all: bool) -> Result<()> {
 /// `games purge [--dry-run]` — count soft-deleted games (via `/status`) for a dry
 /// run, else `POST /purge`.
 pub async fn run_purge(port: u16, dry_run: bool) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if dry_run {
         let n = get_json::<StatusDto>(&client, port, "/status").await.map(|s| s.deleted_games).unwrap_or(0);
         println!("Would purge {n} soft-deleted game(s) (dry run).");
@@ -417,7 +472,7 @@ pub async fn run_purge(port: u16, dry_run: bool) -> Result<()> {
 /// `players merge <keep> <drop>` — confirm (unless `yes`) showing game counts,
 /// then `POST /players/{keep}/merge/{drop}`.
 pub async fn run_merge(port: u16, keep: u32, drop: u32, yes: bool) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !yes {
         let kc = player_game_count(&client, port, keep).await;
         let dc = player_game_count(&client, port, drop).await;
@@ -444,7 +499,7 @@ pub async fn run_merge(port: u16, keep: u32, drop: u32, yes: bool) -> Result<()>
 /// `players merge-by-name <keep> <drop>` — resolve each name to a single player
 /// via `GET /players?name=`, then merge by id.
 pub async fn run_merge_by_name(port: u16, keep_name: &str, drop_name: &str, yes: bool) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let keep = resolve_exact_player(&client, port, keep_name).await?;
     let drop = resolve_exact_player(&client, port, drop_name).await?;
     if keep.id == drop.id {
@@ -577,7 +632,7 @@ struct StatusDtoTotal {
 
 /// `status` — render the daemon's view of the database.
 pub async fn run_status(port: u16) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let s: StatusInfoDto = client
         .get(format!("{}/status", base_url(port)))
         .send().await.context("querying status")?
@@ -608,7 +663,7 @@ pub async fn run_search_players(
     exact: bool,
     id_only: bool,
 ) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let mut q: Vec<(&str, String)> = Vec::new();
     if let Some(f) = fide_id { q.push(("fide_id", f.to_string())); }
     else if !name.is_empty() { q.push(("name", name.to_string())); }
@@ -653,7 +708,7 @@ pub async fn run_position_moves(
     fen: Option<String>,
     first_moves: Option<String>,
 ) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = reqwest::Url::parse_with_params(&format!("{}/position/moves", base_url(port)), &query)
         .context("building position-moves query")?;
     let resp = client.get(url).send().await.context("querying position moves")?;
@@ -668,7 +723,7 @@ pub async fn run_position_moves(
 }
 
 pub async fn run_search_games(port: u16, query: Vec<(&str, String)>, show_moves: bool) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let count_only = query.iter().any(|(k, _)| *k == "count");
     let pgn_mode = query.iter().any(|(k, _)| *k == "pgn");
     let limit: u32 = query.iter().find(|(k, _)| *k == "limit").and_then(|(_, v)| v.parse().ok()).unwrap_or(100);
@@ -705,7 +760,7 @@ pub async fn run_search_games(port: u16, query: Vec<(&str, String)>, show_moves:
 
 /// `games show <ids…>` — GET /games/{id} for each, print the summary line + PGN.
 pub async fn run_show(port: u16, ids: &[u32]) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     for id in ids {
         match get_json::<GameSummaryDto>(&client, port, &format!("/games/{id}")).await {
             Some(g) => {
@@ -733,7 +788,7 @@ struct SourceStatusDto {
 
 /// Render `sources list` against a running daemon (GET /sources).
 pub async fn run_sources(port: u16) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let rows: Vec<SourceStatusDto> = client
         .get(format!("{}/sources", base_url(port)))
         .send().await.context("querying sources")?
