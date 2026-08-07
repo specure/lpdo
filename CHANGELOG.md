@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.16] - 2026-08-07
+
+### Changed
+- **Position indexing commits ~25× less often and reads the games table once
+  instead of ~140 times** — one transaction per 50k-game window (each commit is
+  a WAL flush, the dominant cost on Windows) and fixed id-window paging in
+  place of repeated tail-scans. On Windows the daemon also raises itself to
+  Above Normal priority. Targets the 2h48m-vs-4m41s Windows/Linux gap measured
+  on v0.14.15. (#245)
+- **Windows installer: full Client / Server / CLI component model** — the GUI
+  is now a real optional component (server-only or CLI-only machines install no
+  GUI, and a GUI-only install skips the chess-db binary entirely — it talks to
+  a server over HTTP); the command-line component controls the PATH entry, with
+  proper descriptions on the components page. (#67)
+- **The Maintenance page shows what you're running** — a footer with the GUI
+  version, the server version, and the API contract, so a client/server
+  mismatch is visible at a glance.
+
+### Fixed
+- **The daily update no longer loops for hours after the scheduled time** — the
+  refresh threshold is local wall-clock but the last-run stamp was written in
+  UTC, so on (e.g.) UTC+2 every feed stayed "due" from 04:00 until 06:00 and
+  the whole pipeline re-ran back-to-back. Long-standing; exposed by the full
+  activity history in 0.14.15.
+- **"Server offline" now recovers by itself** — the client retries every few
+  seconds while disconnected (the daemon needs a moment to open a large
+  database after an install or reboot); previously one failed check pinned the
+  offline banner for up to 30 minutes.
+- **Upgrades no longer race the running service** — the installer now waits for
+  the Windows service to fully stop (up to 60s) before replacing its files,
+  instead of failing with "Error opening file for writing".
+
 ## [0.14.15] - 2026-08-06
 
 ### Fixed
@@ -771,7 +803,8 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.14.15...HEAD
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.14.16...HEAD
+[0.14.16]: https://github.com/specure/lpdo/compare/v0.14.15...v0.14.16
 [0.14.15]: https://github.com/specure/lpdo/compare/v0.14.10...v0.14.15
 [0.14.10]: https://github.com/specure/lpdo/compare/v0.14.5...v0.14.10
 [0.14.5]: https://github.com/specure/lpdo/compare/v0.14.1...v0.14.5
