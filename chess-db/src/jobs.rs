@@ -1678,34 +1678,17 @@ fn copy_file(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
     std::fs::copy(src, dst).map(|_| ())
 }
-#[cfg(windows)]
+#[cfg(not(unix))]
 fn copy_file(src: &Path, dst: &Path) -> std::io::Result<()> {
-    use std::os::windows::fs::OpenOptionsExt;
-    // `std::fs::copy` calls CopyFileEx, which opens the source allowing only
-    // other *readers* — that collides with DuckDB's own writer handle on the
-    // live database, so every snapshot failed with "os error 32 … used by
-    // another process" and the guard silently degraded to none (#246).
-    // Open it ourselves with a share mode that tolerates the existing writer
-    // (the way backup tools read open files) and stream the bytes.
-    //
-    // Consistency: the daemon has a SINGLE writer thread and it is the one
-    // taking this snapshot, so no writes can land mid-copy; the caller has also
-    // just CHECKPOINTed. (A concurrent writer would risk a torn copy — there
-    // isn't one by construction.)
-    const FILE_SHARE_READ: u32 = 0x0000_0001;
-    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
-    const FILE_SHARE_DELETE: u32 = 0x0000_0004;
-    let mut reader = std::fs::OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .open(src)?;
-    let mut writer = std::fs::File::create(dst)?;
-    std::io::copy(&mut reader, &mut writer)?;
-    writer.sync_all()
-}
-
-#[cfg(all(not(unix), not(windows)))]
-fn copy_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    // NOTE (#246): on Windows this cannot work while the server is running, and
+    // no share-mode trick changes that — DuckDB takes an EXCLUSIVE lock on the
+    // database file (it permits only one process to hold a database open), so
+    // every outside handle is refused with "os error 32", whatever sharing flags
+    // the reader asks for. Verified on v0.14.17: opening with
+    // FILE_SHARE_READ|WRITE|DELETE fails identically to CopyFileEx. A working
+    // Windows snapshot has to go THROUGH the live connection (ATTACH + COPY FROM
+    // DATABASE) or be avoided by using the crash-safe transactional path — see
+    // the issue. Kept simple here; the caller degrades with a warning.
     std::fs::copy(src, dst).map(|_| ())
 }
 

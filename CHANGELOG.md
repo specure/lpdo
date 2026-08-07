@@ -7,16 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.14.17] - 2026-08-07
-
-### Fixed
-- **Windows: the pre-rebuild safety snapshot works** — it always failed with
-  "Could not create safety snapshot … used by another process (os error 32)",
-  so the crash guard for index rebuilds and bulk imports was silently absent on
-  Windows (and printed that line on every heavy job). The database file is now
-  opened in a share mode that tolerates the server's own writer handle, as
-  backup tools do. (#246)
-
 ## [0.14.16] - 2026-08-07
 
 ### Changed
@@ -814,8 +804,7 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.14.17...HEAD
-[0.14.17]: https://github.com/specure/lpdo/compare/v0.14.16...v0.14.17
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.14.16...HEAD
 [0.14.16]: https://github.com/specure/lpdo/compare/v0.14.15...v0.14.16
 [0.14.15]: https://github.com/specure/lpdo/compare/v0.14.10...v0.14.15
 [0.14.10]: https://github.com/specure/lpdo/compare/v0.14.5...v0.14.10
