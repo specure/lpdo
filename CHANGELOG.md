@@ -14,8 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of ~140 times** — one transaction per 50k-game window (each commit is
   a WAL flush, the dominant cost on Windows) and fixed id-window paging in
   place of repeated tail-scans. On Windows the daemon also raises itself to
-  Above Normal priority. Targets the 2h48m-vs-4m41s Windows/Linux gap measured
-  on v0.14.15. (#245)
+  Above Normal priority. Measured on the same 7.1M-game database: a full
+  rebuild went from **2h 48m to 5m 38s** on Windows (~30× faster, now within
+  1.2× of Linux's 4m 41s). (#245)
 - **Windows installer: full Client / Server / CLI component model** — the GUI
   is now a real optional component (server-only or CLI-only machines install no
   GUI, and a GUI-only install skips the chess-db binary entirely — it talks to
