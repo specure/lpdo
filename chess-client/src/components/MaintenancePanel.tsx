@@ -460,16 +460,18 @@ function IndexSection() {
       rebuild &&
       !window.confirm(
         "Rebuild the entire position index from scratch? This wipes the positions " +
-          "table and reprocesses every game. It uses the fast (appender) path and " +
-          "cannot be cancelled once started — let it run to completion.",
+          "table and reprocesses every game — on a multi-million-game database " +
+          "that takes several minutes. You can cancel it; the index is then " +
+          "completed by the next \"Update index\" run.",
       )
     ) {
       return;
     }
     // Full rebuild uses --fast (appender), the same path the setup wizard uses
     // for the initial index — orders of magnitude faster than the transactional
-    // path on a multi-million-game database. The incremental update stays
-    // transactional (small, safe, cancellable).
+    // path on a multi-million-game database (measured ~170x). Both modes are
+    // cancellable: the fill checks between windows and chunks, committing whole
+    // games, so a cancelled run is simply finished by the next incremental one.
     void progress.run(
       rebuild ? ["index-positions", "--rebuild", "--fast"] : ["index-positions"],
     );
@@ -489,7 +491,7 @@ function IndexSection() {
               onChange={(e) => setRebuild(e.target.checked)}
               className="cursor-pointer accent-primary w-4 h-4"
             />
-            <span>Rebuild from scratch — reprocess every game (can't be cancelled)</span>
+            <span>Rebuild from scratch — reprocess every game</span>
           </label>
           <ActionButton onClick={run}>{rebuild ? "Rebuild index" : "Update index"}</ActionButton>
         </div>
