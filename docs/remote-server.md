@@ -72,14 +72,23 @@ as the server starts, so on a fresh install it may not exist for a second or
 two; wait and retry.
 
 **3. Check the network profile.** The firewall rule applies to **private**
-networks only. If Windows has classified the network as *Public*, the port stays
-blocked and remote clients fail exactly as if the server were down:
+networks only. If Windows has classified the network as *Public* — the default
+for anything it doesn't know — the port stays blocked and remote clients fail
+exactly as if the server were down:
 
 ```powershell
-Get-NetConnectionProfile
-# NetworkCategory must be Private; if it says Public, for that interface:
-Set-NetConnectionProfile -InterfaceAlias "Ethernet" -NetworkCategory Private
+Get-NetConnectionProfile      # NetworkCategory of the network you use must be Private
+Set-NetConnectionProfile -Name "<network or SSID>" -NetworkCategory Private
 ```
+
+Or in the GUI: Settings → Network & Internet → Wi-Fi (or Ethernet) → the
+connected network's *Properties* → **Network profile type** → **Private**.
+
+The label is per network and persists for it, so a laptop server marked Private
+on the home Wi-Fi is automatically *not* exposed on a café network, where the
+rule stops applying. That is why the rule is scoped to private profiles rather
+than opened everywhere — resist "fixing" a blocked connection by adding a
+public-profile rule.
 
 **4. Verify the server is listening on the network**, not just on loopback:
 
