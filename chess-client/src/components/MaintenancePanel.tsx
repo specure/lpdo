@@ -46,7 +46,10 @@ function LogBox({ lines }: { lines: string[] }) {
 
 /** Where the client looks for the server (#247). Lives on this page because it
  *  renders even while disconnected — which is exactly when it's needed. */
-function ServerConnectionSection({ status }: { status: StatusInfo | null }) {
+function ServerConnectionSection({ status, connection = "connected" }: {
+  status: StatusInfo | null;
+  connection?: "checking" | "connected" | "disconnected" | "unauthorized";
+}) {
   const [url, setUrl] = useState(serverUrl());
   const [token, setToken] = useState(serverToken());
   const [saved, setSaved] = useState(false);
@@ -61,8 +64,17 @@ function ServerConnectionSection({ status }: { status: StatusInfo | null }) {
     setTimeout(() => window.location.reload(), 400);
   }
 
+  // /status answers even with a bad token (it is deliberately open), so the
+  // caption must come from the overall connection state — with a wrong token
+  // this card used to say "Connected" (#247 test finding).
+  const caption =
+    connection === "connected" ? "Connected"
+    : connection === "unauthorized" ? "Access denied"
+    : connection === "checking" ? "Connecting…"
+    : "Not connected";
+  void status;
   return (
-    <SectionCard title="Server connection" status={status ? "Connected" : "Not connected"}>
+    <SectionCard title="Server connection" status={caption}>
       <p className="text-body-sm text-on-surface-variant">
         The database server normally runs on this machine. To use one on another computer,
         enter its address — and the access token shown in that server's data folder
@@ -947,7 +959,7 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
                 How to set up a remote server
               </ActionButton>
             </SectionCard>
-            <ServerConnectionSection status={status} />
+            <ServerConnectionSection status={status} connection={connection} />
           </div>
         ) : (
         <div className="space-y-6">
@@ -974,7 +986,7 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
           </div>
 
           <div className={`${grid} ${tab === "others" ? "" : "hidden"}`}>
-            <ServerConnectionSection status={status} />
+            <ServerConnectionSection status={status} connection={connection} />
             <BackupSection />
             <PurgeSection status={status} onMutated={onMutated} />
           </div>

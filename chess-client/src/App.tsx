@@ -106,9 +106,17 @@ function StatusBadge({ status }: { status: ServerStatus }) {
     disconnected: "Server offline",
     unauthorized: "Access denied",
   };
+  // Hover explanation — the badge is the one place the connection state is
+  // always visible, so it should say what the state MEANS and where to fix it.
+  const hint: Record<ServerStatus, string> = {
+    checking: "Contacting the server…",
+    connected: "Connected — the server is reachable and the access token (if any) was accepted.",
+    disconnected: "No server reachable at the configured address. Check Maintenance → Others → Server connection.",
+    unauthorized: "The server rejected the access token. Enter the value from the server's access-token file under Maintenance → Others → Server connection.",
+  };
 
   return (
-    <span className={`inline-flex items-center gap-2 h-7 px-3 rounded-full text-label-md ${styles[status]}`}>
+    <span title={hint[status]} className={`inline-flex items-center gap-2 h-7 px-3 rounded-full text-label-md ${styles[status]}`}>
       <span className={`w-2 h-2 rounded-full ${dots[status]}`} />
       {label[status]}
     </span>
