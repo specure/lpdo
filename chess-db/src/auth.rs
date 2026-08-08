@@ -109,11 +109,23 @@ fn restrict_permissions(path: &Path) {
         SDDL_REVISION_1, SE_FILE_OBJECT,
     };
     use windows_sys::Win32::Security::{
-        ACL, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
-        PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR,
+        GetSecurityDescriptorDacl, ACL, DACL_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
     };
 
     const SDDL: &str = "D:PAI(A;;FA;;;SY)(A;;FA;;;BA)";
+
+    // Escape hatch. This code runs before the database is even opened, and the
+    // service restarts on failure — so a defect here (the first cut of it read a
+    // self-relative descriptor as absolute and died on an access violation) puts
+    // the server in an endless restart loop that can only be broken by editing
+    // the service descriptor by hand. `LPDO_SKIP_TOKEN_ACL=1` lets an operator
+    // get a server back up without a new build, at the cost of the token
+    // keeping the directory's inherited permissions.
+    if std::env::var_os("LPDO_SKIP_TOKEN_ACL").is_some() {
+        eprintln!("LPDO_SKIP_TOKEN_ACL set — leaving the access token's inherited permissions alone.");
+        return;
+    }
 
     let sddl: Vec<u16> = SDDL.encode_utf16().chain(std::iter::once(0)).collect();
     let mut psd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
@@ -132,11 +144,24 @@ fn restrict_permissions(path: &Path) {
         return;
     }
 
-    // The absolute descriptor built above stores a pointer to its DACL;
-    // SetNamedSecurityInfoW wants that ACL, not the descriptor.
-    // SAFETY: psd points to a valid SECURITY_DESCRIPTOR produced by the call
-    // above, whose Dacl field is set because the SDDL contains a `D:` clause.
-    let dacl: *mut ACL = unsafe { (*psd.cast::<SECURITY_DESCRIPTOR>()).Dacl };
+    // SetNamedSecurityInfoW wants the DACL, not the descriptor — and it must be
+    // read with GetSecurityDescriptorDacl, NOT by casting to SECURITY_DESCRIPTOR
+    // and taking `.Dacl`. ConvertStringSecurityDescriptorToSecurityDescriptorW
+    // returns a SELF-RELATIVE descriptor, where that field is a byte offset, not
+    // a pointer; reading it as a pointer hands SetNamedSecurityInfoW a wild
+    // address and kills the process (an access violation, so no panic message
+    // and no log line — it just dies, and WinSW restarts it forever).
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    let mut present: i32 = 0;
+    let mut defaulted: i32 = 0;
+    // SAFETY: psd is a valid descriptor from the call above; the three out
+    // params are live locals. The accessor handles both descriptor layouts.
+    let got = unsafe { GetSecurityDescriptorDacl(psd, &mut present, &mut dacl, &mut defaulted) };
+    if got == 0 || present == 0 || dacl.is_null() {
+        // SAFETY: freeing the descriptor allocated above, still owned here.
+        unsafe { LocalFree(psd.cast()) };
+        return;
+    }
 
     let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
     wide.push(0);
