@@ -142,6 +142,15 @@
       nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" uninstall'
     ${EndIf}
     nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" install'
+    ; Force the start type back to automatic BEFORE starting. When the old
+    ; service can't be deleted at once (an open handle — services.msc, or a
+    ; process still exiting), Windows marks it for deletion and sets its start
+    ; type to Disabled; the `install` above then adopts that pending entry and
+    ; inherits Disabled. The service still runs when started by hand here, so
+    ; the install looks fine — and the server silently fails to come back after
+    ; the next reboot. Observed on a real upgrade; the descriptor's
+    ; <startmode>Automatic</startmode> does not repair it.
+    nsExec::ExecToLog 'sc config LPDOServer start= auto'
     nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" start'
   ${EndIf}
 !macroend
