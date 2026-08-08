@@ -41,22 +41,76 @@ from "wrong token".
 
 ### Windows
 
-Tick **"Allow other computers on this network to connect"** on the installer's
-components page. That is all: the service is configured to listen on the network
-and a firewall rule is added for private networks. The setting is remembered
-across upgrades.
+**1. Enable LAN mode.** Tick **"Allow other computers on this network to
+connect"** on the installer's components page. The service is then configured to
+listen on the network and a firewall rule is added for private networks. The
+choice is remembered across upgrades, and unticking it on a later install closes
+the server again.
 
-Then read the token in an **elevated** PowerShell (right-click → *Run as
-administrator*) — a normal one gets "access denied", by design:
+An upgrade to a newer version installs silently and **skips the components
+page**, so it keeps whatever you chose before. To change the choice, run the
+installer for the version you already have — then the pages appear.
+
+**2. Read the access token.** Open PowerShell **as administrator** (Start menu →
+type `PowerShell` → right-click *Windows PowerShell* → *Run as administrator*),
+then:
 
 ```powershell
 Get-Content C:\ProgramData\LPDO\access-token
 ```
 
-The token file is written as the server starts; if it isn't there yet, wait a
-second and retry.
+To copy it straight to the clipboard instead of retyping 40 hex characters:
 
-To turn it off later, re-run the installer and untick it.
+```powershell
+(Get-Content C:\ProgramData\LPDO\access-token).Trim() | Set-Clipboard
+```
+
+Two things to expect. A **normal, non-elevated** PowerShell gets "access
+denied" — that is deliberate: the token grants full control of the database, so
+only administrators and the service account may read it. And the file is created
+as the server starts, so on a fresh install it may not exist for a second or
+two; wait and retry.
+
+**3. Check the network profile.** The firewall rule applies to **private**
+networks only. If Windows has classified the network as *Public*, the port stays
+blocked and remote clients fail exactly as if the server were down:
+
+```powershell
+Get-NetConnectionProfile
+# NetworkCategory must be Private; if it says Public, for that interface:
+Set-NetConnectionProfile -InterfaceAlias "Ethernet" -NetworkCategory Private
+```
+
+**4. Verify the server is listening on the network**, not just on loopback:
+
+```powershell
+Get-Service LPDOServer | Select-Object Status, StartType   # Running / Automatic
+netstat -ano | findstr :7777                               # expect 0.0.0.0:7777 LISTENING
+```
+
+`127.0.0.1:7777` instead of `0.0.0.0:7777` means LAN mode is not active — re-run
+the installer and tick the box.
+
+Note that in LAN mode the token is required for **every** client, including the
+LPDO app on the server machine itself: loopback callers are not exempt, because
+exempting them would let any local user control the database. So enter the token
+on that machine too.
+
+#### If the server does not come up
+
+Service logs live in `C:\ProgramData\LPDO\logs` — `LPDOServer.wrapper.log`
+(service supervision), `LPDOServer.out.log` and `LPDOServer.err.log` (the server
+itself). A `wrapper.log` that shows the process starting every few seconds means
+the server is crash-looping.
+
+- `sc.exe config`/`net stop` failing with **1072 "marked for deletion"**: a
+  previous service entry is still queued for removal. Stop the service, close
+  `services.msc` and Task Manager, and if it persists, reboot — then re-run the
+  installer, which registers a fresh service.
+- Crash loop right after enabling LAN mode: set the machine-level environment
+  variable `LPDO_SKIP_TOKEN_ACL=1` and restart the service. That skips locking
+  down the token file's permissions (leaving it readable by local users, so use
+  it only to get a server back up) and is a useful signal to report in a bug.
 
 ### Linux
 
