@@ -286,11 +286,16 @@ pub fn player_stats(conn: &Connection, player_id: u32) -> Result<PlayerStats> {
     // so its denominator is 0 → NULLIF makes the ratio NULL → ROUND(NULL) is
     // NULL. COALESCE pins those to 0 so the non-nullable f64 reads never see a
     // NULL column (which previously surfaced as a 500).
+    //
+    // Same for the two colour counts: a player with NO matching games at all
+    // (e.g. mid-first-import, before their games have landed) yields an empty
+    // set, over which SUM is NULL — not 0 like COUNT — so those need COALESCE
+    // too (also previously a 500).
     let row = conn.query_row(
         "SELECT
              COUNT(*) AS total,
-             SUM(CASE WHEN white_id = ? THEN 1 ELSE 0 END) AS as_white,
-             SUM(CASE WHEN black_id = ? THEN 1 ELSE 0 END) AS as_black,
+             COALESCE(SUM(CASE WHEN white_id = ? THEN 1 ELSE 0 END), 0) AS as_white,
+             COALESCE(SUM(CASE WHEN black_id = ? THEN 1 ELSE 0 END), 0) AS as_black,
              COALESCE(ROUND(100.0 * SUM(CASE WHEN white_id = ? AND result = '1-0'     THEN 1 ELSE 0 END) / NULLIF(SUM(CASE WHEN white_id = ? THEN 1 ELSE 0 END), 0)), 0) AS white_w,
              COALESCE(ROUND(100.0 * SUM(CASE WHEN white_id = ? AND result = '1/2-1/2' THEN 1 ELSE 0 END) / NULLIF(SUM(CASE WHEN white_id = ? THEN 1 ELSE 0 END), 0)), 0) AS white_d,
              COALESCE(ROUND(100.0 * SUM(CASE WHEN white_id = ? AND result = '0-1'     THEN 1 ELSE 0 END) / NULLIF(SUM(CASE WHEN white_id = ? THEN 1 ELSE 0 END), 0)), 0) AS white_l,
@@ -412,5 +417,48 @@ fn format_size(bytes: u64) -> String {
         format!("{:.1} MB", bytes as f64 / MB as f64)
     } else {
         format!("{} KB", bytes / 1024)
+    }
+}
+
+#[cfg(test)]
+mod player_stats_tests {
+    use super::*;
+
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        conn
+    }
+
+    /// Regression: a player with no games yet (mid-first-import) hits an empty
+    /// set, where SUM is NULL. Must return zeroed stats, not an error (500).
+    #[test]
+    fn stats_for_player_with_no_games() {
+        let conn = setup();
+        conn.execute("INSERT INTO players (id, name, name_normalized) VALUES (7, 'Svrcek, Jozef', 'svrcek, jozef')", []).unwrap();
+
+        let stats = player_stats(&conn, 7).expect("no-games player must not error");
+        assert_eq!(stats.total, 0);
+        assert_eq!(stats.as_white, 0);
+        assert_eq!(stats.as_black, 0);
+        assert_eq!(stats.white_w_pct, 0.0);
+        assert_eq!(stats.black_l_pct, 0.0);
+        assert!(stats.top_openings_white.is_empty());
+    }
+
+    /// A single-colour player still gets real counts and pinned-to-0 ratios
+    /// for the colour they never played.
+    #[test]
+    fn stats_for_single_colour_player() {
+        let conn = setup();
+        conn.execute("INSERT INTO players (id, name, name_normalized) VALUES (7, 'A', 'a'), (8, 'B', 'b')", []).unwrap();
+        conn.execute(
+            "INSERT INTO games (id, white_id, black_id, date, result, pgn)
+             VALUES (1, 7, 8, '2020-01-01', '1-0', '1. e4 1-0')", []).unwrap();
+
+        let stats = player_stats(&conn, 7).unwrap();
+        assert_eq!((stats.total, stats.as_white, stats.as_black), (1, 1, 0));
+        assert_eq!(stats.white_w_pct, 100.0);
+        assert_eq!(stats.black_w_pct, 0.0);
     }
 }
