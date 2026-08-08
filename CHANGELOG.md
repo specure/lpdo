@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.14.19] - 2026-08-07
+## [0.14.20] - 2026-08-08
 
 ### Added
 - **The server can run on a different machine** — point the client at it under
@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CLI: `--host`/`--token`** (or `$LPDO_HOST`/`$LPDO_TOKEN`) to drive a remote
   server; an unreachable remote fails clearly instead of silently using a local
   database. (#247)
+- **Honest connection states** — a wrong or missing access token shows an
+  amber "Access denied" badge and an explanation (not a green "Online" with
+  cryptic per-panel errors); while disconnected, the Maintenance tools are
+  replaced by one clear message plus the Server connection card, and the
+  activity panel says the server is unreachable instead of "Loading…". If the
+  configured address doesn't answer but a server IS running on this machine,
+  the client says exactly that — the most common remote-setup mistake
+  (loopback-only server, real-IP address). (#247)
 - **Docs: [running the server on another machine](docs/remote-server.md)** —
   setup per platform, where the token lives, and encrypted access via
   Tailscale/WireGuard or an SSH tunnel. The LPDO protocol itself is
@@ -861,8 +869,8 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.14.19...HEAD
-[0.14.19]: https://github.com/specure/lpdo/compare/v0.14.18...v0.14.19
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.14.20...HEAD
+[0.14.20]: https://github.com/specure/lpdo/compare/v0.14.18...v0.14.20
 [0.14.18]: https://github.com/specure/lpdo/compare/v0.14.17...v0.14.18
 [0.14.17]: https://github.com/specure/lpdo/compare/v0.14.16...v0.14.17
 [0.14.16]: https://github.com/specure/lpdo/compare/v0.14.15...v0.14.16

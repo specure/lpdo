@@ -16,6 +16,14 @@ interface Props {
   /** Fires when an action inside the panel mutates the database (purge, etc.).
    *  Host should refresh server status and any visible game lists. */
   onMutated?: () => void;
+  /** Overall connection state from App's status poll. When not "connected",
+   *  the tool panels are replaced by one clear message + the Server connection
+   *  card — every panel failing with its own raw fetch error told the user
+   *  nothing (#247 test finding). */
+  connection?: "checking" | "connected" | "disconnected" | "unauthorized";
+  /** True when the configured (non-default) address is unreachable but a
+   *  server answers on this machine's loopback — the classic mis-setup. */
+  localServerDetected?: boolean;
 }
 
 // ── Shared UI ─────────────────────────────────────────────────────────────────
@@ -893,7 +901,7 @@ function TabBar({ active, onChange }: { active: TabId; onChange: (id: TabId) => 
   );
 }
 
-export default function MaintenancePanel({ onRunWizard, status, onMutated }: Props) {
+export default function MaintenancePanel({ onRunWizard, status, onMutated, connection = "connected", localServerDetected = false }: Props) {
   // Full-screen, non-modal view (driven by App's `mode` state). Mirrors the home
   // screen's layout: a centred max-width column on the bg-surface base. The tools
   // are grouped into tabs (Databases / Players / Others) to keep each view
@@ -927,7 +935,23 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated }: Pro
         {/* Database overview — full-width box, shared across tabs */}
         <DatabaseInfo status={status} />
 
-        {/* Tabbed tools */}
+        {/* Not connected: the tools below would each fail with their own raw
+            fetch error, which is noise once we know the server state. Show one
+            explanation and the card that fixes it. */}
+        {connection !== "connected" ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+            <SectionCard title={connection === "unauthorized" ? "Access denied" : "Server not reachable"}>
+              <p className="text-body-sm text-on-surface-variant">
+                {connection === "unauthorized"
+                  ? "The server is reachable but rejected the access token. Enter the value from the server's access-token file in the Server connection card."
+                  : localServerDetected
+                    ? "Nothing answers at the configured address, but a LPDO server IS running on this machine (127.0.0.1). Either switch back with \u201cUse this machine\u201d, or enable network access on the server (the installer's LAN option on Windows; LPDO_BIND=0.0.0.0 on Linux/macOS) and check its firewall."
+                    : "The maintenance tools need a running server. Check the address below, that the server machine is up, and that its firewall allows the port."}
+              </p>
+            </SectionCard>
+            <ServerConnectionSection status={status} />
+          </div>
+        ) : (
         <div className="space-y-6">
           <TabBar active={tab} onChange={setTab} />
 
@@ -957,6 +981,8 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated }: Pro
             <PurgeSection status={status} onMutated={onMutated} />
           </div>
         </div>
+
+        )}
 
         {/* Version footer — which build am I actually running? GUI and server
             are separate binaries (separate .debs on Linux), so show both: a
