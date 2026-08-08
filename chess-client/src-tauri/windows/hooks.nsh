@@ -140,16 +140,33 @@
     ${If} $1 == 0
       nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" stop'
       nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" uninstall'
+      ; Wait until the SCM has really forgotten the service. A delete that can't
+      ; complete (any open handle — services.msc, Task Manager's Services tab, a
+      ; process still exiting) leaves the entry "marked for deletion": it keeps
+      ; its old config, CreateService then fails with 1072, and even
+      ; `sc config` is refused. `install` would silently fail and the following
+      ; `start` would revive the STALE entry — which then runs the new binaries,
+      ; so everything looks healthy while the entry is still queued for removal
+      ; and its start type is stuck at Disabled. After the next reboot the
+      ; deletion completes and the service is simply gone. Observed on a real
+      ; upgrade over a crash-looping service.
+      StrCpy $2 0
+      ${Do}
+        nsExec::Exec 'sc query LPDOServer'
+        Pop $3
+        ${If} $3 <> 0
+          ${Break}                  ; 1060 "does not exist" — really gone
+        ${EndIf}
+        Sleep 1000
+        IntOp $2 $2 + 1
+      ${LoopUntil} $2 >= 30
+      ${If} $2 >= 30
+        DetailPrint "The old LPDO service is still queued for removal (something holds a handle to it). Reboot and re-run this installer to finish registering the server."
+      ${EndIf}
     ${EndIf}
     nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" install'
-    ; Force the start type back to automatic BEFORE starting. When the old
-    ; service can't be deleted at once (an open handle — services.msc, or a
-    ; process still exiting), Windows marks it for deletion and sets its start
-    ; type to Disabled; the `install` above then adopts that pending entry and
-    ; inherits Disabled. The service still runs when started by hand here, so
-    ; the install looks fine — and the server silently fails to come back after
-    ; the next reboot. Observed on a real upgrade; the descriptor's
-    ; <startmode>Automatic</startmode> does not repair it.
+    ; Belt and braces: assert the start type on the freshly created service, so
+    ; an upgrade can never leave the server out of the boot sequence.
     nsExec::ExecToLog 'sc config LPDOServer start= auto'
     nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" start'
   ${EndIf}

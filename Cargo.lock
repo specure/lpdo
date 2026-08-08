@@ -840,7 +840,7 @@ dependencies = [
 
 [[package]]
 name = "chess-client"
-version = "0.15.2"
+version = "0.15.3"
 dependencies = [
  "chess-pgn",
  "chess-results-client",
@@ -863,7 +863,7 @@ dependencies = [
 
 [[package]]
 name = "chess-db"
-version = "0.15.2"
+version = "0.15.3"
 dependencies = [
  "anyhow",
  "axum",
