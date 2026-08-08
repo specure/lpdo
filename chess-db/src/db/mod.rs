@@ -1,3 +1,4 @@
+pub mod ids;
 pub mod queries;
 pub mod schema;
 

@@ -451,17 +451,61 @@ export default function App() {
     handleSelectPlayer(fresh, additive);
   }
 
+  // Revalidate the in-memory selection when the DB mutates underneath it
+  // (#249): a merge can delete the very id it points at mid-session — and on
+  // servers predating the id high-water mark, a later import could even
+  // reissue that id to a different player, silently rebinding the view to
+  // someone else's games. Check the id directly; if it's gone or renamed,
+  // fall back to the stable-key resolver (fide_id / exact name).
+  useEffect(() => {
+    if (!selectedPlayer) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`/api/players/${selectedPlayer.id}`);
+        if (cancelled) return;
+        if (r.ok) {
+          const cur = (await r.json()) as PlayerInfo;
+          if (cancelled || cur.name === selectedPlayer.name) {
+            // Same player — just refresh the count if it moved (e.g. absorbed
+            // a merged duplicate's games).
+            if (!cancelled && cur.game_count !== selectedPlayer.game_count) setSelectedPlayer(cur);
+            return;
+          }
+        } else if (r.status !== 404) {
+          return; // server error/unreachable — don't churn the selection
+        }
+        // Id gone (merged away) or owned by someone else: re-resolve the
+        // *person*; clearing the selection honestly beats showing wrong games.
+        const fresh = await resolveCurrentPlayer(selectedPlayer);
+        if (cancelled) return;
+        setSelectedPlayer(fresh);
+        setSelectedExtras([]);
+        if (fresh) addRecentPlayer(fresh);
+      } catch {
+        // offline blip — leave the selection alone
+      }
+    })();
+    return () => { cancelled = true; };
+    // Deliberately keyed on mutations only, not on selection changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameMutationKey]);
+
   // Home "My games" card: open the Players view scoped to the user's configured
   // profile player. No longer filters by a "My games" collection — that
   // collection may not exist — so this is just the player's games. The Home card
   // is disabled when no profile is set, so myPlayer is normally present; the
   // guard keeps it safe if that ever changes.
-  function handleMyGames() {
+  async function handleMyGames() {
     const myPlayer = loadMyPlayer();
     if (!myPlayer) return;
     setScopePublicOnly(false);      // include the user's own private games
     setScopeCollectionId(null);     // no collection scoping — just the player
-    handleSelectPlayer(myPlayer);
+    // The stored profile carries a persisted (possibly stale) id — re-resolve
+    // by stable key before selecting (#249). Falls back to the stored snapshot
+    // when offline so the card still opens.
+    const fresh = await resolveCurrentPlayer(myPlayer);
+    handleSelectPlayer(fresh ?? myPlayer);
     setMode("players");
   }
 

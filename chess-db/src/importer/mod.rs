@@ -92,12 +92,12 @@ pub fn upsert_collection(conn: &Connection, name: &str) -> Result<i32> {
     ) {
         return Ok(id);
     }
-    let next_id: i32 = conn
-        .query_row("SELECT COALESCE(MAX(id), 0) + 1 FROM collections", [], |r| r.get(0))?;
+    let next_id = crate::db::ids::next_id(conn, "collections")? as i32;
     conn.execute(
         "INSERT INTO collections (id, name, created_at) VALUES (?, ?, CAST(NOW() AS TIMESTAMP))",
         duckdb::params![next_id, name],
     )?;
+    crate::db::ids::raise_high_water(conn, "collections", next_id as u32)?;
     Ok(next_id)
 }
 
@@ -1094,18 +1094,12 @@ impl ImportContext {
         spinner.enable_steady_tick(std::time::Duration::from_millis(80));
 
         let mut player_cache: HashMap<String, u32> = HashMap::new();
-        let next_player_id: u32 = {
-            let max_id: Option<i64> = conn
-                .query_row("SELECT MAX(id) FROM players", [], |r| r.get(0))
-                .unwrap_or(None);
-            max_id.unwrap_or(0) as u32 + 1
-        };
-        let next_game_id: u32 = {
-            let max_id: Option<i64> = conn
-                .query_row("SELECT MAX(id) FROM games", [], |r| r.get(0))
-                .unwrap_or(None);
-            max_id.unwrap_or(0) as u32 + 1
-        };
+        // Allocate above the persistent high-water mark, not MAX(id): ids freed
+        // by player merges / game dedup must never be reissued (#249) — stale
+        // references (client-stored players, collection members) would silently
+        // rebind to the new owner.
+        let next_player_id: u32 = crate::db::ids::next_id(conn, "players")?;
+        let next_game_id: u32 = crate::db::ids::next_id(conn, "games")?;
 
         {
             let mut pstmt = conn.prepare("SELECT id, name_normalized FROM players")?;
@@ -1732,6 +1726,11 @@ fn flush_players(
         }
         conn.execute_batch("COMMIT")?;
     }
+    // Retire the batch's ids per flush, not only at import end: a failed or
+    // cancelled import must still never donate its ids to a later one (#249).
+    if let Some(max_id) = players.iter().map(|p| p.0).max() {
+        crate::db::ids::raise_high_water(conn, "players", max_id)?;
+    }
     Ok(())
 }
 
@@ -1804,6 +1803,10 @@ fn flush_games(conn: &Connection, games: &[GameRow], fast: bool) -> Result<()> {
             ])?;
         }
         conn.execute_batch("COMMIT")?;
+    }
+    // Same rationale as flush_players: retire the ids as soon as they're live.
+    if let Some(max_id) = games.iter().map(|g| g.id).max() {
+        crate::db::ids::raise_high_water(conn, "games", max_id)?;
     }
     Ok(())
 }
