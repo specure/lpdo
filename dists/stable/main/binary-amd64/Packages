@@ -180,6 +180,29 @@ Description: LPDO chess database command-line tool and client.
  (local or remote), falling back to direct access when no server is running.
 License: Apache-2.0
 
+Package: lpdo-cli
+Architecture: amd64
+Version: 0.15.5
+Priority: optional
+Section: utils
+Maintainer: SPECURE GmbH <jozef.svrcek@specure.com>
+Installed-Size: 62221
+Depends: libc6 (>= 2.34)
+Conflicts: lpdo (<< 0.5.0)
+Replaces: lpdo (<< 0.5.0)
+Filename: pool/main/lpdo-cli_0.15.5_amd64.deb
+Size: 21078704
+MD5sum: d0457cf7a9fbb9e675f5aa00e85e9bff
+SHA1: 20f6ef2785e11fabcee7af48f69af4f6741a96c1
+SHA256: 997144d3e978d8515cd8d96710cb2e730eae485759cc15c5211e0455a1802b4d
+SHA512: 5913ddee534eaba66709e9725cab26b33f3e6c01f881feb6d35b684417591202de7639eb8d94460269a75bc3443cc7c54f9069edb73ee39b0c7a8058c38efaf3
+Homepage: https://github.com/specure/lpdo
+Description: LPDO chess database command-line tool and client.
+ The chess-db binary imports TWIC archives, searches games and players, edits
+ the database, and transparently proxies to a running lpdo-server over HTTP
+ (local or remote), falling back to direct access when no server is running.
+License: Apache-2.0
+
 Package: lpdo-server
 Architecture: amd64
 Version: 0.13.0
@@ -348,6 +371,27 @@ Description: LPDO chess database server (system daemon).
  TWIC update scheduler. Listens on 127.0.0.1:7777 for the GUI and CLI.
 License: Apache-2.0
 
+Package: lpdo-server
+Architecture: amd64
+Version: 0.15.5
+Priority: optional
+Section: misc
+Maintainer: SPECURE GmbH <jozef.svrcek@specure.com>
+Installed-Size: 1
+Depends: lpdo-cli (= 0.15.5)
+Filename: pool/main/lpdo-server_0.15.5_amd64.deb
+Size: 2596
+MD5sum: 3266b50564651f4c4ac37bf084eb5aa7
+SHA1: ff6b99695ef713939aed89a5742c4d01388f12e6
+SHA256: 179f005502bceb241682b24c9a4c917236318c6c4b57464d4a4853303efe5157
+SHA512: bfec9892119022214915533abe4f94b04f3dfad7771badaed0868dc03733b31b4f476c4b506f3ffe75c1d1c900617d6b2612d789361a42bf689adf030373024a
+Homepage: https://github.com/specure/lpdo
+Description: LPDO chess database server (system daemon).
+ Runs `chess-db serve` as a systemd system service under the dedicated `lpdo`
+ user, owning the database under /var/lib/lpdo and running the in-process
+ TWIC update scheduler. Listens on 127.0.0.1:7777 for the GUI and CLI.
+License: Apache-2.0
+
 Package: lpdo
 Architecture: amd64
 Version: 0.13.0
@@ -481,6 +525,23 @@ MD5sum: 6fafd6d2530959a4c2a12429a95977db
 SHA1: 049391e7ebe3c90ae5d2739aed7aca7dac807ac6
 SHA256: 9aea6d9ba617625883ca0c1d2ce33a9934392bb2375a4a081226f424c48835ce
 SHA512: ef53ea943ff84da0bd6f0a91ac9ba67992b4425a95b63076f6dcc47bbb9379220c990bfaec4741cba12381435881fbf3b7f1a728552bbee8704ac58e10f2db87
+Description: LPDO — desktop chess database for managing your games and preparing for tournaments
+ (none)
+
+Package: lpdo
+Architecture: amd64
+Version: 0.15.5
+Priority: optional
+Maintainer: Specure
+Installed-Size: 22944
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Recommends: lpdo-server
+Filename: pool/main/lpdo_0.15.5_amd64.deb
+Size: 7966074
+MD5sum: e88555dde1337f3f0695e3e7f04d7719
+SHA1: 06efc9ff7e95cda65da2a0624f261847d20f4619
+SHA256: 0e62fc208648debc2eb70324abc92c2ad2e56981212d4967411baf5e904e9e6d
+SHA512: 58f4cb121ffe35e064f7b9eac49abf618407a610ee5066ee425f0749551bb43c454d33bd1c8871dece4f8b03bd8f0ed97986866c2e547989724cd9ae348baecc
 Description: LPDO — desktop chess database for managing your games and preparing for tournaments
  (none)
 
