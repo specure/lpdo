@@ -35,6 +35,34 @@
 ; that the user deliberately opened.
 !define LPDO_STATE_KEY "Software\LPDO"
 
+; Poll LPDOServer.exe for writability — the definitive "the process is really
+; gone" signal — for up to 30s. Pushes 1 when it unlocked (or was never there),
+; 0 on timeout. Defined at file scope, NOT inside a hook macro: those macro
+; bodies are expanded inside the install Section, where NSIS rejects a Function
+; definition. This file is !include-d before any section, so the hooks below can
+; call it.
+Function WaitForServiceExeUnlock
+  Push $2
+  Push $3
+  StrCpy $2 0
+  ${Do}
+    ClearErrors
+    FileOpen $3 "$INSTDIR\windows\service\LPDOServer.exe" a
+    ${IfNot} ${Errors}
+      FileClose $3
+      Pop $3
+      Pop $2
+      Push 1
+      Return
+    ${EndIf}
+    Sleep 1000
+    IntOp $2 $2 + 1
+  ${LoopUntil} $2 >= 30
+  Pop $3
+  Pop $2
+  Push 0
+FunctionEnd
+
 !macro NSIS_HOOK_PREINSTALL
   ; On an upgrade, stop the running service before Tauri replaces the locked
   ; exes. On a fresh install LPDOServer.exe isn't extracted yet → silent no-op.
@@ -45,21 +73,31 @@
   ; especially on Windows) — losing that race yields "Error opening file for
   ; writing". `net stop` blocks until the SCM reports stopped; then poll the
   ; service exe for writability (the definitive unlock signal) up to ~60s.
+  ;
+  ; A graceful stop is not always possible: a service entry that is marked for
+  ; deletion refuses control messages ("net stop" → error 2189) while its
+  ; process keeps running and keeps LPDOServer.exe locked. The wait then burns
+  ; its whole timeout and extraction fails anyway with "Error opening file for
+  ; writing" (observed on a real upgrade). So escalate: ask nicely, wait, and
+  ; only if the file is still locked kill the process tree — /T takes the
+  ; chess-db child with it. Kill is the last resort, not the default: it
+  ; interrupts a DuckDB checkpoint, leaving a WAL to replay on next open.
   nsExec::Exec 'sc query LPDOServer'
   Pop $1
   ${If} $1 == 0
     nsExec::ExecToLog 'net stop LPDOServer'
-    StrCpy $2 0
-    ${Do}
-      ClearErrors
-      FileOpen $3 "$INSTDIR\windows\service\LPDOServer.exe" a
-      ${IfNot} ${Errors}
-        FileClose $3
-        ${Break}
+    Call WaitForServiceExeUnlock
+    Pop $4
+    ${If} $4 == 0
+      DetailPrint "The LPDO service did not release its files; stopping it forcefully."
+      nsExec::ExecToLog 'taskkill /F /IM LPDOServer.exe /T'
+      nsExec::ExecToLog 'taskkill /F /IM chess-db.exe /T'
+      Call WaitForServiceExeUnlock
+      Pop $4
+      ${If} $4 == 0
+        DetailPrint "LPDOServer.exe is still locked. If this install fails to replace it, reboot and run the installer again."
       ${EndIf}
-      Sleep 1000
-      IntOp $2 $2 + 1
-    ${LoopUntil} $2 >= 60
+    ${EndIf}
   ${EndIf}
 !macroend
 
@@ -140,8 +178,34 @@
     ${If} $1 == 0
       nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" stop'
       nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" uninstall'
+      ; Wait until the SCM has really forgotten the service. A delete that can't
+      ; complete (any open handle — services.msc, Task Manager's Services tab, a
+      ; process still exiting) leaves the entry "marked for deletion": it keeps
+      ; its old config, CreateService then fails with 1072, and even
+      ; `sc config` is refused. `install` would silently fail and the following
+      ; `start` would revive the STALE entry — which then runs the new binaries,
+      ; so everything looks healthy while the entry is still queued for removal
+      ; and its start type is stuck at Disabled. After the next reboot the
+      ; deletion completes and the service is simply gone. Observed on a real
+      ; upgrade over a crash-looping service.
+      StrCpy $2 0
+      ${Do}
+        nsExec::Exec 'sc query LPDOServer'
+        Pop $3
+        ${If} $3 <> 0
+          ${Break}                  ; 1060 "does not exist" — really gone
+        ${EndIf}
+        Sleep 1000
+        IntOp $2 $2 + 1
+      ${LoopUntil} $2 >= 30
+      ${If} $2 >= 30
+        DetailPrint "The old LPDO service is still queued for removal (something holds a handle to it). Reboot and re-run this installer to finish registering the server."
+      ${EndIf}
     ${EndIf}
     nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" install'
+    ; Belt and braces: assert the start type on the freshly created service, so
+    ; an upgrade can never leave the server out of the boot sequence.
+    nsExec::ExecToLog 'sc config LPDOServer start= auto'
     nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" start'
   ${EndIf}
 !macroend

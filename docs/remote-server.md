@@ -31,19 +31,124 @@ in the server's data directory:
 | macOS | `/Library/Application Support/LPDO/access-token` |
 
 Anyone with the token has full control of the database, so treat it like a
-password. `GET /status` (version and counters only) stays open, which is how a
-client can tell "server unreachable" from "wrong token".
+password. The file is readable only by administrators and the service account,
+so reading it takes elevation — an elevated PowerShell on Windows, `sudo` on
+Linux and macOS (see the per-platform steps below). `GET /status` (version and
+counters only) stays open, which is how a client can tell "server unreachable"
+from "wrong token".
 
 ## Setting up the server
 
 ### Windows
 
-Tick **"Allow other computers on this network to connect"** on the installer's
-components page. That is all: the service is configured to listen on the network
-and a firewall rule is added for private networks. The setting is remembered
-across upgrades.
+**1. Enable LAN mode.** Tick **"Allow other computers on this network to
+connect"** on the installer's components page. The service is then configured to
+listen on the network and a firewall rule is added for private networks. The
+choice is remembered across upgrades, and unticking it on a later install closes
+the server again.
 
-To turn it off later, re-run the installer and untick it.
+An upgrade to a newer version installs silently and **skips the components
+page**, so it keeps whatever you chose before. To change the choice, run the
+installer for the version you already have — then the pages appear.
+
+**2. Read the access token.** Open PowerShell **as administrator** (Start menu →
+type `PowerShell` → right-click *Windows PowerShell* → *Run as administrator*),
+then:
+
+```powershell
+Get-Content C:\ProgramData\LPDO\access-token
+```
+
+To copy it straight to the clipboard instead of retyping 40 hex characters:
+
+```powershell
+(Get-Content C:\ProgramData\LPDO\access-token).Trim() | Set-Clipboard
+```
+
+Two things to expect. A **normal, non-elevated** PowerShell gets "access
+denied" — that is deliberate: the token grants full control of the database, so
+only administrators and the service account may read it. And the file is created
+as the server starts, so on a fresh install it may not exist for a second or
+two; wait and retry.
+
+**3. Check the network profile.** The firewall rule applies to **private**
+networks only. If Windows has classified the network as *Public* — the default
+for anything it doesn't know — the port stays blocked and remote clients fail
+exactly as if the server were down:
+
+```powershell
+Get-NetConnectionProfile      # NetworkCategory of the network you use must be Private
+Set-NetConnectionProfile -Name "<network or SSID>" -NetworkCategory Private
+```
+
+Or in the GUI: Settings → Network & Internet → Wi-Fi (or Ethernet) → the
+connected network's *Properties* → **Network profile type** → **Private**.
+
+The label is per network and persists for it, so a laptop server marked Private
+on the home Wi-Fi is automatically *not* exposed on a café network, where the
+rule stops applying. That is why the rule is scoped to private profiles rather
+than opened everywhere — resist "fixing" a blocked connection by adding a
+public-profile rule.
+
+**4. Verify the server is listening on the network**, not just on loopback:
+
+```powershell
+Get-Service LPDOServer | Select-Object Status, StartType   # Running / Automatic
+netstat -ano | findstr :7777                               # expect 0.0.0.0:7777 LISTENING
+```
+
+`127.0.0.1:7777` instead of `0.0.0.0:7777` means LAN mode is not active — re-run
+the installer and tick the box.
+
+Note that in LAN mode the token is required for **every** client, including the
+LPDO app on the server machine itself: loopback callers are not exempt, because
+exempting them would let any local user control the database. So enter the token
+on that machine too.
+
+#### If it works on the server machine but not from another computer
+
+The classic symptom: the LPDO app **on the server itself** connects fine over the
+machine's LAN address, and another computer can even `ping` it, but that computer
+cannot reach the database. Traffic from the server machine to its own address
+never passes the firewall, and `ping` is allowed by separate rules — so both of
+those succeeding tells you nothing about port 7777.
+
+Nearly always the network is classified **Public**, so the private-profile rule
+does not apply. Check and fix it as in step 3 above.
+
+The category is stored **per network**, which catches people out on a laptop:
+marking the docking-station Ethernet Private does nothing for the Wi-Fi you use
+later, and each new network starts out Public. If the connection worked
+yesterday and not today, check which network you are on now.
+
+Worth confirming from the other computer — `/status` needs no token, so it
+separates a blocked port from an authentication problem:
+
+```bash
+curl http://<server-ip>:7777/status
+```
+
+JSON back means the transport is fine and the remaining issue is the token or
+the address in the client (which shows as *Access denied*, not offline). A
+timeout means something is still filtering: a third-party firewall, or client
+isolation (sometimes called "AP isolation") on the router, which some access
+points enable on guest networks and which blocks LAN peers outright.
+
+#### If the server does not come up
+
+Service logs live in `C:\ProgramData\LPDO\logs` — `LPDOServer.wrapper.log`
+(service supervision), `LPDOServer.out.log` and `LPDOServer.err.log` (the server
+itself). A `wrapper.log` that shows the process starting every few seconds means
+the server is crash-looping.
+
+- `sc.exe config`/`net stop` failing with **1072 "marked for deletion"**: a
+  previous service entry is still queued for removal. Stop the service, close
+  `services.msc` and Task Manager, and if it persists, reboot — then re-run the
+  installer, which registers a fresh service.
+- Crash loop right after enabling LAN mode: set the machine-level environment
+  variable `LPDO_SKIP_TOKEN_ACL=1` and restart the service. That skips locking
+  down the token file's permissions (leaving it readable by local users, so use
+  it only to get a server back up) and is a useful signal to report in a bug.
 
 ### Linux
 

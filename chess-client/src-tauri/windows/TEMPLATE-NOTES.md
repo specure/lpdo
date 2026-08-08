@@ -194,3 +194,36 @@ reads SHCTX, which becomes HKLM. A previous currentUser install registered under
 $LOCALAPPDATA install would be orphaned. **Our build already uses `"installMode": "perMachine"`**
 (`tauri.windows.conf.json` line 11), so SHCTX = HKLM today and detection is consistent; but any
 migration logic for old per-user installs would need an explicit HKCU probe added near lines 217–220.
+
+## Syntax-checking hooks.nsh from Linux
+
+`hooks.nsh` mistakes otherwise surface only after a ~20-minute CI build and a
+failed install on a Windows machine. `makensis` runs fine on Linux and catches
+the structural errors — most importantly that hook macro bodies are expanded
+**inside the install Section**, where NSIS rejects a `Function` definition (put
+shared helpers at file scope in `hooks.nsh`; the file is `!include`-d before any
+section, so the macros can `Call` them).
+
+No root needed — extract the packages instead of installing them:
+
+```bash
+mkdir -p /tmp/nsis && cd /tmp/nsis
+apt-get download nsis nsis-common
+for f in *.deb; do dpkg -x "$f" root; done
+```
+
+Then compile a harness that mimics how the Tauri template consumes the file:
+`!include` at file scope, the four component sections declared, and the macros
+inserted inside `Section "Install"` / `Section "Uninstall"`. It needs
+`LogicLib.nsh`, `Sections.nsh`, `WinMessages.nsh`, `FileFunc.nsh`,
+`StrFunc.nsh` (plus `${Using:StrFunc} StrLoc` / `UnStrLoc`), `WordFunc.nsh` and
+`!insertmacro un.WordReplace`, and `Var UpdateMode` / `Var
+DeleteAppDataCheckboxState` which the real template declares:
+
+```bash
+NSISDIR=$PWD/root/usr/share/nsis ./root/usr/bin/makensis hooktest.nsi
+```
+
+Warnings about a missing uninstaller and unreferenced variables are harness
+artifacts. This checks syntax and structure only — service control, firewall
+rules and registry effects still need a real Windows run.
