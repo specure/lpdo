@@ -1861,6 +1861,33 @@ async fn main() -> Result<()> {
         jobs::restore_snapshot_if_present(&cli.db)?;
     }
 
+    // Resolve the serve bind address and (for a network bind) the access token
+    // BEFORE the database open below: opening a multi-GB DuckDB takes seconds,
+    // and `systemctl restart && cat access-token` from the setup docs raced it —
+    // the file only appeared "a few moments later" (#247 test finding). Writing
+    // it here makes the token available the instant the process starts.
+    let serve_net: Option<(String, Option<String>)> = if let Commands::Serve { port, bind, .. } = &cli.command {
+        let bind = bind
+            .clone()
+            .or_else(|| std::env::var("LPDO_BIND").ok().filter(|v| !v.is_empty()))
+            .unwrap_or_else(|| "127.0.0.1".to_string());
+        let addr = format!("{bind}:{port}");
+        let token = if auth::is_loopback_bind(&addr) {
+            None
+        } else {
+            let t = auth::load_or_create(&cli.db)?;
+            eprintln!(
+                "Listening beyond this machine ({addr}); clients must supply the access token from {}.\n\
+                 There is no TLS — use this on a trusted local network only, never exposed to the internet.",
+                auth::token_path(&cli.db).display()
+            );
+            Some(t)
+        };
+        Some((addr, token))
+    } else {
+        None
+    };
+
     // ── CLI → daemon proxy ────────────────────────────────────────────────────
     // The lpdo-server daemon owns the database (single-writer lock), so when it's
     // running we forward long-running "job" commands to it over HTTP rather than
@@ -2462,30 +2489,11 @@ async fn main() -> Result<()> {
                 do_sources_fide_coverage(&conn, collection.as_deref(), &by, cli.json)?;
             }
         },
-        Commands::Serve { port, bind, .. } => {
-            // Flag > $LPDO_BIND (how the packaged services configure it, since
-            // editing a service descriptor by hand is worse than an env entry)
-            // > loopback.
-            let bind = bind
-                .clone()
-                .or_else(|| std::env::var("LPDO_BIND").ok().filter(|v| !v.is_empty()))
-                .unwrap_or_else(|| "127.0.0.1".to_string());
-            let addr = format!("{bind}:{port}");
-            // A LAN-reachable server gets a mandatory access token (#247) — the
-            // API has no other auth and can purge/reset the database. Loopback
-            // keeps today's behaviour exactly: no token, no file, nothing to
-            // configure for existing installs.
-            let token = if auth::is_loopback_bind(&addr) {
-                None
-            } else {
-                let t = auth::load_or_create(&cli.db)?;
-                eprintln!(
-                    "Listening beyond this machine ({addr}); clients must supply the access token from {}.\n\
-                     There is no TLS — use this on a trusted local network only, never exposed to the internet.",
-                    auth::token_path(&cli.db).display()
-                );
-                Some(t)
-            };
+        Commands::Serve { .. } => {
+            // Bind + token were resolved (and the token file written) BEFORE the
+            // slow database open — see `serve_net` above (#247: the token must
+            // exist the moment the service starts, not seconds later).
+            let (addr, token) = serve_net.expect("serve_net is Some for Commands::Serve");
             // The server owns the database read-write: it runs every mutation as
             // an in-process job and serves queries from a pool of cloned read
             // connections (DuckDB MVCC). No separate writer process exists, so

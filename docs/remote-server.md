@@ -63,6 +63,9 @@ sudo systemctl restart lpdo-server
 sudo cat /var/lib/lpdo/.chess-db/access-token   # note this down
 ```
 
+The token file is written as the server starts; if `cat` says it doesn't exist
+yet, wait a second and retry.
+
 If a firewall is active, allow the port — e.g. `sudo ufw allow 7777/tcp`.
 
 ### macOS
