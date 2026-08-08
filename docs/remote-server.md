@@ -105,6 +105,35 @@ LPDO app on the server machine itself: loopback callers are not exempt, because
 exempting them would let any local user control the database. So enter the token
 on that machine too.
 
+#### If it works on the server machine but not from another computer
+
+The classic symptom: the LPDO app **on the server itself** connects fine over the
+machine's LAN address, and another computer can even `ping` it, but that computer
+cannot reach the database. Traffic from the server machine to its own address
+never passes the firewall, and `ping` is allowed by separate rules — so both of
+those succeeding tells you nothing about port 7777.
+
+Nearly always the network is classified **Public**, so the private-profile rule
+does not apply. Check and fix it as in step 3 above.
+
+The category is stored **per network**, which catches people out on a laptop:
+marking the docking-station Ethernet Private does nothing for the Wi-Fi you use
+later, and each new network starts out Public. If the connection worked
+yesterday and not today, check which network you are on now.
+
+Worth confirming from the other computer — `/status` needs no token, so it
+separates a blocked port from an authentication problem:
+
+```bash
+curl http://<server-ip>:7777/status
+```
+
+JSON back means the transport is fine and the remaining issue is the token or
+the address in the client (which shows as *Access denied*, not offline). A
+timeout means something is still filtering: a third-party firewall, or client
+isolation (sometimes called "AP isolation") on the router, which some access
+points enable on guest networks and which blocks LAN peers outright.
+
 #### If the server does not come up
 
 Service logs live in `C:\ProgramData\LPDO\logs` — `LPDOServer.wrapper.log`
