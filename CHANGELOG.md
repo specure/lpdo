@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.5] - 2026-08-09
+
 ### Security
 - **The access token is no longer readable by other users on a Windows server**
   — it inherited `C:\ProgramData`'s permissions, which grant every local account
@@ -15,6 +17,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing token files are tightened when the server restarts. Reading the token
   on Windows now needs an elevated PowerShell, as the setup guide describes.
   (#247)
+
+### Fixed
+- **Windows: the database server no longer fails to register on upgrade** — when
+  the previous service could not be removed immediately, the installer adopted
+  the outgoing entry: the server ran, so the upgrade looked fine, but it was
+  excluded from the boot sequence and disappeared after the next restart. The
+  installer now waits for the old service to be gone before registering the new
+  one. (#247)
+- **Windows: upgrading over a server that refuses to stop no longer breaks the
+  install** — it hung, then failed with "Error opening file for writing". The
+  installer now stops the service forcefully as a last resort, and says when a
+  reboot is needed instead of failing cryptically. (#247)
+
+### Documentation
+- **[Running the server on another machine](docs/remote-server.md) covers
+  Windows properly** — how to read the access token from an elevated PowerShell,
+  why an ordinary one is refused, marking the network as Private (per network,
+  so a laptop's Wi-Fi needs it separately from a dock) and how to verify the
+  server really listens on the network. Plus troubleshooting for the common
+  "works on the server machine but not from another computer" case, where a
+  successful ping proves nothing. (#247)
 
 ## [0.15.0] - 2026-08-08
 
