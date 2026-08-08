@@ -119,18 +119,15 @@ pub fn import(conn: &Connection, path: &Path, reporter: &Reporter) -> Result<()>
             )?;
             updated += 1;
         } else {
-            // New player — allocate an ID above the current max
-            let next_id: u32 = {
-                let max: Option<i64> = conn
-                    .query_row("SELECT MAX(id) FROM players", [], |r| r.get(0))
-                    .unwrap_or(None);
-                max.unwrap_or(0) as u32 + 1
-            };
+            // New player — allocate above the persistent high-water mark so a
+            // merged-away player's id is never reissued (#249).
+            let next_id = crate::db::ids::next_id(conn, "players")?;
             conn.execute(
                 "INSERT INTO players (id, name, name_normalized, fide_id, name_normalised)
                  VALUES (?, ?, ?, ?, TRUE)",
                 duckdb::params![next_id, name, name_normalized, fide_id],
             )?;
+            crate::db::ids::raise_high_water(conn, "players", next_id)?;
             inserted += 1;
         }
     }

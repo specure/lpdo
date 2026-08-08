@@ -1310,17 +1310,54 @@ async fn merge_players_handler(
             return Err((StatusCode::NOT_FOUND, format!("player {} not found", drop_id)));
         }
 
-        // Reassign all games, then delete the dropped player
-        conn.execute("UPDATE games SET white_id = ? WHERE white_id = ?", duckdb::params![keep_id, drop_id])
-            .map_err(db_err)?;
-        conn.execute("UPDATE games SET black_id = ? WHERE black_id = ?", duckdb::params![keep_id, drop_id])
-            .map_err(db_err)?;
-        conn.execute("DELETE FROM players WHERE id = ?", duckdb::params![drop_id])
-            .map_err(db_err)?;
+        // Reassign all games, then delete the dropped player — atomically, so a
+        // failure mid-merge can't leave games split between the two ids (#249).
+        conn.execute_batch("BEGIN").map_err(db_err)?;
+        let merged = (|| -> anyhow::Result<()> {
+            conn.execute("UPDATE games SET white_id = ? WHERE white_id = ?", duckdb::params![keep_id, drop_id])?;
+            conn.execute("UPDATE games SET black_id = ? WHERE black_id = ?", duckdb::params![keep_id, drop_id])?;
+            conn.execute("DELETE FROM players WHERE id = ?", duckdb::params![drop_id])?;
+            crate::db::queries::recalculate_game_count_for(conn, keep_id)?;
+            Ok(())
+        })();
+        match merged {
+            Ok(()) => {
+                conn.execute_batch("COMMIT").map_err(db_err)?;
+                Ok(StatusCode::NO_CONTENT)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(db_err(e))
+            }
+        }
+    }).await
+}
 
-        crate::db::queries::recalculate_game_count_for(conn, keep_id).map_err(db_err)?;
-
-        Ok(StatusCode::NO_CONTENT)
+/// Look a player up by id. Exists so the client can re-validate player
+/// references it persisted across sessions (#249): ids stored while a player
+/// existed may since have been merged away — 404 here — and, on databases
+/// predating the id high-water mark, even reissued to a different player
+/// (the name check catches that).
+async fn player_by_id_handler(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<u32>,
+) -> std::result::Result<Json<PlayerInfo>, (StatusCode, String)> {
+    state.reads.run(move |conn| {
+        conn.query_row(
+            "SELECT id, name, fide_id, game_count FROM players WHERE id = ?",
+            duckdb::params![id],
+            |row| Ok(PlayerInfo {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                fide_id: row.get(2)?,
+                game_count: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+            }),
+        )
+        .map(Json)
+        .map_err(|e| match e {
+            duckdb::Error::QueryReturnedNoRows => (StatusCode::NOT_FOUND, format!("player {id} not found")),
+            other => db_err(other),
+        })
     }).await
 }
 
@@ -2200,6 +2237,7 @@ pub async fn run(
         .route("/sources/{key}/enabled",               post(set_source_enabled_handler))
         .route("/schedule",                            get(get_schedule_handler).post(set_schedule_handler))
         .route("/players",                             get(players_handler))
+        .route("/players/{id}",                        get(player_by_id_handler))
         .route("/players/{id}/stats",                  get(player_stats_handler))
         .route("/players/{keep_id}/merge/{drop_id}",   post(merge_players_handler))
         .route("/games",                               get(games_handler))

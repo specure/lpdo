@@ -334,6 +334,27 @@ pub fn init(conn: &Connection) -> Result<()> {
     // table (#40) reuses the name. Creating it last avoids the drop clobbering it.
     init_sources(conn)?;
 
+    // Seed the id high-water marks (#249) on databases that predate them:
+    // without this, a merge done right after upgrading could still free the
+    // current top id for the next import to reuse. Seeding at the live maxima
+    // retires every id currently visible; ids that were both handed out AND
+    // freed before the upgrade are unknowable here — the client's stable-key
+    // revalidation covers that one residual window. Runs last so all three
+    // tables exist. Idempotent: only inserts missing entity rows.
+    conn.execute_batch(
+        "
+        INSERT INTO id_high_water (entity, high_id)
+        SELECT 'players', COALESCE((SELECT MAX(id) FROM players), 0)
+        WHERE NOT EXISTS (SELECT 1 FROM id_high_water WHERE entity = 'players');
+        INSERT INTO id_high_water (entity, high_id)
+        SELECT 'games', COALESCE((SELECT MAX(id) FROM games), 0)
+        WHERE NOT EXISTS (SELECT 1 FROM id_high_water WHERE entity = 'games');
+        INSERT INTO id_high_water (entity, high_id)
+        SELECT 'collections', COALESCE((SELECT MAX(id) FROM collections), 0)
+        WHERE NOT EXISTS (SELECT 1 FROM id_high_water WHERE entity = 'collections');
+        ",
+    )?;
+
     Ok(())
 }
 
@@ -441,16 +462,33 @@ fn init_collections(conn: &Connection) -> Result<()> {
         ",
     )?;
 
-    // Seed the default TWIC collection (idempotent). The TWIC importer adds
-    // every issue's games here.
+    // Highest id ever handed out per entity (#249) — allocation goes through
+    // db::ids so deleted top ids are never reissued. Created here (before the
+    // TWIC seed below) because every id allocation consults it.
     conn.execute_batch(
         "
-        INSERT INTO collections (id, name, created_at)
-        SELECT COALESCE((SELECT MAX(id) FROM collections), 0) + 1,
-               'TWIC', CAST(NOW() AS TIMESTAMP)
-        WHERE NOT EXISTS (SELECT 1 FROM collections WHERE name = 'TWIC');
+        CREATE TABLE IF NOT EXISTS id_high_water (
+            entity   VARCHAR PRIMARY KEY,
+            high_id  BIGINT NOT NULL
+        );
         ",
     )?;
+
+    // Seed the default TWIC collection (idempotent). The TWIC importer adds
+    // every issue's games here.
+    let twic_exists: bool = conn
+        .query_row("SELECT COUNT(*) FROM collections WHERE name = 'TWIC'", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .map(|c| c > 0)?;
+    if !twic_exists {
+        let id = crate::db::ids::next_id(conn, "collections")?;
+        conn.execute(
+            "INSERT INTO collections (id, name, created_at) VALUES (?, 'TWIC', CAST(NOW() AS TIMESTAMP))",
+            duckdb::params![id],
+        )?;
+        crate::db::ids::raise_high_water(conn, "collections", id)?;
+    }
 
     Ok(())
 }
