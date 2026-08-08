@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.14.20] - 2026-08-08
+## [0.15.0] - 2026-08-08
 
 ### Added
 - **The server can run on a different machine** — point the client at it under
@@ -34,6 +34,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   setup per platform, where the token lives, and encrypted access via
   Tailscale/WireGuard or an SSH tunnel. The LPDO protocol itself is
   unencrypted: trusted local networks only, never the open internet. (#247)
+
+### Fixed
+- **A merged-away player's id can no longer be handed to a new player** — ids
+  were reused after "Merge players", so a stored reference (the selected or
+  recent player) could silently rebind to someone else and list a stranger's
+  games under the wrong name. Ids are now retired permanently, the client
+  re-checks its stored players whenever the database changes underneath them,
+  and a manual merge is applied atomically. Existing databases are protected
+  immediately on upgrade. (#249)
+- **Profile card no longer shows "Server error 500" during a first import** —
+  a configured player whose games haven't landed yet now shows zeros until
+  they do.
 
 ## [0.14.18] - 2026-08-07
 
