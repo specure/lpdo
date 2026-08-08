@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
@@ -21,9 +21,6 @@ interface Props {
    *  card — every panel failing with its own raw fetch error told the user
    *  nothing (#247 test finding). */
   connection?: "checking" | "connected" | "disconnected" | "unauthorized";
-  /** True when the configured (non-default) address is unreachable but a
-   *  server answers on this machine's loopback — the classic mis-setup. */
-  localServerDetected?: boolean;
 }
 
 // ── Shared UI ─────────────────────────────────────────────────────────────────
@@ -901,7 +898,7 @@ function TabBar({ active, onChange }: { active: TabId; onChange: (id: TabId) => 
   );
 }
 
-export default function MaintenancePanel({ onRunWizard, status, onMutated, connection = "connected", localServerDetected = false }: Props) {
+export default function MaintenancePanel({ onRunWizard, status, onMutated, connection = "connected" }: Props) {
   // Full-screen, non-modal view (driven by App's `mode` state). Mirrors the home
   // screen's layout: a centred max-width column on the bg-surface base. The tools
   // are grouped into tabs (Databases / Players / Others) to keep each view
@@ -944,10 +941,11 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
               <p className="text-body-sm text-on-surface-variant">
                 {connection === "unauthorized"
                   ? "The server is reachable but rejected the access token. Enter the value from the server's access-token file in the Server connection card."
-                  : localServerDetected
-                    ? "Nothing answers at the configured address, but a LPDO server IS running on this machine (127.0.0.1). Either switch back with \u201cUse this machine\u201d, or enable network access on the server (the installer's LAN option on Windows; LPDO_BIND=0.0.0.0 on Linux/macOS) and check its firewall."
-                    : "The maintenance tools need a running server. Check the address below, that the server machine is up, and that its firewall allows the port."}
+                  : "The maintenance tools need a running server. Check the address below, that the server machine is up with network access enabled, and that its firewall allows the port."}
               </p>
+              <ActionButton onClick={() => { void openUrl("https://github.com/specure/lpdo/blob/main/docs/remote-server.md"); }}>
+                How to set up a remote server
+              </ActionButton>
             </SectionCard>
             <ServerConnectionSection status={status} />
           </div>

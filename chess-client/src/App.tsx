@@ -19,7 +19,8 @@ import ActivityIndicator from "./components/ActivityIndicator";
 import { loadMyPlayer } from "./components/MyStatsWidget";
 import { useUpdateCheck } from "./hooks/useUpdateCheck";
 import { GameSummary, LocalGame, PlayerInfo, PrepContext, StatusInfo } from "./types";
-import { DEFAULT_SERVER_URL, isDefaultServer, serverUrl } from "./api";
+import { isDefaultServer, serverUrl } from "./api";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 type ServerStatus = "checking" | "connected" | "disconnected" | "unauthorized";
 
@@ -36,12 +37,6 @@ const STATUS_RETRY_OFFLINE_MS = 3 * 1000;
 function useServerStatus() {
   const [status, setStatus] = useState<ServerStatus>("checking");
   const [info, setInfo] = useState<StatusInfo | null>(null);
-  // The most common remote-setup mistake (#247): the client points at this
-  // machine's real IP while the server still listens only on loopback. From
-  // the client's seat that's just "unreachable" — but when the configured
-  // address is non-default AND loopback answers, we can say exactly what's
-  // wrong instead of a generic "Server offline".
-  const [localServerDetected, setLocalServerDetected] = useState(false);
   // Holds the latest `check` closure so callers (e.g. dialog onClose handlers)
   // can trigger an out-of-band refresh without waiting for the next tick.
   const checkRef = useRef<() => void>(() => {});
@@ -71,22 +66,7 @@ function useServerStatus() {
           setStatus("connected"); setInfo(data); ok = true;
         }
       } catch {
-        if (!cancelled) {
-          setStatus("disconnected");
-          setInfo(null);
-          if (!isDefaultServer()) {
-            try {
-              // Absolute URL: bypasses the /api rewrite; a loopback server
-              // needs no token.
-              const r = await fetch(DEFAULT_SERVER_URL + "/status");
-              if (!cancelled) setLocalServerDetected(r.ok);
-            } catch {
-              if (!cancelled) setLocalServerDetected(false);
-            }
-          } else {
-            setLocalServerDetected(false);
-          }
-        }
+        if (!cancelled) { setStatus("disconnected"); setInfo(null); }
       }
       if (!cancelled) {
         timer = setTimeout(check, ok ? STATUS_POLL_INTERVAL_MS : STATUS_RETRY_OFFLINE_MS);
@@ -101,7 +81,7 @@ function useServerStatus() {
   // Stable identity so consumers can safely include `refresh` in dep arrays.
   const refresh = useCallback(() => { checkRef.current(); }, []);
 
-  return { status, info, localServerDetected, refresh };
+  return { status, info, refresh };
 }
 
 function StatusBadge({ status }: { status: ServerStatus }) {
@@ -329,7 +309,7 @@ function basename(path: string): string {
 }
 
 export default function App() {
-  const { status, info, localServerDetected, refresh: refreshServerStatus } = useServerStatus();
+  const { status, info, refresh: refreshServerStatus } = useServerStatus();
   const { step, setStep, max } = useFontScale();
   const { hc, toggle: toggleHc } = useHighContrast();
   const { scheme, toggle: toggleScheme } = useColorScheme();
@@ -747,7 +727,6 @@ export default function App() {
           onRunWizard={() => setShowSetup(true)}
           status={info}
           connection={status}
-          localServerDetected={localServerDetected}
           onMutated={() => { refreshServerStatus(); onGameMutated(); }}
         />
       )}
@@ -765,17 +744,20 @@ export default function App() {
                   file under <span className="text-on-surface">Maintenance → Others → Server connection</span>.
                 </div>
               </>
-            ) : localServerDetected ? (
+            ) : !isDefaultServer() ? (
               <>
-                <div className="text-headline-sm text-on-surface">No server at {serverUrl()} — but one runs on this machine</div>
+                <div className="text-headline-sm text-on-surface">No server reachable at {serverUrl()}</div>
                 <div className="text-body-md text-on-surface-variant">
-                  A LPDO server is answering at 127.0.0.1, just not at the configured
-                  address. Under <span className="text-on-surface">Maintenance → Others → Server connection</span>,
-                  either click <span className="text-on-surface">Use this machine</span> — or, if other
-                  computers should reach this server, enable network access on it
-                  (the installer's LAN option on Windows; <code className="bg-surface-container-highest text-on-surface px-2 py-0.5 rounded-sm">LPDO_BIND=0.0.0.0</code> on Linux/macOS)
-                  and check the firewall.
+                  Check the address under <span className="text-on-surface">Maintenance → Others → Server connection</span>,
+                  that the server machine is running, that its server has network access
+                  enabled, and that its firewall allows the port.
                 </div>
+                <button
+                  onClick={() => { void openUrl("https://github.com/specure/lpdo/blob/main/docs/remote-server.md"); }}
+                  className="h-9 px-4 rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 transition-all duration-short3 ease-standard"
+                >
+                  How to set up a remote server
+                </button>
               </>
             ) : (
               <>

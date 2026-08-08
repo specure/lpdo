@@ -27,10 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   amber "Access denied" badge and an explanation (not a green "Online" with
   cryptic per-panel errors); while disconnected, the Maintenance tools are
   replaced by one clear message plus the Server connection card, and the
-  activity panel says the server is unreachable instead of "Loading…". If the
-  configured address doesn't answer but a server IS running on this machine,
-  the client says exactly that — the most common remote-setup mistake
-  (loopback-only server, real-IP address). (#247)
+  activity panel says the server is unreachable instead of "Loading…". An
+  unreachable remote address gets a checklist and a link to the setup guide.
+  (#247)
 - **Docs: [running the server on another machine](docs/remote-server.md)** —
   setup per platform, where the token lives, and encrypted access via
   Tailscale/WireGuard or an SSH tunnel. The LPDO protocol itself is
