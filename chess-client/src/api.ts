@@ -2,13 +2,54 @@
 //
 // fetch() calls use the relative "/api" prefix: in dev the Vite proxy forwards
 // "/api/*" to the server (stripping "/api"); in a packaged app the fetch
-// override in main.tsx rewrites it to http://127.0.0.1:7777. EventSource is NOT
+// override in main.tsx rewrites it to the configured server. EventSource is NOT
 // covered by that override, so SSE URLs are built explicitly here.
+//
+// The server may run on another machine (#247). Its address and access token are
+// user settings, read live (not captured at module load) so changing them takes
+// effect without restarting the app.
 
-// The daemon's real origin. `apiUrl` fetches go through the "/api" proxy/override,
-// but native (Tauri) HTTP calls — e.g. the streamed import upload (#154) — must
-// hit the server directly, so expose it.
-export const SERVER_URL = "http://127.0.0.1:7777";
+const DEFAULT_SERVER_URL = "http://127.0.0.1:7777";
+const SERVER_URL_KEY = "serverUrl";
+const SERVER_TOKEN_KEY = "serverToken";
+
+/** The daemon's origin. Native (Tauri) HTTP calls — the streamed import upload
+ *  (#154), backup download (#121) — must hit the server directly, so they take
+ *  this rather than relying on the webview fetch override. */
+export function serverUrl(): string {
+  try {
+    const v = localStorage.getItem(SERVER_URL_KEY)?.trim();
+    return v ? v.replace(/\/+$/, "") : DEFAULT_SERVER_URL;
+  } catch {
+    return DEFAULT_SERVER_URL;
+  }
+}
+
+/** Shared access token; empty for a loopback server, which requires none. */
+export function serverToken(): string {
+  try {
+    return localStorage.getItem(SERVER_TOKEN_KEY)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function setServerSettings(url: string, token: string): void {
+  const clean = url.trim().replace(/\/+$/, "");
+  if (clean && clean !== DEFAULT_SERVER_URL) localStorage.setItem(SERVER_URL_KEY, clean);
+  else localStorage.removeItem(SERVER_URL_KEY);
+  if (token.trim()) localStorage.setItem(SERVER_TOKEN_KEY, token.trim());
+  else localStorage.removeItem(SERVER_TOKEN_KEY);
+}
+
+export function isDefaultServer(): boolean {
+  return serverUrl() === DEFAULT_SERVER_URL;
+}
+
+export { DEFAULT_SERVER_URL };
+
+/** Header name the server expects the token in (auth.rs TOKEN_HEADER). */
+export const TOKEN_HEADER = "x-lpdo-token";
 
 export function apiUrl(path: string): string {
   return "/api" + path;
@@ -44,7 +85,11 @@ export async function postJson<T>(path: string, body?: unknown): Promise<T> {
  *  fetch override, so it needs the real server URL in a packaged app). */
 export function jobEventsUrl(jobId: string): string {
   const path = `/jobs/${encodeURIComponent(jobId)}/events`;
-  return import.meta.env.DEV ? "/api" + path : SERVER_URL + path;
+  const base = import.meta.env.DEV ? "/api" + path : serverUrl() + path;
+  // EventSource cannot set headers, so an authenticated server takes the token
+  // as a query parameter here (see the middleware in serve.rs).
+  const token = serverToken();
+  return token ? `${base}?token=${encodeURIComponent(token)}` : base;
 }
 
 export interface JobRequest {

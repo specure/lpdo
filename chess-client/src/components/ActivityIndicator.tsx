@@ -248,6 +248,9 @@ function WatchRow({ w, onDismiss }: { w: CloudWatch; onDismiss: (fen: string) =>
 // "TWIC 0" while imports built three collections in the background).
 export default function ActivityIndicator({ onSettled }: { onSettled?: () => void } = {}) {
   const [jobs, setJobs] = useState<Job[] | null>(null);
+  // Distinguish "still fetching" from "server unreachable" — a dead server
+  // used to leave the panel on "Loading…" forever (#247 test finding).
+  const [unreachable, setUnreachable] = useState(false);
   const [etas, setEtas] = useState<Map<string, string>>(new Map());
   // Ids the user has asked to cancel — the job keeps running until it reaches a
   // committed boundary (cooperative cancel), so the button shows "Cancelling…"
@@ -279,6 +282,7 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
     const poll = () => {
       getJobs().then((j) => {
         if (stop) return;
+        setUnreachable(false);
         // Detect jobs that newly reached a terminal state and notify the host
         // once each (imports create/populate collections in the background).
         const terminalNow = j
@@ -322,7 +326,7 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
           for (const id of prev) { if (stillActive.has(id)) next.add(id); else changed = true; }
           return changed ? next : prev;
         });
-      }).catch(() => { /* offline — leave last known */ });
+      }).catch(() => { if (!stop) setUnreachable(true); });
       // Deepen watches (chessdb): poll alongside jobs; fire once per update.
       getCloudWatches().then((w) => {
         if (stop) return;
@@ -418,7 +422,9 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
             </span>
           </div>
 
-          {jobs === null ? (
+          {unreachable ? (
+            <div className="px-4 py-6 text-body-sm text-on-surface-variant">Server not reachable — activity unavailable.</div>
+          ) : jobs === null ? (
             <div className="px-4 py-6 text-body-sm text-on-surface-variant">Loading…</div>
           ) : active.length === 0 && recent.length === 0 && watches.length === 0 ? (
             <div className="px-4 py-6 text-body-sm text-on-surface-variant">No background activity.</div>

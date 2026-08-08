@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.20] - 2026-08-08
+
+### Added
+- **The server can run on a different machine** — point the client at it under
+  Maintenance → Others → Server connection (reachable even while disconnected).
+  A server listening beyond this machine requires an access token, generated
+  beside its database on first start; requests without it are rejected. The
+  default stays exactly as before: local server, no token, nothing to
+  configure. (#247)
+- **Windows installer: LAN option** — "Allow other computers on this network to
+  connect" (off by default) makes the service listen on the network and adds a
+  private-profile firewall rule; the choice is remembered across upgrades.
+  Linux/macOS servers opt in with `LPDO_BIND=0.0.0.0` (or `--bind`). (#247)
+- **CLI: `--host`/`--token`** (or `$LPDO_HOST`/`$LPDO_TOKEN`) to drive a remote
+  server; an unreachable remote fails clearly instead of silently using a local
+  database. (#247)
+- **Honest connection states** — a wrong or missing access token shows an
+  amber "Access denied" badge and an explanation (not a green "Online" with
+  cryptic per-panel errors); while disconnected, the Maintenance tools are
+  replaced by one clear message plus the Server connection card, and the
+  activity panel says the server is unreachable instead of "Loading…". An
+  unreachable remote address gets a checklist and a link to the setup guide.
+  (#247)
+- **Docs: [running the server on another machine](docs/remote-server.md)** —
+  setup per platform, where the token lives, and encrypted access via
+  Tailscale/WireGuard or an SSH tunnel. The LPDO protocol itself is
+  unencrypted: trusted local networks only, never the open internet. (#247)
+
 ## [0.14.18] - 2026-08-07
 
 ### Changed
@@ -840,7 +868,8 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.14.18...HEAD
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.14.20...HEAD
+[0.14.20]: https://github.com/specure/lpdo/compare/v0.14.18...v0.14.20
 [0.14.18]: https://github.com/specure/lpdo/compare/v0.14.17...v0.14.18
 [0.14.17]: https://github.com/specure/lpdo/compare/v0.14.16...v0.14.17
 [0.14.16]: https://github.com/specure/lpdo/compare/v0.14.15...v0.14.16

@@ -9,6 +9,7 @@
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 mod ajedrez;
+mod auth;
 mod cloud_eval;
 mod db;
 mod dedup;
@@ -134,6 +135,18 @@ struct Cli {
     /// long-running commands are forwarded to it over HTTP.
     #[arg(long, global = true)]
     port: Option<u16>,
+
+    /// Host of the lpdo-server daemon to proxy commands to (default 127.0.0.1,
+    /// or $LPDO_HOST). Use this to drive a server on another machine (#247);
+    /// it also needs --token, and implies --remote since there is no local
+    /// database to fall back to.
+    #[arg(long, global = true)]
+    host: Option<String>,
+
+    /// Access token for a server bound beyond loopback (also $LPDO_TOKEN). Find
+    /// it in the server's data directory as `access-token`.
+    #[arg(long, global = true)]
+    token: Option<String>,
 
     /// Force direct database access — never proxy to a running daemon. Also via
     /// $LPDO_LOCAL=1. (The command will fail if the daemon holds the DB lock.)
@@ -283,6 +296,13 @@ enum Commands {
         /// Port to listen on
         #[arg(long, default_value_t = 7777)]
         port: u16,
+        /// Address to listen on (default 127.0.0.1 — this machine only, or
+        /// $LPDO_BIND). Use 0.0.0.0 to accept clients from the local network;
+        /// that REQUIRES an access token, generated beside the database on first
+        /// use and entered in the client's server settings (#247). Do not expose
+        /// this port to the internet: there is no TLS.
+        #[arg(long)]
+        bind: Option<String>,
         /// Wipe the database before serving, starting from an empty schema. For a
         /// clean test run — combine with a stopped daemon or systemd override.
         #[arg(long)]
@@ -1841,13 +1861,60 @@ async fn main() -> Result<()> {
         jobs::restore_snapshot_if_present(&cli.db)?;
     }
 
+    // Resolve the serve bind address and (for a network bind) the access token
+    // BEFORE the database open below: opening a multi-GB DuckDB takes seconds,
+    // and `systemctl restart && cat access-token` from the setup docs raced it —
+    // the file only appeared "a few moments later" (#247 test finding). Writing
+    // it here makes the token available the instant the process starts.
+    let serve_net: Option<(String, Option<String>)> = if let Commands::Serve { port, bind, .. } = &cli.command {
+        let bind = bind
+            .clone()
+            .or_else(|| std::env::var("LPDO_BIND").ok().filter(|v| !v.is_empty()))
+            .unwrap_or_else(|| "127.0.0.1".to_string());
+        let addr = format!("{bind}:{port}");
+        let token = if auth::is_loopback_bind(&addr) {
+            None
+        } else {
+            let t = auth::load_or_create(&cli.db)?;
+            eprintln!(
+                "Listening beyond this machine ({addr}); clients must supply the access token from {}.\n\
+                 There is no TLS — use this on a trusted local network only, never exposed to the internet.",
+                auth::token_path(&cli.db).display()
+            );
+            Some(t)
+        };
+        Some((addr, token))
+    } else {
+        None
+    };
+
     // ── CLI → daemon proxy ────────────────────────────────────────────────────
     // The lpdo-server daemon owns the database (single-writer lock), so when it's
     // running we forward long-running "job" commands to it over HTTP rather than
     // open the file here. `serve` itself must always open directly.
     if !matches!(cli.command, Commands::Serve { .. }) {
-        let force_local = cli.local
-            || std::env::var("LPDO_LOCAL").map(|v| v == "1" || v == "true").unwrap_or(false);
+        // Point the proxy at a remote daemon when asked (#247). A remote host
+        // implies --remote: there is no local database to fall back to, and
+        // silently operating on a local one instead would be a nasty surprise.
+        let remote_host = cli
+            .host
+            .clone()
+            .or_else(|| std::env::var("LPDO_HOST").ok().filter(|v| !v.is_empty()));
+        let token = cli
+            .token
+            .clone()
+            .or_else(|| std::env::var("LPDO_TOKEN").ok().filter(|v| !v.is_empty()));
+        let targets_remote_host = remote_host.is_some();
+        if let Some(h) = remote_host {
+            if cli.local {
+                bail!("--host and --local are mutually exclusive: a remote server can only be reached over HTTP");
+            }
+            proxy::configure(h, token);
+        }
+
+        let force_local = !targets_remote_host
+            && (cli.local
+                || std::env::var("LPDO_LOCAL").map(|v| v == "1" || v == "true").unwrap_or(false));
         let port = cli
             .port
             .or_else(|| std::env::var("LPDO_PORT").ok().and_then(|v| v.parse().ok()))
@@ -1855,6 +1922,16 @@ async fn main() -> Result<()> {
 
         if !force_local {
             if let Some(daemon) = proxy::detect_daemon(port).await {
+                // /status is open, so reaching the daemon proves nothing about
+                // the token — check it once here rather than letting every
+                // later call fail while parsing a 401 body as JSON.
+                if targets_remote_host && !proxy::token_accepted(port).await {
+                    bail!(
+                        "the server at {}:{port} rejected the access token — pass --token \
+                         (or set $LPDO_TOKEN) with the value from its `access-token` file",
+                        proxy::configured_host()
+                    );
+                }
                 // Surface a CLI/daemon version mismatch — a common gotcha when a
                 // stale `chess-db` on PATH talks to a freshly-built daemon.
                 if daemon.version != env!("CARGO_PKG_VERSION") {
@@ -1883,8 +1960,19 @@ async fn main() -> Result<()> {
                      this command can't run directly, and it isn't proxyable yet. Stop the \
                      daemon (systemctl --user stop lpdo-server) and retry, or pass --local."
                 );
-            } else if cli.remote {
-                bail!("--remote: no lpdo-server daemon reachable on 127.0.0.1:{port}");
+            } else if cli.remote || targets_remote_host {
+                // An explicit --host must never silently fall back to THIS
+                // machine's database — that would quietly operate on the wrong
+                // data. Same for --remote.
+                bail!(
+                    "no lpdo-server daemon reachable on {}:{port}{}",
+                    proxy::configured_host(),
+                    if targets_remote_host {
+                        " — check the address, that the server was started with --bind, and that its firewall allows the port"
+                    } else {
+                        ""
+                    }
+                );
             }
             // No daemon and not --remote → fall through to direct database access.
         }
@@ -2401,12 +2489,16 @@ async fn main() -> Result<()> {
                 do_sources_fide_coverage(&conn, collection.as_deref(), &by, cli.json)?;
             }
         },
-        Commands::Serve { port, .. } => {
+        Commands::Serve { .. } => {
+            // Bind + token were resolved (and the token file written) BEFORE the
+            // slow database open — see `serve_net` above (#247: the token must
+            // exist the moment the service starts, not seconds later).
+            let (addr, token) = serve_net.expect("serve_net is Some for Commands::Serve");
             // The server owns the database read-write: it runs every mutation as
             // an in-process job and serves queries from a pool of cloned read
             // connections (DuckDB MVCC). No separate writer process exists, so
             // there is no read-only reopen.
-            serve::run(conn, port, cli.db.clone()).await?;
+            serve::run(conn, addr, token, cli.db.clone()).await?;
         }
         // Handled before the database is opened (see the early returns above).
         Commands::Service { .. } | Commands::Reset { .. } => unreachable!(),

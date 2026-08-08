@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
@@ -8,7 +8,7 @@ import { useJobProgress } from "../hooks/useJobProgress";
 import SourcesPanel from "./SourcesPanel";
 import MergePlayersDialog from "./MergePlayersDialog";
 import { StatusInfo, ScheduleInfo } from "../types";
-import { SERVER_URL, getSchedule, getJobs } from "../api";
+import { serverUrl, serverToken, setServerSettings, DEFAULT_SERVER_URL, getSchedule, getJobs } from "../api";
 
 interface Props {
   onRunWizard: () => void;
@@ -16,6 +16,11 @@ interface Props {
   /** Fires when an action inside the panel mutates the database (purge, etc.).
    *  Host should refresh server status and any visible game lists. */
   onMutated?: () => void;
+  /** Overall connection state from App's status poll. When not "connected",
+   *  the tool panels are replaced by one clear message + the Server connection
+   *  card — every panel failing with its own raw fetch error told the user
+   *  nothing (#247 test finding). */
+  connection?: "checking" | "connected" | "disconnected" | "unauthorized";
 }
 
 // ── Shared UI ─────────────────────────────────────────────────────────────────
@@ -36,6 +41,80 @@ function LogBox({ lines }: { lines: string[] }) {
     <div ref={ref} className="mt-2 bg-surface-container-lowest rounded-sm p-2 text-label-sm font-mono text-on-surface-variant max-h-24 overflow-y-auto space-y-0.5">
       {lines.map((l, i) => <div key={i}>{l}</div>)}
     </div>
+  );
+}
+
+/** Where the client looks for the server (#247). Lives on this page because it
+ *  renders even while disconnected — which is exactly when it's needed. */
+function ServerConnectionSection({ status, connection = "connected" }: {
+  status: StatusInfo | null;
+  connection?: "checking" | "connected" | "disconnected" | "unauthorized";
+}) {
+  const [url, setUrl] = useState(serverUrl());
+  const [token, setToken] = useState(serverToken());
+  const [saved, setSaved] = useState(false);
+
+  const dirty = url.trim().replace(/\/+$/, "") !== serverUrl() || token.trim() !== serverToken();
+
+  function save() {
+    setServerSettings(url, token);
+    setSaved(true);
+    // Everything reads these per call, but a reload is the honest way to drop
+    // in-flight state (SSE streams, cached lists) tied to the previous server.
+    setTimeout(() => window.location.reload(), 400);
+  }
+
+  // /status answers even with a bad token (it is deliberately open), so the
+  // caption must come from the overall connection state — with a wrong token
+  // this card used to say "Connected" (#247 test finding).
+  const caption =
+    connection === "connected" ? "Connected"
+    : connection === "unauthorized" ? "Access denied"
+    : connection === "checking" ? "Connecting…"
+    : "Not connected";
+  void status;
+  return (
+    <SectionCard title="Server connection" status={caption}>
+      <p className="text-body-sm text-on-surface-variant">
+        The database server normally runs on this machine. To use one on another computer,
+        enter its address — and the access token shown in that server's data folder
+        (<span className="font-mono">access-token</span>). A server on this machine needs no token.
+      </p>
+      <div>
+        <div className="text-label-sm text-on-surface-variant uppercase tracking-wider mb-1">Server address</div>
+        <input
+          type="text"
+          value={url}
+          onChange={(e) => { setUrl(e.target.value); setSaved(false); }}
+          placeholder={DEFAULT_SERVER_URL}
+          spellCheck={false}
+          className="w-full h-9 px-3 rounded-sm bg-transparent text-on-surface placeholder:text-on-surface-variant text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
+        />
+      </div>
+      <div>
+        <div className="text-label-sm text-on-surface-variant uppercase tracking-wider mb-1">Access token (only for a server on another machine)</div>
+        <input
+          type="password"
+          value={token}
+          onChange={(e) => { setToken(e.target.value); setSaved(false); }}
+          placeholder="empty for a local server"
+          spellCheck={false}
+          className="w-full h-9 px-3 rounded-sm bg-transparent text-on-surface placeholder:text-on-surface-variant text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
+        />
+      </div>
+      <div className="flex items-center gap-2">
+        <ActionButton onClick={save} disabled={!dirty}>Save and reconnect</ActionButton>
+        {url.trim().replace(/\/+$/, "") !== DEFAULT_SERVER_URL && (
+          <button
+            onClick={() => { setUrl(DEFAULT_SERVER_URL); setToken(""); setSaved(false); }}
+            className="h-8 px-3 inline-flex items-center rounded-full text-primary text-label-md hover:bg-primary/8 transition-colors duration-short3 ease-standard"
+          >
+            Use this machine
+          </button>
+        )}
+        {saved && <span className="text-success text-body-sm">Saved — reconnecting…</span>}
+      </div>
+    </SectionCard>
   );
 }
 
@@ -602,7 +681,7 @@ function BackupSection() {
     try {
       // download_backup returns the resolved absolute path (leading `~/`
       // expanded) — use it for Reveal, which needs a real path, not `~/…`.
-      const resolved = await invoke<string>("download_backup", { baseUrl: SERVER_URL, collection, destPath: dest });
+      const resolved = await invoke<string>("download_backup", { baseUrl: serverUrl(), token: serverToken(), collection, destPath: dest });
       setSavedPath(resolved || dest);
       setPhase("done");
     } catch (e: unknown) {
@@ -831,7 +910,7 @@ function TabBar({ active, onChange }: { active: TabId; onChange: (id: TabId) => 
   );
 }
 
-export default function MaintenancePanel({ onRunWizard, status, onMutated }: Props) {
+export default function MaintenancePanel({ onRunWizard, status, onMutated, connection = "connected" }: Props) {
   // Full-screen, non-modal view (driven by App's `mode` state). Mirrors the home
   // screen's layout: a centred max-width column on the bg-surface base. The tools
   // are grouped into tabs (Databases / Players / Others) to keep each view
@@ -865,7 +944,24 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated }: Pro
         {/* Database overview — full-width box, shared across tabs */}
         <DatabaseInfo status={status} />
 
-        {/* Tabbed tools */}
+        {/* Not connected: the tools below would each fail with their own raw
+            fetch error, which is noise once we know the server state. Show one
+            explanation and the card that fixes it. */}
+        {connection !== "connected" ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+            <SectionCard title={connection === "unauthorized" ? "Access denied" : "Server not reachable"}>
+              <p className="text-body-sm text-on-surface-variant">
+                {connection === "unauthorized"
+                  ? "The server is reachable but rejected the access token. Enter the value from the server's access-token file in the Server connection card."
+                  : "The maintenance tools need a running server. Check the address below, that the server machine is up with network access enabled, and that its firewall allows the port."}
+              </p>
+              <ActionButton onClick={() => { void openUrl("https://github.com/specure/lpdo/blob/main/docs/remote-server.md"); }}>
+                How to set up a remote server
+              </ActionButton>
+            </SectionCard>
+            <ServerConnectionSection status={status} connection={connection} />
+          </div>
+        ) : (
         <div className="space-y-6">
           <TabBar active={tab} onChange={setTab} />
 
@@ -890,10 +986,13 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated }: Pro
           </div>
 
           <div className={`${grid} ${tab === "others" ? "" : "hidden"}`}>
+            <ServerConnectionSection status={status} connection={connection} />
             <BackupSection />
             <PurgeSection status={status} onMutated={onMutated} />
           </div>
         </div>
+
+        )}
 
         {/* Version footer — which build am I actually running? GUI and server
             are separate binaries (separate .debs on Linux), so show both: a

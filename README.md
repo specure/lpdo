@@ -193,6 +193,9 @@ Longer-form design documents for planned or in-progress work live in
 - [Multiple reference-database sources](docs/multi-source.md) — how LPDO
   supports several reference sources behind a common provider abstraction, using
   collections as provenance and deduplication for cross-source consistency.
+- [Running the server on another machine](docs/remote-server.md) — putting the
+  database on one computer and using it from LPDO on others over the local
+  network, with the access token that guards it.
 
 ## Player-name normalisation
 

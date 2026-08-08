@@ -2140,7 +2140,15 @@ fn raise_process_priority() {
 #[cfg(not(windows))]
 fn raise_process_priority() {}
 
-pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Result<()> {
+/// Serve the API on `bind` (e.g. `127.0.0.1:7777`). `token`, when present, is
+/// required on every request except `/status`; `main` supplies it exactly when
+/// the bind address is reachable from other machines (#247).
+pub async fn run(
+    conn: Connection,
+    bind: String,
+    token: Option<String>,
+    db_path: std::path::PathBuf,
+) -> Result<()> {
     raise_process_priority();
 
     // Clear any upload spool/temp files leaked by an import that crashed or was
@@ -2227,17 +2235,81 @@ pub async fn run(conn: Connection, port: u16, db_path: std::path::PathBuf) -> Re
         .route("/jobs/{id}/events",                    get(job_events_handler))
         .route("/jobs/{id}/cancel",                    post(cancel_job_handler))
         .route("/jobs/{id}/retry",                     post(retry_job_handler))
-        .with_state(state)
-        // Allow the bundled webview (a cross-origin caller, e.g. tauri://localhost)
-        // to reach this local server. In dev the Vite proxy makes calls same-origin;
-        // in a packaged app the frontend hits http://127.0.0.1:7777 directly.
-        .layer(CorsLayer::permissive());
+        .with_state(state);
 
-    let addr = format!("127.0.0.1:{}", port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    println!("chess-db server listening on http://{}", addr);
+    // Reaching beyond loopback requires a token (#247): the API has no auth and
+    // several endpoints are destructive (purge, setup reset, delete), so a bare
+    // LAN bind would hand the database to the whole network. `serve()` refuses
+    // to start otherwise, so this pairing can't be bypassed by configuration.
+    let app = match token {
+        Some(t) => app.layer(axum::middleware::from_fn_with_state(
+            std::sync::Arc::new(t),
+            require_token,
+        )),
+        None => app,
+    };
+
+    // Allow the bundled webview (a cross-origin caller, e.g. tauri://localhost)
+    // to reach this local server. Applied OUTSIDE the auth middleware — layers
+    // added later wrap earlier ones — so 401 responses carry CORS headers too.
+    // Otherwise the webview blocks the 401 at the network layer and the client
+    // sees an opaque "TypeError: Load failed" instead of an auth failure it can
+    // explain to the user (found in the first two-machine test).
+    let app = app.layer(CorsLayer::permissive());
+
+    let listener = tokio::net::TcpListener::bind(&bind).await?;
+    println!("chess-db server listening on http://{}", bind);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Reject requests without the shared token. `/status` stays open so a client
+/// can tell "server unreachable" from "wrong token" (it exposes only version and
+/// counters), and CORS preflights must pass or browsers never send the header.
+async fn require_token(
+    axum::extract::State(expected): axum::extract::State<std::sync::Arc<String>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let open = req.uri().path() == "/status" || req.method() == axum::http::Method::OPTIONS;
+    if open {
+        return next.run(req).await;
+    }
+    // Header is the normal channel. The query fallback exists for SSE: the
+    // browser EventSource API cannot set headers, so the job-progress stream
+    // has no other way to authenticate. A token in a URL can end up in logs,
+    // which is tolerable for a LAN server addressed by the client itself, and
+    // is the standard workaround.
+    let from_header = req
+        .headers()
+        .get(crate::auth::TOKEN_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let provided = from_header.unwrap_or_else(|| {
+        req.uri()
+            .query()
+            .and_then(|q| {
+                q.split('&').find_map(|kv| {
+                    kv.strip_prefix("token=").map(|v| {
+                        // Percent-decoding isn't needed: tokens are hex.
+                        v.to_owned()
+                    })
+                })
+            })
+            .unwrap_or_default()
+    });
+    let provided = provided.as_str();
+    if crate::auth::matches(&expected, provided) {
+        next.run(req).await
+    } else {
+        // Fully qualified: bare `StatusCode` in this module is reqwest's.
+        use axum::response::IntoResponse;
+        (
+            axum::http::StatusCode::UNAUTHORIZED,
+            "missing or invalid access token — set it in the client's server settings",
+        )
+            .into_response()
+    }
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { SERVER_URL } from "../api";
+import { serverUrl, serverToken } from "../api";
 import { Tag, buildBlock, defaultNewGameTags, rememberPgnSite } from "../lib/pgnEditor";
 import { splitPgnFile } from "../lib/pgnSplitter";
 import { useJobProgress } from "../hooks/useJobProgress";
@@ -217,7 +217,8 @@ export default function AddGameDialog({
       // than block the dialog on a multi-hour import.
       invoke<string>("upload_pgn_file", {
         path: p,
-        baseUrl: SERVER_URL,
+        baseUrl: serverUrl(),
+        token: serverToken(),
         collection: collectionName.trim(),
         onDuplicate: dedup,
         fast: bulk,

@@ -87,6 +87,13 @@ Section "Database server (recommended)" SecServer
 SectionEnd
 Section "Command-line tools (chess-db on PATH)" SecCli
 SectionEnd
+
+; LAN mode (#247) — OFF by default: opening a writable database to the network is
+; opt-in, never a silent upgrade side effect. Selecting it makes the service
+; listen on every interface (which forces chess-db to require an access token)
+; and adds a private-profile firewall rule; see hooks.nsh.
+Section /o "Allow other computers on this network to connect" SecLan
+SectionEnd
 Var NoShortcutMode
 Var WixMode
 Var OldMainBinaryName
@@ -823,6 +830,7 @@ SectionEnd
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecApp} "The LPDO desktop application (GUI). Untick for a server-only or command-line-only machine."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecCli} "Adds the chess-db command-line tool to the system PATH, so scripts and terminals can query and manage the database."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecLan} "Let LPDO on other computers use this machine's database: the server listens on the local network, requires an access token (created at C:\ProgramData\LPDO\access-token on first start), and a firewall rule is added for private networks. Leave this off unless you want a shared server — and never forward the port to the internet, as the connection is not encrypted."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecServer} "Runs the LPDO database server in the background as a Windows service (LPDOServer), so your database stays up to date even when the app is closed. Recommended. Untick only if this machine connects to a server elsewhere."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 

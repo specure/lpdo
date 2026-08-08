@@ -27,6 +27,13 @@
 ; System (per-machine) environment key — we install perMachine, so PATH edits
 ; go to HKLM and apply to all users.
 !define LPDO_ENV_KEY "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
+; Firewall rule name for LAN mode (#247) — also used to remove it again.
+!define LPDO_FW_RULE "LPDO database server"
+!define LPDO_PORT "7777"
+; Remembers whether LAN mode is on, so a seamless upgrade (which SKIPS the
+; components page, leaving SecLan unticked) doesn't silently close the server
+; that the user deliberately opened.
+!define LPDO_STATE_KEY "Software\LPDO"
 
 !macro NSIS_HOOK_PREINSTALL
   ; On an upgrade, stop the running service before Tauri replaces the locked
@@ -91,6 +98,40 @@
     CreateDirectory "$0\LPDO"
     CreateDirectory "$0\LPDO\logs"
 
+    ; LAN mode (#247): swap in the service descriptor that sets
+    ; LPDO_BIND=0.0.0.0 (copying a shipped variant beats rewriting XML from
+    ; NSIS), and allow the port through the firewall on PRIVATE networks only —
+    ; a LAN bind is silently unreachable otherwise. Both are undone below when
+    ; the component is not selected, so unticking it on a later upgrade really
+    ; does close the server again.
+    SectionGetFlags ${SecLan} $2
+    IntOp $2 $2 & ${SF_SELECTED}
+    ; On a seamless upgrade the user never saw the components page, so an
+    ; unticked SecLan means "unknown", not "off" — carry the previous choice.
+    ${If} $2 = 0
+    ${AndIf} $UpdateMode = 1
+      ReadRegStr $3 HKLM "${LPDO_STATE_KEY}" "LanMode"
+      ${If} $3 == "1"
+        StrCpy $2 1
+      ${EndIf}
+    ${EndIf}
+
+    nsExec::Exec 'netsh advfirewall firewall delete rule name="${LPDO_FW_RULE}"'
+    Pop $3
+    ${If} $2 <> 0
+      ; Replace the loopback descriptor with the LAN one. Delete+Rename, not
+      ; CopyFiles: CopyFiles wraps SHFileOperation and expects directory
+      ; targets, so it is unreliable for a single file. Both files are
+      ; re-extracted by the next upgrade, so consuming the variant is fine.
+      Delete "$INSTDIR\windows\service\LPDOServer.xml"
+      Rename "$INSTDIR\windows\service\LPDOServer-lan.xml" "$INSTDIR\windows\service\LPDOServer.xml"
+      nsExec::ExecToLog 'netsh advfirewall firewall add rule name="${LPDO_FW_RULE}" dir=in action=allow protocol=TCP localport=${LPDO_PORT} profile=private'
+      WriteRegStr HKLM "${LPDO_STATE_KEY}" "LanMode" "1"
+      DetailPrint "LAN mode: the server listens on all interfaces and requires the access token from %ProgramData%\LPDO\access-token."
+    ${Else}
+      WriteRegStr HKLM "${LPDO_STATE_KEY}" "LanMode" "0"
+    ${EndIf}
+
     ; (Re)register and start the LPDOServer system service via WinSW. Only
     ; stop+uninstall a *pre-existing* service (clean upgrade); skip on a fresh
     ; install so WinSW doesn't log a FATAL for a service that isn't there yet.
@@ -106,6 +147,10 @@
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
+  ; Drop the LAN firewall rule (no-op when it was never added).
+  nsExec::Exec 'netsh advfirewall firewall delete rule name="${LPDO_FW_RULE}"'
+  Pop $1
+
   ; Stop + remove the service if present (regardless of components: a service
   ; from any earlier install must not survive its files being removed).
   nsExec::Exec 'sc query LPDOServer'
@@ -134,6 +179,8 @@
       WriteRegExpandStr HKLM "${LPDO_ENV_KEY}" "Path" "$0"
       SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000
     ${EndIf}
+
+    DeleteRegKey HKLM "${LPDO_STATE_KEY}"
 
     ; Make Tauri's "delete application data" checkbox honest: it only clears
     ; the GUI's per-user data, so when it's ticked, also remove the system

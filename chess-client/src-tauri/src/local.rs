@@ -111,10 +111,15 @@ fn is_uploadable(name: &str) -> bool {
 /// upload→background handoff, and the daemon coalesces post-import maintenance
 /// across the whole batch).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri commands take flat params from JS.
 pub async fn upload_pgn_file(
     app: tauri::AppHandle,
     path: String,
     base_url: String,
+    // Access token for a LAN-bound server (#247); empty for loopback, which
+    // requires none. These native calls bypass the webview fetch override, so
+    // they carry the header themselves.
+    token: String,
     collection: String,
     on_duplicate: String,
     fast: bool,
@@ -159,6 +164,7 @@ pub async fn upload_pgn_file(
             &client,
             f,
             &base_url,
+            &token,
             &collection,
             &on_duplicate,
             fast,
@@ -190,6 +196,7 @@ async fn upload_one(
     client: &reqwest::Client,
     path: &std::path::Path,
     base_url: &str,
+    token: &str,
     collection: &str,
     on_duplicate: &str,
     fast: bool,
@@ -241,10 +248,11 @@ async fn upload_one(
     ];
 
     let url = format!("{}/import/upload", base_url.trim_end_matches('/'));
-    let resp = client
-        .post(url)
-        .query(&query)
-        .body(body)
+    let mut req = client.post(url).query(&query).body(body);
+    if !token.is_empty() {
+        req = req.header("x-lpdo-token", token);
+    }
+    let resp = req
         .send()
         .await
         .map_err(|e| format!("upload request failed: {e}"))?;
@@ -273,6 +281,8 @@ async fn upload_one(
 pub async fn download_backup(
     app: tauri::AppHandle,
     base_url: String,
+    // See upload_pgn_file: token for a LAN-bound server (#247).
+    token: String,
     collection: String,
     dest_path: String,
 ) -> Result<String, String> {
@@ -281,9 +291,11 @@ pub async fn download_backup(
     use tokio::io::AsyncWriteExt;
 
     let url = format!("{}/backup/download", base_url.trim_end_matches('/'));
-    let resp = reqwest::Client::new()
-        .get(url)
-        .query(&[("collection", collection)])
+    let mut req = reqwest::Client::new().get(url).query(&[("collection", collection)]);
+    if !token.is_empty() {
+        req = req.header("x-lpdo-token", &token);
+    }
+    let resp = req
         .send()
         .await
         .map_err(|e| format!("backup request failed: {e}"))?;
