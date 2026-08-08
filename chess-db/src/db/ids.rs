@@ -96,6 +96,24 @@ mod tests {
         assert_eq!(next_id(&conn, "players").unwrap(), 8);
     }
 
+    /// Upgrade path: a database that predates the watermark table gets its
+    /// marks seeded at the live maxima by schema::init, so a merge done right
+    /// after upgrading (before any post-upgrade import) still can't free the
+    /// top id for reuse.
+    #[test]
+    fn upgrade_seeds_marks_at_live_maxima() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO players (id, name, name_normalized) VALUES
+               (1, 'Keep', 'keep'), (2, 'Drop, Top', 'drop top');
+             DELETE FROM id_high_water;",   // simulate the pre-upgrade state
+        ).unwrap();
+
+        crate::db::schema::init(&conn).unwrap();   // the upgrade's re-init
+        conn.execute("DELETE FROM players WHERE id = 2", []).unwrap();
+        assert_eq!(next_id(&conn, "players").unwrap(), 3, "seeded mark must retire id 2");
+    }
+
     #[test]
     fn raise_is_monotonic() {
         let conn = setup();

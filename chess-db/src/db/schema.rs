@@ -334,6 +334,27 @@ pub fn init(conn: &Connection) -> Result<()> {
     // table (#40) reuses the name. Creating it last avoids the drop clobbering it.
     init_sources(conn)?;
 
+    // Seed the id high-water marks (#249) on databases that predate them:
+    // without this, a merge done right after upgrading could still free the
+    // current top id for the next import to reuse. Seeding at the live maxima
+    // retires every id currently visible; ids that were both handed out AND
+    // freed before the upgrade are unknowable here — the client's stable-key
+    // revalidation covers that one residual window. Runs last so all three
+    // tables exist. Idempotent: only inserts missing entity rows.
+    conn.execute_batch(
+        "
+        INSERT INTO id_high_water (entity, high_id)
+        SELECT 'players', COALESCE((SELECT MAX(id) FROM players), 0)
+        WHERE NOT EXISTS (SELECT 1 FROM id_high_water WHERE entity = 'players');
+        INSERT INTO id_high_water (entity, high_id)
+        SELECT 'games', COALESCE((SELECT MAX(id) FROM games), 0)
+        WHERE NOT EXISTS (SELECT 1 FROM id_high_water WHERE entity = 'games');
+        INSERT INTO id_high_water (entity, high_id)
+        SELECT 'collections', COALESCE((SELECT MAX(id) FROM collections), 0)
+        WHERE NOT EXISTS (SELECT 1 FROM id_high_water WHERE entity = 'collections');
+        ",
+    )?;
+
     Ok(())
 }
 
