@@ -69,4 +69,5 @@ tikv-jemallocator = "0.7"
 # exceed usable RAM on small boxes and make heavy ops like index-positions
 # thrash/OOM).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation", "Win32_System_Threading", "Win32_Foundation"] }
+# Win32_Security* carry the ACL call that locks down the access token (#247).
+windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation", "Win32_System_Threading", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization"] }

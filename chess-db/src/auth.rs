@@ -8,9 +8,11 @@
 //! (see `serve::run`).
 //!
 //! Design notes:
-//! - The token lives in `<db-dir>/access-token` (0600 on Unix), generated on
-//!   first LAN bind. Sharing it with a client is copy/paste; there is no user
-//!   database and no accounts.
+//! - The token lives in `<db-dir>/access-token`, generated on first LAN bind and
+//!   readable only by the service account and administrators (0600 on Unix, an
+//!   explicit inheritance-protected DACL on Windows — see
+//!   [`restrict_permissions`]). Sharing it with a client is copy/paste; there is
+//!   no user database and no accounts.
 //! - Compared in constant time so a wrong token cannot be recovered by timing.
 //! - `/status` stays open: clients probe it to distinguish "server down" from
 //!   "wrong token", and it exposes only version/counters.
@@ -27,8 +29,10 @@ use anyhow::{Context, Result};
 /// it clear this is a shared key, not a user credential.
 pub const TOKEN_HEADER: &str = "x-lpdo-token";
 
-/// Where the token is kept: beside the database, so it inherits the data
-/// directory's ownership/permissions (root-owned service dirs on Linux/Windows).
+/// Where the token is kept: beside the database, in the service's data
+/// directory. The file's own permissions are set explicitly (see
+/// [`restrict_permissions`]) — inheriting the directory's is not enough, least
+/// of all on Windows where `%ProgramData%` grants `BUILTIN\Users` read access.
 pub fn token_path(db: &Path) -> PathBuf {
     db.parent()
         .unwrap_or_else(|| Path::new("."))
@@ -36,11 +40,17 @@ pub fn token_path(db: &Path) -> PathBuf {
 }
 
 /// Read the token, or create one if absent. Returns the token string.
+///
+/// Permissions are re-applied on EVERY call, not only when the file is created:
+/// tokens written by an older build (which left Windows files at the inherited,
+/// world-readable ACL) must get tightened when that install upgrades, and a
+/// hand-copied file picks up the right permissions too.
 pub fn load_or_create(db: &Path) -> Result<String> {
     let path = token_path(db);
     if let Ok(existing) = std::fs::read_to_string(&path) {
         let trimmed = existing.trim().to_string();
         if !trimmed.is_empty() {
+            restrict_permissions(&path);
             return Ok(trimmed);
         }
     }
@@ -63,17 +73,101 @@ fn generate() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Restrict the token file to the service account and administrators.
+/// Best-effort: a failure must not stop the server from starting (an
+/// over-permissive token file is bad, an unstartable server is worse), and the
+/// LAN warning at startup already tells the operator to treat the file as a
+/// password.
 #[cfg(unix)]
 fn restrict_permissions(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
 }
 
-#[cfg(not(unix))]
-fn restrict_permissions(_path: &Path) {
-    // Windows: the token inherits the ACL of the service data directory
-    // (C:\ProgramData\LPDO), which is already administrator-owned.
+/// Windows equivalent of 0600: an explicit DACL granting Full Control to
+/// LocalSystem (the service account) and the local Administrators group, and to
+/// nobody else.
+///
+/// Inheritance must be severed explicitly — without
+/// `PROTECTED_DACL_SECURITY_INFORMATION` the ACEs inherited from
+/// `%ProgramData%` survive, and those grant `BUILTIN\Users` read access, which
+/// is precisely the exposure this closes. Reading the token consequently needs
+/// elevation (an elevated `Get-Content`), mirroring `sudo cat` on Linux — the
+/// setup guide says so.
+///
+/// SDDL, decoded: `D:` DACL, `P` protected (no inheritance from the parent),
+/// `AI` auto-inherit-ok for anything below, then two allow-ACEs of Full Access
+/// for `SY` (LocalSystem) and `BA` (BUILTIN\Administrators). The `SY`/`BA`
+/// aliases resolve to SIDs, so this is correct on localized Windows where the
+/// account *names* differ.
+#[cfg(windows)]
+fn restrict_permissions(path: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{LocalFree, ERROR_SUCCESS};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW,
+        SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR,
+    };
+
+    const SDDL: &str = "D:PAI(A;;FA;;;SY)(A;;FA;;;BA)";
+
+    let sddl: Vec<u16> = SDDL.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut psd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: `sddl` is a NUL-terminated UTF-16 literal; the call either fills
+    // `psd` with a LocalAlloc'd descriptor (freed below) or returns 0 and
+    // leaves it null.
+    let built = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1 as u32,
+            &mut psd,
+            std::ptr::null_mut(),
+        )
+    };
+    if built == 0 || psd.is_null() {
+        return;
+    }
+
+    // The absolute descriptor built above stores a pointer to its DACL;
+    // SetNamedSecurityInfoW wants that ACL, not the descriptor.
+    // SAFETY: psd points to a valid SECURITY_DESCRIPTOR produced by the call
+    // above, whose Dacl field is set because the SDDL contains a `D:` clause.
+    let dacl: *mut ACL = unsafe { (*psd.cast::<SECURITY_DESCRIPTOR>()).Dacl };
+
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    wide.push(0);
+    // SAFETY: `wide` is a NUL-terminated path; `dacl` belongs to the live
+    // descriptor; owner/group/SACL are not being changed, hence the nulls.
+    let rc = unsafe {
+        SetNamedSecurityInfoW(
+            wide.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            dacl,
+            std::ptr::null_mut(),
+        )
+    };
+    if rc != ERROR_SUCCESS {
+        eprintln!(
+            "warning: could not restrict permissions on {} (error {rc}) — \
+             check that only administrators can read it",
+            path.display()
+        );
+    }
+    // SAFETY: psd was allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW,
+    // which documents LocalFree as the matching deallocator. Done after the
+    // SetNamedSecurityInfoW call, which borrows the descriptor's DACL.
+    unsafe { LocalFree(psd.cast()) };
 }
+
+#[cfg(not(any(unix, windows)))]
+fn restrict_permissions(_path: &Path) {}
 
 /// Constant-time comparison — a byte-by-byte early return would leak the token
 /// prefix to an attacker measuring response times.
@@ -145,6 +239,33 @@ mod tests {
         let second = load_or_create(&db).unwrap();
         assert_eq!(first, second, "an existing token is reused, not regenerated");
         assert!(token_path(&db).exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The token must not be world-readable, and — since older builds left it
+    /// permissive — an ALREADY EXISTING file must get tightened on the next
+    /// load, not only on creation. (Unix asserts the mode; the Windows DACL
+    /// equivalent can only be verified on Windows, with `icacls`.)
+    #[cfg(unix)]
+    #[test]
+    fn existing_token_permissions_are_tightened_on_load() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("lpdo-token-perm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("chess.db");
+        let path = token_path(&db);
+
+        // A token file as an older build would have left it: world-readable.
+        std::fs::write(&path, "deadbeef\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let token = load_or_create(&db).unwrap();
+        assert_eq!(token, "deadbeef", "the existing token is preserved");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "permissions tightened on load, not just creation");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

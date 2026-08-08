@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **The access token is no longer readable by other users on a Windows server**
+  — it inherited `C:\ProgramData`'s permissions, which grant every local account
+  read access. The file now carries an explicit permission set for
+  administrators and the service account only (matching `0600` on Linux), and
+  existing token files are tightened when the server restarts. Reading the token
+  on Windows now needs an elevated PowerShell, as the setup guide describes.
+  (#247)
+
 ## [0.15.0] - 2026-08-08
 
 ### Added

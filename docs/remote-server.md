@@ -31,8 +31,11 @@ in the server's data directory:
 | macOS | `/Library/Application Support/LPDO/access-token` |
 
 Anyone with the token has full control of the database, so treat it like a
-password. `GET /status` (version and counters only) stays open, which is how a
-client can tell "server unreachable" from "wrong token".
+password. The file is readable only by administrators and the service account,
+so reading it takes elevation — an elevated PowerShell on Windows, `sudo` on
+Linux and macOS (see the per-platform steps below). `GET /status` (version and
+counters only) stays open, which is how a client can tell "server unreachable"
+from "wrong token".
 
 ## Setting up the server
 
@@ -42,6 +45,16 @@ Tick **"Allow other computers on this network to connect"** on the installer's
 components page. That is all: the service is configured to listen on the network
 and a firewall rule is added for private networks. The setting is remembered
 across upgrades.
+
+Then read the token in an **elevated** PowerShell (right-click → *Run as
+administrator*) — a normal one gets "access denied", by design:
+
+```powershell
+Get-Content C:\ProgramData\LPDO\access-token
+```
+
+The token file is written as the server starts; if it isn't there yet, wait a
+second and retry.
 
 To turn it off later, re-run the installer and untick it.
 
