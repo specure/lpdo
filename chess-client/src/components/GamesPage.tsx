@@ -288,6 +288,20 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   function setP1C(c: ColorFilter) { setP1Color(c); setP2Color(OPPOSITE[c]); }
   function setP2C(c: ColorFilter) { setP2Color(c); setP1Color(OPPOSITE[c]); }
 
+  // Players view, two states. With a colour chosen we're analysing what this
+  // player played *as* that colour: board, engine and explorer all hang off the
+  // position. With no colour there is no side to explore from and no position on
+  // screen, so those areas would be meaningless furniture — the view collapses
+  // to the player's whole game list plus the selected-game preview.
+  const listOnly = playerScoped && p1Color === "any";
+  // Entering that state drops the explored line: it filters the game list, and
+  // with no board on screen nothing would explain why games are missing.
+  useEffect(() => {
+    if (!listOnly) return;
+    setLine((prev) => (prev.length ? [] : prev));
+    setPly((p) => (p ? 0 : p));
+  }, [listOnly]);
+
   useEffect(() => { const t = setTimeout(() => setEvent(eventInput), 400); return () => clearTimeout(t); }, [eventInput]);
   useEffect(() => { const t = setTimeout(() => setDateFrom(dateFromInput), 400); return () => clearTimeout(t); }, [dateFromInput]);
   useEffect(() => { const t = setTimeout(() => setDateTo(dateToInput), 400); return () => clearTimeout(t); }, [dateToInput]);
@@ -373,6 +387,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
 
   // Opening-explorer move stats (all games; side-to-move is intrinsic).
   useEffect(() => {
+    if (listOnly) { setMoveStats([]); setMovesLoading(false); return; }   // explorer isn't on screen
     movesAbortRef.current?.abort();
     movesAbortRef.current = new AbortController();
     setMovesLoading(true);
@@ -393,11 +408,12 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
       .then((data) => { setMoveStats(data); setMovesLoading(false); })
       .catch((e) => { if (e instanceof DOMException && e.name === "AbortError") return; setMoveStats([]); setMovesLoading(false); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [firstMovesStr, dateFrom, dateTo, scopePublicOnly, scopeCollectionId, p1?.id, p1Color, p2?.id, p2Color]);
+  }, [listOnly, firstMovesStr, dateFrom, dateTo, scopePublicOnly, scopeCollectionId, p1?.id, p1Color, p2?.id, p2Color]);
 
   // Cloud engine evaluation for the current position (debounced — hits the free
   // chessdb.cn / Lichess services through the daemon, which caches by position).
   useEffect(() => {
+    if (listOnly) return;   // no board, no position to evaluate — don't call out
     engineAbort.current?.abort();
     const ctrl = new AbortController();
     engineAbort.current = ctrl;
@@ -431,14 +447,14 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     }, 350);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [firstMovesStr, engineSource, engineRefreshTick]);
+  }, [listOnly, firstMovesStr, engineSource, engineRefreshTick]);
 
   // Power-move stats for Lichess (async, after the lines are on screen): for each
   // top line, fetch the child position's cloud eval and count the opponent's
   // replies + how many are "strong" (within STRONG_CP of the best). Sparse — only
   // where Lichess has the child position cached.
   useEffect(() => {
-    if (engineSource !== "lichess" || !lichessShowStats || !lichessEval?.lines.length) { setLichessStats({}); return; }
+    if (listOnly || engineSource !== "lichess" || !lichessShowStats || !lichessEval?.lines.length) { setLichessStats({}); return; }
     const fen = fenFromMoves(moveSequence);
     const oppWhite = fen.split(" ")[1] === "b"; // opponent (after our move) is White iff we're Black
     const ctrl = new AbortController();
@@ -467,7 +483,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     }
     return () => ctrl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [firstMovesStr, engineSource, lichessEval, lichessShowStats, lichessLineCount]);
+  }, [listOnly, firstMovesStr, engineSource, lichessEval, lichessShowStats, lichessLineCount]);
 
   // Seed the set of actively-watched positions on mount (a watch may still be
   // running from before this page was last left).
@@ -641,8 +657,11 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
       {/* ── 6-area mosaic (resizable, nested panel groups) ────────────────────── */}
       <div className="flex-1 min-w-0 min-h-0 p-1.5">
         <PanelGroup direction="horizontal" autoSaveId="games-cols" className="h-full w-full">
-          {/* Left column: A (board) over C (engine) */}
-          <Panel defaultSize={30} minSize={16}>
+          {/* Left column: A (board) over C (engine). Dropped in the list-only
+              state — panels here carry explicit id/order because the set is
+              conditional, which react-resizable-panels needs to track them. */}
+          {!listOnly && (
+          <Panel id="left" order={1} defaultSize={30} minSize={16}>
             <PanelGroup direction="vertical" autoSaveId="games-leftcol" className="h-full w-full">
               {/* A — position board (board only) */}
               <Panel defaultSize={60} minSize={20}>
@@ -823,14 +842,17 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
               </Panel>
             </PanelGroup>
           </Panel>
+          )}
 
-          <PanelResizeHandle className={vHandle} />
+          {!listOnly && <PanelResizeHandle className={vHandle} />}
 
           {/* Right area: B (B1|B2) over bottom (D | E/F) */}
-          <Panel defaultSize={70} minSize={30}>
+          <Panel id="right" order={2} defaultSize={listOnly ? 100 : 70} minSize={30}>
             <PanelGroup direction="vertical" autoSaveId="games-right" className="h-full w-full">
-              {/* B — position moves (B1) + explorer stats (B2) */}
-              <Panel defaultSize={34} minSize={15}>
+              {/* B — the opening explorer, tied to the board's position: gone
+                  with it in the list-only state. */}
+              {!listOnly && (
+              <Panel id="explorer" order={1} defaultSize={34} minSize={15}>
                 <PanelGroup direction="horizontal" autoSaveId="games-b" className="h-full w-full">
                   {/* B1 — position-related moves (the played line + nav) */}
                   <Panel defaultSize={33} minSize={15}>
@@ -886,11 +908,13 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                   </Panel>
                 </PanelGroup>
               </Panel>
+              )}
 
-              <PanelResizeHandle className={hHandle} />
+              {!listOnly && <PanelResizeHandle className={hHandle} />}
 
-              {/* Bottom: D (game list) | E-F (mini board over move list) */}
-              <Panel defaultSize={66} minSize={25}>
+              {/* Bottom: D (game list) | E-F (mini board over move list). The
+                  whole area in the list-only state. */}
+              <Panel id="bottom" order={2} defaultSize={listOnly ? 100 : 66} minSize={25}>
                 <PanelGroup direction="horizontal" autoSaveId="games-bottom" className="h-full w-full">
                   {/* D — game list (resizable columns) */}
                   <Panel defaultSize={62} minSize={25}>
