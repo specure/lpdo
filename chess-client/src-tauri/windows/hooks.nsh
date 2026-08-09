@@ -35,6 +35,12 @@
 ; that the user deliberately opened.
 !define LPDO_STATE_KEY "Software\LPDO"
 
+; Set when this run turned LAN access on, so the post-install notice fires only
+; then. A plain Var, not a section-flag read: this file is included before the
+; component sections are declared, so ${SecLan} does not resolve at file scope
+; (macro bodies expand later and can use it).
+Var LpdoLanJustEnabled
+
 ; Poll LPDOServer.exe for writability — the definitive "the process is really
 ; gone" signal — for up to 30s. Pushes 1 when it unlocked (or was never there),
 ; 0 on timeout. Defined at file scope, NOT inside a hook macro: those macro
@@ -166,6 +172,7 @@ FunctionEnd
       nsExec::ExecToLog 'netsh advfirewall firewall add rule name="${LPDO_FW_RULE}" dir=in action=allow protocol=TCP localport=${LPDO_PORT} profile=private'
       WriteRegStr HKLM "${LPDO_STATE_KEY}" "LanMode" "1"
       DetailPrint "LAN mode: the server listens on all interfaces and requires the access token from %ProgramData%\LPDO\access-token."
+      StrCpy $LpdoLanJustEnabled 1
     ${Else}
       WriteRegStr HKLM "${LPDO_STATE_KEY}" "LanMode" "0"
     ${EndIf}
@@ -207,6 +214,38 @@ FunctionEnd
     ; an upgrade can never leave the server out of the boot sequence.
     nsExec::ExecToLog 'sc config LPDOServer start= auto'
     nsExec::ExecToLog '"$INSTDIR\windows\service\LPDOServer.exe" start'
+  ${EndIf}
+
+  ; LAN access needs three manual steps that nothing in the app can do for the
+  ; user, and getting any of them wrong looks exactly like a broken server (the
+  ; #247 test round lost time to each). The component's description text is only
+  ; visible while hovering its row on the components page, so say it here, where
+  ; it cannot be missed, and offer the guide.
+  ;
+  ; Suppressed when the pages are skipped: a passive (seamless upgrade) or silent
+  ; run has nobody to read a modal, and blocking one would hang the install.
+  ${If} $LpdoLanJustEnabled = 1
+  ${AndIf} $PassiveMode = 0
+  ${AndIfNot} ${Silent}
+    ; The continuation lines below are deliberately flush-left: NSIS keeps the
+    ; leading whitespace of a continued line inside the string, so indenting
+    ; them to match this block would indent the dialog text too. Only $\n, $\r,
+    ; $\t, $\" and $\$ are escapes — "$\" plus spaces is not one.
+    MessageBox MB_ICONINFORMATION|MB_YESNO \
+"Other computers on this network can now use this database.$\n$\n\
+Three things are needed before they can connect:$\n$\n\
+1. Read the access token. In PowerShell started with $\"Run as administrator$\":$\n\
+$\tGet-Content C:\ProgramData\LPDO\access-token$\n$\n\
+2. Enter it in LPDO under Maintenance > Others > Server connection — including \
+in the app on THIS machine, which now needs it too.$\n$\n\
+3. Make sure Windows treats your network as Private, or the firewall will keep \
+other computers out.$\n$\n\
+Not sure you want this? Re-run this installer and untick $\"Allow other \
+computers on this network to connect$\".$\n$\n\
+Open the setup guide now?" \
+      IDNO lpdo_lan_notice_done
+    ExecShell "open" "https://github.com/specure/lpdo/blob/main/docs/remote-server.md"
+    lpdo_lan_notice_done:
   ${EndIf}
 !macroend
 

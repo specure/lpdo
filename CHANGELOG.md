@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Enabling LAN access now says what else is needed** — after installing with
+  "Allow other computers on this network to connect", Windows explains the three
+  remaining steps: read the access token from an elevated PowerShell, enter it in
+  the app (including on the server machine itself, which needs it too), and make
+  sure the network is treated as Private. It also offers the setup guide. This
+  was only in the component description, visible while hovering the row; the
+  notice is skipped on silent and seamless-upgrade installs. (#247)
+- **"Access denied" now tells you where the token is** — the Server connection
+  card spells out how to read it: the exact command for this platform when the
+  server runs on this machine, or all three possible locations when it is
+  remote, plus the reminder that the file appears as the server starts. The card
+  also no longer claims a server on this machine needs no token, which stopped
+  being true when network access became possible. (#247)
+
 ## [0.15.5] - 2026-08-09
 
 ### Security
