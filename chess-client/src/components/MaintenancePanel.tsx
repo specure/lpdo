@@ -448,6 +448,61 @@ function ResolveFideSection({ onMutated }: { onMutated?: () => void }) {
   );
 }
 
+// ── Prepare database (the whole pipeline, on demand) ──────────────────────────
+
+/** Runs the same coalesced pass that follows an import — the one the activity
+ *  panel has always called "Prepare database", while being reachable only as a
+ *  side effect of importing. The cards below remain for running a single step.
+ *
+ *  Progress belongs to the activity panel: this enqueues six jobs, and each has
+ *  its own row there, so duplicating a bar here would only ever show one of them.
+ */
+function PrepareDatabaseSection({ onMutated }: { onMutated?: () => void }) {
+  const [state, setState] = useState<"idle" | "starting" | "started" | "deferred" | "failed">("idle");
+
+  async function run() {
+    setState("starting");
+    try {
+      const r = await fetch("/api/maintenance/run", { method: "POST" });
+      if (!r.ok) throw new Error(`Server error ${r.status}`);
+      const { started } = (await r.json()) as { started: boolean };
+      setState(started ? "started" : "deferred");
+      onMutated?.();
+    } catch {
+      setState("failed");
+    }
+  }
+
+  return (
+    <SectionCard title="Prepare database">
+      <p className="text-body-sm text-on-surface-variant">
+        Runs every step below in the right order: fetch FIDE IDs, merge duplicate players,
+        normalise names, deduplicate games, rebuild the position index. This is what runs by
+        itself after an import — start it here if a run was interrupted, or after restoring
+        a database.
+      </p>
+      <div className="flex items-center gap-2">
+        <ActionButton onClick={() => void run()} disabled={state === "starting"}>
+          {state === "starting" ? "Starting…" : "Run all steps"}
+        </ActionButton>
+        {state === "started" && (
+          <span className="text-body-sm text-on-surface-variant">
+            Started — follow it in the activity panel.
+          </span>
+        )}
+        {state === "deferred" && (
+          <span className="text-body-sm text-on-surface-variant">
+            Queued — it starts when the current work finishes.
+          </span>
+        )}
+        {state === "failed" && (
+          <span className="text-body-sm text-error">Could not start — is the server reachable?</span>
+        )}
+      </div>
+    </SectionCard>
+  );
+}
+
 // ── Merge duplicate players (same FIDE ID) ────────────────────────────────────
 
 function DedupPlayersSection({ onMutated }: { onMutated?: () => void }) {
@@ -1032,8 +1087,10 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
           </div>
 
           {/* Maintenance tasks in recommended run order — the same identity-first
-              pipeline the background maintenance runs automatically after imports. */}
+              pipeline the background maintenance runs automatically after imports.
+              "Prepare database" runs the lot; the rest are the individual steps. */}
           <div className={`${grid} ${tab === "databases" ? "" : "hidden"}`}>
+            <PrepareDatabaseSection onMutated={onMutated} />
             <ResolveFideSection onMutated={onMutated} />
             <DedupPlayersSection onMutated={onMutated} />
             <NormaliseSection onMutated={onMutated} />

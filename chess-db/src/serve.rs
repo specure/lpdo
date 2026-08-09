@@ -1383,6 +1383,24 @@ async fn create_job_handler(
     Ok(Json(serde_json::json!({ "job_id": id })))
 }
 
+/// Run the whole maintenance pipeline on demand — the same coalesced,
+/// identity-first pass (fide_refresh → resolve_fide → dedup_players → normalise
+/// → dedup_games → index) that runs by itself after an import.
+///
+/// It was previously reachable only as a side effect of importing, while the
+/// activity panel called it "Prepare database" — so a user reading their own
+/// activity log had no way to invoke the thing it named (#255 follow-up).
+///
+/// Deferred rather than refused when an import is in flight: the pass is
+/// requested and the existing drain logic starts it once the queue empties, so
+/// `started: false` means "owed", not "rejected".
+async fn run_maintenance_handler(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
+    state.jobs.request_maintenance();
+    state.jobs.maybe_run_maintenance();
+    let deferred = state.jobs.maintenance_owed();
+    Ok(Json(serde_json::json!({ "started": !deferred })))
+}
+
 #[derive(Deserialize)]
 struct ImportUploadQuery {
     collection: Option<String>,
@@ -2259,6 +2277,7 @@ pub async fn run(
         .route("/lichess-eval",                        get(lichess_eval_handler))
         // Long-running mutation jobs with streamed progress.
         .route("/jobs",                                get(list_jobs_handler).post(create_job_handler))
+        .route("/maintenance/run",                     post(run_maintenance_handler))
         // Streamed PGN upload (#154): disable the default body-size cap so a
         // multi-GB file streams straight to a spool + import job.
         .route("/import/upload", post(import_upload_handler).layer(DefaultBodyLimit::disable()))

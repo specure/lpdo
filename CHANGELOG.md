@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **"Prepare database" is now something you can run** — Maintenance → Databases
+  has a card that runs the whole pipeline in the right order (fetch FIDE IDs,
+  merge duplicate players, normalise names, deduplicate games, rebuild the
+  position index). It is the same pass that runs by itself after an import, and
+  the name the activity panel has always used for it — previously there was no
+  way to start it by hand, only the six steps individually. Pressing it while
+  other work is running queues it rather than refusing. (#255)
+
 ### Fixed
 - **A failed import no longer breaks the maintenance run that follows it** —
   "Merge duplicate players" (and deduplication) died with *"Cannot create index
