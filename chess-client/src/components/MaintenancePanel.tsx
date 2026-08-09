@@ -46,6 +46,66 @@ function LogBox({ lines }: { lines: string[] }) {
 
 /** Where the client looks for the server (#247). Lives on this page because it
  *  renders even while disconnected — which is exactly when it's needed. */
+/** Concrete "where do I get the token" help, shown when the server rejected it.
+ *
+ *  A server that allows network access requires the token from EVERY client,
+ *  including the app on its own machine — loopback is not exempt, since
+ *  exempting it would hand any local user control of the database. That
+ *  surprises people (#247 test round), so name the case and give the command.
+ *
+ *  Only for a local server can the platform be pinned down: this client's OS is
+ *  then also the server's. For a remote address the server's OS is unknown, so
+ *  all three locations are listed rather than guessing one.
+ */
+function AccessDeniedHint({ url }: { url: string }) {
+  const host = (() => {
+    try { return new URL(url).hostname.toLowerCase(); } catch { return ""; }
+  })();
+  const isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1";
+  const ua = navigator.userAgent;
+  const os = /Windows/i.test(ua) ? "windows" : /Mac OS X|Macintosh/i.test(ua) ? "macos" : "linux";
+  const localRead: Record<typeof os, string> = {
+    windows: "Get-Content C:\\ProgramData\\LPDO\\access-token",
+    linux: "sudo cat /var/lib/lpdo/.chess-db/access-token",
+    macos: 'sudo cat "/Library/Application Support/LPDO/access-token"',
+  };
+
+  return (
+    <div className="rounded-sm border border-warning/40 bg-warning-container/30 p-3 space-y-2">
+      <div className="text-body-sm text-on-surface">
+        The server is running but rejected the access token.
+      </div>
+      {isLocal ? (
+        <>
+          <p className="text-body-sm text-on-surface-variant">
+            This machine's server was set up to allow other computers to connect, so it
+            requires its token — from every client, including this app.
+            {os === "windows" && " Read it in PowerShell started with \u201cRun as administrator\u201d:"}
+            {os !== "windows" && " Read it with:"}
+          </p>
+          <pre className="text-body-sm font-mono text-on-surface bg-surface-container-low rounded-sm p-2 overflow-x-auto select-text">{localRead[os]}</pre>
+        </>
+      ) : (
+        <>
+          <p className="text-body-sm text-on-surface-variant">
+            On the machine running the server, read its <span className="font-mono">access-token</span> file.
+            It is readable only by administrators, so use an elevated PowerShell
+            (Windows) or <span className="font-mono">sudo</span>:
+          </p>
+          <ul className="text-body-sm font-mono text-on-surface-variant space-y-0.5 select-text">
+            <li>C:\ProgramData\LPDO\access-token</li>
+            <li>/var/lib/lpdo/.chess-db/access-token</li>
+            <li>/Library/Application Support/LPDO/access-token</li>
+          </ul>
+        </>
+      )}
+      <p className="text-body-sm text-on-surface-variant">
+        The file is created as the server starts; if it isn't there yet, wait a moment and retry.
+      </p>
+    </div>
+  );
+}
+
 function ServerConnectionSection({ status, connection = "connected" }: {
   status: StatusInfo | null;
   connection?: "checking" | "connected" | "disconnected" | "unauthorized";
@@ -77,9 +137,11 @@ function ServerConnectionSection({ status, connection = "connected" }: {
     <SectionCard title="Server connection" status={caption}>
       <p className="text-body-sm text-on-surface-variant">
         The database server normally runs on this machine. To use one on another computer,
-        enter its address — and the access token shown in that server's data folder
-        (<span className="font-mono">access-token</span>). A server on this machine needs no token.
+        enter its address — and the access token from that server's data folder
+        (<span className="font-mono">access-token</span>). A server on this machine needs a
+        token only when it was set up to allow other computers to connect.
       </p>
+      {connection === "unauthorized" && <AccessDeniedHint url={serverUrl()} />}
       <div>
         <div className="text-label-sm text-on-surface-variant uppercase tracking-wider mb-1">Server address</div>
         <input
@@ -92,12 +154,12 @@ function ServerConnectionSection({ status, connection = "connected" }: {
         />
       </div>
       <div>
-        <div className="text-label-sm text-on-surface-variant uppercase tracking-wider mb-1">Access token (only for a server on another machine)</div>
+        <div className="text-label-sm text-on-surface-variant uppercase tracking-wider mb-1">Access token (required when the server allows network access)</div>
         <input
           type="password"
           value={token}
           onChange={(e) => { setToken(e.target.value); setSaved(false); }}
-          placeholder="empty for a local server"
+          placeholder="empty for a local-only server"
           spellCheck={false}
           className="w-full h-9 px-3 rounded-sm bg-transparent text-on-surface placeholder:text-on-surface-variant text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
         />
