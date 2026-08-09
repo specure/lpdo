@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { GameSummary, MoveStats } from "../types";
 import { LoadedGame } from "../lib/useGamePgn";
+import { CursorPath } from "../lib/moveTreeNav";
 import MiniBoard from "./games/MiniBoard";
 import GameBoard from "./GameBoard";
 
@@ -14,8 +15,18 @@ import GameBoard from "./GameBoard";
 export interface AnalysisTab {
   key: string;          // stable per open game (dedupe by game id)
   game: GameSummary;
-  loaded: LoadedGame;   // parsed moves + fens — used for the rail preview
-  ply: number;
+  loaded: LoadedGame;   // parsed moves + fens — the rail preview's fallback
+  /** Position last analysed in this tab, as reported by the board. Drives the
+   *  rail preview (so it shows the real position, variations included) and the
+   *  reference/related panels. null until the board has reported one. */
+  fen: string | null;
+  /** Where the board's cursor stood, as a line descent + index. Restored into
+   *  the board when the tab is activated again — the FEN alone could not say
+   *  which variation (or which repetition of a position) the user was on. */
+  cursor: CursorPath | null;
+  /** Board orientation for this game — remembered per tab, so flipping to
+   *  Black's view survives tab switches, leaving the page, and restarts. */
+  flipped: boolean;
 }
 
 interface Props {
@@ -24,6 +35,8 @@ interface Props {
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
   onOpenGame: (game: GameSummary) => void;   // open a related game as a new tab
+  /** Persist per-tab view state (position, cursor, orientation) in the owning store. */
+  onTabState: (key: string, patch: { fen?: string; cursor?: CursorPath; flipped?: boolean }) => void;
   onGameMutated?: () => void;
 }
 
@@ -32,15 +45,30 @@ const vHandle = "w-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-st
 const hHandle = "h-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-state=drag]:bg-primary/50 transition-colors";
 const STARTPOS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onOpenGame, onGameMutated }: Props) {
+export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onOpenGame, onTabState, onGameMutated }: Props) {
   const active = tabs.find((t) => t.key === activeKey) ?? null;
 
-  // Current board position of the active game, reported by GameBoard.
-  const [currentFen, setCurrentFen] = useState<string>(STARTPOS);
+  // Current board position of the active game, kept on the tab (see below).
+  const currentFen = active?.fen ?? STARTPOS;
   const effFen = !currentFen || currentFen === "start" ? STARTPOS : currentFen;
   const atStart = effFen.startsWith("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w");
   const fenParts = effFen.split(" ");
   const movePrefix = fenParts[1] === "b" ? `${fenParts[5] ?? "1"}...` : `${fenParts[5] ?? "1"}.`;
+
+  // The board reports (fen, gameId) rather than just a fen: it is a single
+  // instance reused across tabs, so we map the report back onto the tab it
+  // belongs to. Read `tabs` through a ref to keep this callback stable —
+  // GameBoard reports from an effect keyed on the callback identity, and a new
+  // identity per position update would feed back into itself.
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const handlePositionChange = useCallback((fen: string, gameId: number, cursor: CursorPath) => {
+    const tab = tabsRef.current.find((t) => t.game.id === gameId);
+    if (tab) onTabState(tab.key, { fen, cursor });
+  }, [onTabState]);
+  const handleFlippedChange = useCallback((flipped: boolean) => {
+    if (activeKey) onTabState(activeKey, { flipped });
+  }, [activeKey, onTabState]);
 
   const [refMoves, setRefMoves] = useState<MoveStats[]>([]);
   const [refLoading, setRefLoading] = useState(false);
@@ -88,7 +116,14 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
           return (
             <div key={t.key} className={`shrink-0 rounded-md border ${on ? "border-primary" : "border-outline/40"} bg-surface-container-low overflow-hidden`}>
               <button onClick={() => onActivate(t.key)} className="w-full aspect-square block" title={`${t.game.white} – ${t.game.black}`}>
-                <MiniBoard game={t.loaded} ply={t.ply} setPly={() => {}} id={`analysis-mini-${t.key}`} showHeader={false} showNav={false} />
+                <MiniBoard
+                  game={t.loaded}
+                  fen={t.fen ?? undefined}
+                  flipped={t.flipped}
+                  id={`analysis-mini-${t.key}`}
+                  showHeader={false}
+                  showNav={false}
+                />
               </button>
               <div className="flex items-center gap-1 px-1.5 py-1 border-t border-outline/40">
                 <span className={`flex-1 min-w-0 truncate text-label-sm ${on ? "text-on-surface" : "text-on-surface-variant"}`}>
@@ -108,7 +143,10 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
             {active && (
               <GameBoard
                 game={active.game}
-                onPositionChange={setCurrentFen}
+                onPositionChange={handlePositionChange}
+                initialCursor={active.cursor}
+                flipped={active.flipped}
+                onFlippedChange={handleFlippedChange}
                 onGameMutated={onGameMutated}
               />
             )}

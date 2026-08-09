@@ -13,6 +13,7 @@ import LocalGameList from "./components/local/LocalGameList";
 import GamesPage from "./components/GamesPage";
 import AnalysisPage, { AnalysisTab } from "./components/AnalysisPage";
 import { loadGamePgn } from "./lib/useGamePgn";
+import { CursorPath } from "./lib/moveTreeNav";
 import HomeEmptyState from "./components/HomeEmptyState";
 import UpdateBanner from "./components/UpdateBanner";
 import ActivityIndicator from "./components/ActivityIndicator";
@@ -275,6 +276,24 @@ async function resolveCurrentPlayer(p: PlayerInfo): Promise<PlayerInfo | null> {
   }
 }
 
+// ── Analysis tab cursors ─────────────────────────────────────────────────────
+
+function sameCursor(a: CursorPath | null, b: CursorPath | null): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.index !== b.index || a.steps.length !== b.steps.length) return false;
+  return a.steps.every((s, i) => s.node === b.steps[i].node && s.varIdx === b.steps[i].varIdx);
+}
+
+/** Validate a cursor read back from localStorage — it outlives the code that
+ *  wrote it, and a malformed one would be handed straight to the board. */
+function readCursor(raw: unknown): CursorPath | null {
+  if (!raw || typeof raw !== "object") return null;
+  const { steps, index } = raw as Partial<CursorPath>;
+  if (!Array.isArray(steps) || typeof index !== "number" || !Number.isFinite(index)) return null;
+  if (!steps.every((s) => s && typeof s.node === "number" && typeof s.varIdx === "number")) return null;
+  return { steps, index };
+}
+
 const RECENT_PGN_KEY = "recentPgnFiles";
 const RECENT_PGN_MAX = 8;
 
@@ -340,9 +359,26 @@ export default function App() {
     if (analysisTabs.some((t) => t.key === key)) return;   // already open → just focus
     try {
       const loaded = await loadGamePgn(game.id);
-      setAnalysisTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, game, loaded, ply: 0 }]));
+      setAnalysisTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, game, loaded, fen: null, cursor: null, flipped: false }]));
     } catch { /* load failure → tab simply doesn't appear */ }
   }
+  // Per-tab view state (analysed position + cursor, board orientation) reported
+  // by the Analysis board. Returns `prev` untouched when nothing actually
+  // changed — the board re-reports its position on every render pass of the
+  // reporting effect, and a fresh array each time would loop.
+  const updateAnalysisTab = useCallback((key: string, patch: { fen?: string; cursor?: CursorPath; flipped?: boolean }) => {
+    setAnalysisTabs((prev) => {
+      let changed = false;
+      const next = prev.map((t) => {
+        if (t.key !== key) return t;
+        const merged = { ...t, ...patch };
+        if (merged.fen === t.fen && merged.flipped === t.flipped && sameCursor(merged.cursor, t.cursor)) return t;
+        changed = true;
+        return merged;
+      });
+      return changed ? next : prev;
+    });
+  }, []);
   function closeAnalysisTab(key: string) {
     setAnalysisTabs((prev) => {
       const next = prev.filter((t) => t.key !== key);
@@ -350,17 +386,18 @@ export default function App() {
       return next;
     });
   }
-  // Persist open Analysis tabs across restarts. We store just the game summaries
-  // + active tab; the parsed PGN (loaded) is re-fetched on restore. Edits persist
+  // Persist open Analysis tabs across restarts. We store the game summaries,
+  // the active tab, and each tab's view state (analysed position + board
+  // orientation); the parsed PGN (loaded) is re-fetched on restore. Edits persist
   // via the DB (saved on Done/switch); in-progress unsaved edits are not restored.
   const analysisRestored = useRef(false);
   useEffect(() => {
     const raw = localStorage.getItem("analysisTabs");
-    let persisted: { tabs: { key: string; game: GameSummary }[]; activeKey: string | null } | null = null;
+    let persisted: { tabs: { key: string; game: GameSummary; fen?: string | null; cursor?: unknown; flipped?: boolean }[]; activeKey: string | null } | null = null;
     try { persisted = raw ? JSON.parse(raw) : null; } catch { /* ignore */ }
     if (!persisted?.tabs?.length) { analysisRestored.current = true; return; }
     Promise.all(persisted.tabs.map(async (p) => {
-      try { return { key: p.key, game: p.game, loaded: await loadGamePgn(p.game.id), ply: 0 } as AnalysisTab; }
+      try { return { key: p.key, game: p.game, loaded: await loadGamePgn(p.game.id), fen: p.fen ?? null, cursor: readCursor(p.cursor), flipped: p.flipped ?? false } as AnalysisTab; }
       catch { return null; }
     })).then((results) => {
       const tabs = results.filter((t): t is AnalysisTab => t !== null);
@@ -373,7 +410,7 @@ export default function App() {
   useEffect(() => {
     if (!analysisRestored.current) return;
     localStorage.setItem("analysisTabs", JSON.stringify({
-      tabs: analysisTabs.map((t) => ({ key: t.key, game: t.game })),
+      tabs: analysisTabs.map((t) => ({ key: t.key, game: t.game, fen: t.fen, cursor: t.cursor, flipped: t.flipped })),
       activeKey: activeAnalysisKey,
     }));
   }, [analysisTabs, activeAnalysisKey]);
@@ -916,6 +953,7 @@ export default function App() {
           onActivate={setActiveAnalysisKey}
           onClose={closeAnalysisTab}
           onOpenGame={openInAnalysis}
+          onTabState={updateAnalysisTab}
           onGameMutated={onGameMutated}
         />
       ) : null}

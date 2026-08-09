@@ -7,24 +7,33 @@ import { LoadedGame } from "../../lib/useGamePgn";
 // with the position board: ⏮ ‹ › ⏭. Shares the lifted `ply` with the move list (F).
 export default function MiniBoard({
   game,
-  ply,
-  setPly,
+  ply = 0,
+  setPly = () => {},
   id = "games-mini-board",
   showHeader = true,
   showNav = true,
+  fen: fenOverride,
+  flipped = false,
 }: {
   game: LoadedGame;
-  ply: number;
-  setPly: (p: number) => void;
+  /** Mainline half-move to draw. Ignored when `fen` is given; only the nav
+   *  buttons (`showNav`) need it. */
+  ply?: number;
+  setPly?: (p: number) => void;
   /** Unique react-chessboard id — required when several boards share a page,
    *  or they resolve each other's squares (double-distance animation bug). */
   id?: string;
   showHeader?: boolean;
   showNav?: boolean;
+  /** Draw this position instead of `game.fens[ply]`. The Analysis rail uses it
+   *  because the live board can sit on a variation (or edited) node that has no
+   *  ply in the mainline `fens` array. */
+  fen?: string;
+  flipped?: boolean;
 }) {
   const last = game.fens.length - 1;
   const at = Math.min(Math.max(ply, 0), last);
-  const fen = game.fens[at];
+  const fen = fenOverride ?? game.fens[at];
 
   // react-chessboard needs an explicit pixel size to compute move animations
   // correctly — a fluid aspect-ratio container makes it overshoot. Measure the
@@ -63,6 +72,10 @@ export default function MiniBoard({
               // constant — colliding boards animate against each other's geometry.
               id,
               position: fen,
+              boardOrientation: flipped ? "black" : "white",
+              // No rank/file labels: at preview size they overlap the pieces
+              // rather than help. The full boards keep theirs.
+              showNotation: false,
               allowDragging: false,
               allowDrawingArrows: false,
               darkSquareStyle: { backgroundColor: "var(--color-board-game-dark)" },
