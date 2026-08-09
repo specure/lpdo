@@ -95,6 +95,32 @@ export function resolvePath(
   return { line, breadcrumbs };
 }
 
+/** A cursor position that survives serialization: the descent to a line plus
+ *  the index within it. Enough to put the board back exactly where it stood,
+ *  variations included — which a bare ply cannot express. */
+export interface CursorPath {
+  steps: PathStep[];
+  index: number;
+}
+
+/** Like `resolvePath`, but for steps that may no longer fit the tree — a path
+ *  persisted before the game's moves were edited, or restored from storage.
+ *  Returns null when a step no longer resolves, instead of throwing. */
+export function resolvePathSafe(
+  root: MoveNode[],
+  steps: PathStep[],
+): { line: MoveNode[]; breadcrumbs: Breadcrumb[] } | null {
+  let line = root;
+  const breadcrumbs: Breadcrumb[] = [];
+  for (const s of steps) {
+    const child = line[s.node]?.variations[s.varIdx];
+    if (!child) return null;
+    breadcrumbs.push({ line, index: s.node });
+    line = child;
+  }
+  return { line, breadcrumbs };
+}
+
 /** Pop one breadcrumb — moves the cursor back to the parent line at the
  *  branching move. Returns null when already on the main line. */
 export function backToParent(

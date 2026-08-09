@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { GameSummary, MoveStats } from "../types";
 import { LoadedGame } from "../lib/useGamePgn";
+import { CursorPath } from "../lib/moveTreeNav";
 import MiniBoard from "./games/MiniBoard";
 import GameBoard from "./GameBoard";
 
@@ -19,6 +20,10 @@ export interface AnalysisTab {
    *  rail preview (so it shows the real position, variations included) and the
    *  reference/related panels. null until the board has reported one. */
   fen: string | null;
+  /** Where the board's cursor stood, as a line descent + index. Restored into
+   *  the board when the tab is activated again — the FEN alone could not say
+   *  which variation (or which repetition of a position) the user was on. */
+  cursor: CursorPath | null;
   /** Board orientation for this game — remembered per tab, so flipping to
    *  Black's view survives tab switches, leaving the page, and restarts. */
   flipped: boolean;
@@ -30,8 +35,8 @@ interface Props {
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
   onOpenGame: (game: GameSummary) => void;   // open a related game as a new tab
-  /** Persist per-tab view state (position, orientation) in the owning store. */
-  onTabState: (key: string, patch: { fen?: string; flipped?: boolean }) => void;
+  /** Persist per-tab view state (position, cursor, orientation) in the owning store. */
+  onTabState: (key: string, patch: { fen?: string; cursor?: CursorPath; flipped?: boolean }) => void;
   onGameMutated?: () => void;
 }
 
@@ -57,9 +62,9 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
   // identity per position update would feed back into itself.
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
-  const handlePositionChange = useCallback((fen: string, gameId: number) => {
+  const handlePositionChange = useCallback((fen: string, gameId: number, cursor: CursorPath) => {
     const tab = tabsRef.current.find((t) => t.game.id === gameId);
-    if (tab) onTabState(tab.key, { fen });
+    if (tab) onTabState(tab.key, { fen, cursor });
   }, [onTabState]);
   const handleFlippedChange = useCallback((flipped: boolean) => {
     if (activeKey) onTabState(activeKey, { flipped });
@@ -139,6 +144,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
               <GameBoard
                 game={active.game}
                 onPositionChange={handlePositionChange}
+                initialCursor={active.cursor}
                 flipped={active.flipped}
                 onFlippedChange={handleFlippedChange}
                 onGameMutated={onGameMutated}
