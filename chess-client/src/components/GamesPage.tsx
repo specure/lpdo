@@ -174,9 +174,12 @@ interface Props {
   /** Available collections + a setter, to offer a collection filter in the rail. */
   collections?: { id: number; name: string; game_count: number }[];
   onCollectionChange?: (id: number | null) => void;
+  /** Bump to re-run the games query — the rows changed underneath us (a merge
+   *  moved games onto this player, an import added some). */
+  reloadKey?: number;
 }
 
-export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, player, onOpenInAnalysis, collections, onCollectionChange }: Props) {
+export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, player, onOpenInAnalysis, collections, onCollectionChange, reloadKey }: Props) {
   const playerScoped = player !== undefined;
   // Restore the Games page's last analysed line + filters (once, on mount). Never
   // for the player-scoped view — that always locks to the externally-chosen player.
@@ -367,7 +370,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
         if (token === queryToken.current) { setError(e instanceof Error ? e.message : "Failed to load games"); setLoading(false); }
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p1?.id, p1Color, p2?.id, p2Color, event, dateFrom, dateTo, firstMovesStr, scopePublicOnly, scopeCollectionId, scopeIncludeDeleted]);
+  }, [p1?.id, p1Color, p2?.id, p2Color, event, dateFrom, dateTo, firstMovesStr, scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, reloadKey]);
 
   function loadMore() {
     if (loading || loadingMore || total === null || games.length >= total) return;

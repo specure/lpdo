@@ -11,6 +11,8 @@ import PrepPlayerList from "./components/prep/PrepPlayerList";
 import DirectoryBrowser from "./components/local/DirectoryBrowser";
 import LocalGameList from "./components/local/LocalGameList";
 import GamesPage from "./components/GamesPage";
+import PlayerProfileModal from "./components/PlayerProfileModal";
+import MergePlayersDialog from "./components/MergePlayersDialog";
 import AnalysisPage, { AnalysisTab } from "./components/AnalysisPage";
 import { loadGamePgn } from "./lib/useGamePgn";
 import { CursorPath } from "./lib/moveTreeNav";
@@ -348,6 +350,15 @@ export default function App() {
   // Additional players Ctrl/Cmd-clicked alongside the anchor (for merging two).
   const [selectedExtras, setSelectedExtras] = useState<PlayerInfo[]>([]);
   const [playersCollapsed, setPlayersCollapsed] = useState(false);
+  // Per-player tools that used to hang off the old player header (#219 replaced
+  // it with the analysis mosaic and they went with it): the FIDE profile, and
+  // merging the anchor with one Ctrl/Cmd-clicked co-selection.
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const mergeOther = selectedExtras.length === 1 ? selectedExtras[0] : null;
+  // Prefer keeping the FIDE-linked record (the dialog's Swap can flip it).
+  const mergeSwap = !!mergeOther?.fide_id && !selectedPlayer?.fide_id;
+  const playerChip = "shrink-0 inline-flex items-center h-7 px-3 rounded-full text-label-md border border-outline text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard";
 
   // Analysis board (#220): several games open at once as mini-board tabs.
   const [analysisTabs, setAnalysisTabs] = useState<AnalysisTab[]>([]);
@@ -461,7 +472,17 @@ export default function App() {
   const [gameMutationKey, setGameMutationKey] = useState(0);
   const onGameMutated = () => setGameMutationKey((k) => k + 1);
   // Bumped after a player merge so the player search list re-fetches.
-  const [playerReloadKey] = useState(0);
+  const [playerReloadKey, setPlayerReloadKey] = useState(0);
+  // Merging a duplicate away changes the kept player's games and deletes the
+  // dropped record — refresh everything that could still be showing it.
+  const handlePlayersMerged = (_keepId: number, dropId: number) => {
+    refreshServerStatus();
+    onGameMutated();                       // kept player's games changed
+    setPlayerReloadKey((k) => k + 1);      // refresh player search results
+    removeRecentPlayer(dropId);            // the dropped player no longer exists
+    if (selectedPlayer?.id === dropId) setSelectedPlayer(null);
+    setSelectedExtras([]);
+  };
   useEffect(() => {
     localStorage.setItem("scopePublicOnly", scopePublicOnly ? "1" : "0");
   }, [scopePublicOnly]);
@@ -919,17 +940,44 @@ export default function App() {
               </div>
             )}
 
-            {/* Analysis mosaic scoped to the selected player */}
+            {/* Analysis mosaic scoped to the selected player, under a slim row
+                carrying the per-player tools (profile, merge). */}
             {selectedPlayer ? (
-              <GamesPage
-                player={selectedPlayer}
-                scopePublicOnly={scopePublicOnly}
-                scopeCollectionId={scopeCollectionId}
-                scopeIncludeDeleted={scopeIncludeDeleted}
-                collections={collectionsList}
-                onCollectionChange={setScopeCollectionId}
-                onOpenInAnalysis={openInAnalysis}
-              />
+              <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+                <div className="shrink-0 px-3 py-1.5 flex items-center gap-2 border-b border-outline/40 bg-surface-container-low">
+                  <span className="text-label-lg text-on-surface truncate">{selectedPlayer.name}</span>
+                  <button
+                    onClick={() => setProfileOpen(true)}
+                    className={playerChip}
+                    title="FIDE profile, rating history and activity"
+                  >
+                    Profile
+                  </button>
+                  {mergeOther ? (
+                    <button onClick={() => setMergeOpen(true)} className={playerChip}>
+                      Merge these 2 players…
+                    </button>
+                  ) : selectedExtras.length > 0 ? (
+                    <span className="text-label-md text-on-surface-variant">
+                      {selectedExtras.length + 1} players selected — merge works with exactly 2.
+                    </span>
+                  ) : (
+                    <span className="text-label-md text-on-surface-variant truncate">
+                      Ctrl-click a second player to merge duplicates
+                    </span>
+                  )}
+                </div>
+                <GamesPage
+                  player={selectedPlayer}
+                  scopePublicOnly={scopePublicOnly}
+                  scopeCollectionId={scopeCollectionId}
+                  scopeIncludeDeleted={scopeIncludeDeleted}
+                  collections={collectionsList}
+                  onCollectionChange={setScopeCollectionId}
+                  onOpenInAnalysis={openInAnalysis}
+                  reloadKey={gameMutationKey}
+                />
+              </div>
             ) : (
               <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md">
                 {prepContext ? "Select an opponent to view their games" : "Search for a player"}
@@ -957,6 +1005,21 @@ export default function App() {
           onGameMutated={onGameMutated}
         />
       ) : null}
+      {profileOpen && selectedPlayer && (
+        <PlayerProfileModal
+          player={selectedPlayer}
+          onClose={() => setProfileOpen(false)}
+          onPlayersMerged={handlePlayersMerged}
+        />
+      )}
+      {mergeOpen && selectedPlayer && mergeOther && (
+        <MergePlayersDialog
+          initialKeep={mergeSwap ? mergeOther : selectedPlayer}
+          initialDrop={mergeSwap ? selectedPlayer : mergeOther}
+          onClose={() => setMergeOpen(false)}
+          onMerged={handlePlayersMerged}
+        />
+      )}
       {/* Each of these dialogs can mutate database contents (import/dedup/purge),
           so re-poll status on close so the Home Database section + empty-DB CTA
           reflect the new state without waiting for the 30-min polling tick. */}
