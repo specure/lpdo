@@ -340,9 +340,26 @@ export default function App() {
     if (analysisTabs.some((t) => t.key === key)) return;   // already open → just focus
     try {
       const loaded = await loadGamePgn(game.id);
-      setAnalysisTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, game, loaded, ply: 0 }]));
+      setAnalysisTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, game, loaded, fen: null, flipped: false }]));
     } catch { /* load failure → tab simply doesn't appear */ }
   }
+  // Per-tab view state (analysed position, board orientation) reported by the
+  // Analysis board. Returns `prev` untouched when nothing actually changed —
+  // the board re-reports its position on every render pass of the reporting
+  // effect, and a fresh array each time would loop.
+  const updateAnalysisTab = useCallback((key: string, patch: { fen?: string; flipped?: boolean }) => {
+    setAnalysisTabs((prev) => {
+      let changed = false;
+      const next = prev.map((t) => {
+        if (t.key !== key) return t;
+        const merged = { ...t, ...patch };
+        if (merged.fen === t.fen && merged.flipped === t.flipped) return t;
+        changed = true;
+        return merged;
+      });
+      return changed ? next : prev;
+    });
+  }, []);
   function closeAnalysisTab(key: string) {
     setAnalysisTabs((prev) => {
       const next = prev.filter((t) => t.key !== key);
@@ -350,17 +367,18 @@ export default function App() {
       return next;
     });
   }
-  // Persist open Analysis tabs across restarts. We store just the game summaries
-  // + active tab; the parsed PGN (loaded) is re-fetched on restore. Edits persist
+  // Persist open Analysis tabs across restarts. We store the game summaries,
+  // the active tab, and each tab's view state (analysed position + board
+  // orientation); the parsed PGN (loaded) is re-fetched on restore. Edits persist
   // via the DB (saved on Done/switch); in-progress unsaved edits are not restored.
   const analysisRestored = useRef(false);
   useEffect(() => {
     const raw = localStorage.getItem("analysisTabs");
-    let persisted: { tabs: { key: string; game: GameSummary }[]; activeKey: string | null } | null = null;
+    let persisted: { tabs: { key: string; game: GameSummary; fen?: string | null; flipped?: boolean }[]; activeKey: string | null } | null = null;
     try { persisted = raw ? JSON.parse(raw) : null; } catch { /* ignore */ }
     if (!persisted?.tabs?.length) { analysisRestored.current = true; return; }
     Promise.all(persisted.tabs.map(async (p) => {
-      try { return { key: p.key, game: p.game, loaded: await loadGamePgn(p.game.id), ply: 0 } as AnalysisTab; }
+      try { return { key: p.key, game: p.game, loaded: await loadGamePgn(p.game.id), fen: p.fen ?? null, flipped: p.flipped ?? false } as AnalysisTab; }
       catch { return null; }
     })).then((results) => {
       const tabs = results.filter((t): t is AnalysisTab => t !== null);
@@ -373,7 +391,7 @@ export default function App() {
   useEffect(() => {
     if (!analysisRestored.current) return;
     localStorage.setItem("analysisTabs", JSON.stringify({
-      tabs: analysisTabs.map((t) => ({ key: t.key, game: t.game })),
+      tabs: analysisTabs.map((t) => ({ key: t.key, game: t.game, fen: t.fen, flipped: t.flipped })),
       activeKey: activeAnalysisKey,
     }));
   }, [analysisTabs, activeAnalysisKey]);
@@ -916,6 +934,7 @@ export default function App() {
           onActivate={setActiveAnalysisKey}
           onClose={closeAnalysisTab}
           onOpenGame={openInAnalysis}
+          onTabState={updateAnalysisTab}
           onGameMutated={onGameMutated}
         />
       ) : null}

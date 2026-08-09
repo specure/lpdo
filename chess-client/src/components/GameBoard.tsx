@@ -367,8 +367,16 @@ interface Props {
    * suspend list-level arrow-key navigation while editing. */
   onEditingChange?: (editing: boolean) => void;
   /** Reports the current board FEN as the cursor moves — lets the Analysis board
-   * drive its reference-moves / related-games panels off this game's position. */
-  onPositionChange?: (fen: string) => void;
+   * drive its reference-moves / related-games panels off this game's position,
+   * and its rail preview off the position actually being analysed. Tagged with
+   * the game the FEN belongs to: this component is reused across Analysis tabs,
+   * so a bare FEN would be ambiguous while the next game's PGN is still loading. */
+  onPositionChange?: (fen: string, gameId: number) => void;
+  /** Controlled board orientation. Left undefined the board keeps its own flip
+   * state; the Analysis board passes it so orientation survives tab switches,
+   * page switches and restarts (remembered per open game). */
+  flipped?: boolean;
+  onFlippedChange?: (flipped: boolean) => void;
 }
 
 // Tags shown in the compact view always; rest only appear when expanded.
@@ -792,7 +800,7 @@ function DetailsPanel({
   );
 }
 
-export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange }: Props) {
+export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange }: Props) {
   const [detail, setDetail] = useState<GameDetail | null>(null);
   const [detailReloadKey, setDetailReloadKey] = useState(0);
   const [detailsOpen, setDetailsOpen] = useState<boolean>(
@@ -815,7 +823,18 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([]);
 
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [flipped, setFlipped] = useState(false);
+  // Orientation is controlled when the host passes `flipped` (Analysis), local
+  // otherwise (Games / Players / PGNs).
+  const [localFlipped, setLocalFlipped] = useState(false);
+  const flipped = flippedProp ?? localFlipped;
+  function toggleFlipped() {
+    const next = !flipped;
+    if (onFlippedChange) onFlippedChange(next);
+    else setLocalFlipped(next);
+  }
+  // The game whose PGN the board is currently showing. Stays null while a new
+  // game loads, so we never attribute the outgoing game's position to it.
+  const [loadedGameId, setLoadedGameId] = useState<number | null>(null);
   // Tracks whether the one-click pointer button is currently held. We need
   // this explicitly because `gestureActive` stays true between release and
   // the DB fetch landing (silent wait), and pointermove after that release
@@ -999,10 +1018,12 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     setActiveLine([]);
     setActiveIndex(0);
     setBreadcrumbs([]);
+    setLoadedGameId(null);
 
     function applyDetail(data: GameDetail) {
       if (cancelled) return;
       setDetail(data);
+      setLoadedGameId(game.id);
       if (data.pgn) {
         try {
           const tree = parsePgnTree(data.pgn);
@@ -1107,7 +1128,10 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     return fens[currentIndex] ?? "start";
   }, [movesEditor.active, movesEditor.fen, useAnnotated, annotatedGame, activeLine, activeIndex, fens, currentIndex]);
 
-  useEffect(() => { onPositionChange?.(currentFen); }, [currentFen, onPositionChange]);
+  useEffect(() => {
+    if (loadedGameId !== game.id) return;   // still loading — the FEN is the previous game's
+    onPositionChange?.(currentFen, game.id);
+  }, [currentFen, loadedGameId, game.id, onPositionChange]);
 
   // Pre-warm the position-moves cache as the user browses, so entering edit
   // mode and clicking on an empty square shows the right arrow without a
@@ -1791,7 +1815,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
                   <button onClick={() => goTo(effectiveIndex + 1)} disabled={effectiveIndex === maxIndex} className={navBtn} title="Next move (→)"><IconNext /></button>
                   <button onClick={() => goTo(maxIndex)} disabled={effectiveIndex === maxIndex} className={navBtn} title="Last move (↓)"><IconLast /></button>
                   <div className="w-px h-5 bg-outline-variant mx-2" />
-                  <button onClick={() => setFlipped((f) => !f)} className={navBtn} title="Flip board"><IconFlip /></button>
+                  <button onClick={toggleFlipped} className={navBtn} title="Flip board"><IconFlip /></button>
                 </>
               );
             })()}
