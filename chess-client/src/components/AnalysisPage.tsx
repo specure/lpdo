@@ -4,7 +4,10 @@ import { GameSummary, MoveStats } from "../types";
 import { LoadedGame } from "../lib/useGamePgn";
 import { CursorPath } from "../lib/moveTreeNav";
 import MiniBoard from "./games/MiniBoard";
+import MoveList from "./games/MoveList";
 import GameBoard from "./GameBoard";
+import CloudEngine from "./CloudEngine";
+import { useGamePgn } from "../lib/useGamePgn";
 
 // The Analysis board (#220): the editable, multi-game workbench. Several games
 // open at once as mini-board tabs (A). The active game is edited in a full
@@ -42,8 +45,10 @@ interface Props {
 
 const panel = "bg-surface-container-low border border-outline/40 rounded-md overflow-hidden flex flex-col min-h-0 min-w-0 h-full w-full";
 const vHandle = "w-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-state=drag]:bg-primary/50 transition-colors";
-const hHandle = "h-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-state=drag]:bg-primary/50 transition-colors";
 const STARTPOS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+type RightTab = "reference" | "engine" | "related";
+const TAB_KEY = "analysisRightTab";
 
 export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onOpenGame, onTabState, onGameMutated }: Props) {
   const active = tabs.find((t) => t.key === activeKey) ?? null;
@@ -69,6 +74,23 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
   const handleFlippedChange = useCallback((flipped: boolean) => {
     if (activeKey) onTabState(activeKey, { flipped });
   }, [activeKey, onTabState]);
+
+  // Right column: one panel at a time. Persisted so the view comes back the way
+  // it was left, like the rest of the Analysis state.
+  const [tab, setTab] = useState<RightTab>(() => {
+    const saved = localStorage.getItem(TAB_KEY);
+    return saved === "engine" || saved === "related" ? saved : "reference";
+  });
+  useEffect(() => { localStorage.setItem(TAB_KEY, tab); }, [tab]);
+
+  // A related game being previewed in place — picking a row no longer opens a
+  // whole tab, which was a heavy commitment for "how did that game go?".
+  const [preview, setPreview] = useState<GameSummary | null>(null);
+  const [previewPly, setPreviewPly] = useState(0);
+  const { game: previewGame, loading: previewLoading } = useGamePgn(preview?.id ?? null);
+  useEffect(() => { setPreviewPly(0); }, [preview?.id]);
+  // Move on, or switch tabs, and the preview no longer belongs to what's listed.
+  useEffect(() => { setPreview(null); }, [effFen, activeKey]);
 
   const [refMoves, setRefMoves] = useState<MoveStats[]>([]);
   const [refLoading, setRefLoading] = useState(false);
@@ -155,72 +177,128 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
 
         <PanelResizeHandle className={vHandle} />
 
+        {/* Position intel + related games, one tab at a time. Tabs rather than
+            more stacked panels: this column would otherwise hold four ~180px
+            strips, and the engine (and a related-game preview) need height.
+            The inactive tabs unmount, so the engine asks for no evaluations
+            while you are reading something else. */}
         <Panel defaultSize={36} minSize={22}>
-          <PanelGroup direction="vertical" autoSaveId="analysis-ce" className="h-full w-full">
-            {/* C — reference-DB moves from this position */}
-            <Panel defaultSize={50} minSize={20}>
-              <div className={panel}>
-                <div className="px-3 py-2 shrink-0 text-label-md text-on-surface-variant uppercase tracking-wider border-b border-outline/40">Reference moves</div>
-                {refLoading ? (
-                  <div className="p-3 text-center text-on-surface-variant text-body-sm">Loading…</div>
-                ) : refMoves.length === 0 ? (
-                  <div className="p-3 text-center text-on-surface-variant text-body-sm">No games from this position</div>
-                ) : (
-                  <div className="flex-1 overflow-y-auto p-2">
-                    <div className="flex items-center text-label-sm text-on-surface-variant px-2 mb-1 select-none">
-                      <span className="w-24">Move</span>
-                      <span className="w-20 text-right">Games</span>
-                      <span className="w-10 text-right">W%</span>
-                      <span className="w-10 text-right">D%</span>
-                      <span className="w-10 text-right">L%</span>
-                      <span className="w-16 text-right">Last</span>
-                    </div>
-                    {refMoves.map((s) => (
-                      <div key={s.mv} className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface">
-                        <span className="w-24 font-mono truncate text-left">{movePrefix}{s.mv}</span>
-                        <span className="w-20 text-right">{s.games.toLocaleString()}</span>
-                        <span className="w-10 text-right text-success">{Math.round(s.w_pct)}</span>
-                        <span className="w-10 text-right text-on-surface-variant">{Math.round(s.d_pct)}</span>
-                        <span className="w-10 text-right text-error">{Math.round(s.l_pct)}</span>
-                        <span className="w-16 text-right text-on-surface-variant">{s.last_played?.slice(0, 4) ?? "—"}</span>
-                      </div>
-                    ))}
+          <div className={panel}>
+            <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b border-outline/40">
+              {([
+                { key: "reference", label: "Reference" },
+                { key: "engine", label: "Engine" },
+                { key: "related", label: `Related${related.length ? ` · ${related.length}${related.length >= 50 ? "+" : ""}` : ""}` },
+              ] as { key: RightTab; label: string }[]).map((t) => (
+                <button
+                  key={t.key}
+                  onClick={() => setTab(t.key)}
+                  className={`h-7 px-3 rounded-full text-label-md transition-colors duration-short3 ease-standard ${
+                    tab === t.key ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12"
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            {tab === "reference" ? (
+              refLoading ? (
+                <div className="p-3 text-center text-on-surface-variant text-body-sm">Loading…</div>
+              ) : refMoves.length === 0 ? (
+                <div className="p-3 text-center text-on-surface-variant text-body-sm">No games from this position</div>
+              ) : (
+                <div className="flex-1 overflow-y-auto p-2">
+                  <div className="flex items-center text-label-sm text-on-surface-variant px-2 mb-1 select-none">
+                    <span className="w-24">Move</span>
+                    <span className="w-20 text-right">Games</span>
+                    <span className="w-10 text-right">W%</span>
+                    <span className="w-10 text-right">D%</span>
+                    <span className="w-10 text-right">L%</span>
+                    <span className="w-16 text-right">Last</span>
                   </div>
-                )}
-              </div>
-            </Panel>
-
-            <PanelResizeHandle className={hHandle} />
-
-            {/* E — related games from the reference DB */}
-            <Panel defaultSize={50} minSize={20}>
-              <div className={panel}>
-                <div className="px-3 py-2 shrink-0 text-label-md text-on-surface-variant uppercase tracking-wider border-b border-outline/40">
-                  Related games{related.length ? ` · ${related.length}${related.length >= 50 ? "+" : ""}` : ""}
+                  {refMoves.map((s) => (
+                    <div key={s.mv} className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface">
+                      <span className="w-24 font-mono truncate text-left">{movePrefix}{s.mv}</span>
+                      <span className="w-20 text-right">{s.games.toLocaleString()}</span>
+                      <span className="w-10 text-right text-success">{Math.round(s.w_pct)}</span>
+                      <span className="w-10 text-right text-on-surface-variant">{Math.round(s.d_pct)}</span>
+                      <span className="w-10 text-right text-error">{Math.round(s.l_pct)}</span>
+                      <span className="w-16 text-right text-on-surface-variant">{s.last_played?.slice(0, 4) ?? "—"}</span>
+                    </div>
+                  ))}
                 </div>
-                <div className="flex-1 overflow-y-auto">
+              )
+            ) : tab === "engine" ? (
+              <CloudEngine fen={effFen} watchLabel={active ? `${active.game.white} – ${active.game.black}` : "Position"} />
+            ) : (
+              <div className="flex-1 min-h-0 flex flex-col">
+                <div className="flex-1 min-h-0 overflow-y-auto">
                   {atStart ? (
                     <div className="p-3 text-center text-on-surface-variant text-body-sm">Play a move to see games reaching this position</div>
                   ) : related.length === 0 ? (
                     <div className="p-3 text-center text-on-surface-variant text-body-sm">No related games</div>
                   ) : (
-                    related.map((g) => (
-                      <button
-                        key={g.id}
-                        onClick={() => onOpenGame(g)}
-                        className="w-full flex items-baseline gap-2 px-3 py-1.5 text-body-sm text-left whitespace-nowrap text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
-                        title="Open in a new tab"
-                      >
-                        <span className="min-w-0 flex-1 truncate">{g.white} – {g.black}</span>
-                        <span className="shrink-0 tabular-nums">{g.result ? (g.result === "1/2-1/2" ? "½-½" : g.result) : ""}</span>
-                        <span className="shrink-0 text-on-surface-variant">{g.date?.slice(0, 4) ?? ""}</span>
-                      </button>
-                    ))
+                    related.map((g) => {
+                      const on = preview?.id === g.id;
+                      return (
+                        <button
+                          key={g.id}
+                          onClick={() => setPreview(g)}
+                          className={`w-full flex items-baseline gap-2 px-3 py-1.5 text-body-sm text-left whitespace-nowrap transition-colors duration-short3 ease-standard ${
+                            on ? "bg-secondary-container text-on-secondary-container" : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
+                          }`}
+                          title="Preview this game"
+                        >
+                          <span className="min-w-0 flex-1 truncate">{g.white} – {g.black}</span>
+                          <span className="shrink-0 tabular-nums">{g.result ? (g.result === "1/2-1/2" ? "½-½" : g.result) : ""}</span>
+                          <span className={`shrink-0 ${on ? "text-on-secondary-container/80" : "text-on-surface-variant"}`}>{g.date?.slice(0, 4) ?? ""}</span>
+                        </button>
+                      );
+                    })
                   )}
                 </div>
+
+                {/* Preview of the highlighted game — the list stays above it, so
+                    you can walk down the list without losing your place. */}
+                {preview && (
+                  <div className="shrink-0 h-[58%] min-h-0 flex flex-col border-t border-outline/40">
+                    <div className="shrink-0 px-2 py-1 flex items-center gap-2 border-b border-outline/40">
+                      <span className="min-w-0 flex-1 truncate text-label-md text-on-surface-variant">
+                        {preview.white} – {preview.black}
+                      </span>
+                      <button
+                        onClick={() => onOpenGame(preview)}
+                        className="shrink-0 text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 px-2.5 h-7 rounded-full transition-colors duration-short3 ease-standard"
+                        title="Open this game in its own Analysis tab"
+                      >
+                        Open in Analysis ↗
+                      </button>
+                      <button
+                        onClick={() => setPreview(null)}
+                        className="shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-sm"
+                        title="Close the preview"
+                      >✕</button>
+                    </div>
+                    {previewGame ? (
+                      <div className="flex-1 min-h-0 flex flex-col">
+                        <div className="flex-[3] min-h-0">
+                          <MiniBoard game={previewGame} ply={previewPly} setPly={setPreviewPly} id="analysis-related-preview" showHeader={false} />
+                        </div>
+                        <div className="flex-[2] min-h-0 border-t border-outline/40">
+                          <MoveList game={previewGame} ply={previewPly} setPly={setPreviewPly} />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-sm">
+                        {previewLoading ? "Loading…" : "—"}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-            </Panel>
-          </PanelGroup>
+            )}
+          </div>
         </Panel>
       </PanelGroup>
     </div>
