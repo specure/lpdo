@@ -572,8 +572,7 @@ fn fill_positions(
             }
             app.flush()?;
         } else {
-            conn.execute_batch("BEGIN")?;
-            {
+            crate::db::with_tx(conn, || {
                 let mut stmt = conn.prepare(
                     "INSERT INTO positions (game_id, move_number, zobrist_hash, next_move) VALUES (?, ?, ?, ?)",
                 )?;
@@ -587,8 +586,8 @@ fn fill_positions(
                     pb.inc(chunk.len() as u64);
                     reporter.progress(pb.position(), total, format!("Indexed {} / {} games", pb.position(), total));
                 }
-            }
-            conn.execute_batch("COMMIT")?;
+                Ok(())
+            })?;
         }
         if reporter.is_cancelled() {
             break 'windows;
@@ -1689,15 +1688,15 @@ fn flush_player_fide_backfill(
     if backfill.is_empty() {
         return Ok(());
     }
-    conn.execute_batch("BEGIN")?;
-    let mut stmt = conn.prepare(
-        "UPDATE players SET fide_id = ?, name_normalised = FALSE WHERE id = ?",
-    )?;
-    for (id, fide_id) in backfill {
-        stmt.execute(duckdb::params![*fide_id, *id])?;
-    }
-    conn.execute_batch("COMMIT")?;
-    Ok(())
+    crate::db::with_tx(conn, || {
+        let mut stmt = conn.prepare(
+            "UPDATE players SET fide_id = ?, name_normalised = FALSE WHERE id = ?",
+        )?;
+        for (id, fide_id) in backfill {
+            stmt.execute(duckdb::params![*fide_id, *id])?;
+        }
+        Ok(())
+    })
 }
 
 fn flush_players(
@@ -1716,15 +1715,16 @@ fn flush_players(
         }
         app.flush()?;
     } else {
-        conn.execute_batch("BEGIN")?;
-        let mut stmt = conn.prepare(
-            "INSERT INTO players (id, name, name_normalized, fide_id, name_normalised)
-             VALUES (?, ?, ?, ?, FALSE)",
-        )?;
-        for (id, name, norm, fide_id) in players {
-            stmt.execute(duckdb::params![*id, name, norm, *fide_id])?;
-        }
-        conn.execute_batch("COMMIT")?;
+        crate::db::with_tx(conn, || {
+            let mut stmt = conn.prepare(
+                "INSERT INTO players (id, name, name_normalized, fide_id, name_normalised)
+                 VALUES (?, ?, ?, ?, FALSE)",
+            )?;
+            for (id, name, norm, fide_id) in players {
+                stmt.execute(duckdb::params![*id, name, norm, *fide_id])?;
+            }
+            Ok(())
+        })?;
     }
     // Retire the batch's ids per flush, not only at import end: a failed or
     // cancelled import must still never donate its ids to a later one (#249).
@@ -1786,23 +1786,24 @@ fn flush_games(conn: &Connection, games: &[GameRow], fast: bool) -> Result<()> {
         }
         app.flush()?;
     } else {
-        conn.execute_batch("BEGIN")?;
-        let mut stmt = conn.prepare(
-            "INSERT INTO games (id, issue_id, white_id, black_id, white_elo, black_elo,
-                               event, site, date, round, result, eco, move_count, pgn,
-                               opening_line, chessbase_id, visibility, deduped,
-                               move_hash, move_hash_short)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, ?)",
-        )?;
-        for g in games {
-            stmt.execute(duckdb::params![
-                g.id, g.issue_id, g.white_id, g.black_id, g.white_elo, g.black_elo,
-                g.event, g.site, g.date, g.round, g.result, g.eco, g.move_count,
-                g.pgn, g.opening_line, g.chessbase_id, g.visibility,
-                g.move_hash, g.move_hash_short
-            ])?;
-        }
-        conn.execute_batch("COMMIT")?;
+        crate::db::with_tx(conn, || {
+            let mut stmt = conn.prepare(
+                "INSERT INTO games (id, issue_id, white_id, black_id, white_elo, black_elo,
+                                   event, site, date, round, result, eco, move_count, pgn,
+                                   opening_line, chessbase_id, visibility, deduped,
+                                   move_hash, move_hash_short)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, ?)",
+            )?;
+            for g in games {
+                stmt.execute(duckdb::params![
+                    g.id, g.issue_id, g.white_id, g.black_id, g.white_elo, g.black_elo,
+                    g.event, g.site, g.date, g.round, g.result, g.eco, g.move_count,
+                    g.pgn, g.opening_line, g.chessbase_id, g.visibility,
+                    g.move_hash, g.move_hash_short
+                ])?;
+            }
+            Ok(())
+        })?;
     }
     // Same rationale as flush_players: retire the ids as soon as they're live.
     if let Some(max_id) = games.iter().map(|g| g.id).max() {
@@ -1822,14 +1823,15 @@ fn flush_positions(conn: &Connection, positions: &[PositionRow], fast: bool) -> 
         }
         app.flush()?;
     } else {
-        conn.execute_batch("BEGIN")?;
-        let mut stmt = conn.prepare(
-            "INSERT INTO positions (game_id, move_number, zobrist_hash, next_move) VALUES (?, ?, ?, ?)",
-        )?;
-        for p in positions {
-            stmt.execute(duckdb::params![p.game_id, p.move_number, p.zobrist_hash, p.next_move])?;
-        }
-        conn.execute_batch("COMMIT")?;
+        crate::db::with_tx(conn, || {
+            let mut stmt = conn.prepare(
+                "INSERT INTO positions (game_id, move_number, zobrist_hash, next_move) VALUES (?, ?, ?, ?)",
+            )?;
+            for p in positions {
+                stmt.execute(duckdb::params![p.game_id, p.move_number, p.zobrist_hash, p.next_move])?;
+            }
+            Ok(())
+        })?;
     }
     Ok(())
 }

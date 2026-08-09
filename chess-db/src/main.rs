@@ -831,21 +831,20 @@ fn do_set_moves(
     let move_count = sans.len() as i16;
     let opening_line = sans.iter().take(10).cloned().collect::<Vec<_>>().join(" ");
 
-    conn.execute_batch("BEGIN")?;
-    conn.execute(
-        "UPDATE games SET pgn = ?, move_count = ?, opening_line = ? WHERE id = ?",
-        duckdb::params![new_pgn, move_count, opening_line, id],
-    )?;
-    conn.execute("DELETE FROM positions WHERE game_id = ?", duckdb::params![id])?;
-    {
+    crate::db::with_tx(conn, || {
+        conn.execute(
+            "UPDATE games SET pgn = ?, move_count = ?, opening_line = ? WHERE id = ?",
+            duckdb::params![new_pgn, move_count, opening_line, id],
+        )?;
+        conn.execute("DELETE FROM positions WHERE game_id = ?", duckdb::params![id])?;
         let mut stmt = conn.prepare(
             "INSERT INTO positions (game_id, move_number, zobrist_hash, next_move) VALUES (?, ?, ?, ?)",
         )?;
         for (mv_no, hash, next_move) in &positions {
             stmt.execute(duckdb::params![id, mv_no, hash, next_move])?;
         }
-    }
-    conn.execute_batch("COMMIT")?;
+        Ok(())
+    })?;
 
     reporter.done(format!("Game {} updated: {} half-move(s).", id, move_count));
     Ok(())

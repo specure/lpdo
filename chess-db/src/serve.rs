@@ -1312,24 +1312,18 @@ async fn merge_players_handler(
 
         // Reassign all games, then delete the dropped player — atomically, so a
         // failure mid-merge can't leave games split between the two ids (#249).
-        conn.execute_batch("BEGIN").map_err(db_err)?;
-        let merged = (|| -> anyhow::Result<()> {
+        // via db::with_tx so a failure rolls back instead of leaving the writer
+        // connection inside a transaction, which breaks later index rebuilds
+        // (#255).
+        crate::db::with_tx(conn, || {
             conn.execute("UPDATE games SET white_id = ? WHERE white_id = ?", duckdb::params![keep_id, drop_id])?;
             conn.execute("UPDATE games SET black_id = ? WHERE black_id = ?", duckdb::params![keep_id, drop_id])?;
             conn.execute("DELETE FROM players WHERE id = ?", duckdb::params![drop_id])?;
             crate::db::queries::recalculate_game_count_for(conn, keep_id)?;
             Ok(())
-        })();
-        match merged {
-            Ok(()) => {
-                conn.execute_batch("COMMIT").map_err(db_err)?;
-                Ok(StatusCode::NO_CONTENT)
-            }
-            Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                Err(db_err(e))
-            }
-        }
+        })
+        .map_err(db_err)?;
+        Ok(StatusCode::NO_CONTENT)
     }).await
 }
 
