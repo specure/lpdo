@@ -73,6 +73,9 @@ export default function MiniBoard({
               id,
               position: fen,
               boardOrientation: flipped ? "black" : "white",
+              // No rank/file labels: at preview size they overlap the pieces
+              // rather than help. The full boards keep theirs.
+              showNotation: false,
               allowDragging: false,
               allowDrawingArrows: false,
               darkSquareStyle: { backgroundColor: "var(--color-board-game-dark)" },
