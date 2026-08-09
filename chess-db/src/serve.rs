@@ -1312,24 +1312,18 @@ async fn merge_players_handler(
 
         // Reassign all games, then delete the dropped player — atomically, so a
         // failure mid-merge can't leave games split between the two ids (#249).
-        conn.execute_batch("BEGIN").map_err(db_err)?;
-        let merged = (|| -> anyhow::Result<()> {
+        // via db::with_tx so a failure rolls back instead of leaving the writer
+        // connection inside a transaction, which breaks later index rebuilds
+        // (#255).
+        crate::db::with_tx(conn, || {
             conn.execute("UPDATE games SET white_id = ? WHERE white_id = ?", duckdb::params![keep_id, drop_id])?;
             conn.execute("UPDATE games SET black_id = ? WHERE black_id = ?", duckdb::params![keep_id, drop_id])?;
             conn.execute("DELETE FROM players WHERE id = ?", duckdb::params![drop_id])?;
             crate::db::queries::recalculate_game_count_for(conn, keep_id)?;
             Ok(())
-        })();
-        match merged {
-            Ok(()) => {
-                conn.execute_batch("COMMIT").map_err(db_err)?;
-                Ok(StatusCode::NO_CONTENT)
-            }
-            Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                Err(db_err(e))
-            }
-        }
+        })
+        .map_err(db_err)?;
+        Ok(StatusCode::NO_CONTENT)
     }).await
 }
 
@@ -1387,6 +1381,24 @@ async fn create_job_handler(
 ) -> ApiResult<serde_json::Value> {
     let id = state.jobs.submit(req.kind, req.params);
     Ok(Json(serde_json::json!({ "job_id": id })))
+}
+
+/// Run the whole maintenance pipeline on demand — the same coalesced,
+/// identity-first pass (fide_refresh → resolve_fide → dedup_players → normalise
+/// → dedup_games → index) that runs by itself after an import.
+///
+/// It was previously reachable only as a side effect of importing, while the
+/// activity panel called it "Prepare database" — so a user reading their own
+/// activity log had no way to invoke the thing it named (#255 follow-up).
+///
+/// Deferred rather than refused when an import is in flight: the pass is
+/// requested and the existing drain logic starts it once the queue empties, so
+/// `started: false` means "owed", not "rejected".
+async fn run_maintenance_handler(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
+    state.jobs.request_maintenance();
+    state.jobs.maybe_run_maintenance();
+    let deferred = state.jobs.maintenance_owed();
+    Ok(Json(serde_json::json!({ "started": !deferred })))
 }
 
 #[derive(Deserialize)]
@@ -2265,6 +2277,7 @@ pub async fn run(
         .route("/lichess-eval",                        get(lichess_eval_handler))
         // Long-running mutation jobs with streamed progress.
         .route("/jobs",                                get(list_jobs_handler).post(create_job_handler))
+        .route("/maintenance/run",                     post(run_maintenance_handler))
         // Streamed PGN upload (#154): disable the default body-size cap so a
         // multi-GB file streams straight to a spool + import job.
         .route("/import/upload", post(import_upload_handler).layer(DefaultBodyLimit::disable()))

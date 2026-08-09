@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **"Prepare database" is now something you can run** — Maintenance → Databases
+  has a card that runs the whole pipeline in the right order (fetch FIDE IDs,
+  merge duplicate players, normalise names, deduplicate games, rebuild the
+  position index). It is the same pass that runs by itself after an import, and
+  the name the activity panel has always used for it — previously there was no
+  way to start it by hand, only the six steps individually. Pressing it while
+  other work is running queues it rather than refusing. (#255)
+
+### Fixed
+- **A failed import no longer breaks the maintenance run that follows it** —
+  "Merge duplicate players" (and deduplication) died with *"Cannot create index
+  with outstanding updates"*, because a failure part-way through an import left
+  the server inside a database transaction, and every later job inherited it.
+  Worse, the failing step had already dropped the indexes it was about to
+  rebuild, so they stayed missing and every player and game query fell back to a
+  full scan. Transactions are now always closed on failure, and a maintenance
+  run repairs a database left in this state instead of failing on it. (#255)
+
 ### Changed
 - **Enabling LAN access now says what else is needed** — after installing with
   "Allow other computers on this network to connect", Windows explains the three

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use duckdb::Connection;
 use crate::reporter::Reporter;
 
@@ -126,12 +126,22 @@ pub fn dedup_players(conn: &Connection, reporter: &Reporter) -> Result<()> {
     let merge_result = run_player_merge_updates(conn, reporter);
     // Rebuild the indexes on EVERY exit (success, cancel, or error) — reads
     // depend on them. Then surface whichever failure happened first.
+    //
+    // Clear a stray transaction first: DuckDB refuses to build an index while
+    // the connection holds uncommitted changes ("Cannot create index with
+    // outstanding updates"), and older builds could leak one from a failed
+    // import. Without this the rebuild fails and the indexes stay DROPPED,
+    // degrading every player query until a later run repairs them (#255).
+    crate::db::clear_stray_transaction(conn);
     let rebuild_result = conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_games_white ON games(white_id);
          CREATE INDEX IF NOT EXISTS idx_games_black ON games(black_id);",
     );
     let finished = merge_result?;
-    rebuild_result?;
+    rebuild_result.context(
+        "the games player-column indexes could not be rebuilt and are now missing — \
+         queries will be slow until this step is re-run",
+    )?;
     if !finished {
         // Cancelled mid-merge: reassignment is idempotent and a re-run rebuilds
         // the same map, so a partial merge is safe — the next run finishes it.
@@ -312,6 +322,9 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
              DROP INDEX IF EXISTS idx_games_chessbase_id;",
         )?;
         let apply_result = apply_dedup(conn, &losers).and_then(|()| sweep_deleted_game_refs(conn));
+        // Same guard as the player merge: an inherited transaction would make
+        // every CREATE INDEX below fail and leave five indexes missing (#255).
+        crate::db::clear_stray_transaction(conn);
         let rebuild_result = conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_games_white ON games(white_id);
              CREATE INDEX IF NOT EXISTS idx_games_black ON games(black_id);
@@ -320,7 +333,10 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
              CREATE INDEX IF NOT EXISTS idx_games_chessbase_id ON games(chessbase_id);",
         );
         apply_result?;
-        rebuild_result?;
+        rebuild_result.context(
+            "the games secondary indexes could not be rebuilt and are now missing — \
+             queries will be slow until deduplication is re-run",
+        )?;
         crate::db::queries::recalculate_game_counts(conn)?;
         spinner.finish_and_clear();
     }
