@@ -289,18 +289,37 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   // Resizable game-list columns. White/Black/Result/Year have user-draggable
   // widths (persisted); Event fills the remainder so no space is wasted.
   type ColKey = "white" | "black" | "result" | "year";
+  const COL_ORDER: ColKey[] = ["white", "black", "result", "year"];
+  const COL_MIN = 36;
   const [colW, setColW] = useState<Record<ColKey, number>>(() => {
     try { const s = localStorage.getItem("gamesColWidths"); if (s) return JSON.parse(s); } catch { /* ignore */ }
     return { white: 170, black: 170, result: 48, year: 52 };
   });
   useEffect(() => { try { localStorage.setItem("gamesColWidths", JSON.stringify(colW)); } catch { /* ignore */ } }, [colW]);
   const gridCols = `${colW.white}px ${colW.black}px ${colW.result}px ${colW.year}px minmax(0,1fr)`;
+  // A divider belongs to the two columns it separates: dragging it trades width
+  // between that pair and leaves every other boundary where it is — the same
+  // rule the panel dividers follow. (Growing one column and letting the trailing
+  // Event column absorb it used to shift every boundary to the right.) The last
+  // fixed column borders Event, which is flexible and absorbs the change itself.
   function startResize(key: ColKey, e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
     const startX = e.clientX;
+    const next = COL_ORDER[COL_ORDER.indexOf(key) + 1] as ColKey | undefined;
     const startW = colW[key];
-    const onMove = (ev: MouseEvent) => setColW((w) => ({ ...w, [key]: Math.max(36, startW + (ev.clientX - startX)) }));
+    const startNext = next ? colW[next] : 0;
+    const onMove = (ev: MouseEvent) => {
+      const raw = ev.clientX - startX;
+      if (next) {
+        // Clamp so neither of the pair drops below the minimum; their total is
+        // constant, so nothing else moves.
+        const dx = Math.max(COL_MIN - startW, Math.min(raw, startNext - COL_MIN));
+        setColW((w) => ({ ...w, [key]: startW + dx, [next]: startNext - dx }));
+      } else {
+        setColW((w) => ({ ...w, [key]: Math.max(COL_MIN, startW + raw) }));
+      }
+    };
     const onUp = () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);

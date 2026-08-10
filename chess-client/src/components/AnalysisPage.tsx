@@ -83,6 +83,22 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
   });
   useEffect(() => { localStorage.setItem(TAB_KEY, tab); }, [tab]);
 
+  // A divider may only resize the two panels it separates. This group has three,
+  // and react-resizable-panels spills past a neighbour that has hit its minimum
+  // into the panel beyond it — so dragging either divider far enough used to move
+  // the third panel as well. While a divider is in use we pin the panel that is
+  // NOT one of its two neighbours to its current size, leaving the library nothing
+  // to spill into: the drag simply stops when the neighbour reaches its minimum.
+  const sizesRef = useRef<[number, number, number]>([9, 57, 34]);
+  const [activeHandle, setActiveHandle] = useState<0 | 1 | null>(null);
+  const railPin = activeHandle === 1 ? sizesRef.current[0] : null;   // far divider ⇒ rail is off-limits
+  const sidePin = activeHandle === 0 ? sizesRef.current[2] : null;   // rail divider ⇒ intel is off-limits
+  const handleProps = (i: 0 | 1) => ({
+    onDragging: (d: boolean) => setActiveHandle(d ? i : null),
+    onFocus: () => setActiveHandle(i),
+    onBlur: () => setActiveHandle(null),
+  });
+
   // A related game being previewed in place — picking a row no longer opens a
   // whole tab, which was a heavy commitment for "how did that game go?".
   const [preview, setPreview] = useState<GameSummary | null>(null);
@@ -130,9 +146,20 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
   }
 
   return (
-    <div className="flex flex-1 overflow-hidden p-1.5 gap-1.5">
+    <div className="flex flex-1 overflow-hidden p-1.5">
+      {/* Rail | board | position intel. One group, so every divider follows the
+          same rule: it resizes the two panels it separates and nothing else. */}
+      <PanelGroup direction="horizontal" autoSaveId="analysis-main" className="flex-1 min-w-0">
       {/* A — open-game tabs (mini-board previews) */}
-      <div className="w-32 shrink-0 flex flex-col gap-1.5 overflow-y-auto">
+      <Panel
+        id="rail"
+        order={1}
+        defaultSize={9}
+        minSize={railPin ?? 5}
+        maxSize={railPin ?? 16}
+        onResize={(size) => { sizesRef.current[0] = size; }}
+      >
+      <div className="h-full flex flex-col gap-1.5 overflow-y-auto">
         {tabs.map((t) => {
           const on = t.key === activeKey;
           return (
@@ -157,10 +184,12 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
           );
         })}
       </div>
+      </Panel>
 
-      {/* Active game (editable board + comments + notation) | C over E */}
-      <PanelGroup direction="horizontal" autoSaveId="analysis-main" className="flex-1 min-w-0">
-        <Panel defaultSize={64} minSize={35}>
+      <PanelResizeHandle className={vHandle} {...handleProps(0)} />
+
+      {/* Active game (editable board + comments + notation) */}
+        <Panel id="board" order={2} defaultSize={57} minSize={34} onResize={(size) => { sizesRef.current[1] = size; }}>
           <div className={panel}>
             {active && (
               <GameBoard
@@ -175,14 +204,21 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
           </div>
         </Panel>
 
-        <PanelResizeHandle className={vHandle} />
+        <PanelResizeHandle className={vHandle} {...handleProps(1)} />
 
         {/* Position intel + related games, one tab at a time. Tabs rather than
             more stacked panels: this column would otherwise hold four ~180px
             strips, and the engine (and a related-game preview) need height.
             The inactive tabs unmount, so the engine asks for no evaluations
             while you are reading something else. */}
-        <Panel defaultSize={36} minSize={22}>
+        <Panel
+          id="side"
+          order={3}
+          defaultSize={34}
+          minSize={sidePin ?? 20}
+          maxSize={sidePin ?? undefined}
+          onResize={(size) => { sizesRef.current[2] = size; }}
+        >
           <div className={panel}>
             <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b border-outline/40">
               {([
