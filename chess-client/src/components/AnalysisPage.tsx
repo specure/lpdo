@@ -8,6 +8,7 @@ import MoveList from "./games/MoveList";
 import GameBoard from "./GameBoard";
 import CloudEngine from "./CloudEngine";
 import { useGamePgn } from "../lib/useGamePgn";
+import { useNeighbourResize } from "../lib/panelResize";
 
 // The Analysis board (#220): the editable, multi-game workbench. Several games
 // open at once as mini-board tabs (A). The active game is edited in a full
@@ -83,21 +84,8 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
   });
   useEffect(() => { localStorage.setItem(TAB_KEY, tab); }, [tab]);
 
-  // A divider may only resize the two panels it separates. This group has three,
-  // and react-resizable-panels spills past a neighbour that has hit its minimum
-  // into the panel beyond it — so dragging either divider far enough used to move
-  // the third panel as well. While a divider is in use we pin the panel that is
-  // NOT one of its two neighbours to its current size, leaving the library nothing
-  // to spill into: the drag simply stops when the neighbour reaches its minimum.
-  const sizesRef = useRef<[number, number, number]>([9, 57, 34]);
-  const [activeHandle, setActiveHandle] = useState<0 | 1 | null>(null);
-  const railPin = activeHandle === 1 ? sizesRef.current[0] : null;   // far divider ⇒ rail is off-limits
-  const sidePin = activeHandle === 0 ? sizesRef.current[2] : null;   // rail divider ⇒ intel is off-limits
-  const handleProps = (i: 0 | 1) => ({
-    onDragging: (d: boolean) => setActiveHandle(d ? i : null),
-    onFocus: () => setActiveHandle(i),
-    onBlur: () => setActiveHandle(null),
-  });
+  // rail | board | intel — three panels, so dividers need the neighbour-only rule.
+  const rz = useNeighbourResize();
 
   // A related game being previewed in place — picking a row no longer opens a
   // whole tab, which was a heavy commitment for "how did that game go?".
@@ -149,15 +137,14 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
     <div className="flex flex-1 overflow-hidden p-1.5">
       {/* Rail | board | position intel. One group, so every divider follows the
           same rule: it resizes the two panels it separates and nothing else. */}
-      <PanelGroup direction="horizontal" autoSaveId="analysis-main" className="flex-1 min-w-0">
+      <PanelGroup direction="horizontal" autoSaveId="analysis-main" className="flex-1 min-w-0" onLayout={rz.onLayout}>
       {/* A — open-game tabs (mini-board previews) */}
       <Panel
         id="rail"
         order={1}
         defaultSize={9}
-        minSize={railPin ?? 5}
-        maxSize={railPin ?? 16}
-        onResize={(size) => { sizesRef.current[0] = size; }}
+        minSize={rz.pin(0) ?? 5}
+        maxSize={rz.pin(0) ?? 16}
       >
       <div className="h-full flex flex-col gap-1.5 overflow-y-auto">
         {tabs.map((t) => {
@@ -186,10 +173,10 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
       </div>
       </Panel>
 
-      <PanelResizeHandle className={vHandle} {...handleProps(0)} />
+      <PanelResizeHandle className={vHandle} {...rz.handle(0)} />
 
       {/* Active game (editable board + comments + notation) */}
-        <Panel id="board" order={2} defaultSize={57} minSize={34} onResize={(size) => { sizesRef.current[1] = size; }}>
+        <Panel id="board" order={2} defaultSize={57} minSize={34}>
           <div className={panel}>
             {active && (
               <GameBoard
@@ -204,7 +191,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
           </div>
         </Panel>
 
-        <PanelResizeHandle className={vHandle} {...handleProps(1)} />
+        <PanelResizeHandle className={vHandle} {...rz.handle(1)} />
 
         {/* Position intel + related games, one tab at a time. Tabs rather than
             more stacked panels: this column would otherwise hold four ~180px
@@ -215,9 +202,8 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
           id="side"
           order={3}
           defaultSize={34}
-          minSize={sidePin ?? 20}
-          maxSize={sidePin ?? undefined}
-          onResize={(size) => { sizesRef.current[2] = size; }}
+          minSize={rz.pin(2) ?? 20}
+          maxSize={rz.pin(2) ?? undefined}
         >
           <div className={panel}>
             <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b border-outline/40">

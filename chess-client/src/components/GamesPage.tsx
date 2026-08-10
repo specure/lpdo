@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { Chess } from "chess.js";
 import { GameSummary, MoveStats, PlayerInfo } from "../types";
@@ -8,6 +8,7 @@ import PositionMoves from "./PositionMoves";
 import MiniBoard from "./games/MiniBoard";
 import MoveList from "./games/MoveList";
 import CloudEngine, { pvString } from "./CloudEngine";
+import { useNeighbourResize } from "../lib/panelResize";
 import { useGamePgn } from "../lib/useGamePgn";
 
 // The Games page: a DB-wide analysis layout with every panel visible at once
@@ -62,9 +63,15 @@ interface Props {
   /** Bump to re-run the games query — the rows changed underneath us (a merge
    *  moved games onto this player, an import added some). */
   reloadKey?: number;
+  /** A rail the host wants as the first panel of the mosaic (the Players page's
+   *  player list). It joins this panel group rather than nesting outside it, so
+   *  dragging its divider resizes only it and the filters — a group of its own
+   *  would rescale everything in here instead. */
+  leadingPanel?: ReactNode;
+  leadingPanelSize?: number;
 }
 
-export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, player, onOpenInAnalysis, collections, onCollectionChange, reloadKey }: Props) {
+export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, player, onOpenInAnalysis, collections, onCollectionChange, reloadKey, leadingPanel, leadingPanelSize = 14 }: Props) {
   const playerScoped = player !== undefined;
   // Restore the Games page's last analysed line + filters (once, on mount). Never
   // for the player-scoped view — that always locks to the externally-chosen player.
@@ -325,6 +332,19 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     window.addEventListener("mouseup", onUp);
   }
 
+  // Top-level group roster, in render order — the rail(s) share it with the
+  // mosaic so a divider between them resizes only that pair.
+  const roster = [
+    ...(leadingPanel ? ["lead"] : []),
+    ...(filtersCollapsed ? [] : ["filters"]),
+    ...(listOnly ? [] : ["left"]),
+    "right",
+  ];
+  const at = (key: string) => roster.indexOf(key);
+  const rz = useNeighbourResize();
+  /** Divider that follows panel `key`. */
+  const after = (key: string) => rz.handle(at(key));
+
   return (
     <div className="flex flex-1 overflow-hidden">
       {/* ── Collapsible filter rail ─────────────────────────────────────────── */}
@@ -338,8 +358,28 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
           <span className="text-label-sm uppercase tracking-wider" style={{ writingMode: "vertical-rl" }}>Filters</span>
           {anyFilter && <span className="w-1.5 h-1.5 rounded-full bg-primary" title="Filters active" />}
         </button>
-      ) : (
-        <div className="w-72 shrink-0 flex flex-col overflow-y-auto bg-surface-container-low border-r border-outline/40">
+      ) : null}
+
+      {/* ── 6-area mosaic (resizable, nested panel groups) ────────────────────── */}
+      <div className="flex-1 min-w-0 min-h-0 p-1.5">
+        <PanelGroup direction="horizontal" autoSaveId="games-cols-v2" className="h-full w-full" onLayout={rz.onLayout}>
+
+          {leadingPanel && (
+            <Panel id="lead" order={1}
+                   defaultSize={leadingPanelSize}
+                   minSize={rz.pin(at("lead")) ?? 8}
+                   maxSize={rz.pin(at("lead")) ?? 30}>
+              {leadingPanel}
+            </Panel>
+          )}
+          {leadingPanel && <PanelResizeHandle className={vHandle} {...after("lead")} />}
+
+          {!filtersCollapsed && (
+          <Panel id="filters" order={2}
+                 defaultSize={18}
+                 minSize={rz.pin(at("filters")) ?? 12}
+                 maxSize={rz.pin(at("filters")) ?? 34}>
+        <div className="h-full flex flex-col overflow-y-auto bg-surface-container-low border border-outline/40 rounded-md">
           <div className="px-3 py-2 flex items-center justify-between border-b border-outline/40">
             <span className="text-label-md text-on-surface-variant uppercase tracking-wider">Filters</span>
             <button onClick={() => setFiltersCollapsed(true)} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide filters">«</button>
@@ -383,16 +423,18 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
             )}
           </div>
         </div>
-      )}
+          </Panel>
+          )}
+          {!filtersCollapsed && <PanelResizeHandle className={vHandle} {...after("filters")} />}
 
-      {/* ── 6-area mosaic (resizable, nested panel groups) ────────────────────── */}
-      <div className="flex-1 min-w-0 min-h-0 p-1.5">
-        <PanelGroup direction="horizontal" autoSaveId="games-cols" className="h-full w-full">
           {/* Left column: A (board) over C (engine). Dropped in the list-only
               state — panels here carry explicit id/order because the set is
               conditional, which react-resizable-panels needs to track them. */}
           {!listOnly && (
-          <Panel id="left" order={1} defaultSize={30} minSize={16}>
+          <Panel id="left" order={3}
+                 defaultSize={30}
+                 minSize={rz.pin(at("left")) ?? 16}
+                 maxSize={rz.pin(at("left")) ?? undefined}>
             <PanelGroup direction="vertical" autoSaveId="games-leftcol" className="h-full w-full">
               {/* A — position board (board only) */}
               <Panel defaultSize={60} minSize={20}>
@@ -423,10 +465,13 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
           </Panel>
           )}
 
-          {!listOnly && <PanelResizeHandle className={vHandle} />}
+          {!listOnly && <PanelResizeHandle className={vHandle} {...after("left")} />}
 
           {/* Right area: B (B1|B2) over bottom (D | E/F) */}
-          <Panel id="right" order={2} defaultSize={listOnly ? 100 : 70} minSize={30}>
+          <Panel id="right" order={4}
+                 defaultSize={listOnly ? 100 : 70}
+                 minSize={rz.pin(at("right")) ?? 30}
+                 maxSize={rz.pin(at("right")) ?? undefined}>
             <PanelGroup direction="vertical" autoSaveId="games-right" className="h-full w-full">
               {/* B — the opening explorer, tied to the board's position: gone
                   with it in the list-only state. */}
