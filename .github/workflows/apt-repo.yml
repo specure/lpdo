@@ -35,7 +35,7 @@ jobs:
       # Bring the existing repository state (old .debs in the pool) so releases
       # accumulate instead of replacing each other. First run: branch is absent.
       - name: Check out existing gh-pages
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: gh-pages
           path: gh-pages
