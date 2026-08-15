@@ -23,7 +23,7 @@ struct PlayerRow {
     last_date: Option<String>,
 }
 
-pub fn dedup_players(conn: &Connection, reporter: &Reporter) -> Result<()> {
+pub fn dedup_players(conn: &Connection, dry_run: bool, reporter: &Reporter) -> Result<()> {
     // Fetch every player row that shares a fide_id OR a normalised name with
     // another, plus that player's most recent game date (for the survivor
     // tiebreaker) — all in ONE query. The per-player last-date is computed in a
@@ -94,6 +94,11 @@ pub fn dedup_players(conn: &Connection, reporter: &Reporter) -> Result<()> {
 
     if mapping.is_empty() {
         reporter.done("No duplicate players found.");
+        return Ok(());
+    }
+
+    if dry_run {
+        report_planned_merges(&rows, &mapping, groups, reporter);
         return Ok(());
     }
 
@@ -169,6 +174,80 @@ pub fn dedup_players(conn: &Connection, reporter: &Reporter) -> Result<()> {
         groups,
     ));
     Ok(())
+}
+
+/// Spell out what a real run would merge, without touching anything. A merge
+/// cannot be undone, so the preview has to be specific enough to spot a wrong
+/// one: every planned merge is listed by name and id, with the FIDE ID that
+/// links it — or "by name" when the names alone did, which is the case worth
+/// checking, since two people really can share a name.
+fn report_planned_merges(
+    rows: &[PlayerRow],
+    mapping: &[(u32, u32)],
+    groups: usize,
+    reporter: &Reporter,
+) {
+    use std::collections::HashMap;
+    let by_id: HashMap<u32, &PlayerRow> = rows.iter().map(|r| (r.id, r)).collect();
+
+    // Group the flat old→new mapping back into one line per survivor.
+    let mut per_survivor: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (old, new) in mapping {
+        per_survivor.entry(*new).or_default().push(*old);
+    }
+    let mut survivors: Vec<u32> = per_survivor.keys().copied().collect();
+    survivors.sort_unstable();
+
+    // Cap the listing: a first run on a large database can plan thousands of
+    // merges, and flooding the log helps nobody. The counts below are complete.
+    const MAX_LINES: usize = 50;
+    let mut by_name_only = 0usize;
+    for (shown, sid) in survivors.iter().enumerate() {
+        let losers = &per_survivor[sid];
+        let keep = by_id.get(sid);
+        let fide = keep.and_then(|k| k.fide_id);
+        // "By name" = nothing in the cluster carries a FIDE ID to justify it.
+        let linked_by_fide =
+            fide.is_some() || losers.iter().any(|l| by_id.get(l).and_then(|r| r.fide_id).is_some());
+        if !linked_by_fide {
+            by_name_only += 1;
+        }
+        if shown >= MAX_LINES {
+            continue;
+        }
+        let names = losers
+            .iter()
+            .map(|l| match by_id.get(l) {
+                Some(r) => format!("“{}” [{}]", r.name, r.id),
+                None => format!("[{}]", l),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        reporter.log(format!(
+            "  keep “{}” [{}] ({}) ← {}",
+            keep.map(|k| k.name.as_str()).unwrap_or("?"),
+            sid,
+            match fide {
+                Some(f) => format!("FIDE {f}"),
+                None => "by name".to_string(),
+            },
+            names,
+        ));
+    }
+    if survivors.len() > MAX_LINES {
+        reporter.log(format!("  …and {} more", survivors.len() - MAX_LINES));
+    }
+    if by_name_only > 0 {
+        reporter.log(format!(
+            "{by_name_only} of these are linked by name alone (no FIDE ID on either side) — \
+             check those for genuine namesakes.",
+        ));
+    }
+    reporter.done(format!(
+        "Dry run: {} duplicate player record(s) across {} player(s) would be merged.",
+        mapping.len(),
+        groups,
+    ));
 }
 
 /// Cluster candidate rows into "same person" sets and choose one survivor each.
@@ -292,6 +371,22 @@ fn run_player_merge_updates(conn: &Connection, reporter: &Reporter) -> Result<bo
     conn.execute("DELETE FROM players WHERE id IN (SELECT old_id FROM merge_map)", [])?;
     step += 1;
     reporter.progress(step, total_steps, "Merging duplicate players…".to_string());
+
+    // Re-open every survivor's games for deduplication. `dedup_games` pairs on
+    // white_id AND black_id, so each verdict it reached while these rows were
+    // split is stale — two copies of one game that could not be matched then can
+    // be matched now. The pipeline's dedup_games is INCREMENTAL and skips games
+    // already flagged `deduped`, so without this the copies this merge just
+    // exposed would never be looked at again (#266). Matching on new_id (the
+    // reassignment above has already run) also re-opens games the survivor
+    // always held, which is harmless: unvetted only means "look again".
+    // Unindexed column, so no per-row ART cost — cheap next to the passes above.
+    conn.execute(
+        "UPDATE games SET deduped = FALSE
+         WHERE white_id IN (SELECT new_id FROM merge_map)
+            OR black_id IN (SELECT new_id FROM merge_map)",
+        [],
+    )?;
     conn.execute_batch("DROP TABLE IF EXISTS merge_map;")?;
     Ok(true)
 }
@@ -1145,7 +1240,7 @@ mod dedup_players_tests {
         )
         .unwrap();
 
-        dedup_players(&conn, &Reporter::silent()).unwrap();
+        dedup_players(&conn, false, &Reporter::silent()).unwrap();
 
         // Non-survivors 2 and 4 are gone; 1, 3, 5 remain.
         let remaining: Vec<u32> = {
@@ -1172,7 +1267,7 @@ mod dedup_players_tests {
                (2,'C, D','c d',200,FALSE);",
         )
         .unwrap();
-        dedup_players(&conn, &Reporter::silent()).unwrap();
+        dedup_players(&conn, false, &Reporter::silent()).unwrap();
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM players", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 2);
     }
@@ -1196,7 +1291,7 @@ mod dedup_players_tests {
         )
         .unwrap();
 
-        dedup_players(&conn, &Reporter::silent()).unwrap();
+        dedup_players(&conn, false, &Reporter::silent()).unwrap();
 
         // Rows in a name group differ only in spacing/case — which `name_score`
         // scores identically — so the tiebreak decides: the lowest (oldest) id.
@@ -1222,7 +1317,7 @@ mod dedup_players_tests {
         )
         .unwrap();
 
-        dedup_players(&conn, &Reporter::silent()).unwrap();
+        dedup_players(&conn, false, &Reporter::silent()).unwrap();
 
         assert_eq!(ids(&conn), vec![2]);
         let fide: Option<u32> = conn
@@ -1244,7 +1339,7 @@ mod dedup_players_tests {
         )
         .unwrap();
 
-        dedup_players(&conn, &Reporter::silent()).unwrap();
+        dedup_players(&conn, false, &Reporter::silent()).unwrap();
 
         assert_eq!(ids(&conn), vec![1, 2, 3], "including the FIDE-less row: which one is it?");
     }
@@ -1265,7 +1360,7 @@ mod dedup_players_tests {
         )
         .unwrap();
 
-        dedup_players(&conn, &Reporter::silent()).unwrap();
+        dedup_players(&conn, false, &Reporter::silent()).unwrap();
 
         assert_eq!(ids(&conn), vec![2], "the normalised, FIDE-carrying row survives");
         let all: Vec<(u32, u32)> = {
@@ -1287,9 +1382,69 @@ mod dedup_players_tests {
         )
         .unwrap();
 
-        dedup_players(&conn, &Reporter::silent()).unwrap();
+        dedup_players(&conn, false, &Reporter::silent()).unwrap();
 
         assert_eq!(ids(&conn), vec![1, 2]);
+    }
+
+    /// Merging players changes the very key `dedup_games` pairs on, so any
+    /// "already vetted" verdict reached while the rows were split is stale. The
+    /// automatic pipeline runs normalise → dedup_players → dedup_games, and its
+    /// dedup_games is INCREMENTAL: without re-opening the survivor's games, a
+    /// duplicate pair that was unmatchable in one pass stays vetted and is never
+    /// looked at again — so the copies survive forever (#266).
+    #[test]
+    fn merge_reopens_the_survivors_games_for_the_next_incremental_dedup() {
+        let conn = setup();
+        // Two records for one person (same normalised name), each holding one
+        // copy of the SAME game. Both games were vetted by an earlier pass that
+        // could not pair them, because their white_ids differed.
+        conn.execute_batch(
+            "INSERT INTO players (id,name,name_normalized,fide_id,name_normalised) VALUES
+               (1,'Abadjian, Vahram','abadjian vahram',NULL,FALSE),
+               (2,'Abadjian, Vahram','abadjian vahram',12345,TRUE),
+               (3,'Krejcar, Walter','krejcar walter',NULL,FALSE);
+             INSERT INTO games (id, white_id, black_id, date, result, opening_line, move_count, pgn, deduped) VALUES
+               (1, 1, 3, '2026-02-14', '0-1', 'e4 e5', 4, '[W \"a\"]\n\n1. e4 e5 2. Nf3 Nc6 0-1', TRUE),
+               (2, 2, 3, '2026-02-14', '0-1', 'e4 e5', 4, '[W \"a\"]\n\n1. e4 e5 2. Nf3 Nc6 0-1', TRUE);",
+        )
+        .unwrap();
+
+        dedup_players(&conn, false, &Reporter::silent()).unwrap();
+        // Incremental — exactly what the post-import pipeline runs.
+        dedup_games(&conn, false, false, &Reporter::silent()).unwrap();
+
+        let games: i64 = conn.query_row("SELECT COUNT(*) FROM games", [], |r| r.get(0)).unwrap();
+        assert_eq!(games, 1, "the copy the merge exposed is removed by the very next pass");
+    }
+
+    /// A preview must leave the database exactly as it found it — players, game
+    /// assignments and the `deduped` flags a real merge would have cleared.
+    #[test]
+    fn dry_run_changes_nothing() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO players (id,name,name_normalized,fide_id,name_normalised) VALUES
+               (1,'Abadjian, Vahram','abadjian vahram',NULL,FALSE),
+               (2,'Abadjian, Vahram','abadjian vahram',12345,TRUE),
+               (3,'Krejcar, Walter','krejcar walter',NULL,FALSE);
+             INSERT INTO games (id, white_id, black_id, date, deduped) VALUES
+               (1, 1, 3, '2026-02-14', TRUE);",
+        )
+        .unwrap();
+
+        dedup_players(&conn, true, &Reporter::silent()).unwrap();
+
+        assert_eq!(ids(&conn), vec![1, 2, 3], "no row removed");
+        let (w, vetted): (u32, bool) = conn
+            .query_row("SELECT white_id, deduped FROM games WHERE id=1", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(w, 1, "no game reassigned");
+        assert!(vetted, "dedup flags untouched");
+
+        // ...and the real run that follows still does the work.
+        dedup_players(&conn, false, &Reporter::silent()).unwrap();
+        assert_eq!(ids(&conn), vec![2, 3]);
     }
 
     /// #205-style: after a merge the survivor owns its losers' games, so the
@@ -1308,7 +1463,7 @@ mod dedup_players_tests {
         )
         .unwrap();
 
-        dedup_players(&conn, &Reporter::silent()).unwrap();
+        dedup_players(&conn, false, &Reporter::silent()).unwrap();
 
         let gc = |id: u32| -> i64 {
             conn.query_row("SELECT game_count FROM players WHERE id=?", duckdb::params![id], |r| r.get(0)).unwrap()

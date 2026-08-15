@@ -1319,6 +1319,15 @@ async fn merge_players_handler(
             conn.execute("UPDATE games SET white_id = ? WHERE white_id = ?", duckdb::params![keep_id, drop_id])?;
             conn.execute("UPDATE games SET black_id = ? WHERE black_id = ?", duckdb::params![keep_id, drop_id])?;
             conn.execute("DELETE FROM players WHERE id = ?", duckdb::params![drop_id])?;
+            // Re-open the kept player's games for deduplication: dedup_games
+            // pairs on white_id AND black_id, so every verdict it reached while
+            // these two rows were split is stale, and its incremental pass would
+            // otherwise never revisit them. Merging by hand is exactly how a user
+            // exposes duplicate games it could not previously see (#266).
+            conn.execute(
+                "UPDATE games SET deduped = FALSE WHERE white_id = ? OR black_id = ?",
+                duckdb::params![keep_id, keep_id],
+            )?;
             crate::db::queries::recalculate_game_count_for(conn, keep_id)?;
             Ok(())
         })
@@ -1384,7 +1393,7 @@ async fn create_job_handler(
 }
 
 /// Run the whole maintenance pipeline on demand — the same coalesced,
-/// identity-first pass (fide_refresh → resolve_fide → dedup_players → normalise
+/// identity-first pass (fide_refresh → resolve_fide → normalise → dedup_players
 /// → dedup_games → index) that runs by itself after an import.
 ///
 /// It was previously reachable only as a side effect of importing, while the
@@ -1712,7 +1721,7 @@ async fn setup_start_handler(State(state): State<AppState>) -> ApiResult<serde_j
 ///
 /// The coalesced tail (#131/#167) is requested rather than enqueued at a fixed
 /// position: first-run is a large import, so it gets the FULL identity-first
-/// pipeline (resolve-fide → dedup_players → normalise → dedup_games → index).
+/// pipeline (resolve-fide → normalise → dedup_players → dedup_games → index).
 /// Coalescing means a source enabled mid-wizard, or an own-PGN import, is covered
 /// by the same one pass that runs once every import drains — no maintenance
 /// stranded ahead of later imports.

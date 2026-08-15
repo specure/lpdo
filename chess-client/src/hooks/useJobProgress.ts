@@ -145,7 +145,12 @@ function planFromArgs(args: string[]): Plan {
         if (hasFlag(args, "--dry-run")) params.dry_run = true;
         return { kind: "job", type: "normalise", params };
       }
-      if (a1 === "dedup") return { kind: "job", type: "dedup_players", params: {} };
+      if (a1 === "dedup") {
+        // `--dry-run` reports every planned merge and writes nothing — the
+        // preview the Maintenance panel offers next to the real run, since a
+        // player merge cannot be undone.
+        return { kind: "job", type: "dedup_players", params: { dry_run: hasFlag(args, "--dry-run") } };
+      }
       if (a1 === "resolve-fide") return { kind: "job", type: "resolve_fide", params: {} };
       break;
     }

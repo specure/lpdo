@@ -34,6 +34,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   away via Maintenance → Players → "Merge duplicate players — automatic".
   Duplicates that are spelled differently *and* have no FIDE ID still need the
   manual merge. (#266)
+- **Merging players now re-opens their games for deduplication** — game
+  deduplication pairs games on their two player records, so every verdict it
+  reached while a person's records were split is stale. Its routine pass only
+  looks at games it has not seen before, so the duplicate copies a merge had
+  just exposed were never re-examined and survived indefinitely. Merging — by
+  hand or automatically — now marks the kept player's games for another look.
+  (#266)
+- **Name normalisation runs before player merging, not after** — renaming a
+  record to its FIDE-canonical spelling can itself produce a duplicate, when the
+  new name is one another record already holds. With merging running first, each
+  maintenance pass ended by creating duplicates that only the *next* pass would
+  clean up. (#266)
 - **A failed import no longer breaks the maintenance run that follows it** —
   "Merge duplicate players" (and deduplication) died with *"Cannot create index
   with outstanding updates"*, because a failure part-way through an import left
@@ -44,6 +56,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run repairs a database left in this state instead of failing on it. (#255)
 
 ### Changed
+- **Player merging can be previewed before it runs** — "Merge duplicate players
+  — automatic" has a Preview button that lists every merge it would make (which
+  record is kept, which are folded in, and whether a FIDE ID or the name alone
+  linked them) and changes nothing. Merges cannot be undone, so a first run on a
+  large database is worth looking at first — particularly the ones linked by
+  name alone, the only ones that could be genuine namesakes. Also available as
+  `chess-db players dedup --dry-run`. (#266)
 - **The Maintenance tools are grouped by what they act on, and say what they
   do** — "Deduplication" was games deduplication, "Merge duplicate players" was
   the automatic one, and "Merge players" (on a different tab) was the manual

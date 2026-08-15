@@ -543,8 +543,8 @@ function PrepareDatabaseSection({ onMutated }: { onMutated?: () => void }) {
   return (
     <SectionCard title="Prepare database">
       <p className="text-body-sm text-on-surface-variant">
-        Runs every maintenance step in the right order: fetch FIDE IDs, merge duplicate players,
-        normalise names (all on the Players tab), remove duplicate games, rebuild the position
+        Runs every maintenance step in the right order: fetch FIDE IDs, normalise names, merge
+        duplicate players (all on the Players tab), remove duplicate games, rebuild the position
         index. This is what runs by itself after an import — start it here if a run was
         interrupted, or after restoring a database.
       </p>
@@ -574,6 +574,9 @@ function PrepareDatabaseSection({ onMutated }: { onMutated?: () => void }) {
 
 function DedupPlayersSection({ onMutated }: { onMutated?: () => void }) {
   const progress = useJobProgress("maint-dedup-players");
+  // Which of the two buttons is running, so the progress row doesn't claim to be
+  // merging while it is only previewing.
+  const [preview, setPreview] = useState(false);
   useEffect(() => { if (progress.done) onMutated?.(); }, [progress.done]);
   return (
     <SectionCard title="Merge duplicate players — automatic">
@@ -586,12 +589,27 @@ function DedupPlayersSection({ onMutated }: { onMutated?: () => void }) {
         ID on either side still need “Merge two players”.
       </p>
       {!progress.running && !progress.done && (
-        <ActionButton onClick={() => void progress.run(["players", "dedup"])}>
-          Find and merge duplicates
-        </ActionButton>
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Preview first: merging cannot be undone, so the safe action is
+                the one offered alongside, not buried behind a checkbox. */}
+            <ActionButton onClick={() => { setPreview(true); void progress.run(["players", "dedup", "--dry-run"]); }}>
+              Preview
+            </ActionButton>
+            <ActionButton onClick={() => { setPreview(false); void progress.run(["players", "dedup"]); }}>
+              Find and merge duplicates
+            </ActionButton>
+          </div>
+          <p className="text-label-sm text-on-surface-variant">
+            Preview lists every merge it would make and changes nothing. Merging cannot be undone.
+          </p>
+        </div>
       )}
       {(progress.running || progress.done) && (
-        <ProgressSection progress={progress} label="Merging duplicate players…" />
+        <ProgressSection
+          progress={progress}
+          label={preview ? "Checking for duplicates…" : "Merging duplicate players…"}
+        />
       )}
     </SectionCard>
   );
@@ -1198,16 +1216,18 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
               by their two players. These steps identify players and fold the duplicates together,
               in the order shown.
             </TabLead>
-            {/* Two columns: the FIDE list feeds the ID lookup (row 1), the two
-                merges sit side by side so automatic vs manual reads at a glance
-                (row 2), then the name-canonicalisation pair (row 3). */}
+            {/* Two columns, in pipeline order: the FIDE list feeds the ID lookup
+                (row 1), the canonical-name pair renames from it (row 2), and the
+                merges come last — a rename can itself create a duplicate — with
+                automatic and manual side by side so the pair reads at a glance
+                (row 3). */}
             <div className={grid}>
               <FideRefreshSection />
               <ResolveFideSection onMutated={onMutated} />
-              <DedupPlayersSection onMutated={onMutated} />
-              <MergePlayersSection onMutated={onMutated} />
               <NormaliseSection onMutated={onMutated} />
               <PlayersSection />
+              <DedupPlayersSection onMutated={onMutated} />
+              <MergePlayersSection onMutated={onMutated} />
             </div>
           </div>
 
