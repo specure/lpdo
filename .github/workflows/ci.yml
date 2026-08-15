@@ -61,7 +61,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: clippy
-      - uses: mozilla-actions/sccache-action@v0.0.10
+      - uses: mozilla-actions/sccache-action@v0.0.11
       # Keep rust-cache too: it restores a ready target/ for the common
       # lock-unchanged build (fastest path), while sccache covers the
       # lock-changed / cold-branch case with granular per-crate hits.
