@@ -29,6 +29,9 @@ export LPDO_VERSION="$VER"
 DRAFTS="${DRAFTS:-$HOME/lpdo-drafts}"
 TAURI_CONF=chess-client/src-tauri/tauri.conf.json
 BUNDLE_DIR=target/release/bundle/deb
+# Crates whose [package] version ends up compiled into a binary: chess-db backs
+# `chess-db --version` and the /status the GUI footer shows.
+CARGO_TOMLS=(chess-db/Cargo.toml chess-client/src-tauri/Cargo.toml)
 
 # nfpm is not always installed; fetch it to ~/.local/bin (no sudo) if missing.
 if ! command -v nfpm >/dev/null 2>&1; then
@@ -41,10 +44,18 @@ fi
 
 echo ">>> draft version $VER  ->  $DRAFTS"
 
-# Bump the GUI version (the GUI .deb takes its version from tauri.conf.json).
-# Reverted on exit — the rest of the tree is already committed, so this is safe.
+# Bump the versions that get compiled in, not just the one on the .deb label.
+# The GUI .deb takes its version from tauri.conf.json; `chess-db --version` and
+# the /status the GUI footer shows come from chess-db's Cargo package version.
+# Leaving those stale made every draft report the last released server version —
+# which defeats the footer's whole job of catching a daemon that wasn't restarted.
+# All reverted on exit; the rest of the tree is already committed, so this is safe.
 jq --arg v "$VER" '.version = $v' "$TAURI_CONF" > "$TAURI_CONF.tmp" && mv "$TAURI_CONF.tmp" "$TAURI_CONF"
-trap 'git checkout -- "$TAURI_CONF" 2>/dev/null || true' EXIT
+for f in "${CARGO_TOMLS[@]}"; do
+  # Only the [package] version — the first such line in the file, never a dependency's.
+  sed -i "0,/^version = \".*\"/s//version = \"$VER\"/" "$f"
+done
+trap 'git checkout -- "$TAURI_CONF" "${CARGO_TOMLS[@]}" Cargo.lock 2>/dev/null || true' EXIT
 
 echo ">>> [1/6] prune stale bundle .debs"
 # The bundler never cleans this dir, so old builds pile up and an ambiguous glob
