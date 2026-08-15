@@ -7,10 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-08-15
+
 ### Added
 - **"Prepare database" is now something you can run** — Maintenance → Database
   has a card that runs the whole pipeline in the right order (fetch FIDE IDs,
-  merge duplicate players, normalise names, deduplicate games, rebuild the
+  normalise names, merge duplicate players, remove duplicate games, rebuild the
   position index). It is the same pass that runs by itself after an import, and
   the name the activity panel has always used for it — previously there was no
   way to start it by hand, only the six steps individually. Pressing it while
@@ -995,7 +997,8 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.14.20...HEAD
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/specure/lpdo/compare/v0.15.5...v0.16.0
 [0.14.20]: https://github.com/specure/lpdo/compare/v0.14.18...v0.14.20
 [0.14.18]: https://github.com/specure/lpdo/compare/v0.14.17...v0.14.18
 [0.14.17]: https://github.com/specure/lpdo/compare/v0.14.16...v0.14.17
