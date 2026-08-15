@@ -342,7 +342,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   ];
   const at = (key: string) => roster.indexOf(key);
   // Layout persistence moved from autoSaveId to explicit storage wiring in v4.
-  const cols = useDefaultLayout({ id: "games-cols-v2", storage: localStorage, panelIds: roster });
+  const cols = useDefaultLayout({ id: "games-cols-v2", storage: localStorage });
   const leftCol = useDefaultLayout({ id: "games-leftcol", storage: localStorage });
   const rightCol = useDefaultLayout({ id: "games-right", storage: localStorage });
   const explorer = useDefaultLayout({ id: "games-b", storage: localStorage });
