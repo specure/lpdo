@@ -11,12 +11,20 @@ import type { Layout } from "react-resizable-panels";
 // rail by a divider two panels away).
 //
 // The fix is to leave it nothing to spill into: while a divider is in use, every
-// panel that is not one of its two neighbours is pinned to its current size, so
-// the drag simply stops when the neighbour reaches its minimum.
+// panel that is not one of its two neighbours gets a floor at its current size,
+// so the drag simply stops when the neighbour reaches its minimum.
+//
+// Two things this got wrong before, both of which only a real mouse in the real
+// webview revealed — a divider would highlight but not drag, or need a click
+// first and a drag second:
+//   · the floor must be in place *before* the pointer goes down. Changing a
+//     panel's constraints mid-drag aborts that drag, so it is set on hover.
+//   · it must be a floor, not a lock. min == max over-constrains the group, and
+//     doing that to the last panel makes v4 refuse to resize at all.
 //
 //   const rz = useNeighbourResize(["rail", "board", "side"]);
 //   <Group onLayoutChange={rz.onLayout}>
-//     <Panel id="rail" minSize={rz.pin("rail") ?? "5"} maxSize={rz.pin("rail") ?? "16"} />
+//     <Panel id="rail" minSize={rz.floor("rail") ?? "5"} maxSize="16" />
 //     <Separator {...rz.separator(0)} />
 //     …
 //
@@ -29,11 +37,20 @@ export function useNeighbourResize(panelIds: string[]) {
   // its own to report from, and a pin with nothing to pin to silently does
   // nothing, which is how the spill got through the first version of this.
   const sizes = useRef<Layout>({});
-  // A separator counts as "in use" while dragged and while focused: keyboard
-  // resizing cascades exactly like dragging, and a drag leaves focus behind.
-  const [dragging, setDragging] = useState<number | null>(null);
+  // A separator counts as "in use" from the moment the pointer is over it, and
+  // while it holds keyboard focus.
+  //
+  // Hover, not pointer-down, because the pin works by changing panel min/max —
+  // and changing a constraint *during* a drag aborts that drag: the two dividers
+  // that pin a third panel highlighted but would not move, while every divider
+  // in a two-panel group (nothing to pin) dragged normally. Pinning on hover
+  // settles the constraints before the drag begins, so nothing changes under it.
+  const [hovered, setHovered] = useState<number | null>(null);
   const [focused, setFocused] = useState<number | null>(null);
-  const active = dragging ?? focused;
+  // Only to stop hover being dropped mid-drag: the pointer is captured and
+  // routinely leaves the separator while dragging.
+  const dragging = useRef(false);
+  const active = hovered ?? focused;
 
   return {
     /** Feed the group's live layout back: `<Group onLayoutChange={rz.onLayout}>`. */
@@ -46,17 +63,24 @@ export function useNeighbourResize(panelIds: string[]) {
      *  and *then* sets its own `onFocus`/`onBlur`, so the bubble-phase versions
      *  are silently overwritten — the pin looked wired up and never fired. */
     separator: (i: number) => ({
-      onPointerDownCapture: () => setDragging(i),
-      onPointerUpCapture: () => setDragging(null),
-      onLostPointerCaptureCapture: () => setDragging(null),
+      onPointerEnterCapture: () => setHovered(i),
+      onPointerLeaveCapture: () => { if (!dragging.current) setHovered(null); },
+      onPointerDownCapture: () => { dragging.current = true; setHovered(i); },
+      onPointerUpCapture: () => { dragging.current = false; },
+      onLostPointerCaptureCapture: () => { dragging.current = false; setHovered(null); },
       onFocusCapture: () => setFocused(i),
       onBlurCapture: () => setFocused(null),
     }),
 
-    /** The size panel `id` is pinned to, as a percentage string, or null when it
-     *  is free to resize — no divider in use, this panel neighbours it, or we
-     *  have no size for it yet. */
-    pin: (id: string): string | null => {
+    /** A floor for panel `id` — its current size, as a percentage string — or
+     *  null when it is free to shrink.
+     *
+     *  A floor, not a lock: a spill can only ever *shrink* a panel the divider
+     *  does not touch, because the panel being grown is always the divider's own
+     *  neighbour. Pinning min *and* max over-constrains the group, and pinning
+     *  the last panel that way made v4 refuse the drag entirely — the divider
+     *  highlighted and would not move. */
+    floor: (id: string): string | null => {
       if (active === null) return null;
       if (id === panelIds[active] || id === panelIds[active + 1]) return null;
       const size = sizes.current[id];

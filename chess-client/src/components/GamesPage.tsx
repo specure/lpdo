@@ -374,8 +374,8 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
           {leadingPanel && (
             <Panel id="lead"
                    defaultSize={leadingPanelSize}
-                   minSize={rz.pin("lead") ?? "8"}
-                   maxSize={rz.pin("lead") ?? "30"}>
+                   minSize={rz.floor("lead") ?? "8"}
+                   maxSize="30">
               {leadingPanel}
             </Panel>
           )}
@@ -384,8 +384,8 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
           {!filtersCollapsed && (
           <Panel id="filters"
                  defaultSize="18"
-                 minSize={rz.pin("filters") ?? "12"}
-                 maxSize={rz.pin("filters") ?? "34"}>
+                 minSize={rz.floor("filters") ?? "12"}
+                 maxSize="34">
         <div className="h-full flex flex-col overflow-y-auto bg-surface-container-low border border-outline/40 rounded-md">
           <div className="px-3 py-2 flex items-center justify-between border-b border-outline/40">
             <span className="text-label-md text-on-surface-variant uppercase tracking-wider">Filters</span>
@@ -440,8 +440,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
           {!listOnly && (
           <Panel id="left"
                  defaultSize="30"
-                 minSize={rz.pin("left") ?? "16"}
-                 maxSize={rz.pin("left") ?? undefined}>
+                 minSize={rz.floor("left") ?? "16"}>
             <Group orientation="vertical" className="h-full w-full flex" defaultLayout={leftCol.defaultLayout} onLayoutChanged={leftCol.onLayoutChanged}>
               {/* A — position board (board only) */}
               <Panel defaultSize="60" minSize="20">
@@ -477,8 +476,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
           {/* Right area: B (B1|B2) over bottom (D | E/F) */}
           <Panel id="right"
                  defaultSize={listOnly ? "100" : "70"}
-                 minSize={rz.pin("right") ?? "30"}
-                 maxSize={rz.pin("right") ?? undefined}>
+                 minSize={rz.floor("right") ?? "30"}>
             <Group orientation="vertical" className="h-full w-full flex" defaultLayout={rightCol.defaultLayout} onLayoutChanged={rightCol.onLayoutChanged}>
               {/* B — the opening explorer, tied to the board's position: gone
                   with it in the list-only state. */}

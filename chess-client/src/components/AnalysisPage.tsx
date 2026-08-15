@@ -151,8 +151,8 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
       <Panel
         id="rail"
         defaultSize="9"
-        minSize={rz.pin("rail") ?? "5"}
-        maxSize={rz.pin("rail") ?? "16"}
+        minSize={rz.floor("rail") ?? "5"}
+        maxSize="16"
       >
       <div className="h-full flex flex-col gap-1.5 overflow-y-auto">
         {tabs.map((t) => {
@@ -209,8 +209,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
         <Panel
           id="side"
           defaultSize="34"
-          minSize={rz.pin("side") ?? "20"}
-          maxSize={rz.pin("side") ?? undefined}
+          minSize={rz.floor("side") ?? "20"}
         >
           <div className={panel}>
             <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b border-outline/40">
