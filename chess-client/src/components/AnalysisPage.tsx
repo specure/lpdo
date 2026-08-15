@@ -100,6 +100,9 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
   const [refLoading, setRefLoading] = useState(false);
   const refAbort = useRef<AbortController | null>(null);
   const [related, setRelated] = useState<GameSummary[]>([]);
+  // How many games reach this position in total — the list is one capped page,
+  // and "50+" hid the difference between 52 games and 3000.
+  const [relatedTotal, setRelatedTotal] = useState<number | null>(null);
   const relAbort = useRef<AbortController | null>(null);
 
   // C — reference-DB moves from the current position (Zobrist / transposition-aware).
@@ -116,12 +119,17 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
 
   // E — related games that reached this position (skip the start position).
   useEffect(() => {
-    if (!active || atStart) { setRelated([]); return; }
+    if (!active || atStart) { setRelated([]); setRelatedTotal(null); return; }
     relAbort.current?.abort();
     relAbort.current = new AbortController();
-    fetch(`/api/games?fen=${encodeURIComponent(effFen)}&limit=50`, { signal: relAbort.current.signal })
+    const sig = relAbort.current.signal;
+    fetch(`/api/games?fen=${encodeURIComponent(effFen)}&limit=50`, { signal: sig })
       .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<GameSummary[]>; })
       .then((d) => setRelated(d))
+      .catch(() => {});
+    fetch(`/api/games?fen=${encodeURIComponent(effFen)}&count=true`, { signal: sig })
+      .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<{ count: number }>; })
+      .then((d) => setRelatedTotal(d.count))
       .catch(() => {});
   }, [active?.key, effFen, atStart]);
 
@@ -210,7 +218,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
               {([
                 { key: "reference", label: "Reference" },
                 { key: "engine", label: "Engine" },
-                { key: "related", label: `Related${related.length ? ` · ${related.length}${related.length >= 50 ? "+" : ""}` : ""}` },
+                { key: "related", label: `Games${relatedTotal != null ? ` · ${relatedTotal.toLocaleString()}` : ""}` },
               ] as { key: RightTab; label: string }[]).map((t) => (
                 <button
                   key={t.key}

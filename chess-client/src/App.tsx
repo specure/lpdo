@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import PlayerList from "./components/PlayerList";
 import GameBoard from "./components/GameBoard";
@@ -16,6 +17,7 @@ import MergePlayersDialog from "./components/MergePlayersDialog";
 import AnalysisPage, { AnalysisTab } from "./components/AnalysisPage";
 import { loadGamePgn } from "./lib/useGamePgn";
 import { CursorPath } from "./lib/moveTreeNav";
+import { setAppVersion as setCrashAppVersion, setCrashContext } from "./lib/crashLog";
 import HomeEmptyState from "./components/HomeEmptyState";
 import UpdateBanner from "./components/UpdateBanner";
 import ActivityIndicator from "./components/ActivityIndicator";
@@ -601,6 +603,14 @@ export default function App() {
 
   // Resolve the pending focus request once Players mode is active and the
   // input is reachable. Runs after commit, so the input is in the live DOM.
+  // Breadcrumbs for the crash log: which screen was open, and whether this is a
+  // remote (LAN) server — the failure modes differ and the entry should say.
+  useEffect(() => { setCrashContext({ view: mode }); }, [mode]);
+  useEffect(() => {
+    setCrashContext({ server: isDefaultServer() ? "local" : "remote" });
+    getVersion().then(setCrashAppVersion).catch(() => {});
+  }, []);
+
   useEffect(() => {
     if (pendingSearchFocus && mode === "players") {
       playerSearchRef.current?.focus();
