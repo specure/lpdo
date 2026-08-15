@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import PlayerList from "./components/PlayerList";
 import GameBoard from "./components/GameBoard";
@@ -16,6 +17,7 @@ import MergePlayersDialog from "./components/MergePlayersDialog";
 import AnalysisPage, { AnalysisTab } from "./components/AnalysisPage";
 import { loadGamePgn } from "./lib/useGamePgn";
 import { CursorPath } from "./lib/moveTreeNav";
+import { setAppVersion as setCrashAppVersion, setCrashContext } from "./lib/crashLog";
 import HomeEmptyState from "./components/HomeEmptyState";
 import UpdateBanner from "./components/UpdateBanner";
 import ActivityIndicator from "./components/ActivityIndicator";
@@ -601,6 +603,14 @@ export default function App() {
 
   // Resolve the pending focus request once Players mode is active and the
   // input is reachable. Runs after commit, so the input is in the live DOM.
+  // Breadcrumbs for the crash log: which screen was open, and whether this is a
+  // remote (LAN) server — the failure modes differ and the entry should say.
+  useEffect(() => { setCrashContext({ view: mode }); }, [mode]);
+  useEffect(() => {
+    setCrashContext({ server: isDefaultServer() ? "local" : "remote" });
+    getVersion().then(setCrashAppVersion).catch(() => {});
+  }, []);
+
   useEffect(() => {
     if (pendingSearchFocus && mode === "players") {
       playerSearchRef.current?.focus();
@@ -901,8 +911,11 @@ export default function App() {
               Read-only analysis layout (#219) scoped to the selected player, with
               a collapsible player list on the left (filters collapse inside it). */}
           <div className={mode === "prep" ? "hidden" : "flex flex-1 overflow-hidden"}>
-            {/* Collapsible player list (prep opponents or normal search) */}
-            {playersCollapsed ? (
+            {/* Collapsible player list (prep opponents or normal search). When
+                expanded it is handed to GamesPage as the mosaic's first panel, so
+                its divider resizes it against the filters and nothing else; a
+                group of its own here would rescale the whole mosaic instead. */}
+            {playersCollapsed && (
               <button
                 onClick={() => setPlayersCollapsed(false)}
                 className="w-8 shrink-0 flex flex-col items-center gap-2 pt-3 bg-surface-container-low border-r border-outline/40 text-on-surface-variant hover:text-on-surface hover:bg-on-surface/4 transition-colors duration-short3 ease-standard"
@@ -911,8 +924,10 @@ export default function App() {
                 <span className="text-body-md">»</span>
                 <span className="text-label-sm uppercase tracking-wider" style={{ writingMode: "vertical-rl" }}>Players</span>
               </button>
-            ) : (
-              <div className="w-56 shrink-0 overflow-hidden flex flex-col border-r border-outline/40">
+            )}
+            {(() => {
+              const playersRail = playersCollapsed ? null : (
+              <div className="h-full overflow-hidden flex flex-col bg-surface-container-low border border-outline/40 rounded-md">
                 <div className="px-3 py-2 flex items-center justify-between border-b border-outline/40">
                   <span className="text-label-md text-on-surface-variant uppercase tracking-wider">{prepContext ? "Opponents" : "Players"}</span>
                   <button onClick={() => setPlayersCollapsed(true)} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide players">«</button>
@@ -938,8 +953,9 @@ export default function App() {
                   />
                 )}
               </div>
-            )}
-
+              );
+              return (
+            <>
             {/* Analysis mosaic scoped to the selected player, under a slim row
                 carrying the per-player tools (profile, merge). */}
             {selectedPlayer ? (
@@ -976,13 +992,21 @@ export default function App() {
                   onCollectionChange={setScopeCollectionId}
                   onOpenInAnalysis={openInAnalysis}
                   reloadKey={gameMutationKey}
+                  leadingPanel={playersRail}
+                  leadingPanelSize={13}
                 />
               </div>
             ) : (
-              <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md">
-                {prepContext ? "Select an opponent to view their games" : "Search for a player"}
-              </div>
+              <>
+                {playersRail && <div className="w-56 shrink-0 p-1.5">{playersRail}</div>}
+                <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md">
+                  {prepContext ? "Select an opponent to view their games" : "Search for a player"}
+                </div>
+              </>
             )}
+            </>
+              );
+            })()}
           </div>
         </>
       ) : mode === "games" ? (

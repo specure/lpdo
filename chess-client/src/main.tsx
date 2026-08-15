@@ -1,8 +1,10 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import ErrorBoundary from "./components/ErrorBoundary";
 import "./index.css";
 import { serverUrl, serverToken, TOKEN_HEADER } from "./api";
+import { installCrashHandlers } from "./lib/crashLog";
 
 // In dev, the Vite dev-server proxies "/api/*" → http://localhost:7777 (see
 // vite.config.ts). A bundled app has no such proxy, so route the relative
@@ -32,8 +34,14 @@ import { serverUrl, serverToken, TOKEN_HEADER } from "./api";
   }) as typeof window.fetch;
 }
 
+// Stray exceptions and rejected promises land in the crash log too — a render
+// error is only one of the ways this app can fail out of sight (#—).
+installCrashHandlers();
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </React.StrictMode>,
 );

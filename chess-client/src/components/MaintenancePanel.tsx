@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
+import { clearCrashLog, formatCrashLog, readCrashLog, type CrashEntry } from "../lib/crashLog";
 import { listen } from "@tauri-apps/api/event";
 import { useJobProgress } from "../hooks/useJobProgress";
 import SourcesPanel from "./SourcesPanel";
@@ -192,6 +193,72 @@ function VersionFooter({ status }: { status: StatusInfo | null }) {
     <div className="pt-2 text-center text-label-md text-on-surface-variant select-text">
       LPDO {appVersion ?? "…"} · {server}
     </div>
+  );
+}
+
+// Diagnostics — the crash log, readable after the reload that follows a crash.
+// A blank window used to be the whole report; this is where the reason lives.
+function DiagnosticsSection() {
+  const [entries, setEntries] = useState<CrashEntry[]>(() => readCrashLog());
+  const [note, setNote] = useState<string | null>(null);
+  const report = formatCrashLog(entries);
+
+  async function saveToFile() {
+    try {
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      const path = await save({ defaultPath: `lpdo-diagnostics-${stamp}.txt`, filters: [{ name: "Text", extensions: ["txt"] }] });
+      if (!path) return;
+      // Generic "write this text there" command (named for its first caller).
+      await invoke("write_pgn_file", { path, content: report });
+      setNote(`Saved to ${path}`);
+    } catch (e) {
+      setNote(`Could not save: ${e}`);
+    }
+  }
+
+  function emailReport() {
+    // Never sends anything by itself: this opens a draft for you to review,
+    // address and send. Mail clients cap the body, so the file goes as an
+    // attachment you add — the draft says so.
+    const last = entries[0];
+    const summary = last ? `${last.at} · ${last.kind}\n${last.message}` : "No crashes recorded.";
+    const body = `LPDO diagnostics\n\n${summary}\n\n(Please attach the diagnostics file saved from Maintenance → Others → Diagnostics.)`;
+    void openUrl(`mailto:?subject=${encodeURIComponent("LPDO crash report")}&body=${encodeURIComponent(body)}`);
+  }
+
+  return (
+    <SectionCard title="Diagnostics" status={entries.length ? `${entries.length} recorded` : "none recorded"}>
+      <p className="text-body-md text-on-surface-variant">
+        Errors the app could not recover from, with the time, the screen you were on and whether the
+        server was local or over the network. Nothing leaves this machine unless you send it.
+      </p>
+      {entries.length > 0 && (
+        <pre className="max-h-64 overflow-auto rounded-md bg-surface-container p-3 text-body-sm text-on-surface whitespace-pre-wrap break-words">{report}</pre>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={() => { void saveToFile(); }}
+          disabled={entries.length === 0}
+          className="h-9 px-4 rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 disabled:opacity-40 transition-all duration-short3 ease-standard"
+        >Save to file…</button>
+        <button
+          onClick={() => { void navigator.clipboard?.writeText(report); setNote("Copied to the clipboard"); }}
+          disabled={entries.length === 0}
+          className="h-9 px-4 rounded-full border border-outline text-on-surface text-label-md hover:bg-on-surface/8 disabled:opacity-40 transition-colors duration-short3 ease-standard"
+        >Copy</button>
+        <button
+          onClick={emailReport}
+          disabled={entries.length === 0}
+          className="h-9 px-4 rounded-full border border-outline text-on-surface text-label-md hover:bg-on-surface/8 disabled:opacity-40 transition-colors duration-short3 ease-standard"
+        >Email report…</button>
+        <button
+          onClick={() => { clearCrashLog(); setEntries([]); setNote("Cleared"); }}
+          disabled={entries.length === 0}
+          className="h-9 px-4 rounded-full text-error text-label-md hover:bg-error/8 disabled:opacity-40 transition-colors duration-short3 ease-standard"
+        >Clear</button>
+      </div>
+      {note && <div className="text-label-md text-on-surface-variant">{note}</div>}
+    </SectionCard>
   );
 }
 
@@ -1107,6 +1174,7 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
           <div className={`${grid} ${tab === "others" ? "" : "hidden"}`}>
             <ServerConnectionSection status={status} connection={connection} />
             <BackupSection />
+            <DiagnosticsSection />
             <PurgeSection status={status} onMutated={onMutated} />
           </div>
         </div>
