@@ -644,8 +644,15 @@ enum GameCommands {
 enum PlayersCommands {
     /// Recalculate and store game counts for all players
     UpdateGameCounts,
-    /// Merge duplicate player records that share the same FIDE ID
-    Dedup,
+    /// Merge duplicate player records: those sharing a FIDE ID, and those sharing
+    /// a normalised name (the key the importer identifies people by). A name held
+    /// by two different FIDE IDs is left alone — those are namesakes
+    Dedup {
+        /// List every merge that would be made, and change nothing. A merge
+        /// cannot be undone, so preview a first run on a large database.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Merge two player records: reassign all games from drop-id to keep-id, then delete drop-id
     Merge {
         /// Player ID to keep
@@ -1566,9 +1573,9 @@ fn job_spec_for(command: &Commands) -> Option<proxy::JobSpec> {
             "resolve_import",
             json!({ "path": path.to_string_lossy() }),
         ),
-        Commands::Players { subcommand: PlayersCommands::Dedup } => (
+        Commands::Players { subcommand: PlayersCommands::Dedup { dry_run } } => (
             "dedup_players",
-            json!({}),
+            json!({ "dry_run": dry_run }),
         ),
         Commands::Players { subcommand: PlayersCommands::Import { path } } => (
             "players_import",
@@ -2279,8 +2286,8 @@ async fn main() -> Result<()> {
                 db::queries::recalculate_game_counts(&conn)?;
                 println!("Done.");
             }
-            PlayersCommands::Dedup => {
-                dedup::dedup_players(&conn, &reporter)?;
+            PlayersCommands::Dedup { dry_run } => {
+                dedup::dedup_players(&conn, dry_run, &reporter)?;
             }
             PlayersCommands::Merge { keep_id, drop_id, yes } => {
                 do_merge_players(&conn, keep_id, drop_id, yes)?;

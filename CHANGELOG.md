@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **"Prepare database" is now something you can run** — Maintenance → Databases
+- **"Prepare database" is now something you can run** — Maintenance → Database
   has a card that runs the whole pipeline in the right order (fetch FIDE IDs,
   merge duplicate players, normalise names, deduplicate games, rebuild the
   position index). It is the same pass that runs by itself after an import, and
@@ -17,6 +17,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other work is running queues it rather than refusing. (#255)
 
 ### Fixed
+- **Duplicate players with the same name are now merged automatically** —
+  automatic player merging only ever looked at FIDE IDs, so two records for one
+  person with no FIDE ID between them stayed split forever. That also hid
+  duplicate *games*: two games are only recognised as the same game when they
+  name the same two player records, so every copy hanging off the second record
+  survived deduplication too — the games list showed the same game twice and no
+  maintenance step could clean it up. Player merging now also folds together
+  records whose names match once capitals, commas and spacing are ignored — the
+  same key the importer already identifies people by, so this restores an
+  invariant rather than guessing. A name held by two *different* FIDE IDs is
+  left untouched: those are namesakes FIDE distinguishes, and a merge cannot be
+  undone. The merge keeps whichever record carries the FIDE ID, and refreshes
+  every affected game count. Since this runs in the pass that follows each
+  import, affected databases repair themselves on the next import — or straight
+  away via Maintenance → Players → "Merge duplicate players — automatic".
+  Duplicates that are spelled differently *and* have no FIDE ID still need the
+  manual merge. (#266)
+- **Merging players now re-opens their games for deduplication** — game
+  deduplication pairs games on their two player records, so every verdict it
+  reached while a person's records were split is stale. Its routine pass only
+  looks at games it has not seen before, so the duplicate copies a merge had
+  just exposed were never re-examined and survived indefinitely. Merging — by
+  hand or automatically — now marks the kept player's games for another look.
+  (#266)
+- **Name normalisation runs before player merging, not after** — renaming a
+  record to its FIDE-canonical spelling can itself produce a duplicate, when the
+  new name is one another record already holds. With merging running first, each
+  maintenance pass ended by creating duplicates that only the *next* pass would
+  clean up. (#266)
 - **A failed import no longer breaks the maintenance run that follows it** —
   "Merge duplicate players" (and deduplication) died with *"Cannot create index
   with outstanding updates"*, because a failure part-way through an import left
@@ -27,6 +56,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run repairs a database left in this state instead of failing on it. (#255)
 
 ### Changed
+- **Player merging can be previewed before it runs** — "Merge duplicate players
+  — automatic" has a Preview button that lists every merge it would make (which
+  record is kept, which are folded in, and whether a FIDE ID or the name alone
+  linked them) and changes nothing. Merges cannot be undone, so a first run on a
+  large database is worth looking at first — particularly the ones linked by
+  name alone, the only ones that could be genuine namesakes. Also available as
+  `chess-db players dedup --dry-run`. (#266)
+- **The Maintenance tools are grouped by what they act on, and say what they
+  do** — "Deduplication" was games deduplication, "Merge duplicate players" was
+  the automatic one, and "Merge players" (on a different tab) was the manual
+  one; all three names were guesses. They are now **"Remove duplicate games"**,
+  **"Merge duplicate players — automatic"** and **"Merge two players —
+  manual"**, and the tabs hold what their name says: **Database** (prepare,
+  remove duplicate games, position index, soft-deleted games) and **Players**
+  (fetch FIDE IDs, the two merges, normalise names, FIDE list, player reference
+  file). Each tab opens with a line explaining the order its steps belong in —
+  in particular that duplicate games are recognised through their two player
+  records, so merging duplicate players comes first. The automatic merge now
+  states that it only finds records sharing a FIDE ID, and points at the manual
+  merge for the rest. (#266)
 - **Enabling LAN access now says what else is needed** — after installing with
   "Allow other computers on this network to connect", Windows explains the three
   remaining steps: read the access token from an elevated PowerShell, enter it in

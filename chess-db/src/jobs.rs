@@ -689,8 +689,8 @@ impl JobManager {
 
     /// If maintenance is owed and nothing import- or maintenance-class is queued
     /// or running, enqueue the coalesced pass once and clear the owed flag. The
-    /// single identity-first pass (#167) is resolve-fide → dedup_players →
-    /// normalise → dedup_games → index; `dedup_games` is incremental (#—), so
+    /// single identity-first pass (#167) is resolve-fide → normalise →
+    /// dedup_players → dedup_games → index; `dedup_games` is incremental (#—), so
     /// it's affordable after every sync and there's no longer a light variant. If
     /// the queue hasn't drained yet, re-arm and wait for a later call. Safe to
     /// call from any thread and as often as you like — the flag is claimed
@@ -729,10 +729,16 @@ impl JobManager {
         // ahead and failing with "No FIDE list loaded" (#206).
         let c = self.next_cluster_id();
         let m = |t: &str, p| self.submit_in_cluster(t.to_string(), p, Some(c.clone()));
+        //
+        // `normalise` runs BEFORE `dedup_players`, not after (#266): renaming a
+        // row to its FIDE-canonical spelling is itself a way to create a
+        // duplicate — the new name can be one another row already holds — so
+        // merging has to come after the renames, or the pass ends by creating
+        // duplicates it will not clean up until the next one.
         m("fide_refresh", serde_json::json!({ "if_due": true }));
         m("resolve_fide", serde_json::json!({}));
-        m("dedup_players", serde_json::json!({}));
         m("normalise", serde_json::json!({}));
+        m("dedup_players", serde_json::json!({}));
         m("dedup_games", serde_json::json!({}));
         m("index_positions", serde_json::json!({ "fast": true }));
     }
@@ -1383,7 +1389,7 @@ fn run_job(
             dedup::dedup_games(conn, flag(p, "dry_run"), flag(p, "full"), reporter)?;
         }
         "dedup_players" => {
-            dedup::dedup_players(conn, reporter)?;
+            dedup::dedup_players(conn, flag(p, "dry_run"), reporter)?;
         }
         "cleanup" => {
             dedup::cleanup_nonstandard(conn, flag(p, "non_standard"), flag(p, "dry_run"), reporter)?;

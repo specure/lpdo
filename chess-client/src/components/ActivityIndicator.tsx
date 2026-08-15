@@ -38,8 +38,8 @@ function jobLabel(j: Job): string {
     case "update":             return "Scheduled update";
     case "fide_refresh":       return "Update FIDE player list";
     case "index_positions":    return "Build position index";
-    case "dedup_games":        return "Deduplicate games";
-    case "dedup_players":      return "Merge duplicate players";
+    case "dedup_games":        return "Remove duplicate games";
+    case "dedup_players":      return p.dry_run ? "Preview duplicate players" : "Merge duplicate players";
     case "cleanup":            return "Clean up games";
     case "normalise":          return "Normalise player names";
     case "resolve_fide":       return "Fetch missing FIDE IDs";
@@ -53,7 +53,7 @@ function jobLabel(j: Job): string {
       if (f) return c ? `Import ${f} → ${c}` : `Import ${f}`;
       return c ? `Import PGN → ${c}` : "Import PGN";
     }
-    case "maintenance_pending": return "Prepare database — resolve · dedup · normalise · index";
+    case "maintenance_pending": return "Prepare database — resolve · normalise · dedup · index";
     case "players_import":     return "Import players";
     case "players_export":     return "Export players";
     case "backup":             return p.collection ? `Backup ${p.collection}` : "Backup";
