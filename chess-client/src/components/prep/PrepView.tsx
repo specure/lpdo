@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { invoke } from "@tauri-apps/api/core";
 import { GameSummary, PlayerInfo, PrepContext, ShortlistEntry } from "../../types";
 import TournamentList from "./TournamentList";
@@ -33,11 +34,20 @@ export default function PrepView({ onOpponentsReady, onShowGame }: Props) {
   }
 
   const selectedEntry = entries.find((e) => e.id === selectedId) ?? null;
+  const saved = useDefaultLayout({ id: "prep-cols", storage: localStorage });
 
   return (
     <div className="flex flex-1 overflow-hidden bg-surface">
-      {/* Left: tournament list */}
-      <div className="w-72 shrink-0 overflow-hidden flex flex-col">
+      {/* Tournament list | prep panel, as resizable siblings — two panels, so the
+          divider trades between them and there is nothing else to disturb. */}
+      <Group
+        orientation="horizontal"
+        className="flex-1 min-w-0 flex"
+        defaultLayout={saved.defaultLayout}
+        onLayoutChanged={saved.onLayoutChanged}
+      >
+      <Panel id="tournaments" defaultSize="22" minSize="14" maxSize="40">
+      <div className="h-full overflow-hidden flex flex-col">
         <TournamentList
           entries={entries}
           selectedId={selectedId}
@@ -49,9 +59,13 @@ export default function PrepView({ onOpponentsReady, onShowGame }: Props) {
           <div className="px-3 py-2 text-body-sm text-error">{removeError}</div>
         )}
       </div>
+      </Panel>
+
+      <Separator className="w-1.5 bg-transparent hover:bg-primary/30 data-[separator=drag]:bg-primary/50 transition-colors" />
 
       {/* Right: prep panel or empty state */}
-      <div className="flex-1 overflow-hidden flex flex-col bg-surface-container-low">
+      <Panel id="prep" defaultSize="78" minSize="40">
+      <div className="h-full overflow-hidden flex flex-col bg-surface-container-low">
         {selectedEntry ? (
           <TournamentPrepPanel entry={selectedEntry} onOpponentsReady={onOpponentsReady} onShowGame={onShowGame} />
         ) : (
@@ -60,6 +74,8 @@ export default function PrepView({ onOpponentsReady, onShowGame }: Props) {
           </div>
         )}
       </div>
+      </Panel>
+      </Group>
 
       {showAdd && (
         <AddTournamentModal

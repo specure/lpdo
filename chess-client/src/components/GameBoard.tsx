@@ -4,6 +4,7 @@ import { Chess } from "chess.js";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { GameSummary } from "../types";
+import { createPortal } from "react-dom";
 import { parsePgnTree, AnnotatedGame, MoveNode } from "../lib/parsePgnTree";
 import { ensureMoveNumbers, parseBlockTags } from "../lib/pgnEditor";
 import { useJobProgress } from "../hooks/useJobProgress";
@@ -381,6 +382,11 @@ interface Props {
    * it can be fed straight back from state the board itself drives. Ignored if
    * it no longer resolves against the tree (the moves were edited since). */
   initialCursor?: CursorPath | null;
+  /** Render the move list into this element instead of inline beside the board.
+   * The Analysis view owns it as a panel of its own, so the board and the move
+   * text are siblings under one divider rule rather than a compound panel with a
+   * sub-divider inside it. State stays here; only the DOM moves. */
+  moveListHost?: HTMLElement | null;
   /** Controlled board orientation. Left undefined the board keeps its own flip
    * state; the Analysis board passes it so orientation survives tab switches,
    * page switches and restarts (remembered per open game). */
@@ -809,7 +815,7 @@ function DetailsPanel({
   );
 }
 
-export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor }: Props) {
+export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost }: Props) {
   const [detail, setDetail] = useState<GameDetail | null>(null);
   const [detailReloadKey, setDetailReloadKey] = useState(0);
   const [detailsOpen, setDetailsOpen] = useState<boolean>(
@@ -1885,16 +1891,35 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
         )}
       </div>
 
-      {/* Move list — sidebar, tonal step from board area */}
-      <div
-        className="shrink-0 flex flex-col bg-surface-container-low overflow-hidden py-2 relative"
-        style={{ width: moveListWidth }}
-      >
-        {/* Drag handle */}
-        <div
-          onMouseDown={handleDragStart}
-          className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/40 z-10 transition-colors duration-short3 ease-standard"
-        />
+      {/* Move list. Hosted in its own panel when the view provides one (Analysis),
+          otherwise the inline sidebar with its own width and drag handle. */}
+      {moveListHost
+        ? createPortal(
+            <div className="h-full flex flex-col bg-surface-container-low overflow-hidden py-2">
+              {renderMoveListBody()}
+            </div>,
+            moveListHost,
+          )
+        : (
+          <div
+            className="shrink-0 flex flex-col bg-surface-container-low overflow-hidden py-2 relative"
+            style={{ width: moveListWidth }}
+          >
+            {/* Drag handle — only meaningful for the inline sidebar; in a hosted
+                panel the group's own divider does this job. */}
+            <div
+              onMouseDown={handleDragStart}
+              className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/40 z-10 transition-colors duration-short3 ease-standard"
+            />
+            {renderMoveListBody()}
+          </div>
+        )}
+    </div>
+  );
+
+  function renderMoveListBody() {
+    return (
+      <>
         {movesEditor.active ? (
           <MovesEditorMoveList editor={movesEditor} />
         ) : useAnnotated ? (
@@ -1922,7 +1947,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             No PGN available
           </div>
         )}
-      </div>
-    </div>
-  );
+      </>
+    );
+  }
 }

@@ -15,6 +15,8 @@ import GamesPage from "./components/GamesPage";
 import PlayerProfileModal from "./components/PlayerProfileModal";
 import MergePlayersDialog from "./components/MergePlayersDialog";
 import AnalysisPage, { AnalysisTab } from "./components/AnalysisPage";
+import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
+import { useNeighbourResize } from "./lib/panelResize";
 import { loadGamePgn } from "./lib/useGamePgn";
 import { CursorPath } from "./lib/moveTreeNav";
 import { setAppVersion as setCrashAppVersion, setCrashContext } from "./lib/crashLog";
@@ -298,6 +300,8 @@ function readCursor(raw: unknown): CursorPath | null {
   return { steps, index };
 }
 
+const vHandle = "w-1.5 bg-transparent hover:bg-primary/30 data-[separator=drag]:bg-primary/50 transition-colors";
+
 const RECENT_PGN_KEY = "recentPgnFiles";
 const RECENT_PGN_MAX = 8;
 
@@ -458,6 +462,18 @@ export default function App() {
   }, [openLocalFile]);
   const [filesCollapsed, setFilesCollapsed] = useState(false);
   const [gameListCollapsed, setGameListCollapsed] = useState(false);
+
+  // PGNs page panels: the two lists collapse to a strip but stay mounted, so
+  // collapse is driven imperatively rather than by unmounting the panel.
+  const showPgnGamesPanel = !!localSelectedFile && localGameCount !== 1;
+  const pgnRz = useNeighbourResize(showPgnGamesPanel ? ["files", "games", "board"] : ["files", "board"]);
+  // This view is mounted the whole time and merely hidden, so the group measures
+  // zero on mount and falls back to an equal split, ignoring each Panel's
+  // defaultSize. An explicit starting layout does not depend on measurement.
+  const pgnLayout = useDefaultLayout({ id: "pgn-cols", storage: localStorage });
+  const pgnDefaultLayout = pgnLayout.defaultLayout
+    ?? (showPgnGamesPanel ? { files: 16, games: 20, board: 64 } : { files: 16, board: 84 });
+
   const [scopePublicOnly, setScopePublicOnly] = useState<boolean>(
     () => localStorage.getItem("scopePublicOnly") === "1",
   );
@@ -730,68 +746,93 @@ export default function App() {
 
       {/* Body */}
 
-      {/* Local view — works without server, always mounted */}
+      {/* Local view — works without server, always mounted.
+          Files | games | board as sibling panels, with the same collapse
+          affordance as the other pages: « in the panel header, » on the strip.
+          Both lists stay mounted while collapsed — the browser keeps its
+          directory, and the game list is what reports the file's game count. */}
       <div className={mode !== "local" ? "hidden" : "flex flex-1 overflow-hidden"}>
-        {/* Files panel — always mounted to preserve directory state */}
-        {filesCollapsed && (
-          <button
-            onClick={() => setFilesCollapsed(false)}
-            className="shrink-0 w-6 flex items-start pt-3 justify-center border-r border-outline/40 bg-surface-container-low text-on-surface-variant hover:text-on-surface hover:bg-on-surface/4 transition-colors"
-            title="Show files"
+        <div className="flex-1 min-w-0 min-h-0 p-1.5">
+          <Group
+            orientation="horizontal"
+            className="h-full w-full flex"
+            defaultLayout={pgnDefaultLayout}
+            onLayoutChanged={pgnLayout.onLayoutChanged}
+            onLayoutChange={pgnRz.onLayout}
           >
-            <span className="text-xs" style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}>Files</span>
-          </button>
-        )}
-        <div className={`shrink-0 flex relative ${filesCollapsed ? "hidden" : ""}`} style={{ width: "14rem" }}>
-          <div className="flex-1 overflow-hidden flex flex-col">
-            <DirectoryBrowser
-              selectedFile={localSelectedFile}
-              onSelectFile={(path) => { setLocalSelectedFile(path); setLocalSelectedGame(null); setLocalGameCount(null); }}
-              recentFiles={recentPgnFiles}
-            />
-          </div>
-          <button
-            onClick={() => setFilesCollapsed(true)}
-            className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 z-10 w-5 h-8 flex items-center justify-center rounded bg-surface-container-high border border-outline/40 text-on-surface-variant hover:text-on-surface hover:bg-on-surface/8 transition-colors text-sm"
-            title="Hide files"
-          >‹</button>
-        </div>
-
-        {/* Game list panel — always mounted so onGameCount fires */}
-        {localSelectedFile && (
-          <>
-            {localGameCount !== 1 && gameListCollapsed && (
-              <button
-                onClick={() => setGameListCollapsed(false)}
-                className="shrink-0 w-6 flex items-start pt-3 justify-center border-r border-outline/40 bg-surface-container-low text-on-surface-variant hover:text-on-surface hover:bg-on-surface/4 transition-colors"
-                title="Show games"
-              >
-                <span className="text-xs" style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}>Games</span>
-              </button>
-            )}
-            <div className={`shrink-0 flex relative ${localGameCount === 1 || gameListCollapsed ? "hidden" : ""}`} style={{ width: "18rem" }}>
-              <div className="flex-1 overflow-hidden flex flex-col">
-                <LocalGameList
-                  filePath={localSelectedFile}
-                  selectedId={localSelectedGame?.id ?? null}
-                  onSelect={setLocalSelectedGame}
-                  onGameCount={(count) => {
-                    setLocalGameCount(count);
-                    // Track files that actually parsed (count > 0) so the
-                    // empty-state chips reflect "files I've successfully opened".
-                    if (localSelectedFile) addRecentPgnFile(localSelectedFile, count);
-                  }}
-                />
+            <Panel
+              id="files"
+              defaultSize="16"
+              minSize={filesCollapsed ? "2" : (pgnRz.floor("files") ?? "11")}
+              maxSize={filesCollapsed ? "2" : "34"}
+            >
+              <div className="h-full flex flex-col overflow-hidden bg-surface-container-low border border-outline/40 rounded-md">
+                {filesCollapsed ? (
+                  <button
+                    onClick={() => setFilesCollapsed(false)}
+                    className="flex-1 flex flex-col items-center gap-2 pt-3 text-on-surface-variant hover:text-on-surface hover:bg-on-surface/4 transition-colors duration-short3 ease-standard"
+                    title="Show files"
+                  >
+                    <span className="text-body-md">»</span>
+                    <span className="text-label-sm uppercase tracking-wider" style={{ writingMode: "vertical-rl" }}>Files</span>
+                  </button>
+                ) : (<div className="px-3 py-2 flex items-center justify-between border-b border-outline/40">
+                    <span className="text-label-md text-on-surface-variant uppercase tracking-wider">Files</span>
+                    <button onClick={() => setFilesCollapsed(true)} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide files">«</button>
+                  </div>)}
+                <div className={filesCollapsed ? "hidden" : "flex-1 min-h-0 overflow-hidden flex flex-col"}>
+                  <DirectoryBrowser
+                    selectedFile={localSelectedFile}
+                    onSelectFile={(path) => { setLocalSelectedFile(path); setLocalSelectedGame(null); setLocalGameCount(null); }}
+                    recentFiles={recentPgnFiles}
+                  />
+                </div>
               </div>
-              <button
-                onClick={() => setGameListCollapsed(true)}
-                className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 z-10 w-5 h-8 flex items-center justify-center rounded bg-surface-container-high border border-outline/40 text-on-surface-variant hover:text-on-surface hover:bg-on-surface/8 transition-colors text-sm"
-                title="Hide games"
-              >‹</button>
-            </div>
-          </>
-        )}
-        <div className="flex-1 flex overflow-hidden">
+            </Panel>
+
+            <Separator className={vHandle} {...pgnRz.separator(0)} />
+
+            {showPgnGamesPanel && !gameListCollapsed && (
+              <Panel
+                id="games"
+                defaultSize="20"
+                minSize={gameListCollapsed ? "2" : (pgnRz.floor("games") ?? "12")}
+                maxSize={gameListCollapsed ? "2" : "40"}
+              >
+                <div className="h-full flex flex-col overflow-hidden bg-surface-container-low border border-outline/40 rounded-md">
+                  {gameListCollapsed ? (
+                    <button
+                      onClick={() => setGameListCollapsed(false)}
+                      className="flex-1 flex flex-col items-center gap-2 pt-3 text-on-surface-variant hover:text-on-surface hover:bg-on-surface/4 transition-colors duration-short3 ease-standard"
+                      title="Show games"
+                    >
+                      <span className="text-body-md">»</span>
+                      <span className="text-label-sm uppercase tracking-wider" style={{ writingMode: "vertical-rl" }}>Games</span>
+                    </button>
+                  ) : (<div className="px-3 py-2 flex items-center justify-between border-b border-outline/40">
+                      <span className="text-label-md text-on-surface-variant uppercase tracking-wider">Games</span>
+                      <button onClick={() => setGameListCollapsed(true)} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide games">«</button>
+                    </div>)}
+                  <div className={gameListCollapsed ? "hidden" : "flex-1 min-h-0 overflow-hidden flex flex-col"}>
+                    <LocalGameList
+                      filePath={localSelectedFile!}
+                      selectedId={localSelectedGame?.id ?? null}
+                      onSelect={setLocalSelectedGame}
+                      onGameCount={(count) => {
+                        setLocalGameCount(count);
+                        // Track files that actually parsed (count > 0) so the
+                        // empty-state chips reflect "files I've successfully opened".
+                        if (localSelectedFile) addRecentPgnFile(localSelectedFile, count);
+                      }}
+                    />
+                  </div>
+                </div>
+              </Panel>
+            )}
+            {showPgnGamesPanel && <Separator className={vHandle} {...pgnRz.separator(1)} />}
+
+            <Panel id="board" defaultSize="64" minSize={pgnRz.floor("board") ?? "30"}>
+        <div className="h-full flex overflow-hidden">
           {localSelectedGame ? (
             <GameBoard game={localSelectedGame} pgn={localSelectedGame.pgn} />
           ) : localSelectedFile ? (
@@ -825,6 +866,9 @@ export default function App() {
               Browse to a PGN file
             </div>
           )}
+        </div>
+            </Panel>
+          </Group>
         </div>
       </div>
 
