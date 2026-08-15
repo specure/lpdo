@@ -12,34 +12,74 @@ pub fn hard_delete_game(conn: &Connection, id: u32) -> Result<()> {
     Ok(())
 }
 
+/// One candidate row for the player merge: everything needed to cluster it and
+/// to score it as a survivor.
+struct PlayerRow {
+    id: u32,
+    name: String,
+    name_normalized: String,
+    fide_id: Option<u32>,
+    name_normalised: bool,
+    last_date: Option<String>,
+}
+
 pub fn dedup_players(conn: &Connection, reporter: &Reporter) -> Result<()> {
-    // Fetch every player row that shares a fide_id with another, plus that
-    // player's most recent game date (for the survivor tiebreaker) — all in ONE
-    // query. The per-player last-date is computed in a single pass over games
-    // rather than a whole-table scan per fide_id (the old approach's first cost).
-    let rows: Vec<(u32, u32, String, bool, Option<String>)> = {
+    // Fetch every player row that shares a fide_id OR a normalised name with
+    // another, plus that player's most recent game date (for the survivor
+    // tiebreaker) — all in ONE query. The per-player last-date is computed in a
+    // single pass over games rather than a whole-table scan per group (the old
+    // approach's first cost).
+    //
+    // Normalised name is the second key because it is the SAME key the importer
+    // identifies people by: `get_or_create_player` looks a name up in a cache of
+    // every existing `name_normalized` before it ever considers a FIDE ID, so
+    // one normalised name already means one person as far as import is
+    // concerned. Two rows sharing one are an artefact — most often a rename
+    // (`players normalise` / `players import` rewrite a row to its FIDE-canonical
+    // spelling, which can land on a name another row already holds) — and until
+    // they are merged they also hide duplicate GAMES, since `dedup_games` pairs
+    // on player ids. `cluster_players` refuses the one case where the rows are
+    // known to be different people: distinct FIDE IDs.
+    let rows: Vec<PlayerRow> = {
         let mut stmt = conn.prepare(
-            "WITH dups AS (
+            "WITH dup_fide AS (
                  SELECT fide_id FROM players
                  WHERE fide_id IS NOT NULL
                  GROUP BY fide_id HAVING COUNT(*) > 1
+             ),
+             dup_name AS (
+                 SELECT name_normalized FROM players
+                 WHERE name_normalized IS NOT NULL AND name_normalized <> ''
+                 GROUP BY name_normalized HAVING COUNT(*) > 1
+             ),
+             cand AS (
+                 SELECT id, name, name_normalized, fide_id, name_normalised
+                 FROM players
+                 WHERE fide_id IN (SELECT fide_id FROM dup_fide)
+                    OR name_normalized IN (SELECT name_normalized FROM dup_name)
              ),
              last AS (
                  SELECT pid, MAX(date) AS last_date
                  FROM (SELECT white_id AS pid, date FROM games
                        UNION ALL
                        SELECT black_id AS pid, date FROM games)
-                 WHERE pid IN (SELECT id FROM players WHERE fide_id IN (SELECT fide_id FROM dups))
+                 WHERE pid IN (SELECT id FROM cand)
                  GROUP BY pid
              )
-             SELECT p.fide_id, p.id, p.name, p.name_normalised, l.last_date
-             FROM players p
-             JOIN dups d ON d.fide_id = p.fide_id
-             LEFT JOIN last l ON l.pid = p.id
-             ORDER BY p.fide_id, p.id",
+             SELECT c.id, c.name, c.name_normalized, c.fide_id, c.name_normalised, l.last_date
+             FROM cand c
+             LEFT JOIN last l ON l.pid = c.id
+             ORDER BY c.id",
         )?;
         stmt.query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            Ok(PlayerRow {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                name_normalized: r.get(2)?,
+                fide_id: r.get(3)?,
+                name_normalised: r.get(4)?,
+                last_date: r.get(5)?,
+            })
         })?
         .filter_map(|r| r.ok())
         .collect()
@@ -50,38 +90,7 @@ pub fn dedup_players(conn: &Connection, reporter: &Reporter) -> Result<()> {
         return Ok(());
     }
 
-    // Group consecutive rows by fide_id (the query is ORDER BY fide_id), pick a
-    // survivor per group, and build a flat old_id → survivor_id reassignment map.
-    // Each player row has exactly one fide_id, so no old_id is another group's
-    // survivor — the map needs no chaining.
-    let mut mapping: Vec<(u32, u32)> = Vec::new();
-    let mut fide_ids = 0usize;
-    let mut group: Vec<(u32, String, bool, Option<String>)> = Vec::new();
-    let flush = |group: &mut Vec<(u32, String, bool, Option<String>)>,
-                     mapping: &mut Vec<(u32, u32)>,
-                     fide_ids: &mut usize| {
-        if group.len() >= 2 {
-            *fide_ids += 1;
-            let survivor_idx = pick_survivor(group);
-            let survivor_id = group[survivor_idx].0;
-            for (id, ..) in group.iter() {
-                if *id != survivor_id {
-                    mapping.push((*id, survivor_id));
-                }
-            }
-        }
-        group.clear();
-    };
-
-    let mut cur_fide: Option<u32> = None;
-    for (fide_id, id, name, normalised, last_date) in rows {
-        if cur_fide != Some(fide_id) {
-            flush(&mut group, &mut mapping, &mut fide_ids);
-            cur_fide = Some(fide_id);
-        }
-        group.push((id, name, normalised, last_date));
-    }
-    flush(&mut group, &mut mapping, &mut fide_ids);
+    let (mapping, groups) = cluster_players(&rows);
 
     if mapping.is_empty() {
         reporter.done("No duplicate players found.");
@@ -149,12 +158,97 @@ pub fn dedup_players(conn: &Connection, reporter: &Reporter) -> Result<()> {
         return Ok(());
     }
 
+    // Survivors now own their losers' games, so every stored count is understated.
+    // The pipeline's later `dedup_games` would refresh them, but a merge run on
+    // its own from the Maintenance page has to leave the numbers right too.
+    crate::db::queries::recalculate_game_counts(conn)?;
+
     reporter.done(format!(
-        "Removed {} duplicate player record(s) across {} FIDE ID(s).",
+        "Removed {} duplicate player record(s) across {} player(s).",
         mapping.len(),
-        fide_ids,
+        groups,
     ));
     Ok(())
+}
+
+/// Cluster candidate rows into "same person" sets and choose one survivor each.
+/// Returns `(old_id → survivor_id for every non-survivor, number of clusters)`.
+///
+/// Two rows join a cluster when they share a FIDE ID or share a normalised name;
+/// union-find makes the relation transitive, so `A(fide 7) — B(fide 7, "smith
+/// john") — C("smith john")` collapses to one survivor without the caller having
+/// to chase chains through the mapping.
+///
+/// The one refusal: a normalised name held by rows with two or more DIFFERENT
+/// FIDE IDs is left alone entirely. Those are namesakes that FIDE itself
+/// distinguishes, and a merge cannot be undone. (FIDE IDs never conflict inside a
+/// cluster otherwise: unioning by FIDE ID cannot mix two of them, and this guard
+/// stops a name from doing so.)
+fn cluster_players(rows: &[PlayerRow]) -> (Vec<(u32, u32)>, usize) {
+    use std::collections::HashMap;
+
+    // Rows with ≥2 distinct FIDE IDs under one normalised name — never merged.
+    let ambiguous: std::collections::HashSet<&str> = {
+        let mut seen: HashMap<&str, u32> = HashMap::new();
+        let mut bad = std::collections::HashSet::new();
+        for r in rows {
+            let Some(fid) = r.fide_id else { continue };
+            match seen.get(r.name_normalized.as_str()) {
+                Some(&other) if other != fid => { bad.insert(r.name_normalized.as_str()); }
+                Some(_) => {}
+                None => { seen.insert(&r.name_normalized, fid); }
+            }
+        }
+        bad
+    };
+
+    let mut parent: HashMap<u32, u32> = rows.iter().map(|r| (r.id, r.id)).collect();
+    let union = |parent: &mut HashMap<u32, u32>, a: u32, b: u32| {
+        let (ra, rb) = (uf_find(parent, a), uf_find(parent, b));
+        if ra != rb {
+            parent.insert(ra, rb);
+        }
+    };
+    let mut by_fide: HashMap<u32, u32> = HashMap::new();
+    let mut by_name: HashMap<&str, u32> = HashMap::new();
+    for r in rows {
+        if let Some(fid) = r.fide_id {
+            match by_fide.get(&fid) {
+                Some(&first) => union(&mut parent, r.id, first),
+                None => { by_fide.insert(fid, r.id); }
+            }
+        }
+        if ambiguous.contains(r.name_normalized.as_str()) {
+            continue;
+        }
+        match by_name.get(r.name_normalized.as_str()) {
+            Some(&first) => union(&mut parent, r.id, first),
+            None => { by_name.insert(&r.name_normalized, r.id); }
+        }
+    }
+
+    // Group by cluster root, then pick each cluster's survivor.
+    let mut clusters: HashMap<u32, Vec<&PlayerRow>> = HashMap::new();
+    for r in rows {
+        clusters.entry(uf_find(&mut parent, r.id)).or_default().push(r);
+    }
+    let mut mapping = Vec::new();
+    let mut groups = 0usize;
+    for members in clusters.values() {
+        if members.len() < 2 {
+            continue; // a lone row: its partner was the ambiguous-name case
+        }
+        groups += 1;
+        let survivor = pick_survivor(members);
+        for m in members {
+            if m.id != survivor {
+                mapping.push((m.id, survivor));
+            }
+        }
+    }
+    // Deterministic order so a cancelled run rebuilds the same map on re-run.
+    mapping.sort_unstable();
+    (mapping, groups)
 }
 
 /// The UPDATE/DELETE body of the player merge, run while the games player-column
@@ -739,13 +833,20 @@ fn normalise_san_token(tok: &str) -> Option<String> {
     })
 }
 
-fn pick_survivor(rows: &[(u32, String, bool, Option<String>)]) -> usize {
+/// The id of the row to keep for a cluster. A row carrying the cluster's FIDE ID
+/// always wins: the merge only rewrites `games`, so a FIDE-less survivor would
+/// drop the ID off the database entirely. Among equals, `name_score` decides,
+/// and the lowest id breaks a tie so the choice is stable across runs.
+fn pick_survivor(rows: &[&PlayerRow]) -> u32 {
     rows.iter()
-        .enumerate()
-        .max_by_key(|(_, (_, name, normalised, last_date))| {
-            name_score(name, *normalised, last_date.as_deref())
+        .max_by_key(|r| {
+            (
+                r.fide_id.is_some(),
+                name_score(&r.name, r.name_normalised, r.last_date.as_deref()),
+                std::cmp::Reverse(r.id),
+            )
         })
-        .map(|(i, _)| i)
+        .map(|r| r.id)
         .unwrap_or(0)
 }
 
@@ -1074,5 +1175,145 @@ mod dedup_players_tests {
         dedup_players(&conn, &Reporter::silent()).unwrap();
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM players", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 2);
+    }
+
+    fn ids(conn: &Connection) -> Vec<u32> {
+        let mut s = conn.prepare("SELECT id FROM players ORDER BY id").unwrap();
+        s.query_map([], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect()
+    }
+
+    /// The gap this key closes: two rows with the same normalised name and no
+    /// FIDE ID on either. Nothing linked them before, and while they were split
+    /// `dedup_games` could not see that their games were the same game.
+    #[test]
+    fn merges_same_normalised_name_without_fide_ids() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO players (id,name,name_normalized,fide_id,name_normalised) VALUES
+               (1,'Sedlak,Marek','sedlak marek',NULL,FALSE),
+               (2,'Sedlak, Marek','sedlak marek',NULL,FALSE);
+             INSERT INTO games (id, white_id, black_id, date) VALUES (1, 2, 1, '2020-01-01');",
+        )
+        .unwrap();
+
+        dedup_players(&conn, &Reporter::silent()).unwrap();
+
+        // Rows in a name group differ only in spacing/case — which `name_score`
+        // scores identically — so the tiebreak decides: the lowest (oldest) id.
+        assert_eq!(ids(&conn), vec![1]);
+        let g: (u32, u32) = conn
+            .query_row("SELECT white_id, black_id FROM games WHERE id=1", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(g, (1, 1), "both sides reassigned to the survivor");
+    }
+
+    /// A rename (`players normalise` / `players import`) can land a FIDE-carrying
+    /// row on a name a FIDE-less row already holds. The merged row must keep the
+    /// FIDE ID — the merge only rewrites `games`, so a FIDE-less survivor would
+    /// drop it from the database.
+    #[test]
+    fn survivor_keeps_the_fide_id_when_merging_by_name() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO players (id,name,name_normalized,fide_id,name_normalised) VALUES
+               (1,'Sedlak, Marek','sedlak marek',NULL,FALSE),
+               (2,'Sedlak, Marek','sedlak marek',555,TRUE);
+             INSERT INTO games (id, white_id, black_id, date) VALUES (1, 1, 2, '2020-01-01');",
+        )
+        .unwrap();
+
+        dedup_players(&conn, &Reporter::silent()).unwrap();
+
+        assert_eq!(ids(&conn), vec![2]);
+        let fide: Option<u32> = conn
+            .query_row("SELECT fide_id FROM players WHERE id=2", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fide, Some(555));
+    }
+
+    /// Namesakes FIDE itself distinguishes are left alone — a merge cannot be
+    /// undone, so two distinct FIDE IDs under one name veto the whole name group.
+    #[test]
+    fn refuses_same_name_with_two_different_fide_ids() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO players (id,name,name_normalized,fide_id,name_normalised) VALUES
+               (1,'Smith, John','smith john',111,TRUE),
+               (2,'Smith, John','smith john',222,TRUE),
+               (3,'Smith, John','smith john',NULL,FALSE);",
+        )
+        .unwrap();
+
+        dedup_players(&conn, &Reporter::silent()).unwrap();
+
+        assert_eq!(ids(&conn), vec![1, 2, 3], "including the FIDE-less row: which one is it?");
+    }
+
+    /// Chained across both keys: A and B share a FIDE ID, B and C share a name.
+    /// All three are one person and must collapse to a single row.
+    #[test]
+    fn chains_fide_id_and_name_links_into_one_cluster() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO players (id,name,name_normalized,fide_id,name_normalised) VALUES
+               (1,'Novak,P','novak p',77,FALSE),
+               (2,'Novak, Peter','novak peter',77,TRUE),
+               (3,'Novak, Peter','novak peter',NULL,FALSE);
+             INSERT INTO games (id, white_id, black_id, date) VALUES
+               (1, 1, 3, '2020-01-01'),
+               (2, 3, 2, '2021-01-01');",
+        )
+        .unwrap();
+
+        dedup_players(&conn, &Reporter::silent()).unwrap();
+
+        assert_eq!(ids(&conn), vec![2], "the normalised, FIDE-carrying row survives");
+        let all: Vec<(u32, u32)> = {
+            let mut s = conn.prepare("SELECT white_id, black_id FROM games ORDER BY id").unwrap();
+            s.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().filter_map(|r| r.ok()).collect()
+        };
+        assert_eq!(all, vec![(2, 2), (2, 2)], "every reference chased to the one survivor");
+    }
+
+    /// An empty normalised name is not an identity — rows that have one must not
+    /// all collapse into a single player.
+    #[test]
+    fn empty_normalised_name_is_not_a_merge_key() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO players (id,name,name_normalized,fide_id,name_normalised) VALUES
+               (1,'?','',NULL,FALSE),
+               (2,'','',NULL,FALSE);",
+        )
+        .unwrap();
+
+        dedup_players(&conn, &Reporter::silent()).unwrap();
+
+        assert_eq!(ids(&conn), vec![1, 2]);
+    }
+
+    /// #205-style: after a merge the survivor owns its losers' games, so the
+    /// stored counts must be refreshed even when no game dedup follows.
+    #[test]
+    fn merge_refreshes_player_game_counts() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO players (id,name,name_normalized,fide_id,name_normalised,game_count) VALUES
+               (1,'Sedlak, Marek','sedlak marek',NULL,FALSE,1),
+               (2,'Sedlak, Marek','sedlak marek',555,TRUE,1),
+               (3,'Horak, Jan','horak jan',666,TRUE,2);
+             INSERT INTO games (id, white_id, black_id, date) VALUES
+               (1, 1, 3, '2020-01-01'),
+               (2, 2, 3, '2021-01-01');",
+        )
+        .unwrap();
+
+        dedup_players(&conn, &Reporter::silent()).unwrap();
+
+        let gc = |id: u32| -> i64 {
+            conn.query_row("SELECT game_count FROM players WHERE id=?", duckdb::params![id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(gc(2), 2, "survivor's count covers both merged rows' games");
+        assert_eq!(gc(3), 2, "untouched player's count still right");
     }
 }

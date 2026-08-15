@@ -38,7 +38,7 @@ function jobLabel(j: Job): string {
     case "update":             return "Scheduled update";
     case "fide_refresh":       return "Update FIDE player list";
     case "index_positions":    return "Build position index";
-    case "dedup_games":        return "Deduplicate games";
+    case "dedup_games":        return "Remove duplicate games";
     case "dedup_players":      return "Merge duplicate players";
     case "cleanup":            return "Clean up games";
     case "normalise":          return "Normalise player names";

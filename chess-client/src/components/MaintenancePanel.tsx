@@ -543,10 +543,10 @@ function PrepareDatabaseSection({ onMutated }: { onMutated?: () => void }) {
   return (
     <SectionCard title="Prepare database">
       <p className="text-body-sm text-on-surface-variant">
-        Runs every step below in the right order: fetch FIDE IDs, merge duplicate players,
-        normalise names, deduplicate games, rebuild the position index. This is what runs by
-        itself after an import — start it here if a run was interrupted, or after restoring
-        a database.
+        Runs every maintenance step in the right order: fetch FIDE IDs, merge duplicate players,
+        normalise names (all on the Players tab), remove duplicate games, rebuild the position
+        index. This is what runs by itself after an import — start it here if a run was
+        interrupted, or after restoring a database.
       </p>
       <div className="flex items-center gap-2">
         <ActionButton onClick={() => void run()} disabled={state === "starting"}>
@@ -570,20 +570,24 @@ function PrepareDatabaseSection({ onMutated }: { onMutated?: () => void }) {
   );
 }
 
-// ── Merge duplicate players (same FIDE ID) ────────────────────────────────────
+// ── Merge duplicate players, automatically (same FIDE ID or same name) ────────
 
 function DedupPlayersSection({ onMutated }: { onMutated?: () => void }) {
   const progress = useJobProgress("maint-dedup-players");
   useEffect(() => { if (progress.done) onMutated?.(); }, [progress.done]);
   return (
-    <SectionCard title="Merge duplicate players">
+    <SectionCard title="Merge duplicate players — automatic">
       <p className="text-body-sm text-on-surface-variant">
-        Merge player records that share the same FIDE ID (e.g. name variants across sources),
-        reassigning their games to a single row. Run after fetching FIDE IDs.
+        Searches the whole database for records that are one person — they share a FIDE ID, or
+        they share a name once capitals, commas and spacing are ignored — and merges each set
+        into one, moving all their games with them. Two records with <em>different</em> FIDE IDs
+        under one name are left alone: FIDE says they are different people. Running “Fetch
+        missing FIDE IDs” first links more of them. Duplicates spelled differently with no FIDE
+        ID on either side still need “Merge two players”.
       </p>
       {!progress.running && !progress.done && (
         <ActionButton onClick={() => void progress.run(["players", "dedup"])}>
-          Merge duplicates
+          Find and merge duplicates
         </ActionButton>
       )}
       {(progress.running || progress.done) && (
@@ -652,9 +656,9 @@ function FideRefreshSection() {
   );
 }
 
-// ── Deduplication section ─────────────────────────────────────────────────────
+// ── Remove duplicate games ────────────────────────────────────────────────────
 
-function DeduplicationSection({ onMutated }: { onMutated?: () => void }) {
+function DedupGamesSection({ onMutated }: { onMutated?: () => void }) {
   const progress = useJobProgress("maint-dedup");
   // Full re-checks every game (cleans duplicates an earlier pass missed, e.g. the
   // same game across TWIC and a Lichess broadcast); incremental only checks games
@@ -673,9 +677,11 @@ function DeduplicationSection({ onMutated }: { onMutated?: () => void }) {
   }, [progress.done]);
 
   return (
-    <SectionCard title="Deduplication">
+    <SectionCard title="Remove duplicate games">
       <p className="text-body-sm text-on-surface-variant">
-        Detects and removes duplicate games resulting from overlapping collections.
+        Finds games stored more than once — the same game from two overlapping sources, or a PGN
+        imported twice — and keeps the most complete copy. Two games only match when they name the
+        same two <em>player records</em>, so merge duplicate players (Players tab) first.
       </p>
       {!progress.running && !progress.done && (
         <>
@@ -700,7 +706,7 @@ function DeduplicationSection({ onMutated }: { onMutated?: () => void }) {
               ? "Full — re-checks every game (slower). Cleans duplicates an earlier pass missed."
               : "Incremental — only games added since the last pass (fast); same as the automatic sweep."}
           </p>
-          <ActionButton onClick={run}>Run deduplication</ActionButton>
+          <ActionButton onClick={run}>Remove duplicate games</ActionButton>
         </>
       )}
       {(progress.running || progress.done) && (
@@ -784,7 +790,7 @@ function NormaliseSection({ onMutated }: { onMutated?: () => void }) {
       <p className="text-body-sm text-on-surface-variant">
         Update player names to their FIDE-canonical form using the locally-stored FIDE list.
         This runs instantly — no online lookups. If names don't change, update the FIDE list
-        first (FIDE player list, above).
+        first (“FIDE player list”, at the top of this tab).
       </p>
       {!progress.running && !progress.done && (
         <ActionButton onClick={run}>Normalise names</ActionButton>
@@ -1040,17 +1046,19 @@ function PurgeSection({ status, onMutated }: { status: StatusInfo | null; onMuta
 
 // ── Panel shell ───────────────────────────────────────────────────────────────
 
-// ── Merge players section ─────────────────────────────────────────────────────
+// ── Merge two players, by hand ────────────────────────────────────────────────
 
 function MergePlayersSection({ onMutated }: { onMutated?: () => void }) {
   const [open, setOpen] = useState(false);
   return (
-    <SectionCard title="Merge players">
+    <SectionCard title="Merge two players — manual">
       <p className="text-body-sm text-on-surface-variant">
-        Combine duplicate player records — e.g. a full name (“Karpov, Anatoly”) and a surname-only
-        entry (“Karpov”) for the same person — into one. All games move to the player you keep.
+        Pick two records yourself and combine them — e.g. a full name (“Karpov, Anatoly”) and a
+        surname-only entry (“Karpov”) for the same person. All games move to the record you keep.
+        This is the way to fix duplicates the automatic merge cannot see: the two spellings differ,
+        and neither record carries a FIDE ID to link them.
       </p>
-      <ActionButton onClick={() => setOpen(true)}>Merge players…</ActionButton>
+      <ActionButton onClick={() => setOpen(true)}>Choose two players…</ActionButton>
       {open && (
         <MergePlayersDialog onClose={() => setOpen(false)} onMerged={() => onMutated?.()} />
       )}
@@ -1063,11 +1071,19 @@ function MergePlayersSection({ onMutated }: { onMutated?: () => void }) {
 
 const TABS = [
   { id: "sources", label: "Sources" },
-  { id: "databases", label: "Databases" },
+  { id: "databases", label: "Database" },
   { id: "players", label: "Players" },
   { id: "others", label: "Others" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
+
+/** One sentence above a tab's cards saying what the tab is for and in which
+ *  order its steps belong — the grouping alone never conveyed that, and the
+ *  Players/Database split only makes sense once you know duplicate games are
+ *  matched through their player records. */
+function TabLead({ children }: { children: React.ReactNode }) {
+  return <p className="text-body-md text-on-surface-variant max-w-3xl">{children}</p>;
+}
 
 function TabBar({ active, onChange }: { active: TabId; onChange: (id: TabId) => void }) {
   // M3 primary tabs — a row of text labels with an active underline indicator.
@@ -1097,8 +1113,9 @@ function TabBar({ active, onChange }: { active: TabId; onChange: (id: TabId) => 
 export default function MaintenancePanel({ onRunWizard, status, onMutated, connection = "connected" }: Props) {
   // Full-screen, non-modal view (driven by App's `mode` state). Mirrors the home
   // screen's layout: a centred max-width column on the bg-surface base. The tools
-  // are grouped into tabs (Databases / Players / Others) to keep each view
-  // uncluttered; the database overview stays pinned above the tabs.
+  // are grouped by what they act on — Sources (where games come from), Database
+  // (the games), Players (who played them), Others (the app itself) — to keep
+  // each view uncluttered; the database overview stays pinned above the tabs.
   const [tab, setTab] = useState<TabId>("sources");
 
   // Inactive tabs are hidden, not unmounted, so a long-running job (e.g. a TWIC
@@ -1153,29 +1170,51 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
             <SourcesPanel onMutated={onMutated} />
           </div>
 
-          {/* Maintenance tasks in recommended run order — the same identity-first
-              pipeline the background maintenance runs automatically after imports.
-              "Prepare database" runs the lot; the rest are the individual steps. */}
-          <div className={`${grid} ${tab === "databases" ? "" : "hidden"}`}>
-            <PrepareDatabaseSection onMutated={onMutated} />
-            <ResolveFideSection onMutated={onMutated} />
-            <DedupPlayersSection onMutated={onMutated} />
-            <NormaliseSection onMutated={onMutated} />
-            <DeduplicationSection onMutated={onMutated} />
-            <IndexSection />
-            <FideRefreshSection />
+          {/* Database — what happens to the games themselves. "Prepare database"
+              runs every step of the maintenance pipeline, here and on the Players
+              tab, in the right order; the cards are the individual steps. */}
+          <div className={tab === "databases" ? "space-y-4" : "hidden"}>
+            <TabLead>
+              Work on the stored games: run the whole maintenance pipeline, remove copies of the
+              same game, rebuild the position index, and empty the recycle bin. Player records are
+              cleaned up on the Players tab — do that first, since duplicate games are recognised
+              by their two players.
+            </TabLead>
+            <div className={grid}>
+              <PrepareDatabaseSection onMutated={onMutated} />
+              <DedupGamesSection onMutated={onMutated} />
+              <IndexSection />
+              <PurgeSection status={status} onMutated={onMutated} />
+            </div>
           </div>
 
-          <div className={`${grid} ${tab === "players" ? "" : "hidden"}`}>
-            <PlayersSection />
-            <MergePlayersSection onMutated={onMutated} />
+          {/* Players — everything that decides WHO a game was played by. In the
+              order the automatic pipeline runs them, with the manual merge next
+              to the automatic one it complements. */}
+          <div className={tab === "players" ? "space-y-4" : "hidden"}>
+            <TabLead>
+              One person can arrive from several sources under several spellings, leaving one
+              player record per spelling — and that also hides duplicate games, which are matched
+              by their two players. These steps identify players and fold the duplicates together,
+              in the order shown.
+            </TabLead>
+            {/* Two columns: the FIDE list feeds the ID lookup (row 1), the two
+                merges sit side by side so automatic vs manual reads at a glance
+                (row 2), then the name-canonicalisation pair (row 3). */}
+            <div className={grid}>
+              <FideRefreshSection />
+              <ResolveFideSection onMutated={onMutated} />
+              <DedupPlayersSection onMutated={onMutated} />
+              <MergePlayersSection onMutated={onMutated} />
+              <NormaliseSection onMutated={onMutated} />
+              <PlayersSection />
+            </div>
           </div>
 
           <div className={`${grid} ${tab === "others" ? "" : "hidden"}`}>
             <ServerConnectionSection status={status} connection={connection} />
             <BackupSection />
             <DiagnosticsSection />
-            <PurgeSection status={status} onMutated={onMutated} />
           </div>
         </div>
 

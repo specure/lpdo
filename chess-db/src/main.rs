@@ -644,7 +644,9 @@ enum GameCommands {
 enum PlayersCommands {
     /// Recalculate and store game counts for all players
     UpdateGameCounts,
-    /// Merge duplicate player records that share the same FIDE ID
+    /// Merge duplicate player records: those sharing a FIDE ID, and those sharing
+    /// a normalised name (the key the importer identifies people by). A name held
+    /// by two different FIDE IDs is left alone — those are namesakes
     Dedup,
     /// Merge two player records: reassign all games from drop-id to keep-id, then delete drop-id
     Merge {
