@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import type { Layout } from "react-resizable-panels";
 
 // One rule for every divider in the app: it resizes the two panels it separates,
 // their total stays the same, and nothing else moves.
@@ -13,43 +14,53 @@ import { useRef, useState } from "react";
 // panel that is not one of its two neighbours is pinned to its current size, so
 // the drag simply stops when the neighbour reaches its minimum.
 //
-//   const rz = useNeighbourResize();
-//   <PanelGroup onLayout={rz.onLayout}>
-//     <Panel minSize={rz.pin(0) ?? 5} maxSize={rz.pin(0) ?? 16} />
-//     <PanelResizeHandle {...rz.handle(0)} />
+//   const rz = useNeighbourResize(["rail", "board", "side"]);
+//   <Group onLayoutChange={rz.onLayout}>
+//     <Panel id="rail" minSize={rz.pin("rail") ?? "5"} maxSize={rz.pin("rail") ?? "16"} />
+//     <Separator {...rz.separator(0)} />
 //     …
 //
 // Only needed for groups of three or more; a two-panel group has nowhere to
 // spill, so its divider already obeys the rule.
-export function useNeighbourResize() {
+export function useNeighbourResize(panelIds: string[]) {
   // Live sizes, in a ref: they change on every frame of a drag and no render
-  // depends on them until a pin is taken. Taken from the group's onLayout rather
-  // than per-panel onResize, which only fires once a panel has actually changed —
-  // a panel still at its default had no size to pin to, so the pin silently did
-  // nothing and the spill went through.
-  const sizes = useRef<number[]>([]);
-  // Index of the divider being dragged or keyboard-focused, if any.
-  const [active, setActive] = useState<number | null>(null);
+  // depends on them until a pin is taken. Fed from the group's onLayoutChange,
+  // which reports every panel — a panel still at its default has no onResize of
+  // its own to report from, and a pin with nothing to pin to silently does
+  // nothing, which is how the spill got through the first version of this.
+  const sizes = useRef<Layout>({});
+  // A separator counts as "in use" while dragged and while focused: keyboard
+  // resizing cascades exactly like dragging, and a drag leaves focus behind.
+  const [dragging, setDragging] = useState<number | null>(null);
+  const [focused, setFocused] = useState<number | null>(null);
+  const active = dragging ?? focused;
 
   return {
-    /** Index of the divider currently in use, or null. Exposed for debugging. */
-    active,
-    /** Feed the group's layout back: `<PanelGroup onLayout={rz.onLayout}>`. */
-    onLayout: (layout: number[]) => { sizes.current = layout; },
-    /** Wire a divider: `<PanelResizeHandle {...rz.handle(i)} />`. Keyboard resize
-     *  cascades exactly like dragging, so focus counts as "in use" too. */
-    handle: (i: number) => ({
-      onDragging: (dragging: boolean) => setActive(dragging ? i : null),
-      onFocus: () => setActive(i),
-      onBlur: () => setActive(null),
+    /** Feed the group's live layout back: `<Group onLayoutChange={rz.onLayout}>`. */
+    onLayout: (layout: Layout) => { sizes.current = layout; },
+
+    /** Wire a divider: `<Separator {...rz.separator(i)} />`, `i` counting from 0,
+     *  sitting between panelIds[i] and panelIds[i + 1].
+     *
+     *  Capture-phase handlers on purpose: Separator spreads the props it is given
+     *  and *then* sets its own `onFocus`/`onBlur`, so the bubble-phase versions
+     *  are silently overwritten — the pin looked wired up and never fired. */
+    separator: (i: number) => ({
+      onPointerDownCapture: () => setDragging(i),
+      onPointerUpCapture: () => setDragging(null),
+      onLostPointerCaptureCapture: () => setDragging(null),
+      onFocusCapture: () => setFocused(i),
+      onBlurCapture: () => setFocused(null),
     }),
-    /** The size panel `i` is pinned to, or null when it is free to resize —
-     *  which is when no divider is in use, this panel neighbours it, or we have
-     *  no size for it yet (nothing to pin it to). */
-    pin: (i: number): number | null => {
-      if (active === null || i === active || i === active + 1) return null;
-      const size = sizes.current[i];
-      return typeof size === "number" ? size : null;
+
+    /** The size panel `id` is pinned to, as a percentage string, or null when it
+     *  is free to resize — no divider in use, this panel neighbours it, or we
+     *  have no size for it yet. */
+    pin: (id: string): string | null => {
+      if (active === null) return null;
+      if (id === panelIds[active] || id === panelIds[active + 1]) return null;
+      const size = sizes.current[id];
+      return typeof size === "number" ? String(size) : null;
     },
   };
 }

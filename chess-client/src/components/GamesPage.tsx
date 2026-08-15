@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { Chess } from "chess.js";
 import { GameSummary, MoveStats, PlayerInfo } from "../types";
 import PlayerPicker from "./PlayerPicker";
@@ -341,9 +341,16 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     "right",
   ];
   const at = (key: string) => roster.indexOf(key);
-  const rz = useNeighbourResize();
+  // Layout persistence moved from autoSaveId to explicit storage wiring in v4.
+  const cols = useDefaultLayout({ id: "games-cols-v2", storage: localStorage, panelIds: roster });
+  const leftCol = useDefaultLayout({ id: "games-leftcol", storage: localStorage });
+  const rightCol = useDefaultLayout({ id: "games-right", storage: localStorage });
+  const explorer = useDefaultLayout({ id: "games-b", storage: localStorage });
+  const bottom = useDefaultLayout({ id: "games-bottom", storage: localStorage });
+  const preview = useDefaultLayout({ id: "games-ef", storage: localStorage });
+  const rz = useNeighbourResize(roster);
   /** Divider that follows panel `key`. */
-  const after = (key: string) => rz.handle(at(key));
+  const after = (key: string) => rz.separator(at(key));
 
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -362,23 +369,23 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
 
       {/* ── 6-area mosaic (resizable, nested panel groups) ────────────────────── */}
       <div className="flex-1 min-w-0 min-h-0 p-1.5">
-        <PanelGroup direction="horizontal" autoSaveId="games-cols-v2" className="h-full w-full" onLayout={rz.onLayout}>
+        <Group orientation="horizontal" className="h-full w-full flex" defaultLayout={cols.defaultLayout} onLayoutChanged={cols.onLayoutChanged} onLayoutChange={rz.onLayout}>
 
           {leadingPanel && (
-            <Panel id="lead" order={1}
+            <Panel id="lead"
                    defaultSize={leadingPanelSize}
-                   minSize={rz.pin(at("lead")) ?? 8}
-                   maxSize={rz.pin(at("lead")) ?? 30}>
+                   minSize={rz.pin("lead") ?? "8"}
+                   maxSize={rz.pin("lead") ?? "30"}>
               {leadingPanel}
             </Panel>
           )}
-          {leadingPanel && <PanelResizeHandle className={vHandle} {...after("lead")} />}
+          {leadingPanel && <Separator className={vHandle} {...after("lead")} />}
 
           {!filtersCollapsed && (
-          <Panel id="filters" order={2}
-                 defaultSize={18}
-                 minSize={rz.pin(at("filters")) ?? 12}
-                 maxSize={rz.pin(at("filters")) ?? 34}>
+          <Panel id="filters"
+                 defaultSize="18"
+                 minSize={rz.pin("filters") ?? "12"}
+                 maxSize={rz.pin("filters") ?? "34"}>
         <div className="h-full flex flex-col overflow-y-auto bg-surface-container-low border border-outline/40 rounded-md">
           <div className="px-3 py-2 flex items-center justify-between border-b border-outline/40">
             <span className="text-label-md text-on-surface-variant uppercase tracking-wider">Filters</span>
@@ -425,19 +432,19 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
         </div>
           </Panel>
           )}
-          {!filtersCollapsed && <PanelResizeHandle className={vHandle} {...after("filters")} />}
+          {!filtersCollapsed && <Separator className={vHandle} {...after("filters")} />}
 
           {/* Left column: A (board) over C (engine). Dropped in the list-only
               state — panels here carry explicit id/order because the set is
               conditional, which react-resizable-panels needs to track them. */}
           {!listOnly && (
-          <Panel id="left" order={3}
-                 defaultSize={30}
-                 minSize={rz.pin(at("left")) ?? 16}
-                 maxSize={rz.pin(at("left")) ?? undefined}>
-            <PanelGroup direction="vertical" autoSaveId="games-leftcol" className="h-full w-full">
+          <Panel id="left"
+                 defaultSize="30"
+                 minSize={rz.pin("left") ?? "16"}
+                 maxSize={rz.pin("left") ?? undefined}>
+            <Group orientation="vertical" className="h-full w-full flex" defaultLayout={leftCol.defaultLayout} onLayoutChanged={leftCol.onLayoutChanged}>
               {/* A — position board (board only) */}
-              <Panel defaultSize={60} minSize={20}>
+              <Panel defaultSize="60" minSize="20">
                 <div className={panel}>
                   <PositionBoard
                     moveSequence={moveSequence}
@@ -450,9 +457,9 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                   />
                 </div>
               </Panel>
-              <PanelResizeHandle className={hHandle} />
+              <Separator className={hHandle} />
               {/* C — cloud engine evaluation (#221), shared with the Analysis view */}
-              <Panel defaultSize={40} minSize={12}>
+              <Panel defaultSize="40" minSize="12">
                 <div className={panel}>
                   <CloudEngine
                     fen={currentFen}
@@ -461,25 +468,25 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                   />
                 </div>
               </Panel>
-            </PanelGroup>
+            </Group>
           </Panel>
           )}
 
-          {!listOnly && <PanelResizeHandle className={vHandle} {...after("left")} />}
+          {!listOnly && <Separator className={vHandle} {...after("left")} />}
 
           {/* Right area: B (B1|B2) over bottom (D | E/F) */}
-          <Panel id="right" order={4}
-                 defaultSize={listOnly ? 100 : 70}
-                 minSize={rz.pin(at("right")) ?? 30}
-                 maxSize={rz.pin(at("right")) ?? undefined}>
-            <PanelGroup direction="vertical" autoSaveId="games-right" className="h-full w-full">
+          <Panel id="right"
+                 defaultSize={listOnly ? "100" : "70"}
+                 minSize={rz.pin("right") ?? "30"}
+                 maxSize={rz.pin("right") ?? undefined}>
+            <Group orientation="vertical" className="h-full w-full flex" defaultLayout={rightCol.defaultLayout} onLayoutChanged={rightCol.onLayoutChanged}>
               {/* B — the opening explorer, tied to the board's position: gone
                   with it in the list-only state. */}
               {!listOnly && (
-              <Panel id="explorer" order={1} defaultSize={34} minSize={15}>
-                <PanelGroup direction="horizontal" autoSaveId="games-b" className="h-full w-full">
+              <Panel id="explorer" defaultSize="34" minSize="15">
+                <Group orientation="horizontal" className="h-full w-full flex" defaultLayout={explorer.defaultLayout} onLayoutChanged={explorer.onLayoutChanged}>
                   {/* B1 — position-related moves (the played line + nav) */}
-                  <Panel defaultSize={33} minSize={15}>
+                  <Panel defaultSize="33" minSize="15">
                     <div className={panel}>
                       <div className="p-2 h-full min-h-0">
                         <PositionMoves
@@ -494,9 +501,9 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                       </div>
                     </div>
                   </Panel>
-                  <PanelResizeHandle className={vHandle} />
+                  <Separator className={vHandle} />
                   {/* B2 — opening-explorer moves (stats over all matching games) */}
-                  <Panel defaultSize={67} minSize={20}>
+                  <Panel defaultSize="67" minSize="20">
                     <div className={panel}>
                       {movesLoading ? (
                         <div className="p-3 text-center text-on-surface-variant text-body-sm">Loading…</div>
@@ -530,18 +537,18 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                       )}
                     </div>
                   </Panel>
-                </PanelGroup>
+                </Group>
               </Panel>
               )}
 
-              {!listOnly && <PanelResizeHandle className={hHandle} />}
+              {!listOnly && <Separator className={hHandle} />}
 
               {/* Bottom: D (game list) | E-F (mini board over move list). The
                   whole area in the list-only state. */}
-              <Panel id="bottom" order={2} defaultSize={listOnly ? 100 : 66} minSize={25}>
-                <PanelGroup direction="horizontal" autoSaveId="games-bottom" className="h-full w-full">
+              <Panel id="bottom" defaultSize={listOnly ? 100 : 66} minSize="25">
+                <Group orientation="horizontal" className="h-full w-full flex" defaultLayout={bottom.defaultLayout} onLayoutChanged={bottom.onLayoutChanged}>
                   {/* D — game list (resizable columns) */}
-                  <Panel defaultSize={62} minSize={25}>
+                  <Panel defaultSize="62" minSize="25">
                     <div className={panel}>
                       <div className="px-3 py-2 shrink-0 text-label-md border-b border-outline/40 truncate" title={p1?.name}>
                         {loading ? (
@@ -597,12 +604,12 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                       </div>
                     </div>
                   </Panel>
-                  <PanelResizeHandle className={vHandle} />
+                  <Separator className={vHandle} />
                   {/* E over F */}
-                  <Panel defaultSize={38} minSize={18}>
-                    <PanelGroup direction="vertical" autoSaveId="games-ef" className="h-full w-full">
+                  <Panel defaultSize="38" minSize="18">
+                    <Group orientation="vertical" className="h-full w-full flex" defaultLayout={preview.defaultLayout} onLayoutChanged={preview.onLayoutChanged}>
                       {/* E — mini board of the selected game */}
-                      <Panel defaultSize={55} minSize={20}>
+                      <Panel defaultSize="55" minSize="20">
                         <div className={panel}>
                           {loadedGame ? (
                             <>
@@ -626,9 +633,9 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                           )}
                         </div>
                       </Panel>
-                      <PanelResizeHandle className={hHandle} />
+                      <Separator className={hHandle} />
                       {/* F — compact move list of the selected game */}
-                      <Panel defaultSize={45} minSize={12}>
+                      <Panel defaultSize="45" minSize="12">
                         <div className={panel}>
                           {loadedGame ? (
                             <MoveList game={loadedGame} ply={selectedPly} setPly={setSelectedPly} />
@@ -637,13 +644,13 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                           )}
                         </div>
                       </Panel>
-                    </PanelGroup>
+                    </Group>
                   </Panel>
-                </PanelGroup>
+                </Group>
               </Panel>
-            </PanelGroup>
+            </Group>
           </Panel>
-        </PanelGroup>
+        </Group>
       </div>
     </div>
   );
