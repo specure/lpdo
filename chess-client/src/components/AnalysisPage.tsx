@@ -85,7 +85,12 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
   useEffect(() => { localStorage.setItem(TAB_KEY, tab); }, [tab]);
 
   // rail | board | intel — three panels, so dividers need the neighbour-only rule.
-  const rz = useNeighbourResize(["rail", "board", "side"]);
+  // rail | board | move text | intel — four sibling panels, so every divider
+  // trades between exactly two of them. The move text used to live inside the
+  // board panel, which is why dragging the intel divider resized the board and
+  // left the move text alone.
+  const rz = useNeighbourResize(["rail", "board", "moves", "side"]);
+  const [moveHost, setMoveHost] = useState<HTMLDivElement | null>(null);
   const saved = useDefaultLayout({ id: "analysis-main", storage: localStorage });
 
   // A related game being previewed in place — picking a row no longer opens a
@@ -184,7 +189,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
       <Separator className={vHandle} {...rz.separator(0)} />
 
       {/* Active game (editable board + comments + notation) */}
-        <Panel id="board" defaultSize="57" minSize="34">
+        <Panel id="board" defaultSize="38" minSize={rz.floor("board") ?? "20"}>
           <div className={panel}>
             {active && (
               <GameBoard
@@ -194,12 +199,22 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                 flipped={active.flipped}
                 onFlippedChange={handleFlippedChange}
                 onGameMutated={onGameMutated}
+                moveListHost={moveHost}
               />
             )}
           </div>
         </Panel>
 
         <Separator className={vHandle} {...rz.separator(1)} />
+
+        {/* The game's move text — its own panel, not a sidebar of the board. */}
+        <Panel id="moves" defaultSize="19" minSize={rz.floor("moves") ?? "10"}>
+          <div className={panel}>
+            <div ref={setMoveHost} className="flex-1 min-h-0" />
+          </div>
+        </Panel>
+
+        <Separator className={vHandle} {...rz.separator(2)} />
 
         {/* Position intel + related games, one tab at a time. Tabs rather than
             more stacked panels: this column would otherwise hold four ~180px
@@ -208,8 +223,8 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
             while you are reading something else. */}
         <Panel
           id="side"
-          defaultSize="34"
-          minSize={rz.floor("side") ?? "20"}
+          defaultSize="30"
+          minSize={rz.floor("side") ?? "18"}
         >
           <div className={panel}>
             <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b border-outline/40">
