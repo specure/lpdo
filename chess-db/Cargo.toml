@@ -30,7 +30,7 @@ zip = "8"
 # Zstandard decompression (Lichess .pgn.zst broadcast files, #40 Phase B2)
 zstd = "0.13"
 # 7z/LZMA decompression (Ajedrez Data historical .7z, #40 Phase B3)
-sevenz-rust2 = "0.21"
+sevenz-rust2 = "0.22"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
