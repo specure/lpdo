@@ -28,7 +28,7 @@ indicatif = "0.18"
 # Zip extraction
 zip = "8"
 # Zstandard decompression (Lichess .pgn.zst broadcast files, #40 Phase B2)
-zstd = "0.13"
+zstd = "0.14"
 # 7z/LZMA decompression (Ajedrez Data historical .7z, #40 Phase B3)
 sevenz-rust2 = "0.21"
 
