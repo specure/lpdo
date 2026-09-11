@@ -29,5 +29,5 @@ serde = { version = "1", features = ["derive"] }
 # Decompress .zip/.zst/.gz PGNs directly (#104 slice 3) — versions match chess-db
 # so the compiled crates are shared, not duplicated.
 zip = "8"
-zstd = "0.13"
+zstd = "0.14"
 flate2 = "1"
