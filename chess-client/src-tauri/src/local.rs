@@ -74,8 +74,8 @@ pub async fn list_directory(path: String) -> Result<DirectoryListing, String> {
         }
     }
 
-    dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    dirs.sort_by_key(|e| e.name.to_lowercase());
+    files.sort_by_key(|e| e.name.to_lowercase());
 
     let mut entries = dirs;
     entries.append(&mut files);

@@ -73,7 +73,8 @@ fn team_name_matches(stored: &str, search: &str) -> bool {
 
 fn team_color(is_home: bool, board: u32, home_black_board1: bool) -> &'static str {
     // home_black_board1: home has Black on odd boards (1, 3, …), White on even boards.
-    let home_has_black = if home_black_board1 { board % 2 == 1 } else { board % 2 == 0 };
+    let odd_board = !board.is_multiple_of(2);
+    let home_has_black = if home_black_board1 { odd_board } else { !odd_board };
     match (is_home, home_has_black) {
         (true, true) => "Black",
         (true, false) => "White",
