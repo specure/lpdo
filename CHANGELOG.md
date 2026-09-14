@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The Players page brings back your whole view, not just the selected game** —
+  the colour filters for player and opponent, the opponent, event and dates, and
+  the move line you explored under them now come back too when you return to a
+  player, after opening a game in Analysis or restarting the app. A player you
+  open for the first time starts with a clean view instead of inheriting the
+  previous player's filters. (#289)
+
 ## [0.17.0] - 2026-09-14
 
 ### Fixed
