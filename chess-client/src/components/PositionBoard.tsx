@@ -1,5 +1,7 @@
 import { useMemo, useLayoutEffect, useRef, useState } from "react";
 import { Chessboard, Arrow } from "react-chessboard";
+import { fitBoard } from "../lib/boardSize";
+import BoardErrorBoundary from "./BoardErrorBoundary";
 import { Chess } from "chess.js";
 import { GameSummary, MoveStats } from "../types";
 import PositionMoves from "./PositionMoves";
@@ -52,7 +54,7 @@ export default function PositionBoard({
     function measure() {
       const rect = el!.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0)
-        setSquareSize(Math.floor(Math.min(rect.width, rect.height)) - 4);
+        setSquareSize(fitBoard(rect, 4));
     }
     measure();
     const ro = new ResizeObserver(measure);
@@ -104,6 +106,7 @@ export default function PositionBoard({
           {copiedFen ? "Copied" : "FEN"}
         </button>
         <div style={{ width: squareSize, height: squareSize, flexShrink: 0 }}>
+          <BoardErrorBoundary>
           <Chessboard
             options={{
               id: "position-board", // unique id — see MiniBoard note (shared default id collides)
@@ -118,6 +121,7 @@ export default function PositionBoard({
               boardStyle: { alignContent: "start" },
             }}
           />
+          </BoardErrorBoundary>
         </div>
       </div>
 

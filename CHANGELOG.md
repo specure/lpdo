@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   list at all until the next successful one, leaving name normalisation and
   FIDE-ID matching with nothing to work with. A failed or empty download now
   keeps the current list. (#282)
+- **Replaying games no longer crashes the app with "Square width not found"** —
+  each board sized itself from the space available minus a margin, so a
+  squeezed board area (the notes panel dragged up, a very short window) could
+  leave it with no size at all, and the chessboard library then failed on the
+  next animated move and took the whole app down. Boards now keep a minimum
+  size, the small preview boards no longer animate, and a board that does fail
+  shows a "Redraw board" button in its place instead of crashing the app. (#283)
 
 ### Changed
 - **FIDE list refreshes say what triggered them** — the monthly schedule, the

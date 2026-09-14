@@ -1,5 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from "react";
 import { Chessboard } from "react-chessboard";
+import { fitBoard } from "../lib/boardSize";
+import BoardErrorBoundary from "./BoardErrorBoundary";
 import { Chess } from "chess.js";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -1017,7 +1019,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     function measure() {
       const rect = el!.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0)
-        setSquareSize(Math.floor(Math.min(rect.width, rect.height)) - 16);
+        setSquareSize(fitBoard(rect, 16));
     }
     measure();
     const ro = new ResizeObserver(measure);
@@ -1730,6 +1732,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
               movesEditor.clearPreview();
             }}
           >
+            <BoardErrorBoundary>
             <Chessboard
               options={{
                 id: "game-board", // unique id so it never shares square DOM ids with another board
@@ -1752,6 +1755,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
                   : undefined,
               }}
             />
+            </BoardErrorBoundary>
             {/* Custom annotation overlay (arrows + circles) in view mode */}
             {!movesEditor.active && (annotationArrows.length > 0 || annotationCircles.length > 0) && (
               <AnnotationOverlay
