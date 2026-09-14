@@ -41,7 +41,11 @@ export default function MoveList({
   }
 
   if (game.moves.length === 0) {
-    return <div className="p-3 text-center text-on-surface-variant text-body-sm">No moves</div>;
+    return (
+      <div className="p-3 text-center text-on-surface-variant text-body-sm">
+        {game.unreadable ? "Couldn't read this game's moves" : "No moves"}
+      </div>
+    );
   }
 
   return (
