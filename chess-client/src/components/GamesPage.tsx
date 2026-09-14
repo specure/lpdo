@@ -10,6 +10,7 @@ import MoveList from "./games/MoveList";
 import CloudEngine, { pvString } from "./CloudEngine";
 import { useNeighbourResize } from "../lib/panelResize";
 import { useGamePgn } from "../lib/useGamePgn";
+import { loadPlayerViewState, savePlayerViewState } from "../lib/playerViewState";
 
 // The Games page: a DB-wide analysis layout with every panel visible at once
 // (#219). Six areas — A main position board, B opening-explorer moves, C engine
@@ -36,7 +37,8 @@ function fenFromMoves(moves: string[]): string {
 
 // Games-page state that should survive leaving and returning to the page (and a
 // restart) — the analysed line + applied filters. Persisted to localStorage; only
-// for the Games page, not the player-scoped Players view (#—).
+// for the Games page — the player-scoped Players view remembers its selection per
+// player instead (lib/playerViewState).
 const GAMES_STATE_KEY = "gamesPageState";
 interface PersistedGamesState {
   p1: PlayerInfo | null; p1Color: ColorFilter; p2: PlayerInfo | null; p2Color: ColorFilter;
@@ -125,17 +127,42 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const [selectedGame, setSelectedGame] = useState<GameSummary | null>(restored?.selectedGame ?? null);
   const [selectedPly, setSelectedPly] = useState(restored?.selectedPly ?? 0);
   const { game: loadedGame, loading: gameLoading } = useGamePgn(selectedGame?.id ?? null);
-  useEffect(() => { setSelectedPly(0); }, [selectedGame?.id]);
+  // A newly selected game starts at its first move — unless it's a restored
+  // selection, which brings its move along. (This also runs on mount, where it
+  // used to overwrite the Games page's restored move with 0.)
+  const pendingPlyRef = useRef<{ gameId: number; ply: number } | null>(
+    restored?.selectedGame ? { gameId: restored.selectedGame.id, ply: restored.selectedPly ?? 0 } : null,
+  );
+  useEffect(() => {
+    const pending = pendingPlyRef.current;
+    pendingPlyRef.current = null;
+    setSelectedPly(pending && pending.gameId === selectedGame?.id ? pending.ply : 0);
+  }, [selectedGame?.id]);
 
   // Players mode: when the externally-selected player changes, lock Player 1 to
-  // them and reset the explorer + selection to a clean slate for the new player.
+  // them, reset the explorer, and bring back the game and move last selected for
+  // this player (a clean slate if none). Opening a game in Analysis unmounts this
+  // view, and coming back used to lose the selection.
+  // `viewOwner` is whose selection is on screen: saving by it, not by `player`,
+  // means a player switch can never file one player's selection under another.
+  const [viewOwner, setViewOwner] = useState<number | null>(null);
   useEffect(() => {
     if (!playerScoped) return;
     setP1(player ?? null);
     setLine([]); setPly(0);
-    setSelectedGame(null);
+    const saved = player ? loadPlayerViewState(player.id) : null;
+    const game = saved?.selectedGame ?? null;
+    const gamePly = saved?.selectedPly ?? 0;
+    pendingPlyRef.current = game ? { gameId: game.id, ply: gamePly } : null;
+    setSelectedGame(game);
+    setSelectedPly(gamePly);
+    setViewOwner(player?.id ?? null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [player?.id]);
+  useEffect(() => {
+    if (!playerScoped || viewOwner === null) return;
+    savePlayerViewState(viewOwner, { selectedGame, selectedPly });
+  }, [playerScoped, viewOwner, selectedGame, selectedPly]);
 
   const firstMovesStr = moveSequence.join(" ");
 
