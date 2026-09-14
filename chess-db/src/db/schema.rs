@@ -334,6 +334,15 @@ pub fn init(conn: &Connection) -> Result<()> {
     // table (#40) reuses the name. Creating it last avoids the drop clobbering it.
     init_sources(conn)?;
 
+    // One-time repair (#282): FIDE list reloads used to DELETE + re-append
+    // `fide_players` in place, and DuckDB never reclaims deleted rows, so each
+    // reload left the previous list's storage behind. Reloads now swap in a
+    // fresh table (fide.rs); this rebuilds a table still carrying old copies.
+    let stale = crate::fide::reclaim_stale_rows(conn)?;
+    if stale > 0 {
+        println!("Reclaimed space from {stale} stale FIDE list rows (one-time repair, #282).");
+    }
+
     // Seed the id high-water marks (#249) on databases that predate them:
     // without this, a merge done right after upgrading could still free the
     // current top id for the next import to reuse. Seeding at the live maxima

@@ -82,7 +82,7 @@ async fn tick(jobs: &Arc<JobManager>, reads: &ReadPool, db_path: &Path) -> anyho
             .await
             .unwrap_or(false);
         if due {
-            jobs.submit("fide_refresh".into(), serde_json::json!({ "if_due": true }));
+            jobs.submit("fide_refresh".into(), serde_json::json!({ "if_due": true, "trigger": "scheduler" }));
         }
     }
 

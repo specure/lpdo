@@ -399,7 +399,7 @@ fn uses_appender(job_type: &str, params: &serde_json::Value) -> bool {
         "update" => true,
         // sources_sync / sources_import run `import` with fast=true internally.
         "sources_sync" | "sources_import" => true,
-        // fide_refresh bulk-appends ~1.9M rows into fide_players.
+        // fide_refresh bulk-appends ~1.9M rows (into fide_players_new, then swaps it in).
         "fide_refresh" => true,
         _ => false,
     }
@@ -735,7 +735,7 @@ impl JobManager {
         // duplicate — the new name can be one another row already holds — so
         // merging has to come after the renames, or the pass ends by creating
         // duplicates it will not clean up until the next one.
-        m("fide_refresh", serde_json::json!({ "if_due": true }));
+        m("fide_refresh", serde_json::json!({ "if_due": true, "trigger": "maintenance" }));
         m("resolve_fide", serde_json::json!({}));
         m("normalise", serde_json::json!({}));
         m("dedup_players", serde_json::json!({}));
@@ -1434,6 +1434,14 @@ fn run_job(
             if flag(p, "if_due") && !crate::fide::refresh_due(conn)? {
                 reporter.done("FIDE list is current — no refresh needed.");
             } else {
+                // Say what asked for this reload, in the activity log and the
+                // server's journal, so an unexpected reload pattern can be traced
+                // (#282: one install reloaded the list ~3,445 times, cause unknown).
+                let trigger = p.get("trigger").and_then(|v| v.as_str()).unwrap_or("manual");
+                let due = if flag(p, "if_due") { ", due" } else { "" };
+                let msg = format!("Refreshing the FIDE list (trigger: {trigger}{due}).");
+                println!("{msg}");
+                reporter.log(msg);
                 match p.get("file").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
                     Some(path) => {
                         crate::fide::load_from_file(conn, Path::new(path), reporter)?;
@@ -1503,6 +1511,7 @@ fn run_job(
             // download just retries on the next update, and the existing list (if
             // any) still serves normalise. Only stamp the monthly clock on success.
             if crate::fide::refresh_due(conn)? {
+                println!("Refreshing the FIDE list (trigger: update, due).");
                 reporter.log("Refreshing the FIDE player list…");
                 match crate::fide::download_and_load(conn, crate::fide::FIDE_LIST_URL, &step) {
                     Ok(n) => {

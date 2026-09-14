@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The database no longer grows with every FIDE list refresh** — a refresh
+  replaced the ~1.9M-player list by deleting it in place, and the database engine
+  never reclaims deleted rows, so each refresh left the previous list (~29 MB)
+  behind for good. Monthly that adds up slowly, but one install that had
+  refreshed thousands of times had grown to 117.8 GB instead of ~12 GB. The list
+  is now loaded into a fresh table and swapped in, and the space left by earlier
+  refreshes is reclaimed once on the next start. The file keeps its current size
+  and reuses that space; it doesn't shrink by itself. (#282)
+- **A failed FIDE list refresh no longer empties the list** — the old list was
+  deleted before the new one loaded, so a refresh that failed partway left no
+  list at all until the next successful one, leaving name normalisation and
+  FIDE-ID matching with nothing to work with. A failed or empty download now
+  keeps the current list. (#282)
+
+### Changed
+- **FIDE list refreshes say what triggered them** — the monthly schedule, the
+  post-import maintenance pass, the app or the command line — in the activity
+  log and the server's log. (#282)
+
 ## [0.16.0] - 2026-08-15
 
 ### Added
