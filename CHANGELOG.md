@@ -37,11 +37,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read games the same way Analysis does, start from a set-up position when a
   game has one, and say "Couldn't read this game's moves" if a game really
   can't be read. (#286)
+- **The Games page brings back the selected move again** — it saved which move
+  you were on in the selected game, but reset it to the start every time you
+  came back to the page. (#288)
 
 ### Changed
 - **FIDE list refreshes say what triggered them** — the monthly schedule, the
   post-import maintenance pass, the app or the command line — in the activity
   log and the server's log. (#282)
+- **The Players page remembers where you were** — each player's selected game
+  and move come back when you return to them, after opening a game in Analysis
+  or restarting the app. Leaving the page used to reset the selection. Filters
+  aren't remembered per player, so a forgotten one can't hide some of their
+  games later. (#288)
 
 ## [0.16.0] - 2026-08-15
 
