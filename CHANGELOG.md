@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   next animated move and took the whole app down. Boards now keep a minimum
   size, the small preview boards no longer animate, and a board that does fail
   shows a "Redraw board" button in its place instead of crashing the app. (#283)
+- **Game previews show every move again** — the preview on the Games and
+  Players pages (and the related-game preview in Analysis) read moves with a
+  stricter parser than Analysis, and it gave up on valid PGN with several
+  comments in a row after one move, which is what Lichess broadcasts write on
+  every move their engine flags as a blunder, mistake or inaccuracy. Those games
+  showed "No moves" in the preview but all their moves in Analysis. Previews now
+  read games the same way Analysis does, start from a set-up position when a
+  game has one, and say "Couldn't read this game's moves" if a game really
+  can't be read. (#286)
 
 ### Changed
 - **FIDE list refreshes say what triggered them** — the monthly schedule, the
