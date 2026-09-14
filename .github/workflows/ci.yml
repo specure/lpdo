@@ -4,7 +4,10 @@ name: CI
 # unverified:
 #   * frontend  — `npm ci` + the production build (tsc + vite), which catches
 #                 dependency-bump breakage and TypeScript errors.
-#   * chess-db  — the Rust sidecar's unit tests (importer, etc.).
+#   * rust      — tests + clippy for the whole Cargo workspace: chess-db (the
+#                 sidecar), chess-pgn, the API clients and the Tauri app crate.
+#                 Covering every crate matters because a shared dependency
+#                 (zstd, zip, …) can break one crate while the others still pass.
 #
 # The full Tauri bundle (and the signed macOS/Windows installers) is built by
 # release.yml on a version tag, so it's intentionally NOT repeated here — this
@@ -44,8 +47,8 @@ jobs:
         working-directory: chess-client
         run: npm run build
 
-  chess-db:
-    name: chess-db tests
+  rust:
+    name: Rust tests
     runs-on: ubuntu-22.04
     env:
       # Cache Rust compilation via sccache, backed by the GitHub Actions cache.
@@ -57,6 +60,17 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v7
+      # The Tauri app crate (chess-client/src-tauri) links against WebKitGTK and
+      # friends on Linux. Same set as release.yml, minus the bundling-only tools.
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev
       # Version kept in sync with /rust-toolchain.toml (the source of truth).
       - uses: dtolnay/rust-toolchain@1.96.0
         with:
@@ -69,9 +83,9 @@ jobs:
         with:
           workspaces: '.'
       - name: Test
-        run: cargo test -p chess-db
+        run: cargo test --workspace
       - name: Clippy
-        run: cargo clippy -p chess-db -- -D warnings
+        run: cargo clippy --workspace -- -D warnings
       - name: sccache stats
         if: always()
         run: sccache --show-stats
