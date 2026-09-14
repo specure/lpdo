@@ -76,35 +76,117 @@ fn parse_line(line: &str) -> Option<(u32, String)> {
     Some((fide_id, name))
 }
 
+/// Columns of `fide_players`, as `db::schema` defines them. A reload builds a
+/// fresh table with these and swaps it in, so they must stay in step with the
+/// schema (`reload_keeps_the_schema` checks it).
+const FIDE_PLAYERS_COLUMNS: &str = "fide_id INTEGER PRIMARY KEY, name VARCHAR NOT NULL";
+
 /// Replace `fide_players` with the fixed-width FIDE list read from `reader`.
 /// Returns the number of players loaded (Appender bulk load).
+///
+/// The list goes into a fresh `fide_players_new` that is then swapped in, never
+/// `DELETE` + re-append in place: DuckDB never reclaims the storage of deleted
+/// rows, so every in-place reload left the previous ~1.9M rows (~29 MiB) behind
+/// for good — one install that reloaded thousands of times reached 117.8 GB
+/// (#282). The swap also makes a reload all-or-nothing: a failed or empty load
+/// keeps the current list instead of emptying it.
 pub fn load_from_reader<R: BufRead>(conn: &Connection, reader: R, source: &str, reporter: &Reporter) -> Result<usize> {
-    conn.execute_batch("DELETE FROM fide_players")?;
-
-    let mut count = 0usize;
-    {
-        let mut app = conn.appender("fide_players")?;
-        for (i, line) in reader.lines().enumerate() {
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => continue, // skip a stray undecodable line
-            };
-            if i == 0 {
-                continue; // header
-            }
-            if let Some((fide_id, name)) = parse_line(&line) {
-                app.append_row(duckdb::params![fide_id, name])?;
-                count += 1;
-                if count.is_multiple_of(200_000) {
-                    reporter.progress(count as u64, 0, format!("Loaded {count} FIDE players…"));
-                }
-            }
+    conn.execute_batch(&format!(
+        "DROP TABLE IF EXISTS fide_players_new;
+         CREATE TABLE fide_players_new ({FIDE_PLAYERS_COLUMNS});"
+    ))?;
+    let loaded = append_list(conn, reader, reporter).and_then(|count| {
+        if count == 0 {
+            anyhow::bail!("no FIDE players found in {source} — keeping the current list");
         }
-        app.flush()?;
-    }
+        Ok(count)
+    });
+    let count = match loaded {
+        Ok(count) => count,
+        Err(e) => {
+            let _ = conn.execute_batch("DROP TABLE IF EXISTS fide_players_new");
+            return Err(e);
+        }
+    };
+    swap_in_new_table(conn)?;
 
     reporter.done(format!("Loaded {count} FIDE players from {source}"));
     Ok(count)
+}
+
+/// Stream the list into `fide_players_new`.
+fn append_list<R: BufRead>(conn: &Connection, reader: R, reporter: &Reporter) -> Result<usize> {
+    let mut count = 0usize;
+    let mut app = conn.appender("fide_players_new")?;
+    for (i, line) in reader.lines().enumerate() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue, // skip a stray undecodable line
+        };
+        if i == 0 {
+            continue; // header
+        }
+        if let Some((fide_id, name)) = parse_line(&line) {
+            app.append_row(duckdb::params![fide_id, name])?;
+            count += 1;
+            if count.is_multiple_of(200_000) {
+                reporter.progress(count as u64, 0, format!("Loaded {count} FIDE players…"));
+            }
+        }
+    }
+    app.flush()?;
+    Ok(count)
+}
+
+/// Replace `fide_players` with `fide_players_new` in one transaction, then
+/// checkpoint so the old table's blocks are free for reuse straight away — a
+/// dropped table's storage, unlike deleted rows', is reclaimed.
+fn swap_in_new_table(conn: &Connection) -> Result<()> {
+    let swapped = conn.execute_batch(
+        "BEGIN TRANSACTION;
+         DROP TABLE fide_players;
+         ALTER TABLE fide_players_new RENAME TO fide_players;
+         COMMIT;",
+    );
+    if let Err(e) = swapped {
+        let _ = conn.execute_batch("ROLLBACK");
+        let _ = conn.execute_batch("DROP TABLE IF EXISTS fide_players_new");
+        return Err(e).context("swapping in the new FIDE list");
+    }
+    // Best effort, like the other post-job checkpoints: a skipped one only
+    // delays the reuse until the next automatic checkpoint.
+    let _ = conn.execute_batch("CHECKPOINT");
+    Ok(())
+}
+
+/// One-time repair for databases that reloaded the list in place before the
+/// swap above (#282). `estimated_size` still counts the deleted-but-retained
+/// rows, so a table storing well beyond its live rows is rebuilt once, which
+/// frees that space for reuse (the file keeps its size). Also clears a
+/// `fide_players_new` left by a load that was killed mid-append. Returns the
+/// number of stale rows reclaimed, 0 when there was nothing to do.
+pub fn reclaim_stale_rows(conn: &Connection) -> Result<i64> {
+    conn.execute_batch("DROP TABLE IF EXISTS fide_players_new")?;
+    let (live, stored): (i64, i64) = conn.query_row(
+        "SELECT (SELECT count(*) FROM fide_players),
+                (SELECT estimated_size FROM duckdb_tables()
+                 WHERE database_name = current_database() AND schema_name = 'main'
+                   AND table_name = 'fide_players')",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let stale = stored - live;
+    // A single leftover list (one past monthly reload) is already worth
+    // reclaiming; below 100k rows it isn't worth rebuilding the table for.
+    if stale <= (live / 2).max(100_000) {
+        return Ok(0);
+    }
+    conn.execute_batch(&format!(
+        "CREATE TABLE fide_players_new ({FIDE_PLAYERS_COLUMNS});
+         INSERT INTO fide_players_new SELECT fide_id, name FROM fide_players;"
+    ))?;
+    swap_in_new_table(conn)?;
+    Ok(stale)
 }
 
 /// Load `fide_players` from a local FIDE list file (already unzipped .txt).
@@ -304,5 +386,110 @@ mod fold_tests {
         assert_eq!(fold(&conn, "Carlsen, Magnus."), "carlsen magnus");
         assert_eq!(fold(&conn, "Vachier-Lagrave, Maxime"), "vachier lagrave maxime");
         assert_ne!(fold(&conn, "Svrcek, J"), fold(&conn, "Svrcek, Jozef"));
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::*;
+
+    /// A fixed-width FIDE list: the header, then one player per id.
+    fn list(ids: &[u32]) -> String {
+        let mut s = String::from("ID Number      Name\n");
+        for id in ids {
+            s.push_str(&format!("{id:<15}Player, No {id}\n"));
+        }
+        s
+    }
+
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        conn
+    }
+
+    fn load(conn: &Connection, ids: &[u32]) -> Result<usize> {
+        load_from_reader(conn, list(ids).as_bytes(), "test", &Reporter::silent())
+    }
+
+    fn live(conn: &Connection) -> i64 {
+        conn.query_row("SELECT count(*) FROM fide_players", [], |r| r.get(0)).unwrap()
+    }
+
+    /// Rows the table still stores, deleted ones included.
+    fn stored(conn: &Connection) -> i64 {
+        conn.query_row(
+            "SELECT estimated_size FROM duckdb_tables() WHERE table_name = 'fide_players'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn reload_replaces_the_list_without_keeping_old_rows() {
+        let conn = setup();
+        for _ in 0..3 {
+            assert_eq!(load(&conn, &[1, 2, 3]).unwrap(), 3);
+        }
+        assert_eq!(live(&conn), 3);
+        assert_eq!(stored(&conn), 3, "earlier loads must not linger as deleted rows (#282)");
+    }
+
+    #[test]
+    fn a_failed_or_empty_reload_keeps_the_current_list() {
+        let conn = setup();
+        load(&conn, &[1, 2, 3]).unwrap();
+        // Nothing parseable: refuse rather than swap in an empty list.
+        assert!(load(&conn, &[]).is_err());
+        // A duplicate id makes the appender fail partway through.
+        assert!(load(&conn, &[7, 8, 7]).is_err());
+        assert_eq!(live(&conn), 3, "the current list survives");
+        let leftover: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'fide_players_new'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(leftover, 0, "no half-loaded table is left behind");
+    }
+
+    #[test]
+    fn reload_keeps_the_schema() {
+        let describe = |conn: &Connection| -> Vec<String> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT column_name || ' ' || data_type || ' nullable=' || CAST(is_nullable AS VARCHAR)
+                     FROM duckdb_columns() WHERE table_name = 'fide_players'
+                     UNION ALL
+                     SELECT constraint_type || ' ' || array_to_string(constraint_column_names, ',')
+                     FROM duckdb_constraints() WHERE table_name = 'fide_players'
+                     ORDER BY 1",
+                )
+                .unwrap();
+            stmt.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+        };
+        let fresh = setup();
+        let reloaded = setup();
+        load(&reloaded, &[1]).unwrap();
+        assert_eq!(describe(&reloaded), describe(&fresh), "the swapped-in table must match db::schema");
+    }
+
+    #[test]
+    fn reclaim_rebuilds_a_table_still_carrying_old_copies() {
+        let conn = setup();
+        let fill = "INSERT INTO fide_players SELECT range, 'Player' FROM range(1, 200001);";
+        conn.execute_batch(fill).unwrap();
+        // How reloads used to work: delete in place, then append again.
+        conn.execute_batch(&format!("DELETE FROM fide_players; {fill}")).unwrap();
+        assert!(stored(&conn) > live(&conn), "DuckDB keeps the deleted rows — the #282 leak");
+
+        assert!(reclaim_stale_rows(&conn).unwrap() >= 200_000);
+        assert_eq!(live(&conn), 200_000);
+        assert_eq!(stored(&conn), 200_000);
+        assert_eq!(reclaim_stale_rows(&conn).unwrap(), 0, "a clean table is left alone");
+        // Still keyed on fide_id after the rebuild.
+        assert!(conn.execute_batch("INSERT INTO fide_players VALUES (1, 'Duplicate')").is_err());
     }
 }

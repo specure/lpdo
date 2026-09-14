@@ -1591,7 +1591,7 @@ fn job_spec_for(command: &Commands) -> Option<proxy::JobSpec> {
         ),
         Commands::Fide { subcommand: FideCommands::Refresh { file, url } } => (
             "fide_refresh",
-            json!({ "file": file.as_ref().map(|f| f.to_string_lossy().into_owned()), "url": url }),
+            json!({ "file": file.as_ref().map(|f| f.to_string_lossy().into_owned()), "url": url, "trigger": "cli" }),
         ),
         Commands::Sources { subcommand: SourcesCommands::Sync { key, fast, max_position_depth, skip_dedup } } => (
             "sources_sync",
