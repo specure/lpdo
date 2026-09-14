@@ -1,6 +1,8 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { Chessboard } from "react-chessboard";
 import { LoadedGame } from "../../lib/useGamePgn";
+import { fitBoard } from "../../lib/boardSize";
+import BoardErrorBoundary from "../BoardErrorBoundary";
 
 // Small read-only board (area E of the Games page, #219) showing the selected
 // game at the current ply. Nav sits below the board in the unified order shared
@@ -45,7 +47,7 @@ export default function MiniBoard({
     if (!el) return;
     const measure = () => {
       const r = el.getBoundingClientRect();
-      if (r.width > 0 && r.height > 0) setSquareSize(Math.floor(Math.min(r.width, r.height)) - 4);
+      if (r.width > 0 && r.height > 0) setSquareSize(fitBoard(r, 4));
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -65,6 +67,7 @@ export default function MiniBoard({
       )}
       <div ref={boardBoxRef} className="flex-1 min-h-0 min-w-0 flex items-center justify-center overflow-hidden">
         <div style={{ width: squareSize, height: squareSize, flexShrink: 0 }}>
+          <BoardErrorBoundary>
           <Chessboard
             options={{
               // Unique per instance: react-chessboard locates squares by
@@ -83,8 +86,13 @@ export default function MiniBoard({
               // Anchor the square grid to the top so react-chessboard's absolutely
               // positioned animation layer lines up — without this pieces overshoot.
               boardStyle: { alignContent: "start" },
+              // Previews and the Analysis rail's thumbnails don't need move
+              // animation — and the rail follows every replayed move, so it only
+              // doubled the chances of the #283 measuring failure.
+              showAnimations: false,
             }}
           />
+          </BoardErrorBoundary>
         </div>
       </div>
       {showNav && (
