@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Lichess evals are colour-coded too** — only chessdb evals were. In both
   lists green now means the move is good for the player to move and red means
   it's bad, so with Black to move a good -0.40 is green. (#292)
+- **The Players page brings back your whole view, not just the selected game** —
+  the colour filters for player and opponent, the opponent, event and dates, and
+  the move line you explored under them now come back too when you return to a
+  player, after opening a game in Analysis or restarting the app. A player you
+  open for the first time starts with a clean view instead of inheriting the
+  previous player's filters. (#289)
 
 ### Fixed
 - **The scrollbar no longer covers the close ✕ on the Analysis page** — in the

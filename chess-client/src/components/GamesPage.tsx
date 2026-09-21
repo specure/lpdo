@@ -10,7 +10,7 @@ import MoveList from "./games/MoveList";
 import CloudEngine, { pvString } from "./CloudEngine";
 import { useNeighbourResize } from "../lib/panelResize";
 import { useGamePgn } from "../lib/useGamePgn";
-import { loadPlayerViewState, savePlayerViewState } from "../lib/playerViewState";
+import { EMPTY_PLAYER_VIEW, loadPlayerViewState, savePlayerViewState } from "../lib/playerViewState";
 
 // The Games page: a DB-wide analysis layout with every panel visible at once
 // (#219). Six areas — A main position board, B opening-explorer moves, C engine
@@ -37,7 +37,7 @@ function fenFromMoves(moves: string[]): string {
 
 // Games-page state that should survive leaving and returning to the page (and a
 // restart) — the analysed line + applied filters. Persisted to localStorage; only
-// for the Games page — the player-scoped Players view remembers its selection per
+// for the Games page — the player-scoped Players view remembers its view per
 // player instead (lib/playerViewState).
 const GAMES_STATE_KEY = "gamesPageState";
 interface PersistedGamesState {
@@ -89,17 +89,23 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   // Restore the Games page's last analysed line + filters (once, on mount). Never
   // for the player-scoped view — that always locks to the externally-chosen player.
   const restored = useRef<Partial<PersistedGamesState> | null>(playerScoped ? null : loadGamesState()).current;
+  // The Players view instead starts from what it last showed for this player.
+  // Read here, on mount, not only in the player effect below: the very first
+  // render then already has the player's colour, so the effect that clears the
+  // line under "Any" (it runs on mount too) can't wipe a restored line.
+  const savedView = useRef(playerScoped && player ? loadPlayerViewState(player.id) : null).current;
+  const initial: Partial<PersistedGamesState> | null = restored ?? savedView;
   // ── Filters ───────────────────────────────────────────────────────────────
   const [p1, setP1] = useState<PlayerInfo | null>(player ?? restored?.p1 ?? null);
-  const [p1Color, setP1Color] = useState<ColorFilter>(restored?.p1Color ?? "any");
-  const [p2, setP2] = useState<PlayerInfo | null>(restored?.p2 ?? null);
-  const [p2Color, setP2Color] = useState<ColorFilter>(restored?.p2Color ?? "any");
-  const [eventInput, setEventInput] = useState(restored?.event ?? "");
-  const [dateFromInput, setDateFromInput] = useState(restored?.dateFrom ?? "");
-  const [dateToInput, setDateToInput] = useState(restored?.dateTo ?? "");
-  const [event, setEvent] = useState(restored?.event ?? "");
-  const [dateFrom, setDateFrom] = useState(restored?.dateFrom ?? "");
-  const [dateTo, setDateTo] = useState(restored?.dateTo ?? "");
+  const [p1Color, setP1Color] = useState<ColorFilter>(initial?.p1Color ?? "any");
+  const [p2, setP2] = useState<PlayerInfo | null>(initial?.p2 ?? null);
+  const [p2Color, setP2Color] = useState<ColorFilter>(initial?.p2Color ?? "any");
+  const [eventInput, setEventInput] = useState(initial?.event ?? "");
+  const [dateFromInput, setDateFromInput] = useState(initial?.dateFrom ?? "");
+  const [dateToInput, setDateToInput] = useState(initial?.dateTo ?? "");
+  const [event, setEvent] = useState(initial?.event ?? "");
+  const [dateFrom, setDateFrom] = useState(initial?.dateFrom ?? "");
+  const [dateTo, setDateTo] = useState(initial?.dateTo ?? "");
   const [filtersCollapsed, setFiltersCollapsed] = useState(restored?.filtersCollapsed ?? true);
 
   // ── Game list (infinite scroll) ─────────────────────────────────────────────
@@ -116,8 +122,8 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   // Cursor model: `line` is the full explored line, `ply` the current depth. The
   // active sequence (board position, filters, move-stats) is line[0..ply]. Back/
   // forward just move the cursor; clicking a new move from B branches from here.
-  const [line, setLine] = useState<string[]>(restored?.line ?? []);
-  const [ply, setPly] = useState(restored?.ply ?? 0);
+  const [line, setLine] = useState<string[]>(initial?.line ?? []);
+  const [ply, setPly] = useState(initial?.ply ?? 0);
   const moveSequence = line.slice(0, ply);
   function appendMove(mv: string) {
     setLine((prev) => (prev[ply] === mv ? prev : [...prev.slice(0, ply), mv]));
@@ -135,14 +141,14 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const movesAbortRef = useRef<AbortController | null>(null);
 
   // ── Selected game (E + F), independent of the explorer ──────────────────────
-  const [selectedGame, setSelectedGame] = useState<GameSummary | null>(restored?.selectedGame ?? null);
-  const [selectedPly, setSelectedPly] = useState(restored?.selectedPly ?? 0);
+  const [selectedGame, setSelectedGame] = useState<GameSummary | null>(initial?.selectedGame ?? null);
+  const [selectedPly, setSelectedPly] = useState(initial?.selectedPly ?? 0);
   const { game: loadedGame, loading: gameLoading } = useGamePgn(selectedGame?.id ?? null);
   // A newly selected game starts at its first move — unless it's a restored
   // selection, which brings its move along. (This also runs on mount, where it
   // used to overwrite the Games page's restored move with 0.)
   const pendingPlyRef = useRef<{ gameId: number; ply: number } | null>(
-    restored?.selectedGame ? { gameId: restored.selectedGame.id, ply: restored.selectedPly ?? 0 } : null,
+    initial?.selectedGame ? { gameId: initial.selectedGame.id, ply: initial.selectedPly ?? 0 } : null,
   );
   useEffect(() => {
     const pending = pendingPlyRef.current;
@@ -151,29 +157,32 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   }, [selectedGame?.id]);
 
   // Players mode: when the externally-selected player changes, lock Player 1 to
-  // them, reset the explorer, and bring back the game and move last selected for
-  // this player (a clean slate if none). Opening a game in Analysis unmounts this
-  // view, and coming back used to lose the selection.
-  // `viewOwner` is whose selection is on screen: saving by it, not by `player`,
-  // means a player switch can never file one player's selection under another.
+  // them and bring back everything last shown for this player — colour filters,
+  // opponent, event and dates, the explored line, the selected game and move — or
+  // a clean view for a player seen for the first time. Opening a game in Analysis
+  // unmounts this view, and coming back used to lose all of it.
+  // `viewOwner` is whose view is on screen: saving by it, not by `player`, means a
+  // player switch can never file one player's view under another.
   const [viewOwner, setViewOwner] = useState<number | null>(null);
   useEffect(() => {
     if (!playerScoped) return;
+    const v = (player ? loadPlayerViewState(player.id) : null) ?? EMPTY_PLAYER_VIEW;
     setP1(player ?? null);
-    setLine([]); setPly(0);
-    const saved = player ? loadPlayerViewState(player.id) : null;
-    const game = saved?.selectedGame ?? null;
-    const gamePly = saved?.selectedPly ?? 0;
-    pendingPlyRef.current = game ? { gameId: game.id, ply: gamePly } : null;
-    setSelectedGame(game);
-    setSelectedPly(gamePly);
+    setP1Color(v.p1Color); setP2(v.p2); setP2Color(v.p2Color);
+    setEventInput(v.event); setEvent(v.event);
+    setDateFromInput(v.dateFrom); setDateFrom(v.dateFrom);
+    setDateToInput(v.dateTo); setDateTo(v.dateTo);
+    setLine(v.line); setPly(v.ply);
+    pendingPlyRef.current = v.selectedGame ? { gameId: v.selectedGame.id, ply: v.selectedPly } : null;
+    setSelectedGame(v.selectedGame);
+    setSelectedPly(v.selectedPly);
     setViewOwner(player?.id ?? null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [player?.id]);
   useEffect(() => {
     if (!playerScoped || viewOwner === null) return;
-    savePlayerViewState(viewOwner, { selectedGame, selectedPly });
-  }, [playerScoped, viewOwner, selectedGame, selectedPly]);
+    savePlayerViewState(viewOwner, { p1Color, p2, p2Color, event, dateFrom, dateTo, line, ply, selectedGame, selectedPly });
+  }, [playerScoped, viewOwner, p1Color, p2, p2Color, event, dateFrom, dateTo, line, ply, selectedGame, selectedPly]);
 
   const firstMovesStr = moveSequence.join(" ");
 
