@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Game lists show the full date and the round** — the Players and Games pages
+  showed only the year. They now show the date (as much of it as is known) and
+  a Round column, and games played on the same day are listed in round order,
+  newest first. Games whose exact date is unknown come after the dated games of
+  their year, not before them. (#292)
+
 ## [0.17.0] - 2026-09-14
 
 ### Fixed
