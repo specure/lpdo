@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-21
+
 ### Changed
 - **Game lists show the full date and the round** — the Players and Games pages
   showed only the year. They now show the date (as much of it as is known) and
@@ -1068,7 +1070,8 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/specure/lpdo/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/specure/lpdo/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/specure/lpdo/compare/v0.15.5...v0.16.0
 [0.14.20]: https://github.com/specure/lpdo/compare/v0.14.18...v0.14.20
