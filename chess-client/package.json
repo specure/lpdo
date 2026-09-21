@@ -16,19 +16,19 @@
     "@tauri-apps/plugin-dialog": "^2.7.3",
     "@tauri-apps/plugin-opener": "^2",
     "chess.js": "^1.4.0",
-    "react": "^19.2.8",
+    "react": "^19.3.0",
     "react-chessboard": "^5.12.1",
-    "react-dom": "^19.2.8",
-    "react-resizable-panels": "^4.12.3"
+    "react-dom": "^19.3.0",
+    "react-resizable-panels": "^4.12.4"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "~2.11",
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.7",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
     "tailwindcss": "^4.2.2",
     "typescript": "~7.0.2",
-    "vite": "^8.2.2"
+    "vite": "^8.3.0"
   }
 }

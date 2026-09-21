@@ -73,6 +73,17 @@ interface Props {
   leadingPanelSize?: number;
 }
 
+// Dates are stored PGN-style with unknown parts as "??" ("2026-03-??"): show only
+// the known part.
+function displayDate(date: string | null): string {
+  return date?.replace(/-?\?\?.*$/, "") ?? "";
+}
+
+// "?" and "-" are PGN for an unknown round.
+function displayRound(round: string | null | undefined): string {
+  return round && round !== "?" && round !== "-" ? round : "";
+}
+
 export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, player, onOpenInAnalysis, collections, onCollectionChange, reloadKey, leadingPanel, leadingPanelSize = 14 }: Props) {
   const playerScoped = player !== undefined;
   // Restore the Games page's last analysed line + filters (once, on mount). Never
@@ -329,17 +340,20 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const vHandle = "w-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-state=drag]:bg-primary/50 transition-colors";
   const hHandle = "h-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-state=drag]:bg-primary/50 transition-colors";
 
-  // Resizable game-list columns. White/Black/Result/Year have user-draggable
+  // Resizable game-list columns. White/Black/Result/Date/Round have user-draggable
   // widths (persisted); Event fills the remainder so no space is wasted.
-  type ColKey = "white" | "black" | "result" | "year";
-  const COL_ORDER: ColKey[] = ["white", "black", "result", "year"];
+  type ColKey = "white" | "black" | "result" | "date" | "round";
+  const COL_ORDER: ColKey[] = ["white", "black", "result", "date", "round"];
+  const COL_LABEL: Record<ColKey, string> = { white: "White", black: "Black", result: "Result", date: "Date", round: "Round" };
   const COL_MIN = 36;
   const [colW, setColW] = useState<Record<ColKey, number>>(() => {
-    try { const s = localStorage.getItem("gamesColWidths"); if (s) return JSON.parse(s); } catch { /* ignore */ }
-    return { white: 170, black: 170, result: 48, year: 52 };
+    const defaults = { white: 170, black: 170, result: 48, date: 88, round: 52 };
+    // Merge over the defaults: widths saved before a column existed lack its key.
+    try { const s = localStorage.getItem("gamesColWidths"); if (s) return { ...defaults, ...JSON.parse(s) }; } catch { /* ignore */ }
+    return defaults;
   });
   useEffect(() => { try { localStorage.setItem("gamesColWidths", JSON.stringify(colW)); } catch { /* ignore */ } }, [colW]);
-  const gridCols = `${colW.white}px ${colW.black}px ${colW.result}px ${colW.year}px minmax(0,1fr)`;
+  const gridCols = `${COL_ORDER.map((k) => `${colW[k]}px`).join(" ")} minmax(0,1fr)`;
   // A divider belongs to the two columns it separates: dragging it trades width
   // between that pair and leaves every other boundary where it is — the same
   // rule the panel dividers follow. (Growing one column and letting the trailing
@@ -598,9 +612,9 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                       </div>
                       {/* Column header with drag-to-resize handles */}
                       <div className="shrink-0 grid items-center text-label-sm text-on-surface-variant border-b border-outline/40 select-none" style={{ gridTemplateColumns: gridCols }}>
-                        {(["white", "black", "result", "year"] as ColKey[]).map((k) => (
+                        {COL_ORDER.map((k) => (
                           <div key={k} className="relative px-3 py-1 truncate">
-                            {k === "white" ? "White" : k === "black" ? "Black" : k === "result" ? "Result" : "Year"}
+                            {COL_LABEL[k]}
                             <span
                               onMouseDown={(e) => startResize(k, e)}
                               className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-primary/40"
@@ -629,7 +643,8 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                               <span className="px-3 py-1.5 truncate">{game.white}{game.white_elo ? <span className={subText}> {game.white_elo}</span> : null}</span>
                               <span className="px-3 py-1.5 truncate">{game.black}{game.black_elo ? <span className={subText}> {game.black_elo}</span> : null}</span>
                               <span className="px-3 py-1.5 truncate tabular-nums">{game.result ? (game.result === "1/2-1/2" ? "½-½" : game.result) : ""}</span>
-                              <span className={`px-3 py-1.5 truncate ${subText}`}>{game.date?.slice(0, 4) ?? ""}</span>
+                              <span className={`px-3 py-1.5 truncate tabular-nums ${subText}`}>{displayDate(game.date)}</span>
+                              <span className={`px-3 py-1.5 truncate tabular-nums ${subText}`}>{displayRound(game.round)}</span>
                               <span className={`px-3 py-1.5 truncate ${subText}`}>{game.event ?? ""}</span>
                             </button>
                           );

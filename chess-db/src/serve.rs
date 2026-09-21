@@ -155,6 +155,8 @@ pub struct GameSummary {
     pub visibility: Option<String>,
     /// Soft-delete timestamp; only populated when `include_deleted=true` is requested.
     pub deleted_at: Option<String>,
+    /// The PGN Round tag as imported ("5", "3.2", "?").
+    pub round: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pgn: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -392,6 +394,18 @@ fn strip_move_numbers(input: &str) -> String {
 
 // ── Shared query builder ──────────────────────────────────────────────────────
 
+/// Game-list order: newest date first, then latest round first, so games played
+/// on the same day list in the order they were played (reversed, like the dates).
+/// Round is a free-text PGN tag ("5", "3.2", "?"), so it is compared numerically
+/// on its round and sub-round parts — as text "10" would sort before "9".
+/// Unknown date parts ("2026-??-??") sort as zero, below that year's dated
+/// games — as text "?" sorts above every digit. `g.id` breaks remaining ties so
+/// paging never skips or repeats a game.
+const GAME_LIST_ORDER: &str = "replace(g.date, '?', '0') DESC NULLS LAST, \
+     TRY_CAST(split_part(g.round, '.', 1) AS INTEGER) DESC NULLS LAST, \
+     TRY_CAST(split_part(g.round, '.', 2) AS INTEGER) DESC NULLS LAST, \
+     g.id DESC";
+
 #[allow(clippy::too_many_arguments)]
 fn build_games_sql(
     name: Option<&str>,
@@ -495,14 +509,14 @@ fn build_games_sql(
         }
         return (format!(
             "SELECT g.id, pw.name, pb.name, g.white_elo, g.black_elo,
-                    g.event, g.date, g.result, g.eco, g.move_count, g.opening_line, g.visibility, CAST(g.deleted_at AS VARCHAR){pgn_col}{move_num_col}
+                    g.event, g.date, g.result, g.eco, g.move_count, g.opening_line, g.visibility, CAST(g.deleted_at AS VARCHAR), g.round{pgn_col}{move_num_col}
              FROM games g
              JOIN players pw ON g.white_id = pw.id
              JOIN players pb ON g.black_id = pb.id
              {pos_join}
              WHERE {players_filter} {date_from_filter} {date_to_filter}
              {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}
-             ORDER BY g.date DESC NULLS LAST LIMIT ? OFFSET ?"
+             ORDER BY {GAME_LIST_ORDER} LIMIT ? OFFSET ?"
         ), params);
     } else if name.is_some() || fide_id.is_some() {
         let color_filter = match color.unwrap_or("any") {
@@ -535,7 +549,7 @@ fn build_games_sql(
         } else {
             format!(
                 "SELECT g.id, pw.name, pb.name, g.white_elo, g.black_elo,
-                        g.event, g.date, g.result, g.eco, g.move_count, g.opening_line, g.visibility, CAST(g.deleted_at AS VARCHAR){pgn_col}{move_num_col}
+                        g.event, g.date, g.result, g.eco, g.move_count, g.opening_line, g.visibility, CAST(g.deleted_at AS VARCHAR), g.round{pgn_col}{move_num_col}
                  FROM games g
                  JOIN players p  ON (g.white_id = p.id OR g.black_id = p.id)
                  JOIN players pw ON g.white_id = pw.id
@@ -543,7 +557,7 @@ fn build_games_sql(
                  {pos_join}
                  WHERE 1=1 {player_filter} {color_filter}
                  {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}
-                 ORDER BY g.date DESC NULLS LAST LIMIT ? OFFSET ?"
+                 ORDER BY {GAME_LIST_ORDER} LIMIT ? OFFSET ?"
             )
         }
     } else {
@@ -582,14 +596,14 @@ fn build_games_sql(
         } else {
             format!(
                 "SELECT g.id, pw.name, pb.name, g.white_elo, g.black_elo,
-                        g.event, g.date, g.result, g.eco, g.move_count, g.opening_line, g.visibility, CAST(g.deleted_at AS VARCHAR){pgn_col}{move_num_col}
+                        g.event, g.date, g.result, g.eco, g.move_count, g.opening_line, g.visibility, CAST(g.deleted_at AS VARCHAR), g.round{pgn_col}{move_num_col}
                  FROM games g
                  JOIN players pw ON g.white_id = pw.id
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE {where_clause}
                  {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}
-                 ORDER BY g.date DESC NULLS LAST LIMIT ? OFFSET ?"
+                 ORDER BY {GAME_LIST_ORDER} LIMIT ? OFFSET ?"
             )
         }
     };
@@ -1008,10 +1022,10 @@ async fn games_handler(
             return Ok(Json(serde_json::json!({ "count": n })));
         }
 
-        // Column layout: 0-10 fixed, visibility at 11, deleted_at at 12,
-        // then optional pgn (13), then optional move_number.
-        let pgn_col: i32      = if q.pgn              { 13 } else { -1 };
-        let move_num_col: i32 = if fen_hash.is_some() { if q.pgn { 14 } else { 13 } } else { -1 };
+        // Column layout: 0-10 fixed, visibility at 11, deleted_at at 12, round
+        // at 13, then optional pgn (14), then optional move_number.
+        let pgn_col: i32      = if q.pgn              { 14 } else { -1 };
+        let move_num_col: i32 = if fen_hash.is_some() { if q.pgn { 15 } else { 14 } } else { -1 };
 
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
         let rows = stmt.query_map(params_ref.as_slice(), |row| {
@@ -1022,6 +1036,7 @@ async fn games_handler(
                 eco: row.get(8)?, move_count: row.get(9)?, opening_line: row.get(10)?,
                 visibility: row.get(11)?,
                 deleted_at: row.get(12)?,
+                round: row.get(13)?,
                 pgn:         if pgn_col      >= 0 { row.get(pgn_col as usize)?      } else { None },
                 move_number: if move_num_col >= 0 { Some(row.get(move_num_col as usize)?) } else { None },
             })
