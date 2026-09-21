@@ -13,6 +13,8 @@ export interface GameSummary {
   visibility?: string | null;
   /** Soft-delete timestamp (ISO). Null = alive. Only populated when include_deleted=true. */
   deleted_at?: string | null;
+  /** PGN Round tag ("5", "3.2", "?"). */
+  round?: string | null;
   move_number?: number | null;
 }
 

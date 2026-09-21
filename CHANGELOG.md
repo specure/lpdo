@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Game lists show the full date and the round** — the Players and Games pages
+  showed only the year. They now show the date (as much of it as is known) and
+  a Round column, and games played on the same day are listed in round order,
+  newest first. Games whose exact date is unknown come after the dated games of
+  their year, not before them. (#292)
+- **Engine evals read the same way for both sources** — chessdb.cn scored moves
+  for the side to move, so with Black to move a good move showed as positive,
+  while Lichess showed it as negative. Both now show the eval from White's side:
+  positive means White is better, negative means Black is better. (#292)
+- **Lichess evals are colour-coded too** — only chessdb evals were. In both
+  lists green now means the move is good for the player to move and red means
+  it's bad, so with Black to move a good -0.40 is green. (#292)
+
+### Fixed
+- **The scrollbar no longer covers the close ✕ on the Analysis page** — in the
+  column of open games, the scrollbar sat on top of each game's close button.
+  The column now leaves room for it. (#292)
+
 ## [0.17.0] - 2026-09-14
 
 ### Fixed
