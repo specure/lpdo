@@ -159,7 +159,9 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
         minSize={rz.floor("rail") ?? "5"}
         maxSize="16"
       >
-      <div className="h-full flex flex-col gap-1.5 overflow-y-auto">
+      {/* Right padding keeps the cards clear of the scrollbar, which WebKitGTK
+          draws over the content instead of beside it — it hid the close ✕. */}
+      <div className="h-full flex flex-col gap-1.5 overflow-y-auto pr-2.5">
         {tabs.map((t) => {
           const on = t.key === activeKey;
           return (

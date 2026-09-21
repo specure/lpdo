@@ -123,15 +123,20 @@ function moveMark(best: number, score: number): string {
   return drop <= STRONG_MARK_CP ? "!" : drop <= STRONG_CP ? "" : "?";
 }
 
-/** Score from the side-to-move's perspective, e.g. "+0.30", "-1.15", "M3". */
-function fmtEval(m: CloudMove): string {
-  if (m.mate !== null) return m.mate > 0 ? `M${m.mate}` : `-M${-m.mate}`;
-  const p = m.scoreCp / 100;
-  return (p > 0 ? "+" : "") + p.toFixed(2);
+/** Colour for a side-to-move score: green = good for the player to move, red =
+ *  bad. Deliberately not the displayed (White-relative) sign, so with Black to
+ *  move a good -0.40 is green. */
+function evalColor(moverCp: number): string {
+  return moverCp > 0 ? "text-success" : moverCp < 0 ? "text-error" : "text-on-surface-variant";
 }
-function evalColor(m: CloudMove): string {
-  const v = m.mate !== null ? m.mate : m.scoreCp;
-  return v > 0 ? "text-success" : v < 0 ? "text-error" : "text-on-surface-variant";
+
+/** chessdb scores are side-to-move relative; show them White-relative like
+ *  Lichess (positive = White better), e.g. "+0.30", "-1.15", "M3" / "-M3". */
+function fmtEval(m: CloudMove, whiteToMove: boolean): string {
+  const s = whiteToMove ? 1 : -1;
+  if (m.mate !== null) { const mt = s * m.mate; return mt > 0 ? `M${mt}` : `-M${-mt}`; }
+  const p = (s * m.scoreCp) / 100;
+  return (p > 0 ? "+" : "") + p.toFixed(2);
 }
 
 interface Props {
@@ -386,7 +391,7 @@ export default function CloudEngine({ fen, watchLabel, onPlayLine }: Props) {
                     </div>
                     <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface-variant">{nn ? Number(nn.opp) : "—"}</span>
                     <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface">{nn ? Number(nn.oppStrong) : "—"}</span>
-                    <span className={`shrink-0 w-14 text-right tabular-nums text-body-sm ${evalColor(m)}`}>{fmtEval(m)}</span>
+                    <span className={`shrink-0 w-14 text-right tabular-nums font-mono text-body-sm ${evalColor(m.mate ?? m.scoreCp)}`}>{fmtEval(m, fen.split(" ")[1] !== "b")}</span>
                   </div>
                 );
               })}
@@ -463,7 +468,7 @@ export default function CloudEngine({ fen, watchLabel, onPlayLine }: Props) {
                       </div>
                       {lichessShowStats && <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface-variant">{st ? st.replies : "—"}</span>}
                       {lichessShowStats && <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface">{st ? st.strong : "—"}</span>}
-                      <span className="shrink-0 w-14 text-right tabular-nums font-mono text-body-sm text-on-surface">{fmtLichess(l)}</span>
+                      <span className={`shrink-0 w-14 text-right tabular-nums font-mono text-body-sm ${evalColor(lmScores[i])}`}>{fmtLichess(l)}</span>
                     </div>
                   );
                 })}
