@@ -50,6 +50,7 @@ const STARTPOS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 type RightTab = "reference" | "engine" | "related";
 const TAB_KEY = "analysisRightTab";
+const ENGINES_KEY = "analysisShowEngines";
 
 export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onOpenGame, onTabState, onGameMutated }: Props) {
   const active = tabs.find((t) => t.key === activeKey) ?? null;
@@ -85,6 +86,12 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
   });
   useEffect(() => { localStorage.setItem(TAB_KEY, tab); }, [tab]);
 
+  // Engine games (TCEC, via the Lichess broadcasts) drown out the human ones
+  // in both panels, so they are hidden unless asked for. Persisted like the tab.
+  const [showEngines, setShowEngines] = useState(() => localStorage.getItem(ENGINES_KEY) === "1");
+  useEffect(() => { localStorage.setItem(ENGINES_KEY, showEngines ? "1" : "0"); }, [showEngines]);
+  const engineParam = showEngines ? "" : "&exclude_engines=true";
+
   // rail | board | intel — three panels, so dividers need the neighbour-only rule.
   // rail | board | move text | intel — four sibling panels, so every divider
   // trades between exactly two of them. The move text used to live inside the
@@ -118,11 +125,11 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
     refAbort.current?.abort();
     refAbort.current = new AbortController();
     setRefLoading(true);
-    fetch(`/api/position/moves?fen=${encodeURIComponent(effFen)}`, { signal: refAbort.current.signal })
+    fetch(`/api/position/moves?fen=${encodeURIComponent(effFen)}${engineParam}`, { signal: refAbort.current.signal })
       .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<MoveStats[]>; })
       .then((d) => { setRefMoves(d); setRefLoading(false); })
       .catch((e) => { if (!(e instanceof DOMException && e.name === "AbortError")) { setRefMoves([]); setRefLoading(false); } });
-  }, [active?.key, effFen]);
+  }, [active?.key, effFen, engineParam]);
 
   // E — related games that reached this position (skip the start position).
   useEffect(() => {
@@ -133,15 +140,15 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
     // Strongest games first, judged by the player who is about to move — their
     // handling of the position is what you came to see.
     const sort = blackToMove ? "black_elo" : "white_elo";
-    fetch(`/api/games?fen=${encodeURIComponent(effFen)}&limit=50&sort=${sort}`, { signal: sig })
+    fetch(`/api/games?fen=${encodeURIComponent(effFen)}&limit=50&sort=${sort}${engineParam}`, { signal: sig })
       .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<GameSummary[]>; })
       .then((d) => setRelated(d))
       .catch(() => {});
-    fetch(`/api/games?fen=${encodeURIComponent(effFen)}&count=true`, { signal: sig })
+    fetch(`/api/games?fen=${encodeURIComponent(effFen)}&count=true${engineParam}`, { signal: sig })
       .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<{ count: number }>; })
       .then((d) => setRelatedTotal(d.count))
       .catch(() => {});
-  }, [active?.key, effFen, atStart, blackToMove]);
+  }, [active?.key, effFen, atStart, blackToMove, engineParam]);
 
   if (tabs.length === 0) {
     return (
@@ -235,9 +242,11 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
           <div className={panel}>
             <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b border-outline/40">
               {([
+                // Reference and Games are two views of the same games, so they
+                // sit together; the cloud engine is a different question.
                 { key: "reference", label: "Reference" },
-                { key: "engine", label: "Engine" },
                 { key: "related", label: `Games${relatedTotal != null ? ` · ${relatedTotal.toLocaleString()}` : ""}` },
+                { key: "engine", label: "Engine" },
               ] as { key: RightTab; label: string }[]).map((t) => (
                 <button
                   key={t.key}
@@ -249,6 +258,17 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                   {t.label}
                 </button>
               ))}
+              <button
+                onClick={() => setShowEngines((v) => !v)}
+                className={`ml-auto h-7 px-3 rounded-full text-label-md transition-colors duration-short3 ease-standard ${
+                  showEngines ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12"
+                }`}
+                title={showEngines
+                  ? "Engine games (TCEC and the like) count in Reference and Games. Click to leave them out."
+                  : "Engine games are left out of Reference and Games. Click to count them."}
+              >
+                Engine games
+              </button>
             </div>
 
             {tab === "reference" ? (

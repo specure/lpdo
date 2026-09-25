@@ -321,6 +321,10 @@ struct GamesQuery {
     /// Order the list by rating instead of date: "white_elo" or "black_elo"
     /// (highest first). Anything else falls back to the date order.
     sort: Option<String>,
+    /// Drop engine-vs-engine games — anything rated above the human ceiling.
+    /// The Analysis page's position games send this; a UI toggle is #296.
+    #[serde(default)]
+    exclude_engines: bool,
     // output options
     #[serde(default)]
     count: bool,
@@ -360,6 +364,9 @@ struct PositionMovesQuery {
     visibility: Option<String>,
     /// Restrict the popularity aggregation to a collection (matches the game list).
     collection_id: Option<i32>,
+    /// Leave engine-vs-engine games out of the aggregation (matches the game list).
+    #[serde(default)]
+    exclude_engines: bool,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -435,6 +442,7 @@ fn build_games_sql(
     include_deleted: bool,
     include_pgn: bool,
     count: bool,
+    exclude_engines: bool,
     sort: Option<&str>,
     limit: i64,
     offset: i64,
@@ -460,6 +468,15 @@ fn build_games_sql(
     let collection_filter = if collection_id.is_some() { "AND EXISTS (SELECT 1 FROM game_collections gc WHERE gc.game_id = g.id AND gc.collection_id = ?)" } else { "" };
     let visibility_filter = if visibility.is_some()    { "AND g.visibility = ?" } else { "" };
     let deleted_filter    = if include_deleted { "" } else { "AND g.deleted_at IS NULL" };
+    // Engines play under ratings no person reaches, so the rating alone tells
+    // them apart (see HUMAN_ELO_CEILING). An unrated game stays: it is far more
+    // likely to be an old human game than an engine one.
+    let engine_filter: String = if exclude_engines {
+        let ceiling = crate::db::queries::HUMAN_ELO_CEILING;
+        format!("AND COALESCE(g.white_elo, 0) <= {ceiling} AND COALESCE(g.black_elo, 0) <= {ceiling}")
+    } else {
+        String::new()
+    };
     let pgn_col          = if include_pgn            { ", g.pgn"                   } else { "" };
     let move_num_col     = if fen_hash.is_some()     { ", pos.move_number"         } else { "" };
 
@@ -516,7 +533,7 @@ fn build_games_sql(
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE {players_filter} {date_from_filter} {date_to_filter}
-                 {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}"
+                 {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {engine_filter} {fen_filter}"
             ), params);
         }
         return (format!(
@@ -527,7 +544,7 @@ fn build_games_sql(
              JOIN players pb ON g.black_id = pb.id
              {pos_join}
              WHERE {players_filter} {date_from_filter} {date_to_filter}
-             {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}
+             {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {engine_filter} {fen_filter}
              ORDER BY {order} LIMIT ? OFFSET ?"
         ), params);
     } else if name.is_some() || fide_id.is_some() {
@@ -556,7 +573,7 @@ fn build_games_sql(
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE 1=1 {player_filter} {color_filter}
-                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}"
+                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {engine_filter} {fen_filter}"
             )
         } else {
             format!(
@@ -568,7 +585,7 @@ fn build_games_sql(
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE 1=1 {player_filter} {color_filter}
-                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}
+                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {engine_filter} {fen_filter}
                  ORDER BY {order} LIMIT ? OFFSET ?"
             )
         }
@@ -603,7 +620,7 @@ fn build_games_sql(
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE {where_clause}
-                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}"
+                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {engine_filter} {fen_filter}"
             )
         } else {
             format!(
@@ -614,7 +631,7 @@ fn build_games_sql(
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE {where_clause}
-                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}
+                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {engine_filter} {fen_filter}
                  ORDER BY {order} LIMIT ? OFFSET ?"
             )
         }
@@ -1025,7 +1042,7 @@ async fn games_handler(
             fen_hash,
             collection_id, q.visibility.as_deref(),
             q.include_deleted,
-            q.pgn, q.count, q.sort.as_deref(), q.limit, q.offset,
+            q.pgn, q.count, q.exclude_engines, q.sort.as_deref(), q.limit, q.offset,
         );
         let params_ref: Vec<&dyn duckdb::ToSql> = params.iter().map(|p| p.as_ref()).collect();
 
@@ -1197,6 +1214,7 @@ async fn position_moves_handler(
             q.to.as_deref(),
             q.visibility.as_deref(),
             q.collection_id,
+            q.exclude_engines,
         ).map_err(db_err)?;
         Ok(Json(stats.into_iter().map(MoveStats::from).collect()))
     }).await
@@ -2410,7 +2428,7 @@ mod games_sql_tests {
             None, None, None, None, // white/black + fide
             None, None, None, None, None, // event, eco, first_moves, from, to
             None, None, None, // fen_hash, collection_id, visibility
-            false, false, false, None, // include_deleted, include_pgn, count, sort
+            false, false, false, false, None, // include_deleted, include_pgn, count, exclude_engines, sort
             100, 0,
         ).0
     }
@@ -2423,7 +2441,7 @@ mod games_sql_tests {
             None, None, None, None,
             None, None, None, None, None,
             Some(42), None, None,
-            false, false, false, sort,
+            false, false, false, false, sort,
             100, 0,
         ).0
     }
