@@ -301,13 +301,15 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                           }`}
                           title="Preview this game"
                         >
-                          <span className="min-w-0 flex-1 truncate">{g.white} – {g.black}</span>
-                          {/* Ratings, White then Black. The side to move's one is
-                              what the list is sorted by, so the other is dimmed. */}
-                          <span className="shrink-0 tabular-nums text-label-sm">
-                            <span className={blackToMove ? "opacity-55" : "font-semibold"}>{g.white_elo ?? "—"}</span>
-                            <span className="opacity-55">{" · "}</span>
-                            <span className={blackToMove ? "font-semibold" : "opacity-55"}>{g.black_elo ?? "—"}</span>
+                          {/* Each rating sits in brackets after its player. The
+                              side to move's one is what the list is sorted by,
+                              so it carries the weight and the other is dimmed. */}
+                          <span className="min-w-0 flex-1 truncate">
+                            {g.white}
+                            {g.white_elo != null && <span className={`tabular-nums ${blackToMove ? "opacity-55" : "font-semibold"}`}> ({g.white_elo})</span>}
+                            {" – "}
+                            {g.black}
+                            {g.black_elo != null && <span className={`tabular-nums ${blackToMove ? "font-semibold" : "opacity-55"}`}> ({g.black_elo})</span>}
                           </span>
                           <span className="shrink-0 tabular-nums">{g.result ? (g.result === "1/2-1/2" ? "½-½" : g.result) : ""}</span>
                           <span className={`shrink-0 ${on ? "text-on-secondary-container/80" : "text-on-surface-variant"}`}>{g.date?.slice(0, 4) ?? ""}</span>
