@@ -561,6 +561,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                         <div className="flex-1 overflow-y-auto p-2">
                           <div className="flex items-center text-label-sm text-on-surface-variant px-2 mb-1 select-none">
                             <span className="w-24">Move</span>
+                            <span className="flex-1 min-w-0 pl-2" title="The highest-rated players (2500+) who played this move.">Played by</span>
                             <span className="w-20 text-right">Games</span>
                             <span className="w-10 text-right">W%</span>
                             <span className="w-10 text-right">D%</span>
@@ -574,6 +575,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                               className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
                             >
                               <span className="w-24 font-mono truncate text-left">{movePrefix}{stat.mv}</span>
+                              <span className="flex-1 min-w-0 truncate text-left pl-2 text-on-surface-variant" title={stat.elite ?? undefined}>{stat.elite ?? ""}</span>
                               <span className="w-20 text-right">{stat.games.toLocaleString()}</span>
                               <span className="w-10 text-right text-success">{Math.round(stat.w_pct)}</span>
                               <span className="w-10 text-right text-on-surface-variant">{Math.round(stat.d_pct)}</span>
