@@ -61,7 +61,6 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
   const atStart = effFen.startsWith("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w");
   const fenParts = effFen.split(" ");
   const movePrefix = fenParts[1] === "b" ? `${fenParts[5] ?? "1"}...` : `${fenParts[5] ?? "1"}.`;
-  const blackToMove = fenParts[1] === "b";
 
   // The board reports (fen, gameId) rather than just a fen: it is a single
   // instance reused across tabs, so we map the report back onto the tab it
@@ -137,10 +136,9 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
     relAbort.current?.abort();
     relAbort.current = new AbortController();
     const sig = relAbort.current.signal;
-    // Strongest games first, judged by the player who is about to move — their
-    // handling of the position is what you came to see.
-    const sort = blackToMove ? "black_elo" : "white_elo";
-    fetch(`/api/games?fen=${encodeURIComponent(effFen)}&limit=50&sort=${sort}${engineParam}`, { signal: sig })
+    // Strongest games first, both players counted: one colour's rating alone
+    // put a 2726 against a 2404 above 2718 against 2766.
+    fetch(`/api/games?fen=${encodeURIComponent(effFen)}&limit=50&sort=elo_sum${engineParam}`, { signal: sig })
       .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<GameSummary[]>; })
       .then((d) => setRelated(d))
       .catch(() => {});
@@ -148,7 +146,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
       .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<{ count: number }>; })
       .then((d) => setRelatedTotal(d.count))
       .catch(() => {});
-  }, [active?.key, effFen, atStart, blackToMove, engineParam]);
+  }, [active?.key, effFen, atStart, engineParam]);
 
   if (tabs.length === 0) {
     return (
@@ -321,15 +319,14 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                           }`}
                           title="Preview this game"
                         >
-                          {/* Each rating sits in brackets after its player. The
-                              side to move's one is what the list is sorted by,
-                              so it carries the weight and the other is dimmed. */}
+                          {/* Each rating in brackets after its player. Both
+                              count towards the order, so neither is singled out. */}
                           <span className="min-w-0 flex-1 truncate">
                             {g.white}
-                            {g.white_elo != null && <span className={`tabular-nums ${blackToMove ? "opacity-55" : "font-semibold"}`}> ({g.white_elo})</span>}
+                            {g.white_elo != null && <span className="tabular-nums opacity-70"> ({g.white_elo})</span>}
                             {" – "}
                             {g.black}
-                            {g.black_elo != null && <span className={`tabular-nums ${blackToMove ? "font-semibold" : "opacity-55"}`}> ({g.black_elo})</span>}
+                            {g.black_elo != null && <span className="tabular-nums opacity-70"> ({g.black_elo})</span>}
                           </span>
                           <span className="shrink-0 tabular-nums">{g.result ? (g.result === "1/2-1/2" ? "½-½" : g.result) : ""}</span>
                           <span className={`shrink-0 ${on ? "text-on-secondary-container/80" : "text-on-surface-variant"}`}>{g.date?.slice(0, 4) ?? ""}</span>

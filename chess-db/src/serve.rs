@@ -318,8 +318,9 @@ struct GamesQuery {
     /// Include soft-deleted games in the result (default: false).
     #[serde(default)]
     include_deleted: bool,
-    /// Order the list by rating instead of date: "white_elo" or "black_elo"
-    /// (highest first). Anything else falls back to the date order.
+    /// Order the list by rating instead of date: "elo_sum" (both players
+    /// together), "white_elo" or "black_elo", highest first. Anything else
+    /// falls back to the date order.
     sort: Option<String>,
     /// Drop engine-vs-engine games — anything rated above the human ceiling.
     /// The Analysis page's position games send this; a UI toggle is #296.
@@ -452,6 +453,10 @@ fn build_games_sql(
     // Rating order puts the strongest games first; the date order breaks ties
     // and still applies to the games with no rating, which sort last.
     let order = match sort {
+        // Both players' strength together: a 2726 beating a 2404 is a weaker
+        // game than 2718 against 2766, which sorting on one colour got wrong.
+        // A game missing either rating has no sum and sorts last.
+        Some("elo_sum")   => format!("(g.white_elo + g.black_elo) DESC NULLS LAST, {GAME_LIST_ORDER}"),
         Some("white_elo") => format!("g.white_elo DESC NULLS LAST, {GAME_LIST_ORDER}"),
         Some("black_elo") => format!("g.black_elo DESC NULLS LAST, {GAME_LIST_ORDER}"),
         _ => GAME_LIST_ORDER.to_string(),
@@ -2448,6 +2453,8 @@ mod games_sql_tests {
 
     #[test]
     fn rating_sort_leads_the_order_and_keeps_the_date_tiebreak() {
+        let both = sorted(Some("elo_sum"));
+        assert!(both.contains("ORDER BY (g.white_elo + g.black_elo) DESC NULLS LAST, replace(g.date"), "{both}");
         let w = sorted(Some("white_elo"));
         assert!(w.contains("ORDER BY g.white_elo DESC NULLS LAST, replace(g.date"), "{w}");
         let b = sorted(Some("black_elo"));
