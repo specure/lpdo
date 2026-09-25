@@ -566,7 +566,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                             <span className="w-10 text-right">D%</span>
                             <span className="w-10 text-right">L%</span>
                             <span className="w-16 text-right">Last</span>
-                            <span className="flex-1 min-w-0 pl-2" title="The highest-rated players (2500-2900) who played this move. The cap keeps engines out.">Played by</span>
+                            <span className="flex-1 min-w-0 pl-2" title="The highest-rated players (2500-3400) who played this move. The cap keeps engines out.">Played by</span>
                           </div>
                           {moveStats.map((stat) => (
                             <button

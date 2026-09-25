@@ -265,7 +265,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                     <span className="w-10 text-right">D%</span>
                     <span className="w-10 text-right">L%</span>
                     <span className="w-16 text-right">Last</span>
-                    <span className="flex-1 min-w-0 pl-2" title="The highest-rated players (2500-2900) who played this move. The cap keeps engines out.">Played by</span>
+                    <span className="flex-1 min-w-0 pl-2" title="The highest-rated players (2500-3400) who played this move. The cap keeps engines out.">Played by</span>
                   </div>
                   {refMoves.map((s) => (
                     <div key={s.mv} className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface">

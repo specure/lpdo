@@ -20,7 +20,7 @@ pub struct MoveStats {
     /// None when fewer than 5 games have both player and opponent Elo.
     pub perf: Option<f64>,
     pub perf_se: Option<f64>,
-    /// Up to 5 highest-rated players (2500-2900) who played this move, surnames
+    /// Up to 5 highest-rated players (2500-3400) who played this move, surnames
     /// only. The upper bound keeps engines out — see the query below.
     pub elite: Option<String>,
     /// Most recent date this move was played (YYYY-MM-DD or partial).
@@ -178,10 +178,12 @@ pub fn position_moves(
                    split_part(player_name, ',', 1) AS surname,
                    MAX(player_elo) AS max_elo
             FROM pos
-            -- 2900 keeps engines out: TCEC games come in through the Lichess
-            -- broadcast archives rated 3600-3800, and no human has been above
-            -- 2882. They still count in the games/percentages above.
-            WHERE player_elo BETWEEN 2500 AND 2900
+            -- 3400 keeps engines out: TCEC games come in through the Lichess
+            -- broadcast archives rated 3600-3800. The bound is well clear of
+            -- human ratings, online ones included, so nobody real is lost; a
+            -- weaker engine rated under it still slips through. Engine games
+            -- count in the games/percentages above either way.
+            WHERE player_elo BETWEEN 2500 AND 3400
             GROUP BY next_move, split_part(player_name, ',', 1)
         ),
         elite_agg AS (
