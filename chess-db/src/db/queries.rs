@@ -3,6 +3,13 @@ use duckdb::Connection;
 use serde::Deserialize;
 use std::path::Path;
 
+/// Ratings above this are an engine, not a person. TCEC games arrive through
+/// the Lichess broadcast archives rated 3600-3800; the highest human rating
+/// ever reached is 2882, and even strong online ratings stay well under this.
+/// A weaker engine rated below it still passes as human — #296 will mark
+/// engines properly, on the player rather than on the rating.
+pub const HUMAN_ELO_CEILING: i16 = 3400;
+
 /// Aggregated move statistics for a single move from a given position.
 /// `Deserialize` so the CLI proxy can parse the daemon's `/position/moves`
 /// JSON (field names match `serve::MoveStats`) and reuse the local renderer (#213).
@@ -20,7 +27,8 @@ pub struct MoveStats {
     /// None when fewer than 5 games have both player and opponent Elo.
     pub perf: Option<f64>,
     pub perf_se: Option<f64>,
-    /// Up to 5 highest-rated players (≥2500) who played this move, surnames only.
+    /// Up to 5 highest-rated players (2500-3400) who played this move, surnames
+    /// only. The upper bound keeps engines out — see the query below.
     pub elite: Option<String>,
     /// Most recent date this move was played (YYYY-MM-DD or partial).
     pub last_played: Option<String>,
@@ -49,6 +57,8 @@ pub fn position_moves(
     to: Option<&str>,
     visibility: Option<&str>,
     collection_id: Option<i32>,
+    // Leave out engine-vs-engine games (see HUMAN_ELO_CEILING).
+    exclude_engines: bool,
 ) -> Result<Vec<MoveStats>> {
     let mut params: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
     params.push(Box::new(zobrist_hash));
@@ -111,6 +121,14 @@ pub fn position_moves(
     if let Some(v) = visibility { params.push(Box::new(v.to_string())); }
     if let Some(cid) = collection_id { params.push(Box::new(cid)); }
 
+    // Unrated games stay: far more likely an old human game than an engine one.
+    let engine_filter = if exclude_engines {
+        format!("AND COALESCE(g.white_elo, 0) <= {HUMAN_ELO_CEILING} \
+                 AND COALESCE(g.black_elo, 0) <= {HUMAN_ELO_CEILING}")
+    } else {
+        String::new()
+    };
+
     let sql = format!("
         WITH pos AS (
             SELECT p.next_move,
@@ -140,6 +158,7 @@ pub fn position_moves(
               {date_to_filter}
               {visibility_filter}
               {collection_filter}
+              {engine_filter}
         ),
         agg AS (
             SELECT
@@ -177,7 +196,9 @@ pub fn position_moves(
                    split_part(player_name, ',', 1) AS surname,
                    MAX(player_elo) AS max_elo
             FROM pos
-            WHERE player_elo >= 2500
+            -- The upper bound keeps engines out (see HUMAN_ELO_CEILING); they
+            -- still count in the games/percentages above.
+            WHERE player_elo BETWEEN 2500 AND {HUMAN_ELO_CEILING}
             GROUP BY next_move, split_part(player_name, ',', 1)
         ),
         elite_agg AS (

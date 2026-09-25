@@ -566,6 +566,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                             <span className="w-10 text-right">D%</span>
                             <span className="w-10 text-right">L%</span>
                             <span className="w-16 text-right">Last</span>
+                            <span className="flex-1 min-w-0 pl-2" title="The highest-rated players (2500-3400) who played this move. The cap keeps engines out.">Played by</span>
                           </div>
                           {moveStats.map((stat) => (
                             <button
@@ -579,6 +580,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                               <span className="w-10 text-right text-on-surface-variant">{Math.round(stat.d_pct)}</span>
                               <span className="w-10 text-right text-error">{Math.round(stat.l_pct)}</span>
                               <span className="w-16 text-right text-on-surface-variant">{stat.last_played?.slice(0, 4) ?? "—"}</span>
+                              <span className="flex-1 min-w-0 truncate text-left pl-2 text-on-surface-variant" title={stat.elite ?? undefined}>{stat.elite ?? ""}</span>
                             </button>
                           ))}
                         </div>

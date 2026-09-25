@@ -50,6 +50,7 @@ const STARTPOS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 type RightTab = "reference" | "engine" | "related";
 const TAB_KEY = "analysisRightTab";
+const ENGINES_KEY = "analysisShowEngines";
 
 export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onOpenGame, onTabState, onGameMutated }: Props) {
   const active = tabs.find((t) => t.key === activeKey) ?? null;
@@ -84,6 +85,12 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
   });
   useEffect(() => { localStorage.setItem(TAB_KEY, tab); }, [tab]);
 
+  // Engine games (TCEC, via the Lichess broadcasts) drown out the human ones
+  // in both panels, so they are hidden unless asked for. Persisted like the tab.
+  const [showEngines, setShowEngines] = useState(() => localStorage.getItem(ENGINES_KEY) === "1");
+  useEffect(() => { localStorage.setItem(ENGINES_KEY, showEngines ? "1" : "0"); }, [showEngines]);
+  const engineParam = showEngines ? "" : "&exclude_engines=true";
+
   // rail | board | intel — three panels, so dividers need the neighbour-only rule.
   // rail | board | move text | intel — four sibling panels, so every divider
   // trades between exactly two of them. The move text used to live inside the
@@ -117,11 +124,11 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
     refAbort.current?.abort();
     refAbort.current = new AbortController();
     setRefLoading(true);
-    fetch(`/api/position/moves?fen=${encodeURIComponent(effFen)}`, { signal: refAbort.current.signal })
+    fetch(`/api/position/moves?fen=${encodeURIComponent(effFen)}${engineParam}`, { signal: refAbort.current.signal })
       .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<MoveStats[]>; })
       .then((d) => { setRefMoves(d); setRefLoading(false); })
       .catch((e) => { if (!(e instanceof DOMException && e.name === "AbortError")) { setRefMoves([]); setRefLoading(false); } });
-  }, [active?.key, effFen]);
+  }, [active?.key, effFen, engineParam]);
 
   // E — related games that reached this position (skip the start position).
   useEffect(() => {
@@ -129,15 +136,17 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
     relAbort.current?.abort();
     relAbort.current = new AbortController();
     const sig = relAbort.current.signal;
-    fetch(`/api/games?fen=${encodeURIComponent(effFen)}&limit=50`, { signal: sig })
+    // Strongest games first, both players counted: one colour's rating alone
+    // put a 2726 against a 2404 above 2718 against 2766.
+    fetch(`/api/games?fen=${encodeURIComponent(effFen)}&limit=50&sort=elo_sum${engineParam}`, { signal: sig })
       .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<GameSummary[]>; })
       .then((d) => setRelated(d))
       .catch(() => {});
-    fetch(`/api/games?fen=${encodeURIComponent(effFen)}&count=true`, { signal: sig })
+    fetch(`/api/games?fen=${encodeURIComponent(effFen)}&count=true${engineParam}`, { signal: sig })
       .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<{ count: number }>; })
       .then((d) => setRelatedTotal(d.count))
       .catch(() => {});
-  }, [active?.key, effFen, atStart]);
+  }, [active?.key, effFen, atStart, engineParam]);
 
   if (tabs.length === 0) {
     return (
@@ -231,9 +240,11 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
           <div className={panel}>
             <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b border-outline/40">
               {([
+                // Reference and Games are two views of the same games, so they
+                // sit together; the cloud engine is a different question.
                 { key: "reference", label: "Reference" },
-                { key: "engine", label: "Engine" },
                 { key: "related", label: `Games${relatedTotal != null ? ` · ${relatedTotal.toLocaleString()}` : ""}` },
+                { key: "engine", label: "Engine" },
               ] as { key: RightTab; label: string }[]).map((t) => (
                 <button
                   key={t.key}
@@ -245,6 +256,17 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                   {t.label}
                 </button>
               ))}
+              <button
+                onClick={() => setShowEngines((v) => !v)}
+                className={`ml-auto h-7 px-3 rounded-full text-label-md transition-colors duration-short3 ease-standard ${
+                  showEngines ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12"
+                }`}
+                title={showEngines
+                  ? "Engine games (TCEC and the like) count in Reference and Games. Click to leave them out."
+                  : "Engine games are left out of Reference and Games. Click to count them."}
+              >
+                Engine games
+              </button>
             </div>
 
             {tab === "reference" ? (
@@ -261,6 +283,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                     <span className="w-10 text-right">D%</span>
                     <span className="w-10 text-right">L%</span>
                     <span className="w-16 text-right">Last</span>
+                    <span className="flex-1 min-w-0 pl-2" title="The highest-rated players (2500-3400) who played this move. The cap keeps engines out.">Played by</span>
                   </div>
                   {refMoves.map((s) => (
                     <div key={s.mv} className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface">
@@ -270,6 +293,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                       <span className="w-10 text-right text-on-surface-variant">{Math.round(s.d_pct)}</span>
                       <span className="w-10 text-right text-error">{Math.round(s.l_pct)}</span>
                       <span className="w-16 text-right text-on-surface-variant">{s.last_played?.slice(0, 4) ?? "—"}</span>
+                      <span className="flex-1 min-w-0 truncate text-left pl-2 text-on-surface-variant" title={s.elite ?? undefined}>{s.elite ?? ""}</span>
                     </div>
                   ))}
                 </div>
@@ -295,7 +319,15 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                           }`}
                           title="Preview this game"
                         >
-                          <span className="min-w-0 flex-1 truncate">{g.white} – {g.black}</span>
+                          {/* Each rating in brackets after its player. Both
+                              count towards the order, so neither is singled out. */}
+                          <span className="min-w-0 flex-1 truncate">
+                            {g.white}
+                            {g.white_elo != null && <span className="tabular-nums opacity-70"> ({g.white_elo})</span>}
+                            {" – "}
+                            {g.black}
+                            {g.black_elo != null && <span className="tabular-nums opacity-70"> ({g.black_elo})</span>}
+                          </span>
                           <span className="shrink-0 tabular-nums">{g.result ? (g.result === "1/2-1/2" ? "½-½" : g.result) : ""}</span>
                           <span className={`shrink-0 ${on ? "text-on-secondary-container/80" : "text-on-surface-variant"}`}>{g.date?.slice(0, 4) ?? ""}</span>
                         </button>
@@ -309,8 +341,26 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                 {preview && (
                   <div className="shrink-0 h-[58%] min-h-0 flex flex-col border-t border-outline/40">
                     <div className="shrink-0 px-2 py-1 flex items-center gap-2 border-b border-outline/40">
-                      <span className="min-w-0 flex-1 truncate text-label-md text-on-surface-variant">
-                        {preview.white} – {preview.black}
+                      {/* Who, how strong, how it ended and where — the header
+                          tags of the game, so the board below has a context
+                          without opening the game. */}
+                      <span className="min-w-0 flex-1 flex flex-col">
+                        <span className="truncate text-label-md text-on-surface">
+                          {preview.white}
+                          {preview.white_elo != null && <span className="tabular-nums opacity-70"> ({preview.white_elo})</span>}
+                          {" – "}
+                          {preview.black}
+                          {preview.black_elo != null && <span className="tabular-nums opacity-70"> ({preview.black_elo})</span>}
+                        </span>
+                        <span className="truncate text-label-sm text-on-surface-variant" title={preview.event ?? undefined}>
+                          {[
+                            preview.result === "1/2-1/2" ? "½-½" : preview.result,
+                            preview.date ?? null,
+                            preview.event,
+                            preview.round && !/^[?\-\s]*$/.test(preview.round) ? `round ${preview.round}` : null,
+                            preview.eco,
+                          ].filter(Boolean).join(" · ")}
+                        </span>
                       </span>
                       <button
                         onClick={() => onOpenGame(preview)}

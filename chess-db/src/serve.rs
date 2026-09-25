@@ -318,6 +318,14 @@ struct GamesQuery {
     /// Include soft-deleted games in the result (default: false).
     #[serde(default)]
     include_deleted: bool,
+    /// Order the list by rating instead of date: "elo_sum" (both players
+    /// together), "white_elo" or "black_elo", highest first. Anything else
+    /// falls back to the date order.
+    sort: Option<String>,
+    /// Drop engine-vs-engine games — anything rated above the human ceiling.
+    /// The Analysis page's position games send this; a UI toggle is #296.
+    #[serde(default)]
+    exclude_engines: bool,
     // output options
     #[serde(default)]
     count: bool,
@@ -357,6 +365,9 @@ struct PositionMovesQuery {
     visibility: Option<String>,
     /// Restrict the popularity aggregation to a collection (matches the game list).
     collection_id: Option<i32>,
+    /// Leave engine-vs-engine games out of the aggregation (matches the game list).
+    #[serde(default)]
+    exclude_engines: bool,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -432,10 +443,24 @@ fn build_games_sql(
     include_deleted: bool,
     include_pgn: bool,
     count: bool,
+    exclude_engines: bool,
+    sort: Option<&str>,
     limit: i64,
     offset: i64,
 ) -> (String, Vec<Box<dyn duckdb::ToSql>>) {
     let mut params: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
+
+    // Rating order puts the strongest games first; the date order breaks ties
+    // and still applies to the games with no rating, which sort last.
+    let order = match sort {
+        // Both players' strength together: a 2726 beating a 2404 is a weaker
+        // game than 2718 against 2766, which sorting on one colour got wrong.
+        // A game missing either rating has no sum and sorts last.
+        Some("elo_sum")   => format!("(g.white_elo + g.black_elo) DESC NULLS LAST, {GAME_LIST_ORDER}"),
+        Some("white_elo") => format!("g.white_elo DESC NULLS LAST, {GAME_LIST_ORDER}"),
+        Some("black_elo") => format!("g.black_elo DESC NULLS LAST, {GAME_LIST_ORDER}"),
+        _ => GAME_LIST_ORDER.to_string(),
+    };
 
     let event_filter     = if event.is_some()       { "AND g.event LIKE ?"        } else { "" };
     let eco_filter       = if eco.is_some()          { "AND g.eco LIKE ?"          } else { "" };
@@ -448,6 +473,15 @@ fn build_games_sql(
     let collection_filter = if collection_id.is_some() { "AND EXISTS (SELECT 1 FROM game_collections gc WHERE gc.game_id = g.id AND gc.collection_id = ?)" } else { "" };
     let visibility_filter = if visibility.is_some()    { "AND g.visibility = ?" } else { "" };
     let deleted_filter    = if include_deleted { "" } else { "AND g.deleted_at IS NULL" };
+    // Engines play under ratings no person reaches, so the rating alone tells
+    // them apart (see HUMAN_ELO_CEILING). An unrated game stays: it is far more
+    // likely to be an old human game than an engine one.
+    let engine_filter: String = if exclude_engines {
+        let ceiling = crate::db::queries::HUMAN_ELO_CEILING;
+        format!("AND COALESCE(g.white_elo, 0) <= {ceiling} AND COALESCE(g.black_elo, 0) <= {ceiling}")
+    } else {
+        String::new()
+    };
     let pgn_col          = if include_pgn            { ", g.pgn"                   } else { "" };
     let move_num_col     = if fen_hash.is_some()     { ", pos.move_number"         } else { "" };
 
@@ -504,7 +538,7 @@ fn build_games_sql(
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE {players_filter} {date_from_filter} {date_to_filter}
-                 {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}"
+                 {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {engine_filter} {fen_filter}"
             ), params);
         }
         return (format!(
@@ -515,8 +549,8 @@ fn build_games_sql(
              JOIN players pb ON g.black_id = pb.id
              {pos_join}
              WHERE {players_filter} {date_from_filter} {date_to_filter}
-             {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}
-             ORDER BY {GAME_LIST_ORDER} LIMIT ? OFFSET ?"
+             {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {engine_filter} {fen_filter}
+             ORDER BY {order} LIMIT ? OFFSET ?"
         ), params);
     } else if name.is_some() || fide_id.is_some() {
         let color_filter = match color.unwrap_or("any") {
@@ -544,7 +578,7 @@ fn build_games_sql(
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE 1=1 {player_filter} {color_filter}
-                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}"
+                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {engine_filter} {fen_filter}"
             )
         } else {
             format!(
@@ -556,8 +590,8 @@ fn build_games_sql(
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE 1=1 {player_filter} {color_filter}
-                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}
-                 ORDER BY {GAME_LIST_ORDER} LIMIT ? OFFSET ?"
+                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {engine_filter} {fen_filter}
+                 ORDER BY {order} LIMIT ? OFFSET ?"
             )
         }
     } else {
@@ -591,7 +625,7 @@ fn build_games_sql(
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE {where_clause}
-                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}"
+                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {engine_filter} {fen_filter}"
             )
         } else {
             format!(
@@ -602,8 +636,8 @@ fn build_games_sql(
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE {where_clause}
-                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}
-                 ORDER BY {GAME_LIST_ORDER} LIMIT ? OFFSET ?"
+                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {engine_filter} {fen_filter}
+                 ORDER BY {order} LIMIT ? OFFSET ?"
             )
         }
     };
@@ -1013,7 +1047,7 @@ async fn games_handler(
             fen_hash,
             collection_id, q.visibility.as_deref(),
             q.include_deleted,
-            q.pgn, q.count, q.limit, q.offset,
+            q.pgn, q.count, q.exclude_engines, q.sort.as_deref(), q.limit, q.offset,
         );
         let params_ref: Vec<&dyn duckdb::ToSql> = params.iter().map(|p| p.as_ref()).collect();
 
@@ -1185,6 +1219,7 @@ async fn position_moves_handler(
             q.to.as_deref(),
             q.visibility.as_deref(),
             q.collection_id,
+            q.exclude_engines,
         ).map_err(db_err)?;
         Ok(Json(stats.into_iter().map(MoveStats::from).collect()))
     }).await
@@ -2398,9 +2433,38 @@ mod games_sql_tests {
             None, None, None, None, // white/black + fide
             None, None, None, None, None, // event, eco, first_moves, from, to
             None, None, None, // fen_hash, collection_id, visibility
-            false, false, false, // include_deleted, include_pgn, count
+            false, false, false, false, None, // include_deleted, include_pgn, count, exclude_engines, sort
             100, 0,
         ).0
+    }
+
+    // The Analysis page's list of games reaching a position sorts by the rating
+    // of the side to move, so the strongest games come first.
+    fn sorted(sort: Option<&str>) -> String {
+        build_games_sql(
+            None, None, Some(1), Some("any"), None, None,
+            None, None, None, None,
+            None, None, None, None, None,
+            Some(42), None, None,
+            false, false, false, false, sort,
+            100, 0,
+        ).0
+    }
+
+    #[test]
+    fn rating_sort_leads_the_order_and_keeps_the_date_tiebreak() {
+        let both = sorted(Some("elo_sum"));
+        assert!(both.contains("ORDER BY (g.white_elo + g.black_elo) DESC NULLS LAST, replace(g.date"), "{both}");
+        let w = sorted(Some("white_elo"));
+        assert!(w.contains("ORDER BY g.white_elo DESC NULLS LAST, replace(g.date"), "{w}");
+        let b = sorted(Some("black_elo"));
+        assert!(b.contains("ORDER BY g.black_elo DESC NULLS LAST, replace(g.date"), "{b}");
+    }
+
+    #[test]
+    fn unknown_or_missing_sort_keeps_the_date_order() {
+        assert!(sorted(None).contains("ORDER BY replace(g.date"));
+        assert!(sorted(Some("nonsense")).contains("ORDER BY replace(g.date"));
     }
 
     #[test]
