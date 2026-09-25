@@ -109,6 +109,14 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
   // Move on, or switch tabs, and the preview no longer belongs to what's listed.
   useEffect(() => { setPreview(null); }, [effFen, activeKey]);
 
+  // Moves the panels ask the board to play — a Reference row or an Engine
+  // line. They land on the board as a scratch line, which the game never sees
+  // unless the user keeps it. `seq` lets the same move be sent twice.
+  const [playRequest, setPlayRequest] = useState<{ sans: string[]; seq: number } | null>(null);
+  const playSans = useCallback((sans: string[]) => {
+    setPlayRequest((prev) => ({ sans, seq: (prev?.seq ?? 0) + 1 }));
+  }, []);
+
   const [refMoves, setRefMoves] = useState<MoveStats[]>([]);
   const [refLoading, setRefLoading] = useState(false);
   const refAbort = useRef<AbortController | null>(null);
@@ -211,6 +219,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                 onFlippedChange={handleFlippedChange}
                 onGameMutated={onGameMutated}
                 moveListHost={moveHost}
+                playRequest={playRequest}
               />
             )}
           </div>
@@ -286,7 +295,11 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                     <span className="flex-1 min-w-0 pl-2" title="The highest-rated players (2500-3400) who played this move. The cap keeps engines out.">Played by</span>
                   </div>
                   {refMoves.map((s) => (
-                    <div key={s.mv} className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface">
+                    <button
+                      key={s.mv}
+                      onClick={() => playSans([s.mv])}
+                      title="Play this move on the board (not saved in the game)"
+                      className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface text-left hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard">
                       <span className="w-24 font-mono truncate text-left">{movePrefix}{s.mv}</span>
                       <span className="w-20 text-right">{s.games.toLocaleString()}</span>
                       <span className="w-10 text-right text-success">{Math.round(s.w_pct)}</span>
@@ -294,12 +307,12 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                       <span className="w-10 text-right text-error">{Math.round(s.l_pct)}</span>
                       <span className="w-16 text-right text-on-surface-variant">{s.last_played?.slice(0, 4) ?? "—"}</span>
                       <span className="flex-1 min-w-0 truncate text-left pl-2 text-on-surface-variant" title={s.elite ?? undefined}>{s.elite ?? ""}</span>
-                    </div>
+                    </button>
                   ))}
                 </div>
               )
             ) : tab === "engine" ? (
-              <CloudEngine fen={effFen} watchLabel={active ? `${active.game.white} – ${active.game.black}` : "Position"} />
+              <CloudEngine fen={effFen} watchLabel={active ? `${active.game.white} – ${active.game.black}` : "Position"} onPlayLine={playSans} />
             ) : (
               <div className="flex-1 min-h-0 flex flex-col">
                 <div className="flex-1 min-h-0 overflow-y-auto">
