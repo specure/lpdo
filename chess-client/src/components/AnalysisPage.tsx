@@ -60,6 +60,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
   const atStart = effFen.startsWith("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w");
   const fenParts = effFen.split(" ");
   const movePrefix = fenParts[1] === "b" ? `${fenParts[5] ?? "1"}...` : `${fenParts[5] ?? "1"}.`;
+  const blackToMove = fenParts[1] === "b";
 
   // The board reports (fen, gameId) rather than just a fen: it is a single
   // instance reused across tabs, so we map the report back onto the tab it
@@ -129,7 +130,10 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
     relAbort.current?.abort();
     relAbort.current = new AbortController();
     const sig = relAbort.current.signal;
-    fetch(`/api/games?fen=${encodeURIComponent(effFen)}&limit=50`, { signal: sig })
+    // Strongest games first, judged by the player who is about to move — their
+    // handling of the position is what you came to see.
+    const sort = blackToMove ? "black_elo" : "white_elo";
+    fetch(`/api/games?fen=${encodeURIComponent(effFen)}&limit=50&sort=${sort}`, { signal: sig })
       .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<GameSummary[]>; })
       .then((d) => setRelated(d))
       .catch(() => {});
@@ -137,7 +141,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
       .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<{ count: number }>; })
       .then((d) => setRelatedTotal(d.count))
       .catch(() => {});
-  }, [active?.key, effFen, atStart]);
+  }, [active?.key, effFen, atStart, blackToMove]);
 
   if (tabs.length === 0) {
     return (
@@ -296,6 +300,13 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                           title="Preview this game"
                         >
                           <span className="min-w-0 flex-1 truncate">{g.white} – {g.black}</span>
+                          {/* Ratings, White then Black. The side to move's one is
+                              what the list is sorted by, so the other is dimmed. */}
+                          <span className="shrink-0 tabular-nums text-label-sm">
+                            <span className={blackToMove ? "opacity-55" : "font-semibold"}>{g.white_elo ?? "—"}</span>
+                            <span className="opacity-55">{" · "}</span>
+                            <span className={blackToMove ? "font-semibold" : "opacity-55"}>{g.black_elo ?? "—"}</span>
+                          </span>
                           <span className="shrink-0 tabular-nums">{g.result ? (g.result === "1/2-1/2" ? "½-½" : g.result) : ""}</span>
                           <span className={`shrink-0 ${on ? "text-on-secondary-container/80" : "text-on-surface-variant"}`}>{g.date?.slice(0, 4) ?? ""}</span>
                         </button>

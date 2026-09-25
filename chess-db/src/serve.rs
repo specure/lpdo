@@ -318,6 +318,9 @@ struct GamesQuery {
     /// Include soft-deleted games in the result (default: false).
     #[serde(default)]
     include_deleted: bool,
+    /// Order the list by rating instead of date: "white_elo" or "black_elo"
+    /// (highest first). Anything else falls back to the date order.
+    sort: Option<String>,
     // output options
     #[serde(default)]
     count: bool,
@@ -432,10 +435,19 @@ fn build_games_sql(
     include_deleted: bool,
     include_pgn: bool,
     count: bool,
+    sort: Option<&str>,
     limit: i64,
     offset: i64,
 ) -> (String, Vec<Box<dyn duckdb::ToSql>>) {
     let mut params: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
+
+    // Rating order puts the strongest games first; the date order breaks ties
+    // and still applies to the games with no rating, which sort last.
+    let order = match sort {
+        Some("white_elo") => format!("g.white_elo DESC NULLS LAST, {GAME_LIST_ORDER}"),
+        Some("black_elo") => format!("g.black_elo DESC NULLS LAST, {GAME_LIST_ORDER}"),
+        _ => GAME_LIST_ORDER.to_string(),
+    };
 
     let event_filter     = if event.is_some()       { "AND g.event LIKE ?"        } else { "" };
     let eco_filter       = if eco.is_some()          { "AND g.eco LIKE ?"          } else { "" };
@@ -516,7 +528,7 @@ fn build_games_sql(
              {pos_join}
              WHERE {players_filter} {date_from_filter} {date_to_filter}
              {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}
-             ORDER BY {GAME_LIST_ORDER} LIMIT ? OFFSET ?"
+             ORDER BY {order} LIMIT ? OFFSET ?"
         ), params);
     } else if name.is_some() || fide_id.is_some() {
         let color_filter = match color.unwrap_or("any") {
@@ -557,7 +569,7 @@ fn build_games_sql(
                  {pos_join}
                  WHERE 1=1 {player_filter} {color_filter}
                  {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}
-                 ORDER BY {GAME_LIST_ORDER} LIMIT ? OFFSET ?"
+                 ORDER BY {order} LIMIT ? OFFSET ?"
             )
         }
     } else {
@@ -603,7 +615,7 @@ fn build_games_sql(
                  {pos_join}
                  WHERE {where_clause}
                  {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {fen_filter}
-                 ORDER BY {GAME_LIST_ORDER} LIMIT ? OFFSET ?"
+                 ORDER BY {order} LIMIT ? OFFSET ?"
             )
         }
     };
@@ -1013,7 +1025,7 @@ async fn games_handler(
             fen_hash,
             collection_id, q.visibility.as_deref(),
             q.include_deleted,
-            q.pgn, q.count, q.limit, q.offset,
+            q.pgn, q.count, q.sort.as_deref(), q.limit, q.offset,
         );
         let params_ref: Vec<&dyn duckdb::ToSql> = params.iter().map(|p| p.as_ref()).collect();
 
@@ -2398,9 +2410,36 @@ mod games_sql_tests {
             None, None, None, None, // white/black + fide
             None, None, None, None, None, // event, eco, first_moves, from, to
             None, None, None, // fen_hash, collection_id, visibility
-            false, false, false, // include_deleted, include_pgn, count
+            false, false, false, None, // include_deleted, include_pgn, count, sort
             100, 0,
         ).0
+    }
+
+    // The Analysis page's list of games reaching a position sorts by the rating
+    // of the side to move, so the strongest games come first.
+    fn sorted(sort: Option<&str>) -> String {
+        build_games_sql(
+            None, None, Some(1), Some("any"), None, None,
+            None, None, None, None,
+            None, None, None, None, None,
+            Some(42), None, None,
+            false, false, false, sort,
+            100, 0,
+        ).0
+    }
+
+    #[test]
+    fn rating_sort_leads_the_order_and_keeps_the_date_tiebreak() {
+        let w = sorted(Some("white_elo"));
+        assert!(w.contains("ORDER BY g.white_elo DESC NULLS LAST, replace(g.date"), "{w}");
+        let b = sorted(Some("black_elo"));
+        assert!(b.contains("ORDER BY g.black_elo DESC NULLS LAST, replace(g.date"), "{b}");
+    }
+
+    #[test]
+    fn unknown_or_missing_sort_keeps_the_date_order() {
+        assert!(sorted(None).contains("ORDER BY replace(g.date"));
+        assert!(sorted(Some("nonsense")).contains("ORDER BY replace(g.date"));
     }
 
     #[test]
