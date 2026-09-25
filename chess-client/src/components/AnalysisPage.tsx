@@ -260,22 +260,22 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                 <div className="flex-1 overflow-y-auto p-2">
                   <div className="flex items-center text-label-sm text-on-surface-variant px-2 mb-1 select-none">
                     <span className="w-24">Move</span>
-                    <span className="flex-1 min-w-0 pl-2" title="The highest-rated players (2500+) who played this move.">Played by</span>
                     <span className="w-20 text-right">Games</span>
                     <span className="w-10 text-right">W%</span>
                     <span className="w-10 text-right">D%</span>
                     <span className="w-10 text-right">L%</span>
                     <span className="w-16 text-right">Last</span>
+                    <span className="flex-1 min-w-0 pl-2" title="The highest-rated players (2500+) who played this move.">Played by</span>
                   </div>
                   {refMoves.map((s) => (
                     <div key={s.mv} className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface">
                       <span className="w-24 font-mono truncate text-left">{movePrefix}{s.mv}</span>
-                      <span className="flex-1 min-w-0 truncate text-left pl-2 text-on-surface-variant" title={s.elite ?? undefined}>{s.elite ?? ""}</span>
                       <span className="w-20 text-right">{s.games.toLocaleString()}</span>
                       <span className="w-10 text-right text-success">{Math.round(s.w_pct)}</span>
                       <span className="w-10 text-right text-on-surface-variant">{Math.round(s.d_pct)}</span>
                       <span className="w-10 text-right text-error">{Math.round(s.l_pct)}</span>
                       <span className="w-16 text-right text-on-surface-variant">{s.last_played?.slice(0, 4) ?? "—"}</span>
+                      <span className="flex-1 min-w-0 truncate text-left pl-2 text-on-surface-variant" title={s.elite ?? undefined}>{s.elite ?? ""}</span>
                     </div>
                   ))}
                 </div>
