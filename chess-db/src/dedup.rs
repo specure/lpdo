@@ -114,29 +114,39 @@ pub fn dedup_players(conn: &Connection, dry_run: bool, reporter: &Reporter) -> R
     // Third key: a name carrying a title, the way online platforms and some
     // broadcasts write them — "GM Magnus Carlsen", "NM EAMON MONTGOMERY 2215"
     // — against the plain record ("Carlsen, Magnus"). The title and a trailing
-    // rating are dropped and the words compared in any order; a pair is made
-    // only when exactly one untitled player matches, so "FM Wang Li" is left
-    // alone when both "Wang, Li" and "Li, Wang" exist.
+    // rating are dropped from the name as written, and what is left must be
+    // either the plain record's name exactly ("GM Torre, Eugenio" → "Torre,
+    // Eugenio") or, when it has no comma, "Firstname … Lastname" read as
+    // "Lastname, Firstname …" ("GM Allan Stig Rasmussen" → "Rasmussen, Allan
+    // Stig"). No other word order counts. A pair is made only when exactly one
+    // untitled player matches either reading, so "FM Wang Li" stays apart when
+    // both "Wang, Li" and "Li, Wang" exist.
+    let norm = |x: &str| format!("trim(regexp_replace(lower(replace({x}, ',', ' ')), '\\s+', ' ', 'g'))");
     conn.execute_batch(&format!(
         "DROP TABLE IF EXISTS title_pairs;
          CREATE TEMP TABLE title_pairs AS
-         WITH tkey AS (
-             SELECT id, array_to_string(list_sort(string_split(trim(regexp_replace(
-                        regexp_replace(name_normalized, '{TITLE_PREFIX}', ''), ' [0-9]{{3,4}}$', '')), ' ')), ' ') AS k
+         WITH titled AS (
+             SELECT id, trim(regexp_replace(regexp_replace(name,
+                        '^\\s*(GM|IM|FM|CM|NM|LM|WGM|WIM|WFM|WCM)\\s+', '', 'i'),
+                        '\\s+[0-9]{{3,4}}\\s*$', '')) AS bare
              FROM players WHERE regexp_matches(name_normalized, '{TITLE_PREFIX}')
          ),
-         ukey AS (
-             SELECT id, array_to_string(list_sort(string_split(name_normalized, ' ')), ' ') AS k
-             FROM players
-             WHERE name_normalized IS NOT NULL AND name_normalized <> ''
-               AND NOT regexp_matches(name_normalized, '{TITLE_PREFIX}')
+         readings AS (
+             SELECT id, {as_written} AS k FROM titled
+             UNION
+             SELECT id, {surname_first} AS k FROM titled
+             WHERE bare NOT LIKE '%,%' AND bare LIKE '% %'
          ),
-         uniq AS (
-             SELECT k FROM ukey WHERE k IN (SELECT k FROM tkey) GROUP BY k HAVING COUNT(*) = 1
+         candidates AS (
+             SELECT DISTINCT r.id AS titled_id, u.id AS real_id
+             FROM readings r
+             JOIN players u ON u.name_normalized = r.k
+             WHERE r.k <> '' AND NOT regexp_matches(u.name_normalized, '{TITLE_PREFIX}')
          )
-         SELECT t.id AS titled_id, u.id AS real_id
-         FROM tkey t JOIN ukey u ON u.k = t.k
-         WHERE t.k IN (SELECT k FROM uniq) AND t.k <> '';"
+         SELECT titled_id, MIN(real_id) AS real_id
+         FROM candidates GROUP BY titled_id HAVING COUNT(*) = 1;",
+        as_written = norm("bare"),
+        surname_first = norm("regexp_extract(bare, '(\\S+)\\s*$', 1) || ' ' || regexp_replace(bare, '\\s*\\S+\\s*$', '')"),
     ))?;
     let title_pairs: Vec<(u32, u32)> = {
         let mut stmt = conn.prepare("SELECT titled_id, real_id FROM title_pairs ORDER BY titled_id")?;
@@ -307,7 +317,7 @@ fn report_planned_merges(
 
     // Cap the listing: a first run on a large database can plan thousands of
     // merges, and flooding the log helps nobody. The counts below are complete.
-    const MAX_LINES: usize = 50;
+    const MAX_LINES: usize = 200;
     let mut by_name_only = 0usize;
     for (shown, sid) in survivors.iter().enumerate() {
         let losers = &per_survivor[sid];
@@ -1462,7 +1472,7 @@ mod dedup_players_tests {
         let conn = setup();
         // 1/2: the online spelling of a FIDE-listed player merges into him.
         // 3/4: a trailing rating is dropped too.
-        // 5/6/7: two plain records match "FM Wang Li" in some order — ambiguous, untouched.
+        // 5/6/7: "FM Wang Li" reads as "Wang, Li" and as "Li, Wang" — both exist, ambiguous, untouched.
         // 8: a title with no plain record stays as it is.
         conn.execute_batch(
             "INSERT INTO players (id,name,name_normalized,fide_id,name_normalised) VALUES
@@ -1473,7 +1483,13 @@ mod dedup_players_tests {
                (5,'Wang, Li','wang li',NULL,FALSE),
                (6,'Li, Wang','li wang',NULL,FALSE),
                (7,'FM Wang Li','fm wang li',NULL,FALSE),
-               (8,'GM Nobody Known','gm nobody known',NULL,FALSE);
+               (8,'GM Nobody Known','gm nobody known',NULL,FALSE),
+               (9,'Rasmussen, Allan Stig','rasmussen allan stig',1406000,TRUE),
+               (10,'GM Allan Stig Rasmussen','gm allan stig rasmussen',NULL,FALSE),
+               (11,'Torre, Eugenio','torre eugenio',5200016,TRUE),
+               (12,'GM Torre, Eugenio','gm torre eugenio',NULL,FALSE),
+               (13,'Stig, Allan Rasmussen','stig allan rasmussen',NULL,FALSE),
+               (14,'GM Rasmussen Stig Allan','gm rasmussen stig allan',NULL,FALSE);
              INSERT INTO games (id, white_id, black_id, date) VALUES
                (1, 2, 4, '2020-01-01'),
                (2, 7, 8, '2021-01-01');",
@@ -1486,7 +1502,9 @@ mod dedup_players_tests {
             let mut s = conn.prepare("SELECT id FROM players ORDER BY id").unwrap();
             s.query_map([], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect()
         };
-        assert_eq!(remaining, vec![1, 3, 5, 6, 7, 8]);
+        // 10 and 12 merge; 13 is another name, and 14's order is neither the
+        // name as written nor "Firstname … Lastname" of anyone, so both stay.
+        assert_eq!(remaining, vec![1, 3, 5, 6, 7, 8, 9, 11, 13, 14]);
         let (w, b): (u32, u32) = conn
             .query_row("SELECT white_id, black_id FROM games WHERE id = 1", [], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();
