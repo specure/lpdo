@@ -29,6 +29,17 @@ interface Props {
   gameUrl: string | null;
 }
 
+/** The site an address belongs to, for naming the link — "lichess.org" for
+ *  most of them, since that is where the broadcasts come from, but the name is
+ *  read from the address rather than assumed. null when it isn't parseable. */
+export function urlHost(url: string): string | null {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+}
+
 export function lichessPositionUrl(fen: string): string {
   return `https://lichess.org/analysis/${fen.replace(/ /g, "_")}`;
 }
@@ -83,8 +94,10 @@ export default function GameMoreMenu({ pgn, fen, lineSans, ply, startFen, gameUr
       {open && (
         <div className="absolute left-0 top-8 z-30 py-1 rounded-md bg-surface-container-high shadow-xl min-w-56">
           {gameUrl && (
-            <button className={item} onClick={() => go(gameUrl)}>
-              Open where it was played ↗
+            <button className={item} onClick={() => go(gameUrl)} title={gameUrl}>
+              {urlHost(gameUrl)
+                ? `Open the original game URL on ${urlHost(gameUrl)} ↗`
+                : "Open the original game URL ↗"}
             </button>
           )}
           <button className={item} onClick={() => go(lichessGameUrl(startFen, lineSans, ply))} disabled={lineSans.length === 0}>
