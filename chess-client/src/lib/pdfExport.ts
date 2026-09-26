@@ -399,18 +399,18 @@ function drawDiagram(page: PDFPage, fonts: Fonts, diagram: Diagram, x: number, y
         ? grid[rank][7 - file]
         : grid[7 - rank][file];
       if (!cell) continue;
-      // Sized and placed by what the piece draws: scaled so its ink is 78% of
-      // the square tall, then centred in the square. Kings and queens are much
-      // narrower than rooks, so centring on the em square left them adrift.
+      // Each piece is scaled to its own height (see PIECE_HEIGHT), centred on
+      // the ink it draws — kings and queens are much narrower than rooks — and
+      // stood on the same line as its neighbours.
       const box = PIECE_BOXES[cell];
-      const inkHeight = box.y1 - box.y0;
-      const em = (square * 0.80 * PIECE_UNITS_PER_EM) / inkHeight;
+      const wanted = square * PIECE_HEIGHT[cell.toLowerCase()];
+      const em = (wanted * PIECE_UNITS_PER_EM) / (box.y1 - box.y0);
       const scale = em / PIECE_UNITS_PER_EM;
       const inkWidth = (box.x1 - box.x0) * scale;
       drawPiece(
         page, cell,
         left + file * square + (square - inkWidth) / 2 - box.x0 * scale,
-        bottom + rank * square + (square - square * 0.80) / 2 - box.y1 * scale,
+        bottom + rank * square + square * PIECE_FOOT - box.y1 * scale,
         em,
       );
     }
@@ -435,6 +435,21 @@ function drawDiagram(page: PDFPage, fonts: Fonts, diagram: Diagram, x: number, y
     });
   }
 }
+
+/** How tall each piece stands, as a fraction of its square.
+ *
+ *  The font's own proportions cannot be used: these are text symbols, all
+ *  drawn to fill a line of type, so its pawn is 96% as tall as its king. A
+ *  diagram wants the proportions of a real set — a pawn a little over half the
+ *  height of a king — so each piece is given its own. Measured against the
+ *  ChessBase printout in #265. */
+const PIECE_HEIGHT: Record<string, number> = {
+  k: 0.85, q: 0.83, b: 0.79, n: 0.75, r: 0.71, p: 0.61,
+};
+
+/** The lowest ink of any piece sits this far above the square's lower edge, so
+ *  they all stand on one line. */
+const PIECE_FOOT = 0.07;
 
 /** A figurine is set a shade larger than the letter it replaces, which is how
  *  it matches the weight of the text around it. */
