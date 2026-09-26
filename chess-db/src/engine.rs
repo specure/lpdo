@@ -287,8 +287,7 @@ pub struct Engine {
     /// Replies & Strong: the idle helper processes, how many may count at
     /// once, the counts under way and what has been counted.
     helpers: std::sync::Mutex<Vec<Helper>>,
-    helper_slots: std::sync::Mutex<Arc<tokio::sync::Semaphore>>,
-    reply_jobs: Arc<std::sync::Mutex<std::collections::HashMap<String, ReplyJob>>>,
+    reply_queue: std::sync::Mutex<ReplyQueue>,
     reply_cache: std::sync::Mutex<std::collections::HashMap<String, ReplyCount>>,
     /// Nodes the last Stockfish count took: sibling positions take about as
     /// many, which makes the progress of the next one an estimate.
@@ -306,11 +305,27 @@ struct Helper {
 }
 
 /// A count asked for and not yet cached: waiting for a helper, under way
-/// (percent done), or failed. Asked for again, it is only looked up; a waiting
-/// one nobody has asked about for a few seconds is dropped before it starts.
+/// (percent done), or failed. It is kept while the Engine panel asks about its
+/// position (`parent`), also when its move leaves the panel's list for a
+/// while; once the panel has moved on to another position, a waiting count is
+/// dropped and a running one stopped.
 struct ReplyJob {
+    fen: String,
+    parent: String,
+    settings: EngineSettings,
     state: ReplyProgress,
+    /// When the panel last asked for this count by name — on its list now.
     asked: std::time::Instant,
+    queued: std::time::Instant,
+    cancel: Arc<Notify>,
+}
+
+/// The counts asked for, and when the panel last asked about each position.
+struct ReplyQueue {
+    jobs: std::collections::HashMap<String, ReplyJob>,
+    parents: std::collections::HashMap<String, std::time::Instant>,
+    /// How many count at once: the helpers.
+    limit: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -337,8 +352,24 @@ pub struct ReplyState {
     pub error: Option<String>,
 }
 
-/// A waiting count nobody has asked about for this long is dropped.
-const REPLY_ASK_TTL: Duration = Duration::from_secs(4);
+/// The Engine panel's answer: each candidate's count or progress, and how many
+/// counts for the position are still waiting or running — also those of moves
+/// no longer on its list, which it keeps asking for until they are done.
+#[derive(Clone, Debug, Serialize)]
+pub struct ReplyAnswer {
+    pub lines: Vec<ReplyState>,
+    pub pending: usize,
+}
+
+/// What a count stopped because the panel left its position returns.
+const STOPPED: &str = "stopped";
+
+/// A position the panel has not asked about for this long is left: its
+/// counts are dropped (the panel asks twice a second).
+const REPLY_ASK_TTL: Duration = Duration::from_secs(3);
+/// A candidate asked for this recently is on the panel's list now, and is
+/// counted before those that left it.
+const REPLY_ON_LIST: Duration = Duration::from_millis(1500);
 
 /// The opponent's replies after one candidate move.
 #[derive(Clone, Debug, Serialize)]
@@ -432,8 +463,11 @@ impl Engine {
             latest: Mutex::new(None),
             benching: Mutex::new(()),
             helpers: std::sync::Mutex::new(Vec::new()),
-            helper_slots: std::sync::Mutex::new(Arc::new(tokio::sync::Semaphore::new(helpers))),
-            reply_jobs: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            reply_queue: std::sync::Mutex::new(ReplyQueue {
+                jobs: std::collections::HashMap::new(),
+                parents: std::collections::HashMap::new(),
+                limit: helpers,
+            }),
             reply_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
             reply_nodes: AtomicU64::new(0),
         })
@@ -664,14 +698,17 @@ impl Engine {
     }
 
     async fn shutdown(&self) {
-        // Dropping the helpers ends them; counts under way finish into keys
-        // (they include the settings) nobody asks for again.
+        // Dropping the idle helpers ends them; counts under way are stopped.
+        let limit = helper_count(self.kind, &*self.settings.lock().await);
         self.helpers.lock().unwrap().clear();
-        self.reply_jobs.lock().unwrap().clear();
+        {
+            let mut q = self.reply_queue.lock().unwrap();
+            for (_, j) in q.jobs.drain() { j.cancel.notify_one(); }
+            q.parents.clear();
+            q.limit = limit;
+        }
         self.reply_cache.lock().unwrap().clear();
         self.reply_nodes.store(0, Ordering::Relaxed);
-        let n = helper_count(self.kind, &*self.settings.lock().await);
-        *self.helper_slots.lock().unwrap() = Arc::new(tokio::sync::Semaphore::new(n));
         if let Some(mut r) = self.running.lock().await.take() {
             let _ = r.stdin.write_all(b"quit\n").await;
             let _ = tokio::time::timeout(Duration::from_secs(2), r.child.wait()).await;
@@ -818,13 +855,13 @@ impl Engine {
     }
 
     /// Replies & Strong for the positions after the candidate moves (`fens`,
-    /// cleaned): the opponent's legal replies, and how many are within the
-    /// threshold of the best. A position not counted yet is queued for the
-    /// next free helper, unless `cached_only` (a paused engine), and the
-    /// Engine panel asks again for the progress. Stockfish searches every
+    /// cleaned) of `parent`: the opponent's legal replies, and how many are
+    /// within the threshold of the best. A position not counted yet is queued
+    /// for the next free helper, unless `cached_only` (a paused engine), and
+    /// the Engine panel asks again for the progress. Stockfish searches every
     /// reply to the helper's depth; Lc0 runs a short search and counts the
     /// replies it explored.
-    pub async fn replies(self: &Arc<Self>, fens: &[String], cached_only: bool) -> Result<Vec<ReplyState>, String> {
+    pub async fn replies(self: &Arc<Self>, parent: &str, fens: &[String], cached_only: bool) -> Result<ReplyAnswer, String> {
         let settings = self.settings.lock().await.clone();
         if !settings.enabled || !settings.replies {
             return Err("Replies & Strong is switched off for this engine".to_string());
@@ -833,78 +870,107 @@ impl Engine {
         let name = self.running.lock().await.as_ref().map(|r| r.name.clone());
         let state = |fen: &str, state, count, pct, error| ReplyState { fen: fen.to_string(), state, count, pct, error };
         let Some(name) = name else {
-            return Ok(fens.iter().map(|f| state(f, "none", None, None, None)).collect());
+            return Ok(ReplyAnswer { lines: fens.iter().map(|f| state(f, "none", None, None, None)).collect(), pending: 0 });
         };
+        let parent = position_key(parent);
         let now = std::time::Instant::now();
-        let mut out = Vec::with_capacity(fens.len());
-        for fen in fens {
-            let key = Self::reply_key(&name, &settings, fen);
-            if let Some(c) = self.reply_cache.lock().unwrap().get(&key).cloned() {
-                out.push(state(fen, "done", Some(c), None, None));
-                continue;
-            }
-            let legal = legal_moves(fen);
-            if legal == 0 {
-                out.push(state(fen, "done", Some(ReplyCount { replies: 0, strong: 0, depth: 0, nodes: 0 }), None, None));
-                continue;
-            }
-            let mut jobs = self.reply_jobs.lock().unwrap();
-            if let Some(j) = jobs.get_mut(&key) {
-                match &j.state {
-                    // A failure is reported for a while, then tried again.
-                    ReplyProgress::Failed(_, at) if at.elapsed() > Duration::from_secs(30) => { jobs.remove(&key); }
-                    ReplyProgress::Failed(e, _) => { out.push(state(fen, "failed", None, None, Some(e.clone()))); continue; }
-                    ReplyProgress::Waiting => { j.asked = now; out.push(state(fen, "waiting", None, None, None)); continue; }
-                    ReplyProgress::Counting(p) => { j.asked = now; out.push(state(fen, "counting", None, Some(*p), None)); continue; }
+        let mut lines = Vec::with_capacity(fens.len());
+        let pending = {
+            let mut q = self.reply_queue.lock().unwrap();
+            q.parents.insert(parent.clone(), now);
+            for fen in fens {
+                let key = Self::reply_key(&name, &settings, fen);
+                if let Some(c) = self.reply_cache.lock().unwrap().get(&key).cloned() {
+                    lines.push(state(fen, "done", Some(c), None, None));
+                    continue;
                 }
+                if legal_moves(fen) == 0 {
+                    lines.push(state(fen, "done", Some(ReplyCount { replies: 0, strong: 0, depth: 0, nodes: 0 }), None, None));
+                    continue;
+                }
+                if let Some(j) = q.jobs.get_mut(&key) {
+                    match &j.state {
+                        // A failure is reported for a while, then tried again.
+                        ReplyProgress::Failed(_, at) if at.elapsed() > Duration::from_secs(30) => { q.jobs.remove(&key); }
+                        ReplyProgress::Failed(e, _) => { lines.push(state(fen, "failed", None, None, Some(e.clone()))); continue; }
+                        ReplyProgress::Waiting => { j.asked = now; lines.push(state(fen, "waiting", None, None, None)); continue; }
+                        ReplyProgress::Counting(p) => { j.asked = now; lines.push(state(fen, "counting", None, Some(*p), None)); continue; }
+                    }
+                }
+                if cached_only {
+                    lines.push(state(fen, "none", None, None, None));
+                    continue;
+                }
+                q.jobs.insert(key, ReplyJob {
+                    fen: fen.clone(), parent: parent.clone(), settings: settings.clone(),
+                    state: ReplyProgress::Waiting, asked: now, queued: now, cancel: Arc::new(Notify::new()),
+                });
+                lines.push(state(fen, "waiting", None, None, None));
             }
-            if cached_only {
-                out.push(state(fen, "none", None, None, None));
-                continue;
-            }
-            jobs.insert(key.clone(), ReplyJob { state: ReplyProgress::Waiting, asked: now });
-            drop(jobs);
-            tokio::spawn(self.clone().run_reply_job(key, fen.clone(), settings.clone()));
-            out.push(state(fen, "waiting", None, None, None));
-        }
-        Ok(out)
+            q.jobs.values().filter(|j| j.parent == parent && matches!(j.state, ReplyProgress::Waiting | ReplyProgress::Counting(_))).count()
+        };
+        self.dispatch();
+        Ok(ReplyAnswer { lines, pending })
     }
 
-    /// One queued count: wait for a free helper, then count — unless nobody
-    /// has asked about it meanwhile (the panel moved on).
-    async fn run_reply_job(self: Arc<Self>, key: String, fen: String, settings: EngineSettings) {
-        let slots = self.helper_slots.lock().unwrap().clone();
-        let Ok(_permit) = slots.acquire_owned().await else { return };
+    /// Drop the counts of positions the panel has left (stopping those under
+    /// way), then start waiting counts on free helpers: those on the panel's
+    /// list first, then those whose move left it, oldest first.
+    fn dispatch(self: &Arc<Self>) {
+        let mut q = self.reply_queue.lock().unwrap();
+        let fresh = |t: &std::time::Instant| t.elapsed() <= REPLY_ASK_TTL;
+        let stale: Vec<String> = q.jobs.iter()
+            .filter(|(_, j)| !fresh(&j.asked) && !q.parents.get(&j.parent).is_some_and(fresh))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in stale {
+            if let Some(j) = q.jobs.remove(&k) { j.cancel.notify_one(); }
+        }
+        q.parents.retain(|_, t| fresh(t));
+        loop {
+            let running = q.jobs.values().filter(|j| matches!(j.state, ReplyProgress::Counting(_))).count();
+            if running >= q.limit { break; }
+            let next = q.jobs.iter()
+                .filter(|(_, j)| matches!(j.state, ReplyProgress::Waiting))
+                .max_by_key(|(_, j)| (j.asked.elapsed() <= REPLY_ON_LIST, std::cmp::Reverse(j.queued)))
+                .map(|(k, _)| k.clone());
+            let Some(key) = next else { break };
+            let j = q.jobs.get_mut(&key).unwrap();
+            j.state = ReplyProgress::Counting(0);
+            let (fen, settings, cancel) = (j.fen.clone(), j.settings.clone(), j.cancel.clone());
+            tokio::spawn(self.clone().run_reply_job(key, fen, settings, cancel));
+        }
+    }
+
+    /// One count on a helper; then the next waiting one.
+    async fn run_reply_job(self: Arc<Self>, key: String, fen: String, settings: EngineSettings, cancel: Arc<Notify>) {
+        let result = self.count_one(&key, &fen, &settings, &cancel).await;
         {
-            let mut jobs = self.reply_jobs.lock().unwrap();
-            match jobs.get_mut(&key) {
-                Some(j) if j.asked.elapsed() <= REPLY_ASK_TTL => j.state = ReplyProgress::Counting(0),
-                Some(_) => { jobs.remove(&key); return; }
-                None => return,
+            let mut q = self.reply_queue.lock().unwrap();
+            match result {
+                Ok(c) => {
+                    self.reply_cache.lock().unwrap().insert(key.clone(), c);
+                    q.jobs.remove(&key);
+                }
+                // Stopped: the job is gone already.
+                Err(e) if e == STOPPED => {}
+                Err(e) => {
+                    if let Some(j) = q.jobs.get_mut(&key) { j.state = ReplyProgress::Failed(e, std::time::Instant::now()); }
+                }
             }
         }
-        let result = self.count_one(&key, &fen, &settings).await;
-        let mut jobs = self.reply_jobs.lock().unwrap();
-        match result {
-            Ok(c) => {
-                self.reply_cache.lock().unwrap().insert(key.clone(), c);
-                jobs.remove(&key);
-            }
-            Err(e) => {
-                if let Some(j) = jobs.get_mut(&key) { j.state = ReplyProgress::Failed(e, std::time::Instant::now()); }
-            }
-        }
+        self.dispatch();
     }
 
     fn set_reply_pct(&self, key: &str, pct: u32) {
-        if let Some(j) = self.reply_jobs.lock().unwrap().get_mut(key) {
-            j.state = ReplyProgress::Counting(pct.min(99));
+        if let Some(j) = self.reply_queue.lock().unwrap().jobs.get_mut(key) {
+            if matches!(j.state, ReplyProgress::Counting(_)) { j.state = ReplyProgress::Counting(pct.min(99)); }
         }
     }
 
     /// Count one position on an idle helper (or a new one); the helper goes
     /// back to the pool after a clean count, and is ended after a failure.
-    async fn count_one(&self, key: &str, fen: &str, settings: &EngineSettings) -> Result<ReplyCount, String> {
+    async fn count_one(&self, key: &str, fen: &str, settings: &EngineSettings, cancel: &Notify) -> Result<ReplyCount, String> {
         let path = self.running.lock().await.as_ref().map(|r| r.path.clone()).ok_or("no engine")?;
         let legal = legal_moves(fen);
         let config = format!("{path}|{}|{}|{:?}|{:?}", settings.helper_threads, settings.helper_hash_mb, settings.weights, settings.backend);
@@ -959,14 +1025,31 @@ impl Engine {
         let target_depth = settings.helper_depth.max(1);
         let mut shown = 0u32;
         let mut line = String::new();
+        // Ok(false): stopped — the panel left the position.
         let read = async {
+            let mut stopping = false;
             loop {
-                line.clear();
-                if h.stdout.read_line(&mut line).await.map_err(|e| e.to_string())? == 0 {
+                // A line half read when the stop comes stays in `line`, and
+                // the next read completes it.
+                let got = if stopping {
+                    h.stdout.read_line(&mut line).await
+                } else {
+                    tokio::select! {
+                        r = h.stdout.read_line(&mut line) => r,
+                        _ = cancel.notified() => {
+                            send(&mut h.stdin, "stop").await?;
+                            stopping = true;
+                            continue;
+                        }
+                    }
+                };
+                if got.map_err(|e| e.to_string())? == 0 {
                     return Err("the helper ended".to_string());
                 }
-                let t = line.trim();
-                if t.starts_with("bestmove") { return Ok(()); }
+                let t = std::mem::take(&mut line);
+                let t = t.trim();
+                if t.starts_with("bestmove") { return Ok(!stopping); }
+                if stopping { continue; }
                 if let Some(rest) = t.strip_prefix("info string ") {
                     if let Some((mv, n, q)) = parse_move_stats(rest) { stats.insert(mv, (n, q)); }
                     continue;
@@ -1001,8 +1084,9 @@ impl Engine {
             }
         };
         // On a failure or a timeout the helper is dropped, which ends it.
-        tokio::time::timeout(Duration::from_secs(180), read).await.map_err(|_| "the helper took too long".to_string())??;
+        let finished = tokio::time::timeout(Duration::from_secs(180), read).await.map_err(|_| "the helper took too long".to_string())??;
         self.helpers.lock().unwrap().push(h);
+        if !finished { return Err(STOPPED.to_string()); }
 
         Ok(match self.kind {
             Kind::Stockfish => {

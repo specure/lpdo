@@ -1795,7 +1795,9 @@ async fn engines_enabled_handler(State(state): State<AppState>) -> Json<serde_js
 
 #[derive(Deserialize)]
 struct EngineRepliesQuery {
-    /// The positions after the candidate moves, separated by "|".
+    /// The position analysed, and those after its candidate moves, separated
+    /// by "|".
+    fen: String,
     fens: String,
     engine: Option<String>,
     /// Only what has been counted before; never starts a helper.
@@ -1809,12 +1811,13 @@ struct EngineRepliesQuery {
 async fn engine_replies_handler(
     State(state): State<AppState>,
     Query(q): Query<EngineRepliesQuery>,
-) -> ApiResult<Vec<crate::engine::ReplyState>> {
+) -> ApiResult<crate::engine::ReplyAnswer> {
+    let parent = crate::engine::clean_fen(&q.fen).ok_or((StatusCode::BAD_REQUEST, "not a legal position".to_string()))?;
     let fens = q.fens.split('|').take(20)
         .map(|f| crate::engine::clean_fen(f).ok_or((StatusCode::BAD_REQUEST, format!("not a legal position: {f}"))))
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let engine = pick_engine(&state, &WhichEngine { engine: q.engine.clone() })?;
-    engine.replies(&fens, q.cached_only).await.map(Json).map_err(|e| (StatusCode::CONFLICT, e))
+    engine.replies(&parent, &fens, q.cached_only).await.map(Json).map_err(|e| (StatusCode::CONFLICT, e))
 }
 
 #[derive(Deserialize)]

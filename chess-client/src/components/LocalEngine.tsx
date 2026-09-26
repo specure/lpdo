@@ -143,7 +143,7 @@ export default function LocalEngine({
   // legal moves, counted here at once; the strong ones the server's helpers
   // count once the search has settled, several candidates at a time. The
   // panel asks for all candidates and asks again, twice a second, for the
-  // progress until every count is done.
+  // progress until every count for the position is done.
   const repliesOn = !!status?.settings.replies;
   const [replyStates, setReplyStates] = useState<Record<string, ReplyState>>({});
   const settled = !!snap && (kind === "lc0" ? snap.nodes >= 100_000 : snap.depth >= 16);
@@ -158,15 +158,18 @@ export default function LocalEngine({
     const ask = async () => {
       try {
         // Paused: only counts made before — no helper is started.
-        const r = await fetch(apiUrl(`/engine/replies?engine=${kind}&fens=${encodeURIComponent(children.join("|"))}${paused ? "&cached_only=true" : ""}`), { signal: ctrl.signal });
+        const r = await fetch(apiUrl(`/engine/replies?engine=${kind}&fen=${encodeURIComponent(fen)}&fens=${encodeURIComponent(children.join("|"))}${paused ? "&cached_only=true" : ""}`), { signal: ctrl.signal });
         if (!r.ok) return;
-        const got = (await r.json()) as ReplyState[];
+        const { lines: got, pending } = (await r.json()) as { lines: ReplyState[]; pending: number };
         setReplyStates((prev) => {
           const next = { ...prev };
           got.forEach((g, i) => { next[children[i]] = g; });
           return next;
         });
-        if (got.some((g) => g.state === "waiting" || g.state === "counting")) timer = setTimeout(ask, 500);
+        // Asked again while any count for this position runs or waits — also
+        // for moves that have left the list: the server keeps those while the
+        // panel asks, so a move that comes back has its count.
+        if (pending > 0 || got.some((g) => g.state === "waiting" || g.state === "counting")) timer = setTimeout(ask, 500);
       } catch { /* aborted, or the server went away */ }
     };
     void ask();
