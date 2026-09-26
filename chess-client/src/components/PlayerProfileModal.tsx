@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import ExternalLinkIcon from "./ExternalLinkIcon";
 import { PlayerInfo, PlayerStats, OpeningLine, FidePlayer, FideActivity, FideRecentGame, GameSummary } from "../types";
 import { Tag, defaultNewGameTags } from "../lib/pgnEditor";
 import AddGameDialog from "./AddGameDialog";
@@ -430,8 +432,13 @@ export default function PlayerProfileModal({ player, onClose, onPlayersMerged }:
         <div className="flex items-center justify-between px-5 py-4 shrink-0">
           <div>
             <div className="text-title-md text-on-surface">{player.name}</div>
+            {/* The FIDE ID opens the player's FIDE profile in the browser. */}
             {player.fide_id && (
-              <div className="text-body-sm text-on-surface-variant">FIDE {player.fide_id}</div>
+              <button
+                onClick={() => void openUrl(`https://ratings.fide.com/profile/${player.fide_id}`)}
+                title={`Open the FIDE profile: https://ratings.fide.com/profile/${player.fide_id}`}
+                className="text-body-sm text-primary hover:underline inline-flex items-center"
+              >FIDE {player.fide_id}<ExternalLinkIcon /></button>
             )}
           </div>
           <div className="flex items-center gap-2">
