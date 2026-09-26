@@ -24,6 +24,7 @@ import {
 import { serializeMovetext } from "../lib/serializeMovetext";
 import { gameUrlFromPgn } from "../lib/useGamePgn";
 import GameMoreMenu from "./games/GameMoreMenu";
+import ExportPdfDialog from "./games/ExportPdfDialog";
 import { appendScratchMove, clearScratchMarks, replayAsScratch, sansToCursor, type ScratchMove } from "../lib/scratchLine";
 import type { CalArrow, CslCircle } from "../lib/parseAnnotations";
 import { nagsToString, nagToSymbol } from "../lib/parseAnnotations";
@@ -554,7 +555,7 @@ async function exportGameToPgn(detail: GameDetail): Promise<void> {
 // progress used by soft-delete / restore.
 function GameActionsBar({
   detail, onDetailChanged, onStartEditMoves, detailsOpen, onToggleDetails, unsavedEdits = false,
-  fen, lineSans, ply, startFen,
+  fen, lineSans, ply, startFen, onExportPdf,
 }: {
   detail: GameDetail;
   /** Board position, the moves of the line being viewed and the position they
@@ -563,6 +564,8 @@ function GameActionsBar({
   lineSans: string[];
   ply: number;
   startFen: string;
+  /** Opens the PDF export dialog (the board has the whole game in hand). */
+  onExportPdf: () => void;
   onDetailChanged: () => void;
   /** Fires when the user clicks "Edit game…" — host enters inline edit mode. */
   onStartEditMoves: () => void;
@@ -677,6 +680,7 @@ function GameActionsBar({
           ply={ply}
           startFen={startFen}
           gameUrl={gameUrlFromPgn(detail.pgn)}
+          onExportPdf={onExportPdf}
         />
         {/* Restore stays inline with the other actions — it's a recovery action,
             not destructive. Delete is broken out as a separate icon button on
@@ -847,6 +851,7 @@ function DetailsPanel({
 export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange }: Props) {
   const [detail, setDetail] = useState<GameDetail | null>(null);
   const [detailReloadKey, setDetailReloadKey] = useState(0);
+  const [pdfOpen, setPdfOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState<boolean>(
     () => localStorage.getItem("gameDetailsOpen") === "1"
   );
@@ -1818,6 +1823,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
         {!movesEditor.active && (
           <GameActionsBar
             detail={detail}
+            onExportPdf={() => setPdfOpen(true)}
             fen={currentFen}
             startFen={useAnnotated ? annotatedGame!.startFen : (fens[0] ?? "")}
             lineSans={useAnnotated ? sansToCursor(breadcrumbs, activeLine, activeLine.length) : moves.map((m) => m.san)}
@@ -2072,7 +2078,10 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             )}
           </div>
 
-          {/* Variation choice menu — M3 menu surface (works in view & edit mode) */}
+          {pdfOpen && detail && (
+        <ExportPdfDialog detail={detail} flipped={flipped} onClose={() => setPdfOpen(false)} />
+      )}
+      {/* Variation choice menu — M3 menu surface (works in view & edit mode) */}
           {varChoice && (
             <div className="absolute inset-0 flex items-center justify-center z-20">
               <div className="bg-surface-container-high rounded-md shadow-xl py-2 min-w-40">

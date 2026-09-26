@@ -370,32 +370,41 @@ pub async fn read_pgn_file(path: String) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// Write bytes the same careful way `write_pgn_file` writes text — used by the
+/// PDF export, which hands over a finished document rather than a string.
+#[tauri::command]
+pub async fn write_binary_file(path: String, bytes: Vec<u8>) -> Result<(), String> {
+    write_atomically(&PathBuf::from(&path), &bytes)
+}
+
 #[tauri::command]
 pub async fn write_pgn_file(path: String, content: String) -> Result<(), String> {
+    write_atomically(&PathBuf::from(&path), content.as_bytes())
+}
+
+/// Write to a sibling temp file then rename over the target, so a crash
+/// mid-write can't leave the original truncated.
+fn write_atomically(p: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
-    let p = PathBuf::from(&path);
 
     if let Some(parent) = p.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
 
-    // Write to a sibling temp file then atomically rename over the target so
-    // a crash mid-write can't leave the original truncated.
-    let mut tmp = p.clone();
+    let mut tmp = p.to_path_buf();
     let file_name = p
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "pgn".to_string());
+        .unwrap_or_else(|| "file".to_string());
     tmp.set_file_name(format!(".{file_name}.tmp"));
 
     {
         let mut f = std::fs::File::create(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
-        f.write_all(content.as_bytes())
-            .map_err(|e| format!("{}: {e}", tmp.display()))?;
+        f.write_all(bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
         f.sync_all().map_err(|e| format!("{}: {e}", tmp.display()))?;
     }
 
-    std::fs::rename(&tmp, &p).map_err(|e| format!("{}: {e}", p.display()))?;
+    std::fs::rename(&tmp, p).map_err(|e| format!("{}: {e}", p.display()))?;
     Ok(())
 }
 
