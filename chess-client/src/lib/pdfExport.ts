@@ -331,7 +331,7 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
           const box = PIECE_SET_BOXES[item.piece];
           // The piece's lowest ink sits just under the baseline, as a letter
           // with a descender would; `top` is where the 45-unit box begins.
-          drawPiece(page, item.piece, x - box.x0 * scale, baseline - item.size * 0.08 + box.y1 * scale, item.size * FIGURINE_EM);
+          drawPiece(page, item.piece, x - box.x0 * scale, baseline - item.size * 0.05 + box.y1 * scale, item.size * FIGURINE_EM);
           x += figurineWidth(item.piece, item.size);
           page.drawText(item.text, { x, y: baseline, size: item.size, font: item.font, color: item.color });
           x += item.font.widthOfTextAtSize(item.text, item.size);
@@ -468,9 +468,10 @@ function drawDiagram(page: PDFPage, fonts: Fonts, diagram: Diagram, x: number, y
 }
 
 /** A figurine's 45-unit box, relative to the type size. The set draws its
- *  pieces with margins inside that box, so at 1.3 em a king's ink stands about
- *  as tall as a capital letter. */
-const FIGURINE_EM = 1.3;
+ *  pieces with margins inside that box (a king's ink is 36 of the 45 units),
+ *  so at 1.05 em a king stands a shade taller than a capital letter — enough
+ *  presence to read as a piece, not so much that it looms over the square. */
+const FIGURINE_EM = 1.05;
 
 function figurineScale(size: number): number {
   return (size * FIGURINE_EM) / PIECE_SET_SIZE;
