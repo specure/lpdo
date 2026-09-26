@@ -237,7 +237,24 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
   const liOn = enabled.lichess && running.lichess;
   useEffect(() => {
     dbAbort.current?.abort();
-    if (!dbOn) return;
+    if (!dbOn) {
+      // Paused: what the server's cache holds for this position, never a request out.
+      if (!enabled.chessdb) return;
+      const ctrl = new AbortController();
+      dbAbort.current = ctrl;
+      fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}&cached_only=true`, { signal: ctrl.signal })
+        .then((r) => (r.ok ? r.json() as Promise<{ status: EngineStatus; moves: CloudMove[] }> : null))
+        .then((d) => {
+          if (!d?.moves?.length) return;
+          setEngineMoves(d.moves); setDbStatus("ok"); setDbFen(fen); setEngineLines({});
+          fetch(`/api/cloud-eval/lines?fen=${encodeURIComponent(fen)}&cached_only=true`, { signal: ctrl.signal })
+            .then((r) => (r.ok ? r.json() as Promise<{ uci: string; pvSan: string[] }[]> : []))
+            .then((ls) => { const map: Record<string, string[]> = {}; for (const l of ls) map[l.uci] = l.pvSan; setEngineLines(map); })
+            .catch(() => {});
+        })
+        .catch(() => {});
+      return () => ctrl.abort();
+    }
     const ctrl = new AbortController();
     dbAbort.current = ctrl;
     engineAbort.current = ctrl;
@@ -266,7 +283,16 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
   }, [fen, dbOn, engineRefreshTick]);
   useEffect(() => {
     liAbort.current?.abort();
-    if (!liOn) return;
+    if (!liOn) {
+      if (!enabled.lichess) return;
+      const ctrl = new AbortController();
+      liAbort.current = ctrl;
+      fetch(`/api/lichess-eval?fen=${encodeURIComponent(fen)}&cached_only=true`, { signal: ctrl.signal })
+        .then((r) => (r.ok ? r.json() as Promise<LichessEval> : null))
+        .then((d) => { if (d?.lines?.length) { setLichessEval(d); setLiStatus("ok"); setLiFen(fen); } })
+        .catch(() => {});
+      return () => ctrl.abort();
+    }
     const ctrl = new AbortController();
     liAbort.current = ctrl;
     setLiStatus("loading");
@@ -421,7 +447,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
         null /* the local engines are drawn below, always mounted */
       ) : !running[engineSource] && (engineSource === "chessdb" ? dbFen : liFen) !== fen ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center text-on-surface-variant text-body-sm px-3">
-          <span>{engineSource === "chessdb" ? "chessdb.cn" : "Lichess"} is paused: it has not been asked about this position.</span>
+          <span>{engineSource === "chessdb" ? "chessdb.cn" : "Lichess"} is paused, and has nothing for this position yet.</span>
           <button onClick={() => toggleRunning(engineSource)} className="h-8 px-3 rounded-full text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard">Run</button>
         </div>
       ) : engineStatus === "loading" ? (

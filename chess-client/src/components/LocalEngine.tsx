@@ -98,8 +98,21 @@ export default function LocalEngine({
     esRef.current?.close();
     esRef.current = null;
     setStreamError(null);
-    if (snapForRef.current !== snapFor) { setSnap(null); snapForRef.current = snapFor; }
-    if (!status?.available || !running || paused) return;
+    const fresh = snapForRef.current !== snapFor;
+    if (fresh) { setSnap(null); snapForRef.current = snapFor; }
+    if (!status?.available) return;
+    // Paused on a new position: show what the server remembers for it, if
+    // anything — never a search.
+    if (paused) {
+      if (!fresh) return;
+      const ctrl = new AbortController();
+      fetch(apiUrl(`/engine/remembered?engine=${kind}&fen=${encodeURIComponent(fen)}`), { signal: ctrl.signal })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((s: Snapshot | null) => { if (s) setSnap({ ...s, cached: true, done: true }); })
+        .catch(() => {});
+      return () => ctrl.abort();
+    }
+    if (!running) return;
     // Running again on the same position: the lines stay until the new
     // search is deeper, as a remembered result does.
     setSnap((prev) => (prev ? { ...prev, cached: true } : prev));
@@ -138,6 +151,8 @@ export default function LocalEngine({
   const candidateKey = candidates.join(",");
   useEffect(() => {
     if (!repliesOn || !settled) return;
+    // Paused: only counts made before — the helper is not started.
+    const cachedOnly = paused;
     const todo = candidates
       .map((uci) => childFen(fen, uci))
       .filter((f): f is string => !!f && !askedRef.current.has(f));
@@ -146,10 +161,10 @@ export default function LocalEngine({
     (async () => {
       for (const child of todo) {
         if (ctrl.signal.aborted) return;
-        askedRef.current.add(child);
+        if (!cachedOnly) askedRef.current.add(child);
         setReplyCounts((prev) => ({ ...prev, [child]: "pending" }));
         try {
-          const r = await fetch(apiUrl(`/engine/replies?engine=${kind}&fen=${encodeURIComponent(child)}`), { signal: ctrl.signal });
+          const r = await fetch(apiUrl(`/engine/replies?engine=${kind}&fen=${encodeURIComponent(child)}${cachedOnly ? "&cached_only=true" : ""}`), { signal: ctrl.signal });
           if (!r.ok) throw new Error();
           const c = (await r.json()) as { replies: number; strong: number };
           setReplyCounts((prev) => ({ ...prev, [child]: c }));
@@ -162,7 +177,7 @@ export default function LocalEngine({
     })();
     return () => ctrl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repliesOn, settled, candidateKey, fen, kind]);
+  }, [repliesOn, settled, candidateKey, fen, kind, paused]);
 
   // A new position starts a new search, even if the last one was stopped.
   useEffect(() => { setRunning(true); }, [fen]);
@@ -195,7 +210,7 @@ export default function LocalEngine({
           {snap ? (kind === "lc0" ? ` · ${fmtNodes(snap.nodes)} nodes` : ` · depth ${snap.depth}`) : ""}
           {snap?.done && !snap.cached ? " · done" : ""}
           {snap?.cached
-            ? <span title="Remembered from an earlier search; the engine is deepening it"> (cached)</span>
+            ? <span title={paused ? "Remembered from an earlier search" : "Remembered from an earlier search; the engine is deepening it"}> (cached)</span>
             : speed ? ` · ${speed}` : ""}
         </span>
         <button

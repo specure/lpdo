@@ -886,6 +886,20 @@ impl Engine {
         Ok(count)
     }
 
+    /// The deepest remembered result for `fen`, with the engine running now.
+    pub async fn remembered(&self, fen: &str) -> Option<Snapshot> {
+        let name = self.running.lock().await.as_ref().map(|r| r.name.clone())?;
+        self.remembered.lock().unwrap().get(&format!("{name}|{}", position_key(fen)))
+    }
+
+    /// Replies & Strong for `fen` if counted before with the current settings.
+    pub async fn cached_replies(&self, fen: &str) -> Option<ReplyCount> {
+        let settings = self.settings.lock().await.clone();
+        let name = self.running.lock().await.as_ref().map(|r| r.name.clone())?;
+        let key = format!("{name}|{}|{}|{}|{}|{}", settings.helper_depth, settings.strong_cp, settings.helper_nodes, settings.strong_pct, position_key(fen));
+        self.reply_cache.lock().unwrap().get(&key).cloned()
+    }
+
     pub fn current_gen(&self) -> u64 {
         self.gen.load(Ordering::SeqCst)
     }

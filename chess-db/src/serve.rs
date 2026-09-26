@@ -1237,6 +1237,10 @@ struct CloudEvalQuery {
     /// `refresh=true` bypasses the cache and re-fetches (the panel's reload button).
     #[serde(default)]
     refresh: bool,
+    /// `cached_only=true`: what the cache holds, and never a request out —
+    /// for a paused tab.
+    #[serde(default)]
+    cached_only: bool,
 }
 
 /// FEN → Zobrist hash (same scheme as the positions index), the cloud-eval cache key.
@@ -1254,6 +1258,7 @@ async fn cloud_eval_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<crate::cloud_eval::CloudEval> {
     let zobrist = fen_zobrist(&q.fen)?;
+    if q.cached_only { return Ok(Json(crate::cloud_eval::peek(zobrist))); }
     if !crate::cloud_eval::settings().chessdb { return Ok(Json(crate::cloud_eval::disabled_chessdb())); }
     if crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(crate::cloud_eval::capped_chessdb())); }
     Ok(Json(crate::cloud_eval::query(&q.fen, zobrist, q.refresh).await))
@@ -1265,6 +1270,7 @@ async fn cloud_eval_lines_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<Vec<crate::cloud_eval::MoveLine>> {
     let zobrist = fen_zobrist(&q.fen)?;
+    if q.cached_only { return Ok(Json(crate::cloud_eval::peek_lines(zobrist))); }
     if !crate::cloud_eval::settings().chessdb || crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(Vec::new())); }
     Ok(Json(crate::cloud_eval::query_lines(&q.fen, zobrist, q.refresh).await))
 }
@@ -1282,6 +1288,7 @@ async fn lichess_eval_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<crate::cloud_eval::LichessEval> {
     let zobrist = fen_zobrist(&q.fen)?;
+    if q.cached_only { return Ok(Json(crate::cloud_eval::peek_lichess(zobrist))); }
     if !crate::cloud_eval::settings().lichess { return Ok(Json(crate::cloud_eval::disabled_lichess())); }
     if crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(crate::cloud_eval::capped_lichess())); }
     Ok(Json(crate::cloud_eval::query_lichess(&q.fen, zobrist, q.refresh).await))
@@ -1790,6 +1797,9 @@ async fn engines_enabled_handler(State(state): State<AppState>) -> Json<serde_js
 struct EngineRepliesQuery {
     fen: String,
     engine: Option<String>,
+    /// Only what has been counted before; never starts the helper.
+    #[serde(default)]
+    cached_only: bool,
 }
 
 /// Replies & Strong for the position after a candidate move.
@@ -1799,7 +1809,27 @@ async fn engine_replies_handler(
 ) -> ApiResult<crate::engine::ReplyCount> {
     let fen = crate::engine::clean_fen(&q.fen).ok_or((StatusCode::BAD_REQUEST, "not a legal position".to_string()))?;
     let engine = pick_engine(&state, &WhichEngine { engine: q.engine.clone() })?;
+    if q.cached_only {
+        return engine.cached_replies(&fen).await.map(Json).ok_or((StatusCode::NOT_FOUND, "not counted yet".to_string()));
+    }
     engine.count_replies(&fen).await.map(Json).map_err(|e| (StatusCode::CONFLICT, e))
+}
+
+#[derive(Deserialize)]
+struct EngineRememberedQuery {
+    fen: String,
+    engine: Option<String>,
+}
+
+/// The deepest result remembered for a position, without searching — what
+/// a paused or finished engine shows when stepping through a game.
+async fn engine_remembered_handler(
+    State(state): State<AppState>,
+    Query(q): Query<EngineRememberedQuery>,
+) -> ApiResult<crate::engine::Snapshot> {
+    let fen = crate::engine::clean_fen(&q.fen).ok_or((StatusCode::BAD_REQUEST, "not a legal position".to_string()))?;
+    let engine = pick_engine(&state, &WhichEngine { engine: q.engine.clone() })?;
+    engine.remembered(&fen).await.map(Json).ok_or((StatusCode::NOT_FOUND, "nothing remembered".to_string()))
 }
 
 async fn engine_status_handler(State(state): State<AppState>, Query(w): Query<WhichEngine>) -> ApiResult<crate::engine::EngineStatus> {
@@ -2562,6 +2592,7 @@ pub async fn run(
         .route("/engine/stop",                         post(engine_stop_handler))
         .route("/engines",                             get(engines_enabled_handler))
         .route("/engine/replies",                      get(engine_replies_handler))
+        .route("/engine/remembered",                   get(engine_remembered_handler))
         .route("/engine/bench",                        post(engine_bench_handler))
         .route("/cloud-eval/lines",                    get(cloud_eval_lines_handler))
         .route("/cloud-eval/queue",                    post(cloud_eval_queue_handler))
