@@ -1810,6 +1810,26 @@ async fn engine_analyse_handler(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
+#[derive(Deserialize, Default)]
+struct EngineBenchBody {
+    threads: Option<u32>,
+    hash_mb: Option<u32>,
+    depth: Option<u32>,
+}
+
+/// Stockfish's benchmark with the given (or current) threads and hash.
+async fn engine_bench_handler(
+    State(state): State<AppState>,
+    Json(body): Json<EngineBenchBody>,
+) -> ApiResult<crate::engine::BenchResult> {
+    state
+        .engine
+        .bench(body.threads, body.hash_mb, body.depth)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::CONFLICT, e))
+}
+
 async fn engine_stop_handler(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
     let gen = state.engine.current_gen();
     state.engine.stop(gen).await;
@@ -2428,6 +2448,7 @@ pub async fn run(
         .route("/engine",                              get(engine_status_handler).put(engine_configure_handler))
         .route("/engine/analyse",                      get(engine_analyse_handler))
         .route("/engine/stop",                         post(engine_stop_handler))
+        .route("/engine/bench",                        post(engine_bench_handler))
         .route("/cloud-eval/lines",                    get(cloud_eval_lines_handler))
         .route("/cloud-eval/queue",                    post(cloud_eval_queue_handler))
         .route("/cloud-eval/watch",                    post(cloud_watch_add_handler).delete(cloud_watch_delete_handler))

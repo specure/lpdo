@@ -132,7 +132,7 @@ export default function LocalEngine({
         <span className="min-w-0 truncate" title={status.path ?? undefined}>
           {status.name ?? "Engine"}{snap ? ` · depth ${snap.depth}` : ""}
           {snap?.cached
-            ? <span title="Remembered from an earlier search; the engine is deepening it"> · remembered</span>
+            ? <span title="Remembered from an earlier search; the engine is deepening it"> (cached)</span>
             : speed ? ` · ${speed}` : ""}
         </span>
         <button

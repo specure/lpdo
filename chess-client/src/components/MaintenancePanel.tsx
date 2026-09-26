@@ -235,6 +235,8 @@ interface EngineInfo {
   settings_file: string;
   latest: { version: string; url: string } | null;
   update_available: boolean;
+  cores: number;
+  memory_mb: number | null;
 }
 
 function EngineSection() {
@@ -342,8 +344,213 @@ function EngineSection() {
       )}
       {note && <p className="text-body-sm text-success">{note}</p>}
       {error && <p className="text-body-sm text-error">{error}</p>}
+      {info?.available && info.name?.startsWith("Stockfish") && (
+        <EngineBench
+          info={info}
+          threads={Number.isFinite(t) ? t : info.settings.threads}
+          hash={Number.isFinite(h) ? h : info.settings.hash_mb}
+          onApply={(threads, hash_mb) => void save({ threads, hash_mb })}
+        />
+      )}
     </SectionCard>
   );
+}
+
+// ── Engine benchmark ──────────────────────────────────────────────────────────
+// Stockfish's `bench` on the server: a fixed set of positions searched to a
+// fixed depth, reporting nodes per second and the time taken. One run uses the
+// threads and hash in the fields above; "Find the best settings" runs a series.
+// Results collect in a table so configurations can be compared.
+interface BenchResult { engine: string; threads: number; hash_mb: number; depth: number; nodes: number; nps: number; ms: number }
+const BENCH_KEY = "engineBenchResults";
+const DEPTHS = [
+  { depth: 13, label: "Quick" },
+  { depth: 16, label: "Standard" },
+  { depth: 20, label: "Long" },
+] as const;
+
+async function runBench(threads: number, hash_mb: number, depth: number): Promise<BenchResult> {
+  const r = await fetch(apiUrl("/engine/bench"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ threads, hash_mb, depth }),
+  });
+  if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
+  return (await r.json()) as BenchResult;
+}
+
+/** The thread counts worth trying: powers of two up to the core count, and
+ *  the core count itself. */
+function threadSteps(cores: number): number[] {
+  const out: number[] = [];
+  for (let n = 1; n < cores; n *= 2) out.push(n);
+  out.push(cores);
+  return out;
+}
+
+/** Hash sizes to try: 64 MB up by fourfold, at most an eighth of the server's
+ *  memory (it holds the database too), and never past 8 GB. */
+function hashSteps(memoryMb: number | null): number[] {
+  const cap = Math.min(8192, memoryMb ? Math.floor(memoryMb / 8) : 1024);
+  const out: number[] = [];
+  for (let m = 64; m <= cap; m *= 4) out.push(m);
+  return out.length ? out : [64];
+}
+
+function EngineBench({ info, threads, hash, onApply }: {
+  info: EngineInfo; threads: number; hash: number; onApply: (threads: number, hash_mb: number) => void;
+}) {
+  const [depth, setDepth] = useState<number>(16);
+  const [results, setResults] = useState<BenchResult[]>(() => {
+    try { return JSON.parse(localStorage.getItem(BENCH_KEY) ?? "[]") as BenchResult[]; } catch { return []; }
+  });
+  const [running, setRunning] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [advice, setAdvice] = useState<{ threads: number; hash_mb: number; why: string } | null>(null);
+  const cancelled = useRef(false);
+
+  function keep(r: BenchResult) {
+    setResults((prev) => {
+      const next = [r, ...prev].slice(0, 40);
+      try { localStorage.setItem(BENCH_KEY, JSON.stringify(next)); } catch { /* per-device convenience only */ }
+      return next;
+    });
+  }
+
+  async function once() {
+    setError(null);
+    setRunning(`Running: ${threads} threads, ${hash} MB, depth ${depth}…`);
+    try { keep(await runBench(threads, hash, depth)); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setRunning(null); }
+  }
+
+  /** Threads first — speed in nodes per second at a fixed hash, depth 13 so
+   *  the single-thread run stays short — then hash at the chosen threads,
+   *  measured as the time to the chosen depth. */
+  async function findBest() {
+    setError(null);
+    setAdvice(null);
+    cancelled.current = false;
+    const tSteps = threadSteps(info.cores);
+    const hSteps = hashSteps(info.memory_mb);
+    const total = tSteps.length + hSteps.length;
+    let step = 0;
+    try {
+      const byThreads: BenchResult[] = [];
+      for (const n of tSteps) {
+        if (cancelled.current) return;
+        step += 1;
+        setRunning(`Step ${step} of ${total}: ${n} thread${n === 1 ? "" : "s"}…`);
+        const r = await runBench(n, 256, 13);
+        keep(r);
+        byThreads.push(r);
+      }
+      const fastest = Math.max(...byThreads.map((r) => r.nps));
+      const pick = byThreads.find((r) => r.nps >= 0.9 * fastest) ?? byThreads[byThreads.length - 1];
+
+      const byHash: BenchResult[] = [];
+      for (const m of hSteps) {
+        if (cancelled.current) return;
+        step += 1;
+        setRunning(`Step ${step} of ${total}: ${m} MB hash at ${pick.threads} threads…`);
+        const r = await runBench(pick.threads, m, depth);
+        keep(r);
+        byHash.push(r);
+      }
+      const quickest = Math.min(...byHash.map((r) => r.ms));
+      const hashPick = byHash.find((r) => r.ms <= 1.05 * quickest) ?? byHash[byHash.length - 1];
+      setAdvice({
+        threads: pick.threads,
+        hash_mb: hashPick.hash_mb,
+        why: `${pick.threads} threads reach ${Math.round((pick.nps / fastest) * 100)}% of the top speed (${fmtNps(fastest)}), leaving the other cores to the server's queries; ${hashPick.hash_mb} MB is within 5% of the quickest time to depth ${depth}.`,
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunning(null);
+    }
+  }
+
+  const btn = "h-8 px-3 inline-flex items-center rounded-full text-primary text-label-md hover:bg-primary/8 active:bg-primary/12 disabled:opacity-40 transition-colors duration-short3 ease-standard";
+  return (
+    <div className="space-y-2 pt-2 border-t border-outline/40">
+      <div className="flex items-center gap-2 flex-wrap text-body-sm text-on-surface">
+        <span className="text-title-sm">Benchmark</span>
+        <div className="inline-flex items-center gap-0.5 p-0.5 bg-surface-container rounded-full">
+          {DEPTHS.map((d) => (
+            <button
+              key={d.depth}
+              onClick={() => setDepth(d.depth)}
+              aria-pressed={depth === d.depth}
+              className={`h-6 px-2.5 rounded-full text-label-sm ${depth === d.depth ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:text-on-surface"}`}
+              title={`Search the benchmark positions to depth ${d.depth}`}
+            >
+              {d.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex-1" />
+        <ActionButton onClick={() => void once()} disabled={running !== null}>Run with these settings</ActionButton>
+        <button onClick={() => void findBest()} disabled={running !== null} className={btn}
+          title={`Measures ${threadSteps(info.cores).join(", ")} threads, then hash sizes of ${hashSteps(info.memory_mb).join(", ")} MB — a few minutes, during which the engine does not analyse.`}>
+          Find the best settings
+        </button>
+      </div>
+      <p className="text-label-sm text-on-surface-variant">
+        Stockfish's own benchmark: a fixed set of positions searched to a fixed depth. Speed shows what
+        threads bring; the time to depth shows what hash brings. The engine does not analyse while it runs.
+      </p>
+      {running && (
+        <div className="flex items-center gap-2 text-body-sm text-on-surface">
+          <span>{running}</span>
+          <button onClick={() => { cancelled.current = true; }} className={btn}>Stop after this step</button>
+        </div>
+      )}
+      {advice && (
+        <div className="rounded-md bg-secondary-container text-on-secondary-container p-3 text-body-sm space-y-2">
+          <div><b>Suggested: {advice.threads} threads, {advice.hash_mb} MB hash.</b> {advice.why}</div>
+          <ActionButton onClick={() => { onApply(advice.threads, advice.hash_mb); setAdvice(null); }}>Use these settings</ActionButton>
+        </div>
+      )}
+      {error && <p className="text-body-sm text-error">{error}</p>}
+      {results.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-body-sm tabular-nums">
+            <thead className="text-label-sm text-on-surface-variant">
+              <tr className="text-right">
+                <th className="text-left font-normal py-1">Engine</th>
+                <th className="font-normal">Threads</th>
+                <th className="font-normal">Hash</th>
+                <th className="font-normal">Depth</th>
+                <th className="font-normal">Speed</th>
+                <th className="font-normal">Time</th>
+              </tr>
+            </thead>
+            <tbody>
+              {results.map((r, i) => (
+                <tr key={i} className="text-right border-t border-outline/20">
+                  <td className="text-left py-0.5">{r.engine}</td>
+                  <td>{r.threads}</td>
+                  <td>{r.hash_mb} MB</td>
+                  <td>{r.depth}</td>
+                  <td>{fmtNps(r.nps)}</td>
+                  <td>{(r.ms / 1000).toFixed(1)} s</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <button onClick={() => { setResults([]); try { localStorage.removeItem(BENCH_KEY); } catch { /* ignore */ } }} className={`${btn} mt-1`}>
+            Clear results
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function fmtNps(nps: number): string {
+  return nps >= 1e6 ? `${(nps / 1e6).toFixed(1)} Mn/s` : `${Math.round(nps / 1e3)} kn/s`;
 }
 
 // Diagnostics — the crash log, readable after the reload that follows a crash.

@@ -90,6 +90,10 @@ pub struct EngineStatus {
     pub latest: Option<LatestRelease>,
     /// A Stockfish older than the newest release is running.
     pub update_available: bool,
+    /// The server's logical processors and memory, for choosing threads and
+    /// hash (memory is None where it cannot be read).
+    pub cores: u32,
+    pub memory_mb: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -159,6 +163,8 @@ pub struct Engine {
     remembered: Arc<std::sync::Mutex<Remembered>>,
     /// The newest Stockfish release and when it was looked up.
     latest: Mutex<Option<(std::time::Instant, Option<LatestRelease>)>>,
+    /// Held while a benchmark runs.
+    benching: Mutex<()>,
 }
 
 /// The deepest result reached for each position, while the server runs.
@@ -224,6 +230,7 @@ impl Engine {
             gen: AtomicU64::new(0),
             remembered: Arc::new(std::sync::Mutex::new(Remembered::default())),
             latest: Mutex::new(None),
+            benching: Mutex::new(()),
         })
     }
 
@@ -316,6 +323,8 @@ impl Engine {
             version,
             latest,
             update_available,
+            cores: std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1),
+            memory_mb: memory_mb(),
         }
     }
 
@@ -471,6 +480,63 @@ impl Engine {
     pub fn current_gen(&self) -> u64 {
         self.gen.load(Ordering::SeqCst)
     }
+
+    /// Run Stockfish's own benchmark — a fixed set of positions searched to
+    /// `depth` — with the given threads and hash, in a separate process, and
+    /// report its speed. The analysis engine is stopped first so the two do
+    /// not share the processor, and only one benchmark runs at a time.
+    pub async fn bench(&self, threads: Option<u32>, hash_mb: Option<u32>, depth: Option<u32>) -> Result<BenchResult, String> {
+        let _one = self.benching.try_lock().map_err(|_| "a benchmark is already running".to_string())?;
+        self.ensure_started().await?;
+        let (path, name) = {
+            let r = self.running.lock().await;
+            let r = r.as_ref().ok_or("no engine")?;
+            (r.path.clone(), r.name.clone())
+        };
+        if !name.starts_with("Stockfish") {
+            return Err(format!("the benchmark is Stockfish's own; {name} has none LPDO knows how to run"));
+        }
+        let settings = self.settings.lock().await.clone();
+        let threads = threads.unwrap_or(settings.threads).clamp(1, 256);
+        let hash_mb = hash_mb.unwrap_or(settings.hash_mb).clamp(16, 65536);
+        let depth = depth.unwrap_or(16).clamp(1, 30);
+        self.stop(self.current_gen()).await;
+
+        let out = tokio::time::timeout(
+            Duration::from_secs(20 * 60),
+            Command::new(&path)
+                .args(["bench", &hash_mb.to_string(), &threads.to_string(), &depth.to_string()])
+                .stdin(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .map_err(|_| "the benchmark took longer than 20 minutes".to_string())?
+        .map_err(|e| e.to_string())?;
+        // Stockfish writes the summary to stderr.
+        let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        let field = |label: &str| -> Option<u64> {
+            text.lines()
+                .find(|l| l.trim_start().starts_with(label))
+                .and_then(|l| l.split(':').nth(1))
+                .and_then(|v| v.trim().parse().ok())
+        };
+        match (field("Nodes searched"), field("Nodes/second"), field("Total time (ms)")) {
+            (Some(nodes), Some(nps), Some(ms)) => Ok(BenchResult { engine: name, threads, hash_mb, depth, nodes, nps, ms }),
+            _ => Err("the engine's benchmark printed no result".to_string()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct BenchResult {
+    pub engine: String,
+    pub threads: u32,
+    pub hash_mb: u32,
+    pub depth: u32,
+    pub nodes: u64,
+    pub nps: u64,
+    pub ms: u64,
 }
 
 fn is_executable(p: &Path) -> bool {
@@ -647,6 +713,13 @@ fn parse_info(t: &str) -> Option<Info> {
     Some(info)
 }
 
+/// Physical memory in MB, where the system says (Linux: /proc/meminfo).
+fn memory_mb() -> Option<u64> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let kb: u64 = text.lines().find(|l| l.starts_with("MemTotal:"))?.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kb / 1024)
+}
+
 /// How many legal moves `fen` has (already validated by `clean_fen`).
 fn legal_moves(fen: &str) -> u32 {
     use shakmaty::{fen::Fen, CastlingMode, Position};
@@ -789,6 +862,9 @@ mod tests {
         assert_eq!(s.lines[0].pv_uci[0], "h5f7");
         assert_eq!(s.lines[0].mate, Some(1));
         engine.stop(gen).await;
+        let b = engine.bench(Some(1), Some(16), Some(8)).await.unwrap();
+        println!("bench: {b:?}");
+        assert!(b.nodes > 0 && b.nps > 0);
         engine.shutdown().await;
         let _ = std::fs::remove_dir_all(&dir);
     }
