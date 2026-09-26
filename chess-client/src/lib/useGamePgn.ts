@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Chess } from "chess.js";
 import { parsePgnTree } from "./parsePgnTree";
+import { parseBlockTags } from "./pgnEditor";
 
 // Fetch + parse a single DB game (by id) into a flat, read-only playback model
 // for the Games page's mini board + compact move list (#219). Linear mainline
@@ -25,6 +26,26 @@ export interface LoadedGame {
   /** The PGN has movetext, but none of it could be read as moves — shown as
    *  such, not as a game without moves (#286). */
   unreadable?: boolean;
+  /** The PGN as the server holds it — the previews offer it for copying.
+   *  Not persisted anywhere: the Analysis tabs store only ids and cursors. */
+  pgn: string | null;
+  /** Where the game can be watched online, from the PGN's own tags — Lichess
+   *  broadcasts write GameURL, and Site is a URL for online games. null when
+   *  the game names no address (most OTB games from TWIC and Megabase). */
+  gameUrl: string | null;
+}
+
+/** The game's own web address, from the first PGN tag that holds one. Tags
+ *  are free text, so anything that isn't an http(s) address is ignored — Site
+ *  is often a town ("Venice") or a service name ("chess.com INT"). */
+export function gameUrlFromPgn(pgn: string | null): string | null {
+  if (!pgn) return null;
+  const { tags } = parseBlockTags(pgn);
+  for (const name of ["GameURL", "GameUrl", "Link", "BroadcastURL", "Site"]) {
+    const value = tags.find((t) => t.name.toLowerCase() === name.toLowerCase())?.value?.trim();
+    if (value && /^https?:\/\/\S+$/i.test(value)) return value;
+  }
+  return null;
 }
 
 /** Whether a PGN has any movetext beyond its headers, comments and result. */
@@ -62,7 +83,12 @@ export async function loadGamePgn(gameId: number): Promise<LoadedGame> {
   const r = await fetch(`/api/games/${gameId}`);
   if (!r.ok) throw new Error(`Server error ${r.status}`);
   const d: { white: string; black: string; result: string | null; date: string | null; event: string | null; pgn: string | null } = await r.json();
-  return { id: gameId, white: d.white, black: d.black, result: d.result, date: d.date, event: d.event, ...buildPlayback(d.pgn) };
+  return {
+    id: gameId, white: d.white, black: d.black, result: d.result, date: d.date, event: d.event,
+    pgn: d.pgn,
+    gameUrl: gameUrlFromPgn(d.pgn),
+    ...buildPlayback(d.pgn),
+  };
 }
 
 export function useGamePgn(gameId: number | null) {

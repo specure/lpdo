@@ -5,6 +5,8 @@ import { LoadedGame } from "../lib/useGamePgn";
 import { CursorPath } from "../lib/moveTreeNav";
 import MiniBoard from "./games/MiniBoard";
 import MoveList from "./games/MoveList";
+import GamePreviewHeader from "./games/GamePreviewHeader";
+import GameMoreMenu from "./games/GameMoreMenu";
 import GameBoard from "./GameBoard";
 import CloudEngine from "./CloudEngine";
 import { useGamePgn } from "../lib/useGamePgn";
@@ -354,33 +356,23 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                 {preview && (
                   <div className="shrink-0 h-[58%] min-h-0 flex flex-col border-t border-outline/40">
                     <div className="shrink-0 px-2 py-1 flex items-center gap-2 border-b border-outline/40">
-                      {/* Who, how strong, how it ended and where — the header
-                          tags of the game, so the board below has a context
-                          without opening the game. */}
-                      <span className="min-w-0 flex-1 flex flex-col">
-                        <span className="truncate text-label-md text-on-surface">
-                          {preview.white}
-                          {preview.white_elo != null && <span className="tabular-nums opacity-70"> ({preview.white_elo})</span>}
-                          {" – "}
-                          {preview.black}
-                          {preview.black_elo != null && <span className="tabular-nums opacity-70"> ({preview.black_elo})</span>}
-                        </span>
-                        <span className="truncate text-label-sm text-on-surface-variant" title={preview.event ?? undefined}>
-                          {[
-                            preview.result === "1/2-1/2" ? "½-½" : preview.result,
-                            preview.date ?? null,
-                            preview.event,
-                            preview.round && !/^[?\-\s]*$/.test(preview.round) ? `round ${preview.round}` : null,
-                            preview.eco,
-                          ].filter(Boolean).join(" · ")}
-                        </span>
-                      </span>
+                      <GamePreviewHeader game={preview} />
+                      {previewGame && (
+                        <GameMoreMenu
+                          pgn={previewGame.pgn}
+                          fen={previewGame.fens[previewPly] ?? previewGame.fens[0]}
+                          lineSans={previewGame.moves.map((m) => m.san)}
+                          ply={previewPly}
+                          startFen={previewGame.fens[0]}
+                          gameUrl={previewGame.gameUrl}
+                        />
+                      )}
                       <button
                         onClick={() => onOpenGame(preview)}
                         className="shrink-0 text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 px-2.5 h-7 rounded-full transition-colors duration-short3 ease-standard"
                         title="Open this game in its own Analysis tab"
                       >
-                        Open in Analysis ↗
+                        Open in Analysis →
                       </button>
                       <button
                         onClick={() => setPreview(null)}

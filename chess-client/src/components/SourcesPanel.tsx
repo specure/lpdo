@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useSyncExternalStore } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import ExternalLinkIcon from "./ExternalLinkIcon";
 import {
   getSources,
   getJobs,
@@ -110,7 +111,7 @@ function SourceLink({ url }: { url: string }) {
       onClick={() => { void openUrl(url); }}
       className="text-primary hover:underline"
     >
-      {host} ↗
+      {host}<ExternalLinkIcon />
     </button>
   );
 }

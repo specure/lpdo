@@ -22,6 +22,8 @@ import {
   saveMovetextViaServer,
 } from "./MovesEditor";
 import { serializeMovetext } from "../lib/serializeMovetext";
+import { gameUrlFromPgn } from "../lib/useGamePgn";
+import GameMoreMenu from "./games/GameMoreMenu";
 import { appendScratchMove, clearScratchMarks, replayAsScratch, sansToCursor, type ScratchMove } from "../lib/scratchLine";
 import type { CalArrow, CslCircle } from "../lib/parseAnnotations";
 import { nagsToString, nagToSymbol } from "../lib/parseAnnotations";
@@ -552,8 +554,15 @@ async function exportGameToPgn(detail: GameDetail): Promise<void> {
 // progress used by soft-delete / restore.
 function GameActionsBar({
   detail, onDetailChanged, onStartEditMoves, detailsOpen, onToggleDetails, unsavedEdits = false,
+  fen, lineSans, ply, startFen,
 }: {
   detail: GameDetail;
+  /** Board position, the moves of the line being viewed and the position they
+   *  start from — what the Share menu offers to Lichess and the clipboard. */
+  fen: string;
+  lineSans: string[];
+  ply: number;
+  startFen: string;
   onDetailChanged: () => void;
   /** Fires when the user clicks "Edit game…" — host enters inline edit mode. */
   onStartEditMoves: () => void;
@@ -659,6 +668,16 @@ function GameActionsBar({
         >
           Export PGN…
         </button>
+        {/* Lichess, the clipboard, and the game's own address when its PGN
+            names one — together, so the bar keeps to one row. */}
+        <GameMoreMenu
+          pgn={detail.pgn}
+          fen={fen}
+          lineSans={lineSans}
+          ply={ply}
+          startFen={startFen}
+          gameUrl={gameUrlFromPgn(detail.pgn)}
+        />
         {/* Restore stays inline with the other actions — it's a recovery action,
             not destructive. Delete is broken out as a separate icon button on
             the right, in error colour, so it can't be confused with edit/export. */}
@@ -1799,6 +1818,10 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
         {!movesEditor.active && (
           <GameActionsBar
             detail={detail}
+            fen={currentFen}
+            startFen={useAnnotated ? annotatedGame!.startFen : (fens[0] ?? "")}
+            lineSans={useAnnotated ? sansToCursor(breadcrumbs, activeLine, activeLine.length) : moves.map((m) => m.san)}
+            ply={useAnnotated ? sansToCursor(breadcrumbs, activeLine, activeIndex).length : currentIndex}
             onDetailChanged={() => { setDetailReloadKey((k) => k + 1); onGameMutated?.(); }}
             onStartEditMoves={() => {
               if (!annotatedGame) return;
