@@ -65,7 +65,6 @@ export default function PrintDialog({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const markers = list.reduce((n, g) => n + (g.pgn?.match(/\[#\]/g) ?? []).length, 0);
   const printable = list.filter((g) => g.pgn);
 
   // The preview: the document as the options stand, and its pages drawn.
@@ -203,21 +202,13 @@ export default function PrintDialog({
                 ? (many ? `Export ${printable.length} games as PDF` : "Export as PDF")
                 : (many ? `Print ${printable.length} games` : "Print this game")}
             </h2>
-            <p className="text-body-sm text-on-surface-variant mt-1">
-              {pages.length > 0 && drawing === null ? `${pages.length} page${pages.length === 1 ? "" : "s"}. ` : ""}
-              {many ? "The games follow one another in the order they are open. " : ""}
-              {primary === "save"
-                ? `The ${many ? "games themselves travel" : "game itself travels"} inside the file, so the PDF can be added back to the database like a PGN.`
-                : "The pages go to your system's print dialog. (A file saved from there is a picture of the pages; Export as PDF makes one that reads back into the database.)"}
-            </p>
+            {/* The pages themselves say the rest; only the count is worth a line. */}
+            {pages.length > 0 && drawing === null && (
+              <p className="text-body-sm text-on-surface-variant mt-1">{pages.length} page{pages.length === 1 ? "" : "s"}</p>
+            )}
           </div>
 
           <div className="space-y-2">
-            <p className="text-body-sm text-on-surface-variant">
-              {markers > 0
-                ? `${markers} diagram${markers > 1 ? "s" : ""} marked in the game${many ? "s" : ""} will be drawn.`
-                : `${many ? "These games mark" : "This game marks"} no diagrams. Add one while editing, with the Diagram button.`}
-            </p>
             {many && (
               <>
                 <label className="flex items-center gap-2 text-body-sm text-on-surface">
