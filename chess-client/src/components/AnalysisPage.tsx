@@ -79,7 +79,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
   const setRailMenu = (open: boolean) => { if (!open) setMenuAt(null); };
   const railMenuRef = useRef<HTMLDivElement>(null);
   const [railNote, setRailNote] = useState<string | null>(null);
-  const [pdfGames, setPdfGames] = useState<ExportableGame[] | null>(null);
+  const [pdfGames, setPdfGames] = useState<{ games: ExportableGame[]; primary: "print" | "save" } | null>(null);
   useEffect(() => {
     if (!railMenu) return;
     const onDown = (e: MouseEvent) => {
@@ -116,13 +116,13 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
       setRailNote(`Could not export: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
-  async function printPdf() {
+  async function printPdf(primary: "print" | "save") {
     setRailMenu(false);
     const list = targets();
     try {
       const pgns = await fetchPgns(list.map((t) => t.game.id));
       // Each game prints the way its board stands: no orientation question.
-      setPdfGames(list.map((t, i) => ({ ...t.game, pgn: pgns[i], flipped: t.flipped })));
+      setPdfGames({ games: list.map((t, i) => ({ ...t.game, pgn: pgns[i], flipped: t.flipped })), primary });
     } catch (e) {
       setRailNote(`Could not load the games: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -284,7 +284,8 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
               return (
                 <div style={{ position: "fixed", left: menuAt!.x, top: menuAt!.y }} className="z-30 py-1 rounded-md bg-surface-container-high shadow-xl min-w-52">
                   <button className={item} onClick={() => void exportPgn()}>Export {which} as PGN…</button>
-                  <button className={item} onClick={() => void printPdf()}>Print {which}…</button>
+                  <button className={item} onClick={() => void printPdf("save")}>Export {which} as PDF…</button>
+                  <button className={item} onClick={() => void printPdf("print")}>Print {which}…</button>
                   <div className="my-1 h-px bg-outline-variant" />
                   {pickedNow.length > 0 && (
                     <button className={item} onClick={() => { setRailMenu(false); onCloseMany(pickedNow); setPicked(new Set()); }}>
@@ -542,7 +543,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
         </Panel>
       </Group>
       {pdfGames && (
-        <PrintDialog games={pdfGames} flipped={active?.flipped ?? false} onClose={() => setPdfGames(null)} />
+        <PrintDialog games={pdfGames.games} primary={pdfGames.primary} flipped={active?.flipped ?? false} onClose={() => setPdfGames(null)} />
       )}
     </div>
   );

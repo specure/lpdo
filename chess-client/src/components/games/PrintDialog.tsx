@@ -31,6 +31,7 @@ export default function PrintDialog({
   detail,
   games,
   flipped,
+  primary = "print",
   onClose,
 }: {
   /** The one game to print — or, with `games`, ignored. */
@@ -39,6 +40,9 @@ export default function PrintDialog({
   games?: ExportableGame[];
   /** The board's current orientation, offered as the diagrams' point of view. */
   flipped: boolean;
+  /** Which way out is the filled button: the one the menu entry named. Both
+   *  are always offered — they are the same pages. */
+  primary?: "print" | "save";
   onClose: () => void;
 }) {
   const list = games ?? (detail ? [detail] : []);
@@ -126,7 +130,11 @@ export default function PrintDialog({
         onClick={(e) => e.stopPropagation()}
       >
         <div>
-          <h2 className="text-title-lg text-on-surface">{many ? `Print ${printable.length} games` : "Print this game"}</h2>
+          <h2 className="text-title-lg text-on-surface">
+            {primary === "save"
+              ? (many ? `Export ${printable.length} games as PDF` : "Export as PDF")
+              : (many ? `Print ${printable.length} games` : "Print this game")}
+          </h2>
           <p className="text-body-sm text-on-surface-variant mt-1">
             Two columns on A4, the main line in bold and variations in brackets.
             {many ? " The games follow one another in the order they are open." : ""} Print opens the pages in
@@ -190,20 +198,24 @@ export default function PrintDialog({
           >
             Cancel
           </button>
-          <button
-            onClick={() => void doSave()}
-            disabled={busy !== null || printable.length === 0}
-            className="h-9 px-4 inline-flex items-center rounded-full text-primary text-label-lg hover:bg-primary/8 disabled:opacity-50 transition-colors duration-short3 ease-standard"
-          >
-            {busy === "save" ? "Writing…" : "Save as PDF…"}
-          </button>
-          <button
-            onClick={() => void doPrint()}
-            disabled={busy !== null || printable.length === 0}
-            className="h-9 px-4 inline-flex items-center rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 disabled:opacity-50 transition-all duration-short3 ease-standard"
-          >
-            {busy === "print" ? "Preparing…" : "Print…"}
-          </button>
+          {([
+            { key: "save", run: doSave, label: busy === "save" ? "Writing…" : "Save as PDF…" },
+            { key: "print", run: doPrint, label: busy === "print" ? "Preparing…" : "Print…" },
+          ] as { key: "print" | "save"; run: () => Promise<void>; label: string }[])
+            // The way out the menu entry named sits last, filled.
+            .sort((a, b) => (a.key === primary ? 1 : 0) - (b.key === primary ? 1 : 0))
+            .map((b) => (
+              <button
+                key={b.key}
+                onClick={() => void b.run()}
+                disabled={busy !== null || printable.length === 0}
+                className={b.key === primary
+                  ? "h-9 px-4 inline-flex items-center rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 disabled:opacity-50 transition-all duration-short3 ease-standard"
+                  : "h-9 px-4 inline-flex items-center rounded-full text-primary text-label-lg hover:bg-primary/8 disabled:opacity-50 transition-colors duration-short3 ease-standard"}
+              >
+                {b.label}
+              </button>
+            ))}
         </div>
       </div>
     </div>

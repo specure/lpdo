@@ -557,7 +557,7 @@ async function exportGameToPgn(detail: GameDetail): Promise<void> {
 // progress used by soft-delete / restore.
 function GameActionsBar({
   detail, onDetailChanged, onStartEditMoves, detailsOpen, onToggleDetails, unsavedEdits = false,
-  fen, lineSans, ply, startFen, onExportPdf,
+  fen, lineSans, ply, startFen, onExportPdf, onPrint,
 }: {
   detail: GameDetail;
   /** Board position, the moves of the line being viewed and the position they
@@ -566,8 +566,10 @@ function GameActionsBar({
   lineSans: string[];
   ply: number;
   startFen: string;
-  /** Opens the Print dialog (the board has the whole game in hand). */
+  /** Open the Print dialog with Save as PDF, or with Print, leading — the
+   *  board has the whole game in hand. */
   onExportPdf: () => void;
+  onPrint: () => void;
   onDetailChanged: () => void;
   /** Fires when the user clicks "Edit game…" — host enters inline edit mode. */
   onStartEditMoves: () => void;
@@ -676,6 +678,7 @@ function GameActionsBar({
           gameUrl={gameUrlFromPgn(detail.pgn)}
           onExportPgn={() => void handleExport()}
           onExportPdf={onExportPdf}
+          onPrint={onPrint}
         />
         {/* Restore stays inline with the other actions — it's a recovery action,
             not destructive. Delete is broken out as a separate icon button on
@@ -853,7 +856,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   // board came first in the DOM, its squares measured 0 wide, and every move
   // on the Analysis board threw "Square width not found" (#283).
   const boardId = useRef(`game-board-${++boardInstances}`).current;
-  const [pdfOpen, setPdfOpen] = useState(false);
+  const [pdfOpen, setPdfOpen] = useState<"print" | "save" | null>(null);
   const [detailsOpen, setDetailsOpen] = useState<boolean>(
     () => localStorage.getItem("gameDetailsOpen") === "1"
   );
@@ -1825,7 +1828,8 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
         {!movesEditor.active && (
           <GameActionsBar
             detail={detail}
-            onExportPdf={() => setPdfOpen(true)}
+            onExportPdf={() => setPdfOpen("save")}
+            onPrint={() => setPdfOpen("print")}
             fen={currentFen}
             startFen={useAnnotated ? annotatedGame!.startFen : (fens[0] ?? "")}
             lineSans={useAnnotated ? sansToCursor(breadcrumbs, activeLine, activeLine.length) : moves.map((m) => m.san)}
@@ -2081,7 +2085,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
           </div>
 
           {pdfOpen && detail && (
-        <PrintDialog detail={detail} flipped={flipped} onClose={() => setPdfOpen(false)} />
+        <PrintDialog detail={detail} flipped={flipped} primary={pdfOpen} onClose={() => setPdfOpen(null)} />
       )}
       {/* Variation choice menu — M3 menu surface (works in view & edit mode) */}
           {varChoice && (
