@@ -21,7 +21,7 @@ import { loadGamePgn } from "./lib/useGamePgn";
 import { CursorPath } from "./lib/moveTreeNav";
 import { setAppVersion as setCrashAppVersion, setCrashContext } from "./lib/crashLog";
 import HomeEmptyState from "./components/HomeEmptyState";
-import UpdateBanner from "./components/UpdateBanner";
+import UpdateBanner, { EngineUpdateBanner } from "./components/UpdateBanner";
 
 /** How many games the Analysis board holds at once. Each open game keeps its
  *  parsed PGN and draws a mini board in the rail, and the rail is meant to be
@@ -793,6 +793,7 @@ export default function App() {
       {showUpdate && updateState && (
         <UpdateBanner state={updateState} onDismiss={dismissUpdate} />
       )}
+      <EngineUpdateBanner serverVersion={status === "connected" ? info?.version ?? null : null} />
 
       {/* Body */}
 
