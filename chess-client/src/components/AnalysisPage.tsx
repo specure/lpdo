@@ -362,6 +362,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                           pgn={previewGame.pgn}
                           fen={previewGame.fens[previewPly] ?? previewGame.fens[0]}
                           lineSans={previewGame.moves.map((m) => m.san)}
+                          ply={previewPly}
                           startFen={previewGame.fens[0]}
                           gameUrl={previewGame.gameUrl}
                         />

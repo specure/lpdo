@@ -554,13 +554,14 @@ async function exportGameToPgn(detail: GameDetail): Promise<void> {
 // progress used by soft-delete / restore.
 function GameActionsBar({
   detail, onDetailChanged, onStartEditMoves, detailsOpen, onToggleDetails, unsavedEdits = false,
-  fen, lineSans, startFen,
+  fen, lineSans, ply, startFen,
 }: {
   detail: GameDetail;
   /** Board position, the moves of the line being viewed and the position they
    *  start from — what the Share menu offers to Lichess and the clipboard. */
   fen: string;
   lineSans: string[];
+  ply: number;
   startFen: string;
   onDetailChanged: () => void;
   /** Fires when the user clicks "Edit game…" — host enters inline edit mode. */
@@ -673,6 +674,7 @@ function GameActionsBar({
           pgn={detail.pgn}
           fen={fen}
           lineSans={lineSans}
+          ply={ply}
           startFen={startFen}
           gameUrl={gameUrlFromPgn(detail.pgn)}
         />
@@ -1819,6 +1821,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             fen={currentFen}
             startFen={useAnnotated ? annotatedGame!.startFen : (fens[0] ?? "")}
             lineSans={useAnnotated ? sansToCursor(breadcrumbs, activeLine, activeLine.length) : moves.map((m) => m.san)}
+            ply={useAnnotated ? sansToCursor(breadcrumbs, activeLine, activeIndex).length : currentIndex}
             onDetailChanged={() => { setDetailReloadKey((k) => k + 1); onGameMutated?.(); }}
             onStartEditMoves={() => {
               if (!annotatedGame) return;

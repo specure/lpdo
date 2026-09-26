@@ -673,6 +673,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                                     pgn={loadedGame.pgn}
                                     fen={loadedGame.fens[selectedPly] ?? loadedGame.fens[0]}
                                     lineSans={loadedGame.moves.map((m) => m.san)}
+                                    ply={selectedPly}
                                     startFen={loadedGame.fens[0]}
                                     gameUrl={loadedGame.gameUrl}
                                   />

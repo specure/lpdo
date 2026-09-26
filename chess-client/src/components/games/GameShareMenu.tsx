@@ -8,7 +8,9 @@ import { pvString } from "../CloudEngine";
 //
 // Lichess reads both forms straight from the address:
 //   https://lichess.org/analysis/<fen, spaces as underscores>
-//   https://lichess.org/analysis/pgn/<movetext>
+//   https://lichess.org/analysis/pgn/<movetext>#<ply>
+// The trailing ply is what stops Lichess landing on the final position: it is
+// counted in half-moves from the start of the movetext.
 
 interface Props {
   /** The game's PGN, for copying. null while it is still loading. */
@@ -17,6 +19,9 @@ interface Props {
   fen: string;
   /** Moves of the line being viewed, from the start of the game. */
   lineSans: string[];
+  /** Half-moves from the start to the position on screen — where Lichess
+   *  should open the line. 0 puts it at the starting position. */
+  ply: number;
   /** Position the line starts from — the game's start, which is not the
    *  standard one in a game set up from a diagram. */
   startFen: string;
@@ -28,11 +33,12 @@ export function lichessPositionUrl(fen: string): string {
   return `https://lichess.org/analysis/${fen.replace(/ /g, "_")}`;
 }
 
-export function lichessGameUrl(startFen: string, sans: string[]): string {
-  return `https://lichess.org/analysis/pgn/${encodeURIComponent(pvString(startFen, sans))}`;
+export function lichessGameUrl(startFen: string, sans: string[], ply = 0): string {
+  const at = Math.max(0, Math.min(ply, sans.length));
+  return `https://lichess.org/analysis/pgn/${encodeURIComponent(pvString(startFen, sans))}#${at}`;
 }
 
-export default function GameShareMenu({ pgn, fen, lineSans, startFen, gameUrl }: Props) {
+export default function GameShareMenu({ pgn, fen, lineSans, ply, startFen, gameUrl }: Props) {
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -81,7 +87,7 @@ export default function GameShareMenu({ pgn, fen, lineSans, startFen, gameUrl }:
               Open where it was played ↗
             </button>
           )}
-          <button className={item} onClick={() => go(lichessGameUrl(startFen, lineSans))} disabled={lineSans.length === 0}>
+          <button className={item} onClick={() => go(lichessGameUrl(startFen, lineSans, ply))} disabled={lineSans.length === 0}>
             Analyse this line on Lichess ↗
           </button>
           <button className={item} onClick={() => go(lichessPositionUrl(fen))}>
