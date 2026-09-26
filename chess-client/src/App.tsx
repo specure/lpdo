@@ -361,9 +361,15 @@ export default function App() {
   // merging the anchor with one Ctrl/Cmd-clicked co-selection.
   const [profileOpen, setProfileOpen] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
-  const mergeOther = selectedExtras.length === 1 ? selectedExtras[0] : null;
-  // Prefer keeping the FIDE-linked record (the dialog's Swap can flip it).
-  const mergeSwap = !!mergeOther?.fide_id && !selectedPlayer?.fide_id;
+  // Everyone Ctrl/Cmd-clicked alongside the anchor. A player can reach the
+  // database under several spellings, so any number of them can be merged at
+  // once; the dialog picks which record survives.
+  const mergeGroup = selectedPlayer ? [selectedPlayer, ...selectedExtras] : [];
+  // Prefer keeping the FIDE-linked record, then the one with the most games —
+  // the dialog's "Keep instead" can override.
+  const mergeKeep = [...mergeGroup].sort(
+    (a, b) => Number(!!b.fide_id) - Number(!!a.fide_id) || b.game_count - a.game_count,
+  )[0] ?? null;
   const playerChip = "shrink-0 inline-flex items-center h-7 px-3 rounded-full text-label-md border border-outline text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard";
 
   // Analysis board (#220): several games open at once as mini-board tabs.
@@ -493,12 +499,13 @@ export default function App() {
   const [playerReloadKey, setPlayerReloadKey] = useState(0);
   // Merging a duplicate away changes the kept player's games and deletes the
   // dropped record — refresh everything that could still be showing it.
-  const handlePlayersMerged = (_keepId: number, dropId: number) => {
+  const handlePlayersMerged = (_keepId: number, dropIds: number[]) => {
+    const dropped = dropIds;
     refreshServerStatus();
     onGameMutated();                       // kept player's games changed
     setPlayerReloadKey((k) => k + 1);      // refresh player search results
-    removeRecentPlayer(dropId);            // the dropped player no longer exists
-    if (selectedPlayer?.id === dropId) setSelectedPlayer(null);
+    dropped.forEach(removeRecentPlayer);   // the dropped players no longer exist
+    if (selectedPlayer && dropped.includes(selectedPlayer.id)) setSelectedPlayer(null);
     setSelectedExtras([]);
   };
   useEffect(() => {
@@ -1013,14 +1020,10 @@ export default function App() {
                   >
                     Profile
                   </button>
-                  {mergeOther ? (
+                  {selectedExtras.length > 0 ? (
                     <button onClick={() => setMergeOpen(true)} className={playerChip}>
-                      Merge these 2 players…
+                      Merge these {selectedExtras.length + 1} players…
                     </button>
-                  ) : selectedExtras.length > 0 ? (
-                    <span className="text-label-md text-on-surface-variant">
-                      {selectedExtras.length + 1} players selected — merge works with exactly 2.
-                    </span>
                   ) : (
                     <span className="text-label-md text-on-surface-variant truncate">
                       Ctrl-click a second player to merge duplicates
@@ -1080,10 +1083,10 @@ export default function App() {
           onPlayersMerged={handlePlayersMerged}
         />
       )}
-      {mergeOpen && selectedPlayer && mergeOther && (
+      {mergeOpen && mergeKeep && selectedExtras.length > 0 && (
         <MergePlayersDialog
-          initialKeep={mergeSwap ? mergeOther : selectedPlayer}
-          initialDrop={mergeSwap ? selectedPlayer : mergeOther}
+          initialKeep={mergeKeep}
+          initialDrops={mergeGroup.filter((p) => p.id !== mergeKeep.id)}
           onClose={() => setMergeOpen(false)}
           onMerged={handlePlayersMerged}
         />

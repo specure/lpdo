@@ -3,46 +3,73 @@ import { PlayerInfo } from "../types";
 import { apiUrl } from "../api";
 import PlayerPicker from "./PlayerPicker";
 
-/** Merge two duplicate player records into one: all games move to the kept
- *  player, the duplicate is deleted. Wraps POST /players/{keep}/merge/{drop}. */
+/** Merge duplicate player records into one: all games move to the kept player,
+ *  the duplicates are deleted. Wraps POST /players/{keep}/merge/{drop}, once
+ *  per duplicate — a player can reach the database under several spellings
+ *  ("Paehtz, Elisabeth", "Paehtz, E. (wh)", "Paehtz, Elisabeth GER"), and
+ *  merging them two at a time meant reopening this dialog for each one. */
 export default function MergePlayersDialog({
   initialKeep = null,
-  initialDrop = null,
+  initialDrops = [],
   onClose,
   onMerged,
 }: {
   initialKeep?: PlayerInfo | null;
-  initialDrop?: PlayerInfo | null;
+  initialDrops?: PlayerInfo[];
   onClose: () => void;
-  /** Called after a successful merge so the host can refresh. */
-  onMerged: (keepId: number, dropId: number) => void;
+  /** Called after every duplicate has been merged, with the ids that are gone. */
+  onMerged: (keepId: number, dropIds: number[]) => void;
 }) {
   const [keep, setKeep] = useState<PlayerInfo | null>(initialKeep);
-  const [drop, setDrop] = useState<PlayerInfo | null>(initialDrop);
-  const [busy, setBusy] = useState(false);
+  const [drops, setDrops] = useState<PlayerInfo[]>(initialDrops);
+  const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const ready = !!keep && !!drop && keep.id !== drop.id;
+  const targets = drops.filter((d) => d.id !== keep?.id);
+  const movedGames = targets.reduce((n, d) => n + d.game_count, 0);
+
+  // Signs that these may not be the same person. A merge cannot be undone, so
+  // they are said plainly, and a FIDE clash has to be acknowledged before the
+  // button works — automatic dedup refuses such a pair outright, and someone
+  // doing it by hand should at least have to mean it.
+  const fideClash = targets.filter((d) => keep?.fide_id && d.fide_id && d.fide_id !== keep.fide_id);
+  const surname = (n: string) => n.split(",")[0].trim().toLocaleLowerCase();
+  const otherSurnames = keep ? targets.filter((d) => surname(d.name) !== surname(keep.name)) : [];
+  const [acknowledged, setAcknowledged] = useState(false);
+  const ready = !!keep && targets.length > 0 && (fideClash.length === 0 || acknowledged);
 
   async function doMerge() {
-    if (!ready || !keep || !drop) return;
-    setBusy(true);
+    if (!ready || !keep) return;
     setError(null);
-    try {
-      const res = await fetch(apiUrl(`/players/${keep.id}/merge/${drop.id}`), { method: "POST" });
-      if (!res.ok) throw new Error((await res.text().catch(() => "")) || `${res.status}`);
-      onMerged(keep.id, drop.id);
-      onClose();
-    } catch (e) {
-      setError(String(e));
-      setBusy(false);
+    const merged: number[] = [];
+    for (const [i, drop] of targets.entries()) {
+      setBusy(targets.length > 1 ? `Merging ${i + 1} of ${targets.length}…` : "Merging…");
+      try {
+        const res = await fetch(apiUrl(`/players/${keep.id}/merge/${drop.id}`), { method: "POST" });
+        if (!res.ok) throw new Error((await res.text().catch(() => "")) || `${res.status}`);
+        merged.push(drop.id);
+      } catch (e) {
+        // Each merge stands on its own, so the ones already done are kept and
+        // reported; only the rest are abandoned.
+        setBusy(null);
+        setError(`${drop.name}: ${String(e)}${merged.length ? ` — ${merged.length} merged before this` : ""}`);
+        setDrops(targets.filter((d) => !merged.includes(d.id)));
+        if (merged.length) onMerged(keep.id, merged);
+        return;
+      }
     }
+    onMerged(keep.id, merged);
+    onClose();
   }
 
-  function swap() {
-    setKeep(drop);
-    setDrop(keep);
+  /** Make `player` the survivor; whoever was the survivor joins the duplicates. */
+  function keepInstead(player: PlayerInfo) {
+    const previous = keep;
+    setKeep(player);
+    setDrops((prev) => [...prev.filter((d) => d.id !== player.id), ...(previous ? [previous] : [])]);
   }
+
+  const rowBtn = "h-7 px-2.5 inline-flex items-center rounded-full text-label-md text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard";
 
   return (
     <div
@@ -50,47 +77,97 @@ export default function MergePlayersDialog({
       onClick={onClose}
     >
       <div
-        className="bg-surface-container-high rounded-xl shadow-2xl w-[34rem] max-w-[92vw] max-h-[88vh] flex flex-col p-6 space-y-4"
+        className="bg-surface-container-high rounded-xl shadow-2xl w-[34rem] max-w-[92vw] max-h-[88vh] overflow-y-auto flex flex-col p-6 space-y-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div>
           <h2 className="text-title-lg text-on-surface">Merge players</h2>
           <p className="text-body-sm text-on-surface-variant mt-1">
-            Move all games from a duplicate record onto the player you keep, then delete the
-            duplicate. Tip: keep the one with a FIDE ID.
+            Move all games from the duplicate records onto the player you keep, then delete the
+            duplicates. Tip: keep the one with a FIDE ID.
           </p>
         </div>
 
-        <PlayerPicker label="Keep this player" value={keep} onPick={setKeep} excludeId={drop?.id} />
+        <PlayerPicker
+          label="Keep this player"
+          value={keep}
+          onPick={setKeep}
+          excludeId={targets[0]?.id}
+        />
 
-        <div className="flex justify-center">
-          <button
-            onClick={swap}
-            disabled={!keep && !drop}
-            title="Swap which player is kept"
-            className="h-7 px-3 inline-flex items-center gap-1 rounded-full text-on-surface-variant text-label-md hover:bg-on-surface/8 disabled:opacity-40 transition-colors duration-short3 ease-standard"
-          >
-            ⇅ Swap
-          </button>
-        </div>
+        {targets.length > 0 && (
+          <div className="space-y-1">
+            <div className="text-label-md text-on-surface-variant">Merge in &amp; delete</div>
+            {targets.map((d) => (
+              <div key={d.id} className="flex items-center gap-2 px-3 py-1.5 rounded-sm bg-surface-container">
+                <span className="min-w-0 flex-1 truncate text-body-sm text-on-surface">
+                  {d.name}
+                  <span className="text-on-surface-variant">
+                    {" — "}{d.game_count.toLocaleString()} games{d.fide_id ? ` · FIDE ${d.fide_id}` : ""}
+                  </span>
+                </span>
+                <button onClick={() => keepInstead(d)} className={rowBtn} title="Keep this record instead">
+                  Keep instead
+                </button>
+                <button
+                  onClick={() => setDrops((prev) => prev.filter((p) => p.id !== d.id))}
+                  className={rowBtn}
+                  title="Leave this player alone"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
 
-        <PlayerPicker label="Merge in & delete" value={drop} onPick={setDrop} excludeId={keep?.id} />
+        <PlayerPicker
+          label={targets.length > 0 ? "Add another duplicate" : "Merge in & delete"}
+          value={null}
+          onPick={(p) => p && setDrops((prev) => (prev.some((d) => d.id === p.id) ? prev : [...prev, p]))}
+          excludeId={keep?.id}
+        />
 
-        {ready && keep && drop && (
+        {/* What the merge would do, shown whether or not it is allowed yet —
+            an unacknowledged warning must not hide the consequences. */}
+        {keep && targets.length > 0 && (
           <div className="text-body-sm text-on-surface-variant bg-surface-container rounded-sm px-3 py-2">
-            <span className="font-medium text-on-surface">{drop.game_count}</span> game(s) will move
-            from <span className="font-medium text-on-surface">{drop.name}</span> to{" "}
+            <span className="font-medium text-on-surface">{movedGames.toLocaleString()}</span> game(s) will move
+            from <span className="font-medium text-on-surface">{targets.length}</span> record
+            {targets.length > 1 ? "s" : ""} to{" "}
             <span className="font-medium text-on-surface">{keep.name}</span>
-            {keep.fide_id ? ` (FIDE ${keep.fide_id})` : ""}, then{" "}
-            <span className="font-medium text-on-surface">{drop.name}</span> is deleted. Result:{" "}
+            {keep.fide_id ? ` (FIDE ${keep.fide_id})` : ""}, then {targets.length > 1 ? "they are" : "it is"}{" "}
+            deleted. Result:{" "}
             <span className="font-medium text-on-surface">
-              {keep.name} — {keep.game_count + drop.game_count} games
+              {keep.name} — {(keep.game_count + movedGames).toLocaleString()} games
             </span>
             .
           </div>
         )}
-        {keep && drop && keep.id === drop.id && (
-          <p className="text-error text-body-sm">Pick two different players.</p>
+        {fideClash.length > 0 && keep && (
+          <div className="text-body-sm bg-error-container text-on-error-container rounded-sm px-3 py-2 space-y-2">
+            <div>
+              {fideClash.length === 1 ? "This record carries" : "These records carry"} a different FIDE ID
+              from {keep.name} (FIDE {keep.fide_id}):{" "}
+              {fideClash.map((d) => `${d.name} (FIDE ${d.fide_id})`).join(", ")}. FIDE lists them as
+              different people, and a merge cannot be undone.
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={acknowledged}
+                onChange={(e) => setAcknowledged(e.target.checked)}
+                className="accent-error"
+              />
+              <span>Merge anyway — I know these are the same player</span>
+            </label>
+          </div>
+        )}
+        {otherSurnames.length > 0 && keep && (
+          <p className="text-body-sm text-on-surface-variant">
+            Different surname from {keep.name}: {otherSurnames.map((d) => d.name).join(", ")}. Worth a
+            second look before merging.
+          </p>
         )}
         {error && <p className="text-error text-body-sm">{error}</p>}
 
@@ -103,10 +180,12 @@ export default function MergePlayersDialog({
           </button>
           <button
             onClick={() => void doMerge()}
-            disabled={!ready || busy}
+            disabled={!ready || busy !== null}
             className="h-9 px-4 inline-flex items-center rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 disabled:opacity-50 transition-all duration-short3 ease-standard"
           >
-            {busy ? "Merging…" : "Merge"}
+            {/* Counts everyone involved, the survivor included — the same
+                number the selection chip shows, and what you see in the list. */}
+            {busy ?? (targets.length > 0 ? `Merge ${targets.length + 1} players` : "Merge")}
           </button>
         </div>
       </div>
