@@ -85,3 +85,52 @@ export function clearScratchMarks(game: AnnotatedGame): AnnotatedGame {
   walk(copy.mainLine);
   return copy;
 }
+
+/** The moves leading to a cursor, as SAN, from the start of the game. */
+export function sansToCursor(breadcrumbs: { line: MoveNode[]; index: number }[], line: MoveNode[], index: number): string[] {
+  const sans: string[] = [];
+  for (const bc of breadcrumbs) sans.push(...bc.line.slice(0, bc.index).map((n) => n.san));
+  sans.push(...line.slice(0, index).map((n) => n.san));
+  return sans;
+}
+
+/** Put `sans` back on top of `game`, following the game's own moves as far as
+ *  they agree and playing the rest as a scratch line.
+ *
+ *  This is what a discarded edit leaves behind: the position stays the one the
+ *  user was looking at, and whatever of it the game doesn't hold is marked as
+ *  a scratch line rather than silently becoming part of the game. Returns null
+ *  when every move was already in the game — there is nothing to scratch, only
+ *  a cursor to move. */
+export function replayAsScratch(
+  game: AnnotatedGame,
+  sans: string[],
+): { game: AnnotatedGame; cursor: CursorPath; anchor: CursorPath; scratched: boolean } | null {
+  let tree = game;
+  let cursor: CursorPath = { steps: [], index: 0 };
+  let anchor: CursorPath | null = null;
+
+  for (const san of sans) {
+    if (!anchor) {
+      // Still walking the game's own moves: take the line that continues with
+      // this move — the line itself first, then any variation on it.
+      const at = resolvePathSafe(tree.mainLine, cursor.steps);
+      if (!at) return null;
+      const next = at.line[cursor.index];
+      if (next && next.san === san) { cursor = { ...cursor, index: cursor.index + 1 }; continue; }
+      const varIdx = next?.variations.findIndex((v) => v[0]?.san === san) ?? -1;
+      if (next && varIdx >= 0) {
+        cursor = { steps: [...cursor.steps, { node: cursor.index, varIdx }], index: 1 };
+        continue;
+      }
+      anchor = cursor;   // from here on the moves are the user's own
+    }
+    const played = appendScratchMove(tree, cursor, { san });
+    if (!played) break;  // shouldn't happen — the moves were legal when played
+    tree = played.game;
+    cursor = played.cursor;
+  }
+
+  if (!anchor) return { game, cursor, anchor: cursor, scratched: false };
+  return { game: tree, cursor, anchor, scratched: true };
+}

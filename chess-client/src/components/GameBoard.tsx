@@ -22,7 +22,7 @@ import {
   saveMovetextViaServer,
 } from "./MovesEditor";
 import { serializeMovetext } from "../lib/serializeMovetext";
-import { appendScratchMove, clearScratchMarks, type ScratchMove } from "../lib/scratchLine";
+import { appendScratchMove, clearScratchMarks, replayAsScratch, sansToCursor, type ScratchMove } from "../lib/scratchLine";
 import type { CalArrow, CslCircle } from "../lib/parseAnnotations";
 import { nagsToString, nagToSymbol } from "../lib/parseAnnotations";
 import AnnotatedMoveList from "./AnnotatedMoveList";
@@ -1309,14 +1309,28 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     setScratchFrom(piece && piece.color === chess.turn() ? square : null);
   }, [useAnnotated, movesEditor.active, currentFen, scratchFrom, tryScratchDrop]);
 
-  // Editing ended while a scratch line was carried in: a save reloads the game
-  // and clears it, a discard must take the line with it.
-  const wasEditingRef = useRef(false);
-  useEffect(() => {
-    const was = wasEditingRef.current;
-    wasEditingRef.current = movesEditor.active;
-    if (was && !movesEditor.active && scratch) discardScratch();
-  }, [movesEditor.active, scratch, discardScratch]);
+  /** Leave the editor without saving, but stay on the position being looked
+   *  at: the moves of the current line that the game doesn't hold come back as
+   *  a scratch line. Discarding an edit should not move the board somewhere
+   *  else — only take back what was about to be written. */
+  const cancelEditing = useCallback(() => {
+    const base = scratch ? scratch.saved : annotatedGame;
+    const sans = movesEditor.game
+      ? sansToCursor(movesEditor.breadcrumbs, movesEditor.activeLine, movesEditor.activeIndex)
+      : [];
+    movesEditor.cancel();
+    if (!base) return;
+    const replayed = replayAsScratch(base, sans);
+    const at = replayed ? resolvePathSafe(replayed.game.mainLine, replayed.cursor.steps) : null;
+    if (!replayed || !at) { discardScratch(); return; }
+    setScratch(replayed.scratched ? { saved: base, anchor: replayed.anchor } : null);
+    setScratchFrom(null);
+    setScratchPromotion(null);
+    setAnnotatedGame(replayed.game);
+    setActiveLine(at.line);
+    setBreadcrumbs(at.breadcrumbs);
+    setActiveIndex(Math.min(replayed.cursor.index, at.line.length));
+  }, [scratch, annotatedGame, movesEditor, discardScratch]);
 
   // Moves pushed down by the host (Reference row, Engine line). Played one by
   // one from the current position; a move that doesn't fit stops the line.
@@ -1580,7 +1594,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
         }
         if (e.key === "ArrowUp")    { e.preventDefault(); movesEditor.setCursor(0); return; }
         if (e.key === "ArrowDown")  { e.preventDefault(); movesEditor.setCursor(movesEditor.activeLine.length); return; }
-        if (e.key === "Escape")     { e.preventDefault(); movesEditor.cancel(); return; }
+        if (e.key === "Escape")     { e.preventDefault(); cancelEditing(); return; }
         return;
       }
 
@@ -1608,7 +1622,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [effectiveIndex, goTo, scratch, discardScratch, varChoice, useAnnotated, activeLine, movesEditor.active, movesEditor.pendingDivergence, movesEditor.pendingPromotion, movesEditor.activeIndex, movesEditor.activeLine, movesEditor.breadcrumbs, movesEditor.canUndo, movesEditor.canRedo]);
+  }, [effectiveIndex, goTo, scratch, discardScratch, cancelEditing, varChoice, useAnnotated, activeLine, movesEditor.active, movesEditor.pendingDivergence, movesEditor.pendingPromotion, movesEditor.activeIndex, movesEditor.activeLine, movesEditor.breadcrumbs, movesEditor.canUndo, movesEditor.canRedo]);
 
   // ── Board annotations ──────────────────────────────────────────────────
 
@@ -1828,7 +1842,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             </span>
             {/* Text button on the container */}
             <button
-              onClick={movesEditor.cancel}
+              onClick={cancelEditing}
               disabled={movesEditor.saving}
               className="h-7 px-3 inline-flex items-center rounded-full text-on-primary-container text-label-md hover:bg-on-primary-container/10 active:bg-on-primary-container/15 disabled:opacity-50 transition-colors duration-short3 ease-standard"
               title="Exit without saving"
