@@ -72,11 +72,24 @@ pub struct GameData {
 pub struct GameVisitor {
     /// None = don't collect positions; Some(n) = collect up to n half-moves.
     pub max_position_depth: Option<i16>,
+    /// Date to fall back on when a game carries none of its own — the month of
+    /// the file being imported, as "YYYY-MM-??". Lichess broadcast archives are
+    /// monthly and most of their games (99.7% of the 2025-08 file) have no Date
+    /// tag at all; without this they arrive dateless, showing nothing in the
+    /// game list and sorting below everything. The month is the file's, so a
+    /// game played just before the turn of the month gets the next one — which
+    /// is why dedup treats a month-only date as matching its neighbours too.
+    pub fallback_date: Option<String>,
 }
 
 impl GameVisitor {
     pub fn new(max_position_depth: Option<i16>) -> Self {
-        Self { max_position_depth }
+        Self { max_position_depth, fallback_date: None }
+    }
+
+    /// Same, for an import whose file names a month (see `fallback_date`).
+    pub fn with_fallback_date(max_position_depth: Option<i16>, fallback_date: Option<String>) -> Self {
+        Self { max_position_depth, fallback_date }
     }
 }
 
@@ -326,7 +339,8 @@ impl Visitor for GameVisitor {
         let resolved_date = match &t.date {
             Some(d) if year_valid(d) => t.date.clone(),
             _ => t.event_date.filter(|d| year_valid(d)),
-        };
+        }
+        .or_else(|| self.fallback_date.clone());
 
         Some(GameData {
             white: t.white,

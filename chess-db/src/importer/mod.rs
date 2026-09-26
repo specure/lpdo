@@ -726,6 +726,11 @@ pub fn import(
                 continue;
             }
 
+            // A monthly archive names its month, and most of its games may carry
+            // no date of their own (Lichess broadcasts) — see
+            // `ImportContext::fallback_date`.
+            ctx.fallback_date = month_from_filename(filename).map(|m| format!("{m}-??"));
+
             let effective_depth = if bulk_mode { None } else { max_position_depth };
             let progress_base = completed * PROGRESS_UNITS_PER_ISSUE;
             // "File i of n" (1-based) with the games from earlier files as the
@@ -1082,6 +1087,10 @@ struct ImportContext {
     /// `dedup_games` pass cleans up afterwards. Bulk loads use this to keep dedup
     /// off the import's critical path (#131/#154).
     skip_dedup: bool,
+    /// Date for games that carry none, set per file: the month of a monthly
+    /// archive, as "YYYY-MM-??" (see `GameVisitor::fallback_date`). None for
+    /// files whose name says nothing about when their games were played.
+    fallback_date: Option<String>,
 }
 
 impl ImportContext {
@@ -1201,6 +1210,7 @@ impl ImportContext {
             seen_this_run,
             seen_chessbase_ids,
             skip_dedup,
+            fallback_date: None,
         })
     }
 }
@@ -1352,6 +1362,23 @@ fn escape_tag_value(value: &str) -> String {
     out
 }
 
+/// The month a file's name claims, as "YYYY-MM" — `lichess_db_broadcast_2026-02.pgn.zst`
+/// is February 2026. Names without one (TWIC's `twic1663g.zip`, Ajedrez's
+/// `AJ-OTB-PGN-000.7z`) yield None, and their games keep whatever dates they carry.
+fn month_from_filename(filename: &str) -> Option<String> {
+    let bytes = filename.as_bytes();
+    for start in 0..bytes.len().saturating_sub(6) {
+        // Windows of exactly "YYYY-MM"; anything else moves the window on.
+        let Some(candidate) = filename.get(start..start + 7) else { continue };
+        let Some((y, m)) = candidate.split_once('-') else { continue };
+        let (Ok(year), Ok(month)) = (y.parse::<u32>(), m.parse::<u32>()) else { continue };
+        if y.len() == 4 && m.len() == 2 && (1..=12).contains(&month) && (1000..=3000).contains(&year) {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
 /// Imports a single PGN payload.
 ///
 /// `collection_id`: the collection this import targets. Existing games matched
@@ -1396,7 +1423,7 @@ fn process_pgn_stream(
     // as-is — no pre-stripping. `src` is read game-by-game, so a multi-GB file
     // never lands in memory (#95); the byte-progress CountingReader is applied by
     // the caller (open_import_reader) before the reader is handed in.
-    let mut visitor = GameVisitor::new(max_position_depth);
+    let mut visitor = GameVisitor::with_fallback_date(max_position_depth, ctx.fallback_date.clone());
     let mut reader = Reader::new(LineCountingReader::new(src));
 
     let mut game_batch: Vec<GameRow> = Vec::with_capacity(BATCH_SIZE);
@@ -2087,6 +2114,26 @@ mod bulk_index_tests {
             )
             .unwrap();
         assert_eq!(by_name, 200);
+    }
+}
+
+#[cfg(test)]
+mod fallback_date_tests {
+    use super::month_from_filename;
+
+    #[test]
+    fn a_monthly_archive_names_its_month() {
+        assert_eq!(month_from_filename("lichess_db_broadcast_2026-02.pgn.zst").as_deref(), Some("2026-02"));
+        assert_eq!(month_from_filename("lichess_db_broadcast_2025-12.pgn.zst").as_deref(), Some("2025-12"));
+    }
+
+    #[test]
+    fn other_archives_name_none() {
+        assert_eq!(month_from_filename("twic1663g.zip"), None);
+        assert_eq!(month_from_filename("AJ-OTB-PGN-000.7z"), None);
+        assert_eq!(month_from_filename("my games.pgn"), None);
+        // A number that looks like a month but isn't one.
+        assert_eq!(month_from_filename("scan_2026-13.pgn"), None);
     }
 }
 

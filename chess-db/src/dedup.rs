@@ -2,6 +2,67 @@ use anyhow::{Context, Result};
 use duckdb::Connection;
 use crate::reporter::Reporter;
 
+// ── When two copies' dates and rounds may still be the same game ─────────────
+//
+// Sources disagree about both. The same game reaches the database from TWIC,
+// from a Lichess broadcast and from a Megabase export, and its date can be the
+// round's date, the day the file was published, or missing entirely; a round
+// can be "7", "7.2", "?" or absent. Requiring either to match exactly left
+// thousands of duplicates in place (#271), so matching asks only that they do
+// not CONTRADICT each other — the move fingerprints, the players and the result
+// still have to agree exactly.
+//
+// Dates are text, `YYYY-MM-DD`, with `?` for parts a source did not know
+// ("2001-??-??"), or NULL. Two complete dates may sit up to a week apart: a
+// broadcast copy is often dated the day the tournament file was published. When
+// either side is partial, only the parts both know are compared, and a
+// month-only date also matches the months either side of it — a broadcast file
+// carries the month it was published, and one ending in March holds games
+// played in February. So "2026-02-??" can be the game dated "2026-01-28", but
+// never one from May.
+const DATE_COMPATIBLE: &str = "\
+    CASE \
+      WHEN g1.date IS NULL OR g2.date IS NULL THEN TRUE \
+      WHEN g1.date NOT LIKE '%?%' AND g2.date NOT LIKE '%?%' \
+        THEN TRY_CAST(g1.date AS DATE) IS NOT NULL \
+         AND TRY_CAST(g2.date AS DATE) IS NOT NULL \
+         AND ABS(DATE_DIFF('day', TRY_CAST(g1.date AS DATE), TRY_CAST(g2.date AS DATE))) <= 7 \
+      ELSE (date_month_idx(g1.date) IS NULL OR date_month_idx(g2.date) IS NULL \
+            OR ABS(date_month_idx(g1.date) - date_month_idx(g2.date)) <= 1) \
+       AND (date_year(g1.date) IS NULL OR date_year(g2.date) IS NULL \
+            OR (date_month_idx(g1.date) IS NOT NULL AND date_month_idx(g2.date) IS NOT NULL) \
+            OR date_year(g1.date) = date_year(g2.date)) \
+    END";
+
+// A round of "7.2" is round 7, game 2 of it — the same round as a source that
+// wrote plain "7". Round 2 and round 7 are different games, whatever else
+// agrees. Only the part before the dot is compared, and only when both sides
+// have one: "?", "-" and free text ("Prelim") say nothing and constrain nothing.
+const ROUND_COMPATIBLE: &str = "\
+    TRY_CAST(split_part(g1.round, '.', 1) AS INTEGER) IS NULL \
+     OR TRY_CAST(split_part(g2.round, '.', 1) AS INTEGER) IS NULL \
+     OR TRY_CAST(split_part(g1.round, '.', 1) AS INTEGER) \
+      = TRY_CAST(split_part(g2.round, '.', 1) AS INTEGER)";
+
+/// The date helpers the expression above uses: the year a date knows, and its
+/// month as one number (year*12 + month) so December and January are a step
+/// apart. Both are NULL when the part is unknown ("2026-??-??"), which is what
+/// makes an unknown part say nothing. DuckDB macros live per connection, so
+/// dedup installs them before it queries.
+const DATE_MACROS: &str = "\
+    CREATE OR REPLACE TEMP MACRO date_year(d) AS ( \
+        CASE WHEN d IS NULL OR split_part(d, '-', 1) LIKE '%?%' \
+             THEN NULL ELSE TRY_CAST(split_part(d, '-', 1) AS INTEGER) END \
+    ); \
+    CREATE OR REPLACE TEMP MACRO date_month_idx(d) AS ( \
+        CASE WHEN d IS NULL \
+                  OR split_part(d, '-', 1) LIKE '%?%' \
+                  OR split_part(d, '-', 2) LIKE '%?%' \
+             THEN NULL \
+             ELSE TRY_CAST(split_part(d, '-', 1) AS INTEGER) * 12 \
+                + TRY_CAST(split_part(d, '-', 2) AS INTEGER) END \
+    );";
+
 /// Hard-delete a game and clean every row that references it: positions,
 /// game_collections, finally games. Use this any time a game row is removed
 /// for good (dedup, manual delete, purge) so we never leak orphan rows.
@@ -440,6 +501,7 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
     // a no-op afterwards and for fresh installs. Writes only the derived hash
     // columns, so it runs even on a dry run.
     backfill_move_hashes(conn, reporter)?;
+    conn.execute_batch(DATE_MACROS)?;
 
     let spinner = reporter.spinner();
     spinner.set_message("Finding duplicate games...");
@@ -450,7 +512,8 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
     } else {
         "AND (g1.deduped IS NOT TRUE OR g2.deduped IS NOT TRUE)"
     };
-    // Duplicate PAIRS straight from the fingerprints: same players/date/result and
+    // Duplicate PAIRS straight from the fingerprints: same players and result,
+    // compatible date and round (see DATE_COMPATIBLE / ROUND_COMPATIBLE), and
     // identical (move_hash = move_hash) or off-by-one-trailing-half-move
     // (move_hash = move_hash_short, either way) move sequences. We carry each
     // game's pgn LENGTH — the survivor metric — but never the pgn itself, so this
@@ -462,10 +525,10 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
              JOIN games g2
                ON g1.white_id = g2.white_id
               AND g1.black_id = g2.black_id
-              AND g1.date IS NOT NULL
-              AND g1.date = g2.date
               AND g1.result IS NOT DISTINCT FROM g2.result
               AND g1.id < g2.id
+              AND ({DATE_COMPATIBLE})
+              AND ({ROUND_COMPATIBLE})
               AND (g1.move_hash = g2.move_hash
                    OR g1.move_hash = g2.move_hash_short
                    OR g1.move_hash_short = g2.move_hash)
@@ -968,6 +1031,118 @@ mod dedup_games_tests {
 
     fn count_games(conn: &Connection) -> i64 {
         conn.query_row("SELECT COUNT(*) FROM games", [], |r| r.get(0)).unwrap()
+    }
+
+    /// Like `insert_game`, but spelling out the two fields whose disagreement
+    /// used to hide duplicates (#271): the date and the round.
+    fn insert_dated(conn: &Connection, id: u32, moves: &str, date: Option<&str>, round: Option<&str>) {
+        conn.execute(
+            "INSERT INTO games (id, white_id, black_id, date, round, result, opening_line, move_count, pgn, deduped)
+             VALUES (?, 1, 2, ?, ?, '1-0', 'e4', ?, ?, FALSE)",
+            duckdb::params![id, date, round, moves.split_whitespace().count() as i16,
+                format!("[White \"A\"]\n[Black \"B\"]\n\n{moves} 1-0")],
+        ).unwrap();
+    }
+
+    fn surviving_ids(conn: &Connection) -> Vec<u32> {
+        let mut stmt = conn.prepare("SELECT id FROM games ORDER BY id").unwrap();
+        let ids = stmt.query_map([], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect();
+        ids
+    }
+
+    const LINE: &str = "e4 e5 Nf3 Nc6 Bb5 a6";
+
+    /// A broadcast copy is often dated when the file was published, not when
+    /// the round was played.
+    #[test]
+    fn dates_within_a_week_are_the_same_game() {
+        let conn = setup();
+        insert_dated(&conn, 1, LINE, Some("2025-09-14"), None);
+        insert_dated(&conn, 2, LINE, Some("2025-09-11"), None);
+        dedup_games(&conn, false, false, &Reporter::silent()).unwrap();
+        assert_eq!(count_games(&conn), 1);
+    }
+
+    #[test]
+    fn dates_further_apart_are_left_alone() {
+        let conn = setup();
+        insert_dated(&conn, 1, LINE, Some("2025-09-20"), None);
+        insert_dated(&conn, 2, LINE, Some("2025-09-11"), None);
+        dedup_games(&conn, false, false, &Reporter::silent()).unwrap();
+        assert_eq!(count_games(&conn), 2, "nine days apart: two games, not one");
+    }
+
+    /// A missing or partial date is compared only on what it knows.
+    #[test]
+    fn unknown_date_parts_only_have_to_agree_where_known() {
+        let conn = setup();
+        insert_dated(&conn, 1, LINE, Some("2026-02-13"), None);
+        insert_dated(&conn, 2, LINE, Some("2026-02-??"), None);
+        insert_dated(&conn, 3, LINE, None, None);
+        insert_dated(&conn, 4, LINE, Some("2026-??-??"), None);
+        dedup_games(&conn, false, false, &Reporter::silent()).unwrap();
+        assert_eq!(count_games(&conn), 1, "all four are the same game");
+    }
+
+    /// A month-only date carries the month the broadcast file was published,
+    /// which can be the month after the game was played.
+    #[test]
+    fn a_month_only_date_reaches_into_the_neighbouring_month() {
+        let conn = setup();
+        insert_dated(&conn, 1, LINE, Some("2026-02-??"), None);
+        insert_dated(&conn, 2, LINE, Some("2026-01-28"), None);
+        dedup_games(&conn, false, false, &Reporter::silent()).unwrap();
+        assert_eq!(count_games(&conn), 1);
+
+        // Across the turn of the year, too: December and January are a step apart.
+        let conn = setup();
+        insert_dated(&conn, 1, LINE, Some("2026-01-??"), None);
+        insert_dated(&conn, 2, LINE, Some("2025-12-30"), None);
+        dedup_games(&conn, false, false, &Reporter::silent()).unwrap();
+        assert_eq!(count_games(&conn), 1);
+    }
+
+    #[test]
+    fn a_month_two_away_is_a_different_game() {
+        let conn = setup();
+        insert_dated(&conn, 1, LINE, Some("2026-02-??"), None);
+        insert_dated(&conn, 2, LINE, Some("2026-05-02"), None);
+        dedup_games(&conn, false, false, &Reporter::silent()).unwrap();
+        assert_eq!(count_games(&conn), 2, "February and May are not the same month");
+    }
+
+    #[test]
+    fn a_year_that_differs_keeps_year_only_dates_apart() {
+        let conn = setup();
+        insert_dated(&conn, 1, LINE, Some("2001-??-??"), None);
+        insert_dated(&conn, 2, LINE, Some("2002-??-??"), None);
+        dedup_games(&conn, false, false, &Reporter::silent()).unwrap();
+        assert_eq!(count_games(&conn), 2);
+    }
+
+    /// "7" and "7.2" are the same round; 2 and 7 never are.
+    #[test]
+    fn rounds_agree_on_their_first_part_or_not_at_all() {
+        let conn = setup();
+        insert_dated(&conn, 1, LINE, Some("2025-09-14"), Some("7"));
+        insert_dated(&conn, 2, LINE, Some("2025-09-14"), Some("7.2"));
+        dedup_games(&conn, false, false, &Reporter::silent()).unwrap();
+        assert_eq!(count_games(&conn), 1, "same round, written differently");
+
+        let conn = setup();
+        insert_dated(&conn, 1, LINE, Some("2025-09-14"), Some("2.2"));
+        insert_dated(&conn, 2, LINE, Some("2025-09-14"), Some("7.2"));
+        dedup_games(&conn, false, false, &Reporter::silent()).unwrap();
+        assert_eq!(surviving_ids(&conn), vec![1, 2], "different rounds are different games");
+    }
+
+    #[test]
+    fn a_round_nobody_recorded_constrains_nothing() {
+        let conn = setup();
+        insert_dated(&conn, 1, LINE, Some("2025-09-14"), Some("?"));
+        insert_dated(&conn, 2, LINE, Some("2025-09-14"), Some("7.2"));
+        dedup_games(&conn, false, false, &Reporter::silent()).unwrap();
+        assert_eq!(count_games(&conn), 1);
     }
 
     #[test]
