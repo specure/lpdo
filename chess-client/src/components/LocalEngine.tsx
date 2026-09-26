@@ -219,7 +219,9 @@ function InstallGuide({ status, checking, onCheck }: { status: EngineStatus; che
       <div>
         <div className="text-label-lg">Another engine, or another place</div>
         <p className="text-on-surface-variant mt-1">
-          Any UCI engine works. If it is not in a standard location, name it on the server in
+          Any UCI engine works. If it is not in a standard location, name it on the server in the
+          file below. On Linux the server cannot see home directories, so keep the engine elsewhere,
+          such as /usr/local/bin or /opt.
         </p>
         <code className={code}>{status.settings_file}</code>
         <code className={code}>{`{ "path": "/path/to/engine" }`}</code>

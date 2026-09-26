@@ -547,6 +547,35 @@ mod tests {
         assert!(clean_fen("not a fen").is_none());
     }
 
+    /// The real thing, where it is installed: `cargo test -- --ignored real_stockfish`.
+    #[tokio::test]
+    #[ignore]
+    async fn real_stockfish() {
+        let dir = std::env::temp_dir().join(format!("lpdo-sf-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let engine = Engine::new(&dir);
+        let status = engine.status().await;
+        assert!(status.available, "{:?} — searched {:?}", status.error, status.searched);
+        println!("engine: {:?} at {:?}", status.name, status.path);
+        // After 1.e4 e5 2.Qh5 Nc6 3.Bc4 Nf6?? White mates: Qxf7#.
+        let fen = clean_fen("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4").unwrap();
+        let (gen, mut rx) = engine.analyse(&fen, 3).await.unwrap();
+        let mut last = None;
+        while let Ok(Ok(s)) = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
+            if s.gen != gen { continue; }
+            let deep = s.depth >= 12 && s.lines.len() == 3;
+            last = Some(s);
+            if deep { break; }
+        }
+        let s = last.expect("snapshots");
+        println!("depth {} nps {} lines {:?}", s.depth, s.nps, s.lines.iter().map(|l| (l.mate, l.eval_cp, l.pv_uci.first().cloned())).collect::<Vec<_>>());
+        assert_eq!(s.lines[0].pv_uci[0], "h5f7");
+        assert_eq!(s.lines[0].mate, Some(1));
+        engine.stop(gen).await;
+        engine.shutdown().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A stand-in engine: a shell script that speaks just enough UCI.
     #[cfg(unix)]
     #[tokio::test]
