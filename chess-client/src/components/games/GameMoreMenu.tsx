@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { pvString } from "../CloudEngine";
 
-// Taking the game somewhere else: Lichess for a second opinion, or the
-// clipboard for anywhere at all. One menu rather than four more buttons in the
+// Everything else this game can do: open it on Lichess for a second opinion,
+// or put it on the clipboard. One menu rather than four more buttons in the
 // actions bar, which is already carrying edit, export and delete.
 //
 // Lichess reads both forms straight from the address:
@@ -38,7 +38,7 @@ export function lichessGameUrl(startFen: string, sans: string[], ply = 0): strin
   return `https://lichess.org/analysis/pgn/${encodeURIComponent(pvString(startFen, sans))}#${at}`;
 }
 
-export default function GameShareMenu({ pgn, fen, lineSans, ply, startFen, gameUrl }: Props) {
+export default function GameMoreMenu({ pgn, fen, lineSans, ply, startFen, gameUrl }: Props) {
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -77,7 +77,7 @@ export default function GameShareMenu({ pgn, fen, lineSans, ply, startFen, gameU
         }`}
         title="Open this game or position elsewhere, or copy it"
       >
-        Share ▾
+        More ▾
       </button>
       {note && <span className="ml-2 text-label-sm text-on-surface-variant">{note}</span>}
       {open && (

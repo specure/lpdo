@@ -6,7 +6,7 @@ import { CursorPath } from "../lib/moveTreeNav";
 import MiniBoard from "./games/MiniBoard";
 import MoveList from "./games/MoveList";
 import GamePreviewHeader from "./games/GamePreviewHeader";
-import GameShareMenu from "./games/GameShareMenu";
+import GameMoreMenu from "./games/GameMoreMenu";
 import GameBoard from "./GameBoard";
 import CloudEngine from "./CloudEngine";
 import { useGamePgn } from "../lib/useGamePgn";
@@ -358,7 +358,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                     <div className="shrink-0 px-2 py-1 flex items-center gap-2 border-b border-outline/40">
                       <GamePreviewHeader game={preview} />
                       {previewGame && (
-                        <GameShareMenu
+                        <GameMoreMenu
                           pgn={previewGame.pgn}
                           fen={previewGame.fens[previewPly] ?? previewGame.fens[0]}
                           lineSans={previewGame.moves.map((m) => m.san)}

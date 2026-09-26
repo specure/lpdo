@@ -23,7 +23,7 @@ import {
 } from "./MovesEditor";
 import { serializeMovetext } from "../lib/serializeMovetext";
 import { gameUrlFromPgn } from "../lib/useGamePgn";
-import GameShareMenu from "./games/GameShareMenu";
+import GameMoreMenu from "./games/GameMoreMenu";
 import { appendScratchMove, clearScratchMarks, replayAsScratch, sansToCursor, type ScratchMove } from "../lib/scratchLine";
 import type { CalArrow, CslCircle } from "../lib/parseAnnotations";
 import { nagsToString, nagToSymbol } from "../lib/parseAnnotations";
@@ -670,7 +670,7 @@ function GameActionsBar({
         </button>
         {/* Lichess, the clipboard, and the game's own address when its PGN
             names one — together, so the bar keeps to one row. */}
-        <GameShareMenu
+        <GameMoreMenu
           pgn={detail.pgn}
           fen={fen}
           lineSans={lineSans}
