@@ -260,7 +260,7 @@ function EngineSection() {
     setInfo(d);
     setThreads(String(d.settings.threads));
     setHash(String(d.settings.hash_mb));
-    setDepth(String(d.settings.max_depth));
+    setDepth(d.settings.max_depth == null ? "" : String(d.settings.max_depth));
   }
   useEffect(() => {
     fetch(apiUrl("/engine"))
@@ -297,10 +297,10 @@ function EngineSection() {
   const field = "w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums";
 
   return (
-    <SectionCard title="Chess engine" status={info ? (info.available ? info.name ?? "running" : "none found") : undefined}>
+    <SectionCard title="Stockfish" status={info ? (info.available ? info.name ?? "running" : "none found") : undefined}>
       <p className="text-body-sm text-on-surface-variant">
-        The engine behind the Engine panel's <em>Local</em> analysis, running on the server. LPDO uses
-        an engine you install; Stockfish is free and among the strongest.
+        The engine behind the Engine panel's <em>Stockfish</em> tab, running on the server — the
+        strongest free engine, measured in centipawns. LPDO uses one you install; any UCI engine works.
       </p>
       {info && !info.available && (
         <p className="text-body-sm text-on-surface-variant">
@@ -431,7 +431,7 @@ function Lc0Section() {
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nodes, setNodes] = useState("");
-  function take(d: Lc0Info) { setInfo(d); setThreads(String(d.settings.threads)); setNodes(String(d.settings.max_nodes)); }
+  function take(d: Lc0Info) { setInfo(d); setThreads(String(d.settings.threads)); setNodes(d.settings.max_nodes == null ? "" : String(d.settings.max_nodes)); }
   useEffect(() => {
     fetch(apiUrl("/engine?engine=lc0"))
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
@@ -599,7 +599,7 @@ function Lc0Bench({ network, backend }: { network: string; backend: string }) {
       <div className="flex items-center gap-2">
         <span className="text-title-sm">Benchmark</span>
         <div className="flex-1" />
-        <ActionButton onClick={() => void run()} disabled={running}>Run the standard benchmark</ActionButton>
+        <ActionButton onClick={() => void run()} disabled={running}>Run the standard benchmark (about 6 min)</ActionButton>
       </div>
       <p className="text-label-sm text-on-surface-variant">
         Lc0's own benchmark: 34 positions, ten seconds each — about six minutes, during which Lc0 does not
@@ -681,7 +681,7 @@ function CloudEnginesSection() {
         The Engine panel's <em>chessdb</em> and <em>Lichess</em> analyses look the position up on those
         services, which sends it there — and chessdb keeps what it is asked. Past the opening that means
         the positions of the games you study, often your own. The server asks them only up to a move;
-        the <em>Local</em> engine analyses everything after it.
+        Stockfish and Lc0 on the server analyse everything after it.
       </p>
       {maxMove != null && (
         <div className="flex items-center gap-2 text-body-sm text-on-surface">
@@ -1751,6 +1751,7 @@ const TABS = [
   { id: "sources", label: "Sources" },
   { id: "databases", label: "Database" },
   { id: "players", label: "Players" },
+  { id: "engines", label: "Engines" },
   { id: "others", label: "Others" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
@@ -1891,11 +1892,21 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
             </div>
           </div>
 
+          {/* Engines — the two on the server side by side, then the cloud ones. */}
+          <div className={tab === "engines" ? "space-y-4" : "hidden"}>
+            <TabLead>
+              The engines behind the Engine panel. Stockfish and Lc0 run on this server, each with its own
+              settings and benchmark; chessdb.cn and Lichess are cloud services, asked only in the opening.
+            </TabLead>
+            <div className={grid}>
+              <EngineSection />
+              <Lc0Section />
+              <CloudEnginesSection />
+            </div>
+          </div>
+
           <div className={`${grid} ${tab === "others" ? "" : "hidden"}`}>
             <ServerConnectionSection status={status} connection={connection} />
-            <EngineSection />
-            <Lc0Section />
-            <CloudEnginesSection />
             <BackupSection />
             <DiagnosticsSection />
           </div>
