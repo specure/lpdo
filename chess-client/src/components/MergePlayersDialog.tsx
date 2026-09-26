@@ -26,8 +26,17 @@ export default function MergePlayersDialog({
   const [error, setError] = useState<string | null>(null);
 
   const targets = drops.filter((d) => d.id !== keep?.id);
-  const ready = !!keep && targets.length > 0;
   const movedGames = targets.reduce((n, d) => n + d.game_count, 0);
+
+  // Signs that these may not be the same person. A merge cannot be undone, so
+  // they are said plainly, and a FIDE clash has to be acknowledged before the
+  // button works — automatic dedup refuses such a pair outright, and someone
+  // doing it by hand should at least have to mean it.
+  const fideClash = targets.filter((d) => keep?.fide_id && d.fide_id && d.fide_id !== keep.fide_id);
+  const surname = (n: string) => n.split(",")[0].trim().toLocaleLowerCase();
+  const otherSurnames = keep ? targets.filter((d) => surname(d.name) !== surname(keep.name)) : [];
+  const [acknowledged, setAcknowledged] = useState(false);
+  const ready = !!keep && targets.length > 0 && (fideClash.length === 0 || acknowledged);
 
   async function doMerge() {
     if (!ready || !keep) return;
@@ -132,6 +141,31 @@ export default function MergePlayersDialog({
             </span>
             .
           </div>
+        )}
+        {fideClash.length > 0 && keep && (
+          <div className="text-body-sm bg-error-container text-on-error-container rounded-sm px-3 py-2 space-y-2">
+            <div>
+              {fideClash.length === 1 ? "This record carries" : "These records carry"} a different FIDE ID
+              from {keep.name} (FIDE {keep.fide_id}):{" "}
+              {fideClash.map((d) => `${d.name} (FIDE ${d.fide_id})`).join(", ")}. FIDE lists them as
+              different people, and a merge cannot be undone.
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={acknowledged}
+                onChange={(e) => setAcknowledged(e.target.checked)}
+                className="accent-error"
+              />
+              <span>Merge anyway — I know these are the same player</span>
+            </label>
+          </div>
+        )}
+        {otherSurnames.length > 0 && keep && (
+          <p className="text-body-sm text-on-surface-variant">
+            Different surname from {keep.name}: {otherSurnames.map((d) => d.name).join(", ")}. Worth a
+            second look before merging.
+          </p>
         )}
         {error && <p className="text-error text-body-sm">{error}</p>}
 
