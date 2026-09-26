@@ -17,6 +17,7 @@
     "@tauri-apps/plugin-opener": "^2",
     "chess.js": "^1.4.0",
     "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.3.289",
     "react": "^19.3.0",
     "react-chessboard": "^5.12.1",
     "react-dom": "^19.3.0",

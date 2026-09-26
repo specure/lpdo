@@ -2,9 +2,9 @@ import { useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 
-// Printing a game (or saving it as a PDF, which is the same pages as a file):
-// A4, two columns, the main line in bold and variations indented in brackets,
-// the way a chess book sets it. Diagrams come from the
+// Printing a game, or saving it as a PDF — the same pages, ending in the
+// system print dialog or in a file: A4, two columns, the main line in bold
+// and variations indented in brackets, the way a chess book sets it. Diagrams come from the
 // movetext itself — a comment holding `[#]`, which is what ChessBase writes
 // when its author asks for one — so an imported annotator's diagrams are kept.
 
@@ -40,8 +40,8 @@ export default function PrintDialog({
   games?: ExportableGame[];
   /** The board's current orientation, offered as the diagrams' point of view. */
   flipped: boolean;
-  /** Which way out is the filled button: the one the menu entry named. Both
-   *  are always offered — they are the same pages. */
+  /** What the dialog ends in: the system print dialog, or a file. The menu
+   *  entry that opened it says which; the options are the same pages. */
   primary?: "print" | "save";
   onClose: () => void;
 }) {
@@ -56,7 +56,7 @@ export default function PrintDialog({
   const [figurines, setFigurines] = useState(true);
   const [newPagePerGame, setNewPagePerGame] = useState(false);
   const [compact, setCompact] = useState(false);
-  const [busy, setBusy] = useState<"print" | "save" | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const markers = list.reduce((n, g) => n + (g.pgn?.match(/\[#\]/g) ?? []).length, 0);
@@ -84,14 +84,15 @@ export default function PrintDialog({
     return { bytes, name };
   }
 
-  /** Print: the pages go to the PDF viewer, whose print dialog knows the
-   *  printers. The webview cannot print a document it did not draw. */
+  /** Print: the pages are drawn into the window and the system's print
+   *  dialog opens on them (lib/printPages.ts). */
   async function doPrint() {
     setError(null);
-    setBusy("print");
+    setBusy("Preparing…");
     try {
-      const { bytes, name } = await build();
-      await invoke("print_pdf", { name, bytes: Array.from(bytes) });
+      const { bytes } = await build();
+      const { printPdfPages } = await import("../../lib/printPages");
+      await printPdfPages(bytes, (done, total) => setBusy(`Drawing page ${done} of ${total}…`));
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -101,7 +102,7 @@ export default function PrintDialog({
 
   async function doSave() {
     setError(null);
-    setBusy("save");
+    setBusy("Writing…");
     try {
       const { bytes, name } = await build();
       const lastDir = localStorage.getItem(PDF_EXPORT_DIR_KEY) ?? "";
@@ -137,10 +138,10 @@ export default function PrintDialog({
           </h2>
           <p className="text-body-sm text-on-surface-variant mt-1">
             Two columns on A4, the main line in bold and variations in brackets.
-            {many ? " The games follow one another in the order they are open." : ""} Print opens the pages in
-            your PDF viewer, where you choose the printer. Save as PDF keeps them as a file that carries the
-            {many ? " games themselves" : " game itself"}, so it can be added back to the database like a PGN.
-            A file made with the print dialog's "print to file" is only a picture of the pages.
+            {many ? " The games follow one another in the order they are open." : ""}
+            {primary === "save"
+              ? ` The ${many ? "games themselves travel" : "game itself travels"} inside the file, so the PDF can be added back to the database like a PGN.`
+              : " The pages go to your system's print dialog. (A file saved from there is a picture of the pages; Export as PDF makes one that reads back into the database.)"}
           </p>
         </div>
 
@@ -198,24 +199,13 @@ export default function PrintDialog({
           >
             Cancel
           </button>
-          {([
-            { key: "save", run: doSave, label: busy === "save" ? "Writing…" : "Save as PDF…" },
-            { key: "print", run: doPrint, label: busy === "print" ? "Preparing…" : "Print…" },
-          ] as { key: "print" | "save"; run: () => Promise<void>; label: string }[])
-            // The way out the menu entry named sits last, filled.
-            .sort((a, b) => (a.key === primary ? 1 : 0) - (b.key === primary ? 1 : 0))
-            .map((b) => (
-              <button
-                key={b.key}
-                onClick={() => void b.run()}
-                disabled={busy !== null || printable.length === 0}
-                className={b.key === primary
-                  ? "h-9 px-4 inline-flex items-center rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 disabled:opacity-50 transition-all duration-short3 ease-standard"
-                  : "h-9 px-4 inline-flex items-center rounded-full text-primary text-label-lg hover:bg-primary/8 disabled:opacity-50 transition-colors duration-short3 ease-standard"}
-              >
-                {b.label}
-              </button>
-            ))}
+          <button
+            onClick={() => void (primary === "save" ? doSave() : doPrint())}
+            disabled={busy !== null || printable.length === 0}
+            className="h-9 px-4 inline-flex items-center rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 disabled:opacity-50 transition-all duration-short3 ease-standard"
+          >
+            {busy ?? (primary === "save" ? "Save PDF…" : "Print…")}
+          </button>
         </div>
       </div>
     </div>

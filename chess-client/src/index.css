@@ -326,3 +326,32 @@ html, body {
 .hc .border-outline-variant {
   border-color: var(--color-outline);
 }
+
+/* Printing: the pages a print job draws (lib/printPages.ts) are the only
+   thing on paper. The layer is invisible on screen. */
+#lpdo-print {
+  display: none;
+}
+@media print {
+  @page {
+    size: A4;
+    margin: 0;
+  }
+  body > *:not(#lpdo-print) {
+    display: none !important;
+  }
+  #lpdo-print {
+    display: block !important;
+  }
+  #lpdo-print img {
+    display: block;
+    width: 210mm;
+    height: 297mm;
+    break-after: page;
+    page-break-after: always;
+  }
+  #lpdo-print img:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+}
