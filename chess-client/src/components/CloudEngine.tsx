@@ -25,7 +25,7 @@ function parseNote(note: string): { mark: string; opp: string; oppStrong: string
 }
 
 type EngineSource = "chessdb" | "lichess" | "local";
-type EngineStatus = "loading" | "ok" | "unknown" | "offline";
+type EngineStatus = "loading" | "ok" | "unknown" | "offline" | "capped";
 
 // Lichess (Stockfish) cloud eval — a few deep PV lines, White-relative eval + depth.
 export interface LichessLine { evalCp: number | null; mate: number | null; pvUci: string[]; }
@@ -349,6 +349,13 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
         <LocalEngine fen={fen} history={history} lineCount={lichessLineCount} onPlayLine={onPlayLine} />
       ) : engineStatus === "loading" ? (
         <div className="p-3 text-center text-on-surface-variant text-body-sm">Analysing…</div>
+      ) : engineStatus === "capped" ? (
+        // The server asks the cloud engines only up to a move (Maintenance →
+        // Cloud engines): past it, positions stay on this server.
+        <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center text-on-surface-variant text-body-sm px-3">
+          <span>The cloud engines are asked only in the opening, up to the move set under Maintenance → Others → Cloud engines. Positions later in a game stay on your server.</span>
+          <button onClick={() => setEngineSource("local")} className="h-8 px-3 rounded-full text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard">Analyse with the Local engine</button>
+        </div>
       ) : engineStatus === "offline" ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center text-on-surface-variant text-body-sm px-3">
           <span>Engine unavailable — the free service may be busy or rate-limited.</span>

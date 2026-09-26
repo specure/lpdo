@@ -1252,6 +1252,7 @@ async fn cloud_eval_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<crate::cloud_eval::CloudEval> {
     let zobrist = fen_zobrist(&q.fen)?;
+    if crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(crate::cloud_eval::capped_chessdb())); }
     Ok(Json(crate::cloud_eval::query(&q.fen, zobrist, q.refresh).await))
 }
 
@@ -1261,11 +1262,13 @@ async fn cloud_eval_lines_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<Vec<crate::cloud_eval::MoveLine>> {
     let zobrist = fen_zobrist(&q.fen)?;
+    if crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(Vec::new())); }
     Ok(Json(crate::cloud_eval::query_lines(&q.fen, zobrist, q.refresh).await))
 }
 
 /// Ask chessdb.cn to analyse an as-yet-unknown position (best-effort).
 async fn cloud_eval_queue_handler(Query(q): Query<CloudEvalQuery>) -> StatusCode {
+    if crate::cloud_eval::beyond_cap(&q.fen) { return StatusCode::CONFLICT; }
     crate::cloud_eval::queue(&q.fen).await;
     StatusCode::OK
 }
@@ -1276,6 +1279,7 @@ async fn lichess_eval_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<crate::cloud_eval::LichessEval> {
     let zobrist = fen_zobrist(&q.fen)?;
+    if crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(crate::cloud_eval::capped_lichess())); }
     Ok(Json(crate::cloud_eval::query_lichess(&q.fen, zobrist, q.refresh).await))
 }
 
@@ -1293,7 +1297,30 @@ async fn cloud_watch_add_handler(
     Query(q): Query<WatchQuery>,
 ) -> ApiResult<crate::cloud_eval::Watch> {
     let zobrist = fen_zobrist(&q.fen)?;
+    if crate::cloud_eval::beyond_cap(&q.fen) {
+        return Err((StatusCode::CONFLICT, "past the move the cloud engines are asked up to".to_string()));
+    }
     Ok(Json(crate::cloud_eval::add_watch(&q.fen, zobrist, &q.label).await))
+}
+
+/// How far into a game the cloud engines are asked.
+async fn cloud_settings_handler() -> Json<crate::cloud_eval::CloudSettings> {
+    Json(crate::cloud_eval::settings())
+}
+
+async fn cloud_settings_put_handler(
+    Json(body): Json<crate::cloud_eval::CloudSettings>,
+) -> ApiResult<crate::cloud_eval::CloudSettings> {
+    crate::cloud_eval::set_settings(CloudSettingsClamp::clamp(body))
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
+struct CloudSettingsClamp;
+impl CloudSettingsClamp {
+    fn clamp(s: crate::cloud_eval::CloudSettings) -> crate::cloud_eval::CloudSettings {
+        crate::cloud_eval::CloudSettings { max_move: s.max_move.min(500) }
+    }
 }
 
 /// List active/landed deepen watches.
@@ -2411,6 +2438,7 @@ pub async fn run(
 
     let setup = Arc::new(std::sync::Mutex::new(SetupPhase::Idle));
     let engine = crate::engine::Engine::new(db_path.parent().unwrap_or(std::path::Path::new(".")));
+    crate::cloud_eval::init_settings(db_path.parent().unwrap_or(std::path::Path::new(".")));
     let state = AppState { reads, writer, jobs, db_path, setup, engine };
 
     // A leftover sentinel means a prior first-run setup didn't finish cleanly. The
@@ -2460,6 +2488,7 @@ pub async fn run(
         .route("/cloud-eval/queue",                    post(cloud_eval_queue_handler))
         .route("/cloud-eval/watch",                    post(cloud_watch_add_handler).delete(cloud_watch_delete_handler))
         .route("/cloud-eval/watches",                  get(cloud_watches_handler))
+        .route("/cloud-eval/settings",                 get(cloud_settings_handler).put(cloud_settings_put_handler))
         .route("/lichess-eval",                        get(lichess_eval_handler))
         // Long-running mutation jobs with streamed progress.
         .route("/jobs",                                get(list_jobs_handler).post(create_job_handler))

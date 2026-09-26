@@ -500,3 +500,81 @@ fn parse_lichess(v: &serde_json::Value) -> LichessEval {
         lines,
     }
 }
+
+// ── How far into a game the cloud engines are asked (#—) ─────────────────────
+//
+// Looking up a position sends it to chessdb.cn or Lichess, and chessdb stores
+// what it is asked about. Past the opening that means the positions of the
+// games being studied — often someone's own — so the server asks only up to a
+// move number, 20 unless changed; the local engine (#309) covers the rest.
+// Kept in cloud.json in the data directory. 0 means no limit.
+
+#[derive(Clone, Copy, Debug, Serialize, serde::Deserialize, PartialEq)]
+#[serde(default)]
+pub struct CloudSettings {
+    /// Ask the cloud engines about positions up to this move number; 0 = always.
+    pub max_move: u32,
+}
+
+impl Default for CloudSettings {
+    fn default() -> Self { Self { max_move: 20 } }
+}
+
+static SETTINGS_FILE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+static SETTINGS: std::sync::RwLock<Option<CloudSettings>> = std::sync::RwLock::new(None);
+
+/// Where the settings live; read them. Called once when the server starts.
+pub fn init_settings(data_dir: &std::path::Path) {
+    let file = data_dir.join("cloud.json");
+    let loaded = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    let _ = SETTINGS_FILE.set(file);
+    *SETTINGS.write().unwrap() = Some(loaded);
+}
+
+pub fn settings() -> CloudSettings {
+    SETTINGS.read().unwrap().unwrap_or_default()
+}
+
+pub fn set_settings(new: CloudSettings) -> Result<CloudSettings, String> {
+    if let Some(file) = SETTINGS_FILE.get() {
+        let json = serde_json::to_string_pretty(&new).map_err(|e| e.to_string())?;
+        std::fs::write(file, json).map_err(|e| format!("{}: {e}", file.display()))?;
+    }
+    *SETTINGS.write().unwrap() = Some(new);
+    Ok(new)
+}
+
+/// The position is past the move the cloud engines are asked up to. The move
+/// number is the FEN's own (its sixth field).
+pub fn beyond_cap(fen: &str) -> bool {
+    let cap = settings().max_move;
+    if cap == 0 { return false; }
+    fen.split_whitespace().nth(5).and_then(|n| n.parse::<u32>().ok()).is_some_and(|n| n > cap)
+}
+
+/// What the endpoints answer instead of asking, past the cap.
+pub fn capped_chessdb() -> CloudEval {
+    CloudEval { status: "capped".to_string(), moves: Vec::new() }
+}
+pub fn capped_lichess() -> LichessEval {
+    LichessEval { status: "capped".to_string(), depth: 0, knodes: 0, lines: Vec::new() }
+}
+
+#[cfg(test)]
+mod cap_tests {
+    use super::*;
+
+    #[test]
+    fn positions_past_the_move_are_not_asked() {
+        *SETTINGS.write().unwrap() = Some(CloudSettings { max_move: 20 });
+        assert!(!beyond_cap("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"));
+        assert!(!beyond_cap("8/8/8/8/8/8/8/K6k w - - 0 20"));
+        assert!(beyond_cap("8/8/8/8/8/8/8/K6k b - - 3 21"));
+        *SETTINGS.write().unwrap() = Some(CloudSettings { max_move: 0 });
+        assert!(!beyond_cap("8/8/8/8/8/8/8/K6k b - - 3 55"));
+        *SETTINGS.write().unwrap() = None;
+    }
+}

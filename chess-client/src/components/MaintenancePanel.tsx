@@ -386,6 +386,65 @@ function EngineSection() {
   );
 }
 
+// ── Cloud engines ─────────────────────────────────────────────────────────────
+// How far into a game chessdb.cn and Lichess are asked. A lookup sends the
+// position there (and chessdb keeps what it is asked), so past the opening the
+// server keeps positions to itself; the local engine analyses those.
+function CloudEnginesSection() {
+  const [maxMove, setMaxMove] = useState<number | null>(null);
+  const [value, setValue] = useState("");
+  const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    fetch(apiUrl("/cloud-eval/settings"))
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
+      .then((d: { max_move: number }) => { setMaxMove(d.max_move); setValue(String(d.max_move)); })
+      .catch((e) => setError(String(e)));
+  }, []);
+  const n = parseInt(value, 10);
+  async function save() {
+    setError(null);
+    setNote(null);
+    try {
+      const r = await fetch(apiUrl("/cloud-eval/settings"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ max_move: n }),
+      });
+      if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
+      const d = (await r.json()) as { max_move: number };
+      setMaxMove(d.max_move);
+      setValue(String(d.max_move));
+      setNote("Saved.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+  return (
+    <SectionCard title="Cloud engines" status={maxMove == null ? undefined : maxMove === 0 ? "every move" : `up to move ${maxMove}`}>
+      <p className="text-body-sm text-on-surface-variant">
+        The Engine panel's <em>chessdb</em> and <em>Lichess</em> analyses look the position up on those
+        services, which sends it there — and chessdb keeps what it is asked. Past the opening that means
+        the positions of the games you study, often your own. The server asks them only up to a move;
+        the <em>Local</em> engine analyses everything after it.
+      </p>
+      {maxMove != null && (
+        <div className="flex items-center gap-2 text-body-sm text-on-surface">
+          <span>Ask them up to move</span>
+          <input
+            type="number" min={0} max={500} value={value} onChange={(e) => setValue(e.target.value)}
+            className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums"
+          />
+          <ActionButton onClick={() => void save()} disabled={!Number.isFinite(n) || n < 0 || n === maxMove}>Save</ActionButton>
+        </div>
+      )}
+      <p className="text-label-sm text-on-surface-variant">0 asks them about every move. The default is 20.</p>
+      {note && <p className="text-body-sm text-success">{note}</p>}
+      {error && <p className="text-body-sm text-error">{error}</p>}
+    </SectionCard>
+  );
+}
+
 // ── Engine benchmark ──────────────────────────────────────────────────────────
 // Stockfish's `bench` on the server: a fixed set of positions searched to a
 // fixed depth, reporting nodes per second and the time taken, with the threads
@@ -1580,6 +1639,7 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
           <div className={`${grid} ${tab === "others" ? "" : "hidden"}`}>
             <ServerConnectionSection status={status} connection={connection} />
             <EngineSection />
+            <CloudEnginesSection />
             <BackupSection />
             <DiagnosticsSection />
           </div>
