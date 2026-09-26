@@ -92,9 +92,17 @@ export function jobEventsUrl(jobId: string): string {
   return token ? `${base}?token=${encodeURIComponent(token)}` : base;
 }
 
+/** How a position arose: the game's start and the SAN moves from it. */
+export interface EngineHistory { startFen: string; sans: string[] }
+
 /** Absolute SSE URL for the local engine's analysis of a position (#309). */
-export function engineAnalyseUrl(fen: string, lines: number): string {
-  const path = `/engine/analyse?fen=${encodeURIComponent(fen)}&lines=${lines}`;
+export function engineAnalyseUrl(fen: string, lines: number, history?: EngineHistory): string {
+  // With the moves that led to the position the engine can tell a draw by
+  // repetition; the server checks they really end on `fen`.
+  const moves = history && history.sans.length
+    ? `&start=${encodeURIComponent(history.startFen)}&moves=${encodeURIComponent(history.sans.join(","))}`
+    : "";
+  const path = `/engine/analyse?fen=${encodeURIComponent(fen)}&lines=${lines}${moves}`;
   const base = import.meta.env.DEV ? "/api" + path : serverUrl() + path;
   const token = serverToken();
   return token ? `${base}&token=${encodeURIComponent(token)}` : base;

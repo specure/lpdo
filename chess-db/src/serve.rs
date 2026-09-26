@@ -1754,6 +1754,10 @@ async fn engine_configure_handler(
 #[derive(Deserialize)]
 struct EngineAnalyseQuery {
     fen: String,
+    /// The game's starting position and the SAN moves from it to `fen`,
+    /// comma-separated — how the position arose, for repetitions.
+    start: Option<String>,
+    moves: Option<String>,
     #[serde(default = "default_engine_lines")]
     lines: u32,
 }
@@ -1780,14 +1784,22 @@ async fn engine_analyse_handler(
     Query(q): Query<EngineAnalyseQuery>,
 ) -> std::result::Result<Sse<impl tokio_stream::Stream<Item = std::result::Result<Event, Infallible>>>, (StatusCode, String)> {
     let fen = crate::engine::clean_fen(&q.fen).ok_or((StatusCode::BAD_REQUEST, "not a legal position".to_string()))?;
-    let (gen, rx) = state
+    let history = match (&q.start, &q.moves) {
+        (Some(start), Some(moves)) if !moves.is_empty() => {
+            let sans: Vec<String> = moves.split(',').map(|m| m.to_string()).collect();
+            crate::engine::history_to_uci(start, &sans, &fen)
+        }
+        _ => None,
+    };
+    let (gen, remembered, rx) = state
         .engine
-        .analyse(&fen, q.lines)
+        .analyse(&fen, history, q.lines)
         .await
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e))?;
     let guard = Arc::new(StopOnDrop { engine: state.engine.clone(), gen });
-    let stream = tokio_stream::wrappers::BroadcastStream::new(rx)
-        .filter_map(|r| r.ok())
+    let first = tokio_stream::iter(remembered);
+    let stream = first.chain(tokio_stream::wrappers::BroadcastStream::new(rx)
+        .filter_map(|r| r.ok()))
         // A newer search has the engine: this stream is over.
         .take_while(move |s| s.gen <= gen)
         .filter(move |s| s.gen == gen)

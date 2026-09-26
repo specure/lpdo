@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { apiUrl, engineAnalyseUrl } from "../api";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { apiUrl, engineAnalyseUrl, type EngineHistory } from "../api";
+import ExternalLinkIcon from "./ExternalLinkIcon";
 import { PvLine, pvToSan, fmtLichess, moverScore, moveMark, evalColor } from "./CloudEngine";
 
 // The server's own engine (#309): Stockfish or any UCI engine installed on
@@ -17,6 +19,9 @@ interface EngineStatus {
   searched: string[];
   settings_file: string;
   os: string;
+  version: string | null;
+  latest: { version: string; url: string } | null;
+  update_available: boolean;
 }
 
 interface Snapshot {
@@ -26,20 +31,27 @@ interface Snapshot {
   nps: number;
   lines: { multipv: number; eval_cp: number | null; mate: number | null; pv_uci: string[] }[];
   done: boolean;
+  /** Remembered from an earlier search of this position. */
+  cached?: boolean;
 }
 
 export default function LocalEngine({
   fen,
+  history,
   lineCount,
   onPlayLine,
 }: {
   fen: string;
+  /** How the position arose — lets the engine see repetitions. */
+  history?: EngineHistory;
   lineCount: number;
   onPlayLine?: (sans: string[]) => void;
 }) {
   const [status, setStatus] = useState<EngineStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
+  // What is shown: a remembered result first, then the live search once it
+  // is deeper — the evaluation on screen never gets shallower.
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [running, setRunning] = useState(true);
   const [streamError, setStreamError] = useState<string | null>(null);
@@ -80,6 +92,9 @@ export default function LocalEngine({
   // Analyse the position on the board: a new stream per position, a moment
   // after the board settles. Closing the stream stops the search on the
   // server, so moving through a game does not leave searches running.
+  const historyKey = history ? `${history.startFen}|${history.sans.join(",")}` : "";
+  const historyRef = useRef(history);
+  historyRef.current = history;
   useEffect(() => {
     esRef.current?.close();
     esRef.current = null;
@@ -87,12 +102,12 @@ export default function LocalEngine({
     setStreamError(null);
     if (!status?.available || !running) return;
     const t = window.setTimeout(() => {
-      const es = new EventSource(engineAnalyseUrl(fen, lineCount));
+      const es = new EventSource(engineAnalyseUrl(fen, lineCount, historyRef.current));
       esRef.current = es;
       es.onmessage = (ev) => {
         const s = JSON.parse(ev.data) as Snapshot;
-        setSnap(s);
-        if (s.done) { es.close(); setRunning(false); }
+        setSnap((prev) => (prev?.cached && !s.cached && s.depth <= prev.depth ? prev : s));
+        if (s.done && !s.cached) { es.close(); setRunning(false); }
       };
       es.onerror = () => {
         // An EventSource retries by itself; a stream that fails before any
@@ -107,7 +122,7 @@ export default function LocalEngine({
       esRef.current?.close();
       esRef.current = null;
     };
-  }, [fen, lineCount, status?.available, running]);
+  }, [fen, historyKey, lineCount, status?.available, running]);
 
   // A new position starts a new search, even if the last one was stopped.
   useEffect(() => { setRunning(true); }, [fen]);
@@ -132,7 +147,10 @@ export default function LocalEngine({
     <div className="flex-1 flex flex-col min-h-0">
       <div className="px-3 py-1 shrink-0 flex items-center justify-between gap-2 text-label-sm text-on-surface-variant border-b border-outline/40">
         <span className="min-w-0 truncate" title={status.path ?? undefined}>
-          {status.name ?? "Engine"}{snap ? ` · depth ${snap.depth}` : ""}{speed ? ` · ${speed}` : ""}
+          {status.name ?? "Engine"}{snap ? ` · depth ${snap.depth}` : ""}
+          {snap?.cached
+            ? <span title="Remembered from an earlier search; the engine is deepening it"> · remembered</span>
+            : speed ? ` · ${speed}` : ""}
         </span>
         {status.found.length > 1 && (
           <select
@@ -155,6 +173,15 @@ export default function LocalEngine({
           {running ? "Stop" : "Analyse"}
         </button>
       </div>
+      {status.update_available && status.latest && (
+        <div className="px-3 py-1 text-label-sm text-on-surface-variant border-b border-outline/40">
+          Stockfish {status.latest.version} is out — this server runs {status.version}.{" "}
+          <button onClick={() => void openUrl(status.latest!.url)} className="text-primary hover:underline inline-flex items-center">
+            Download<ExternalLinkIcon />
+          </button>
+          {status.os === "linux" ? " and install it as /usr/local/bin/stockfish on the server." : " and install it on the server."}
+        </div>
+      )}
       {streamError && <div className="px-3 py-1 text-error text-body-sm">{streamError}</div>}
       <div className="flex-1 overflow-y-auto p-2">
         {lines.length === 0 ? (

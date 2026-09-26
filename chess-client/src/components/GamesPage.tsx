@@ -597,6 +597,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                 <div className={panel}>
                   <CloudEngine
                     fen={currentFen}
+                    history={{ startFen: new Chess().fen(), sans: moveSequence }}
                     watchLabel={moveSequence.length ? pvString(new Chess().fen(), moveSequence) : "Starting position"}
                     onPlayLine={appendLine}
                   />

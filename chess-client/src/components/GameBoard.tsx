@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from "react";
+import type { EngineHistory } from "../api";
 import { Chessboard } from "react-chessboard";
 import { fitBoard } from "../lib/boardSize";
 import BoardErrorBoundary from "./BoardErrorBoundary";
@@ -382,7 +383,7 @@ interface Props {
    * the game the FEN belongs to: this component is reused across Analysis tabs,
    * so a bare FEN would be ambiguous while the next game's PGN is still loading.
    * The cursor travels with it so the host can hand it back as `initialCursor`. */
-  onPositionChange?: (fen: string, gameId: number, cursor: CursorPath) => void;
+  onPositionChange?: (fen: string, gameId: number, cursor: CursorPath, history?: EngineHistory) => void;
   /** Where to place the cursor once this game's PGN has loaded — a cursor
    * previously reported through `onPositionChange`. Read only at load time, so
    * it can be fed straight back from state the board itself drives. Ignored if
@@ -1249,10 +1250,21 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   // the Reference / Games / Engine panels track what is on the board.
   const reportedCursor = scratch ? scratch.anchor : cursor;
 
+  // How the position on the board arose — the game's start and the moves to
+  // it, scratch moves included — so an engine can see repetitions. Not while
+  // the moves editor is open: its tree is the one being changed.
+  const history = useMemo<EngineHistory | undefined>(() => {
+    if (movesEditor.active) return undefined;
+    if (useAnnotated && annotatedGame) {
+      return { startFen: annotatedGame.startFen, sans: sansToCursor(breadcrumbs, activeLine, activeIndex) };
+    }
+    return { startFen: fens[0] ?? "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", sans: moves.slice(0, currentIndex).map((m) => m.san) };
+  }, [movesEditor.active, useAnnotated, annotatedGame, breadcrumbs, activeLine, activeIndex, fens, moves, currentIndex]);
+
   useEffect(() => {
     if (loadedGameId !== game.id) return;   // still loading — the FEN is the previous game's
-    onPositionChange?.(currentFen, game.id, reportedCursor);
-  }, [currentFen, reportedCursor, loadedGameId, game.id, onPositionChange]);
+    onPositionChange?.(currentFen, game.id, reportedCursor, history);
+  }, [currentFen, reportedCursor, loadedGameId, game.id, onPositionChange, history]);
 
   // ── Scratch line ────────────────────────────────────────────────────────
   // Moves played on the board (or clicked in the Reference / Engine panels)

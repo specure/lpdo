@@ -79,6 +79,19 @@ pub struct EngineStatus {
     /// The server's operating system ("linux", "macos", "windows"), for the
     /// install steps: the engine goes on the server, not the client.
     pub os: String,
+    /// The Stockfish release number the engine reports ("16", "17.1"); None
+    /// for another engine or a development build.
+    pub version: Option<String>,
+    /// The newest Stockfish release, checked on GitHub at most once a day.
+    pub latest: Option<LatestRelease>,
+    /// A Stockfish older than the newest release is running.
+    pub update_available: bool,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct LatestRelease {
+    pub version: String,
+    pub url: String,
 }
 
 /// One line of analysis. Scores are from White's point of view.
@@ -99,11 +112,18 @@ pub struct Snapshot {
     pub lines: Vec<Line>,
     /// The search has ended (stopped, capped, or the engine finished).
     pub done: bool,
+    /// Remembered from an earlier search of this position, sent first so the
+    /// client has something at once; the live search replaces it once it
+    /// goes deeper.
+    #[serde(default)]
+    pub cached: bool,
 }
 
 /// What the stdout reader shares with the controller.
 struct Search {
     gen: u64,
+    /// The position's key in the remembered results, with the engine's name.
+    key: String,
     white_to_move: bool,
     searching: bool,
     depth: u32,
@@ -128,6 +148,50 @@ pub struct Engine {
     idle: Arc<Notify>,
     tx: broadcast::Sender<Snapshot>,
     gen: AtomicU64,
+    remembered: Arc<std::sync::Mutex<Remembered>>,
+    /// The newest Stockfish release and when it was looked up.
+    latest: Mutex<Option<(std::time::Instant, Option<LatestRelease>)>>,
+}
+
+/// The deepest result reached for each position, while the server runs.
+/// Stockfish cannot resume a search from a score, and its hash table lives
+/// only as long as the process; this is what lets a position come back with
+/// its evaluation on screen at once. Bounded: the oldest go first.
+#[derive(Default)]
+struct Remembered {
+    by_key: std::collections::HashMap<String, Snapshot>,
+    order: std::collections::VecDeque<String>,
+}
+const REMEMBER_MAX: usize = 20_000;
+
+impl Remembered {
+    fn get(&self, key: &str) -> Option<Snapshot> {
+        self.by_key.get(key).cloned()
+    }
+    /// Keep `s` if it is deeper than what is remembered for `key`.
+    fn offer(&mut self, key: &str, s: &Snapshot) {
+        if s.lines.is_empty() { return; }
+        match self.by_key.get(key) {
+            Some(old) if old.depth > s.depth || (old.depth == s.depth && old.lines.len() >= s.lines.len()) => return,
+            Some(_) => {}
+            None => {
+                self.order.push_back(key.to_string());
+                if self.order.len() > REMEMBER_MAX {
+                    if let Some(k) = self.order.pop_front() { self.by_key.remove(&k); }
+                }
+            }
+        }
+        let mut keep = s.clone();
+        keep.cached = true;
+        keep.done = true;
+        self.by_key.insert(key.to_string(), keep);
+    }
+}
+
+/// A position's key: placement, side, castling and en passant — the move
+/// counters do not change the evaluation.
+fn position_key(fen: &str) -> String {
+    fen.split_whitespace().take(4).collect::<Vec<_>>().join(" ")
 }
 
 impl Engine {
@@ -144,13 +208,46 @@ impl Engine {
             running: Mutex::new(None),
             last_error: Mutex::new(None),
             search: Arc::new(std::sync::Mutex::new(Search {
-                gen: 0, white_to_move: true, searching: false, depth: 0, nodes: 0, nps: 0,
+                gen: 0, key: String::new(), white_to_move: true, searching: false, depth: 0, nodes: 0, nps: 0,
                 lines: BTreeMap::new(),
             })),
             idle: Arc::new(Notify::new()),
             tx,
             gen: AtomicU64::new(0),
+            remembered: Arc::new(std::sync::Mutex::new(Remembered::default())),
+            latest: Mutex::new(None),
         })
+    }
+
+    /// The newest Stockfish release, from GitHub. Asked at most once a day
+    /// (an hour after a failure), and never for long: a server without
+    /// internet access just does not say.
+    async fn latest_stockfish(&self) -> Option<LatestRelease> {
+        let mut cached = self.latest.lock().await;
+        if let Some((at, value)) = cached.as_ref() {
+            let ttl = if value.is_some() { Duration::from_secs(24 * 3600) } else { Duration::from_secs(3600) };
+            if at.elapsed() < ttl { return value.clone(); }
+        }
+        let fetched = async {
+            let client = reqwest::Client::builder()
+                .user_agent(concat!("LPDO/", env!("CARGO_PKG_VERSION")))
+                .timeout(Duration::from_secs(4))
+                .build()
+                .ok()?;
+            let v: serde_json::Value = client
+                .get("https://api.github.com/repos/official-stockfish/Stockfish/releases/latest")
+                .send().await.ok()?
+                .error_for_status().ok()?
+                .json().await.ok()?;
+            let tag = v.get("tag_name")?.as_str()?;
+            Some(LatestRelease {
+                version: tag.strip_prefix("sf_").unwrap_or(tag).to_string(),
+                url: "https://stockfishchess.org/download/".to_string(),
+            })
+        }
+        .await;
+        *cached = Some((std::time::Instant::now(), fetched.clone()));
+        fetched
     }
 
     /// Engines found in the standard locations, in order of preference.
@@ -187,6 +284,15 @@ impl Engine {
         let _ = self.ensure_started().await;
         let settings = self.settings.lock().await.clone();
         let (found, searched) = Self::found();
+        let name = self.running.lock().await.as_ref().map(|r| r.name.clone());
+        let version = name.as_deref().and_then(stockfish_version);
+        // Only worth asking for Stockfish, or when there is no engine yet.
+        let latest = if name.is_none() || name.as_deref().is_some_and(|n| n.starts_with("Stockfish")) {
+            self.latest_stockfish().await
+        } else {
+            None
+        };
+        let update_available = matches!((&version, &latest), (Some(v), Some(l)) if older(v, &l.version));
         let running = self.running.lock().await;
         let error = self.last_error.lock().await.clone();
         EngineStatus {
@@ -199,6 +305,9 @@ impl Engine {
             searched,
             settings_file: self.settings_file.to_string_lossy().to_string(),
             os: std::env::consts::OS.to_string(),
+            version,
+            latest,
+            update_available,
         }
     }
 
@@ -265,7 +374,8 @@ impl Engine {
                 let search = self.search.clone();
                 let idle = self.idle.clone();
                 let tx = self.tx.clone();
-                tokio::spawn(read_engine(stdout, search, idle, tx));
+                let remembered = self.remembered.clone();
+                tokio::spawn(read_engine(stdout, search, idle, tx, remembered));
                 *running = Some(Running { child, stdin, path, name });
                 *self.last_error.lock().await = None;
                 Ok(())
@@ -278,15 +388,26 @@ impl Engine {
         }
     }
 
-    /// Start analysing `fen` (already validated) with `lines` lines. Returns
-    /// the search's number and a receiver of its snapshots.
-    pub async fn analyse(self: &Arc<Self>, fen: &str, lines: u32) -> Result<(u64, broadcast::Receiver<Snapshot>), String> {
+    /// Start analysing `fen` (already validated) with `lines` lines. With
+    /// `history` — the game's starting position and the moves to `fen`, as
+    /// UCI — the engine sees how the position arose and can tell a draw by
+    /// repetition. Returns the search's number, what is remembered for the
+    /// position (if anything), and a receiver of the search's snapshots.
+    pub async fn analyse(
+        self: &Arc<Self>,
+        fen: &str,
+        history: Option<(String, Vec<String>)>,
+        lines: u32,
+    ) -> Result<(u64, Option<Snapshot>, broadcast::Receiver<Snapshot>), String> {
         self.ensure_started().await?;
         let rx = self.tx.subscribe();
         let gen = self.gen.fetch_add(1, Ordering::SeqCst) + 1;
 
         let mut running = self.running.lock().await;
         let r = running.as_mut().ok_or("the engine stopped")?;
+        // Remembered per engine: Stockfish 16 and 19 disagree.
+        let key = format!("{}|{}", r.name, position_key(fen));
+        let remembered = self.remembered.lock().unwrap().get(&key).map(|mut s| { s.gen = gen; s });
 
         // Finish the previous search first, so its closing `bestmove` is not
         // taken for the end of this one.
@@ -300,6 +421,7 @@ impl Engine {
             let mut s = self.search.lock().unwrap();
             *s = Search {
                 gen,
+                key,
                 white_to_move: fen.split_whitespace().nth(1) != Some("b"),
                 searching: true,
                 depth: 0, nodes: 0, nps: 0,
@@ -307,7 +429,11 @@ impl Engine {
             };
         }
         send(&mut r.stdin, &format!("setoption name MultiPV value {}", lines.clamp(1, 10))).await?;
-        send(&mut r.stdin, &format!("position fen {fen}")).await?;
+        let position = match &history {
+            Some((start, moves)) if !moves.is_empty() => format!("position fen {start} moves {}", moves.join(" ")),
+            _ => format!("position fen {fen}"),
+        };
+        send(&mut r.stdin, &position).await?;
         send(&mut r.stdin, "go infinite").await?;
         drop(running);
 
@@ -317,7 +443,7 @@ impl Engine {
             tokio::time::sleep(MAX_SEARCH).await;
             me.stop(gen).await;
         });
-        Ok((gen, rx))
+        Ok((gen, remembered, rx))
     }
 
     /// Stop search `gen` if it is still the current one.
@@ -411,6 +537,7 @@ async fn read_engine(
     search: Arc<std::sync::Mutex<Search>>,
     idle: Arc<Notify>,
     tx: broadcast::Sender<Snapshot>,
+    remembered: Arc<std::sync::Mutex<Remembered>>,
 ) {
     let mut line = String::new();
     loop {
@@ -444,11 +571,14 @@ async fn read_engine(
             } else {
                 continue;
             }
-            Snapshot {
+            let snap = Snapshot {
                 gen: s.gen, depth: s.depth, nodes: s.nodes, nps: s.nps,
                 lines: s.lines.values().cloned().collect(),
                 done: !s.searching,
-            }
+                cached: false,
+            };
+            remembered.lock().unwrap().offer(&s.key, &snap);
+            snap
         };
         let _ = tx.send(snapshot);
     }
@@ -456,7 +586,7 @@ async fn read_engine(
     let snapshot = {
         let mut s = search.lock().unwrap();
         s.searching = false;
-        Snapshot { gen: s.gen, depth: s.depth, nodes: s.nodes, nps: s.nps, lines: s.lines.values().cloned().collect(), done: true }
+        Snapshot { gen: s.gen, depth: s.depth, nodes: s.nodes, nps: s.nps, lines: s.lines.values().cloned().collect(), done: true, cached: false }
     };
     idle.notify_waiters();
     let _ = tx.send(snapshot);
@@ -505,6 +635,46 @@ fn parse_info(t: &str) -> Option<Info> {
     Some(info)
 }
 
+/// The release number in a Stockfish name: "Stockfish 16" → "16",
+/// "Stockfish 17.1" → "17.1". A development build ("Stockfish dev-2026…")
+/// has none.
+pub fn stockfish_version(name: &str) -> Option<String> {
+    let rest = name.strip_prefix("Stockfish ")?;
+    let v = rest.split_whitespace().next()?;
+    v.chars().next()?.is_ascii_digit().then(|| v.to_string())
+}
+
+/// `a` is an older release than `b` ("16" < "17.1" < "19").
+pub fn older(a: &str, b: &str) -> bool {
+    let parts = |v: &str| v.split('.').map(|p| p.parse::<u32>().unwrap_or(0)).collect::<Vec<_>>();
+    let (a, b) = (parts(a), parts(b));
+    for i in 0..a.len().max(b.len()) {
+        let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0));
+        if x != y { return x < y; }
+    }
+    false
+}
+
+/// Replay `sans` from `start` and return the start (rewritten) and the
+/// moves as UCI — but only if they end on `fen`'s position. Anything that
+/// does not add up is dropped, and the engine gets the bare position.
+pub fn history_to_uci(start: &str, sans: &[String], fen: &str) -> Option<(String, Vec<String>)> {
+    use shakmaty::{fen::Fen, san::San, uci::UciMove, Position, EnPassantMode, CastlingMode};
+    if sans.is_empty() || sans.len() > 1000 { return None; }
+    let start_fen: Fen = start.trim().parse().ok()?;
+    let mut pos: shakmaty::Chess = start_fen.into_position(CastlingMode::Standard).ok()?;
+    let start_clean = Fen::from_position(&pos, EnPassantMode::Legal).to_string();
+    let mut uci = Vec::with_capacity(sans.len());
+    for s in sans {
+        let san: San = s.trim().trim_end_matches(['+', '#', '!', '?']).parse().ok()?;
+        let m = san.to_move(&pos).ok()?;
+        uci.push(UciMove::from_standard(m).to_string());
+        pos.play_unchecked(m);
+    }
+    let reached = Fen::from_position(&pos, EnPassantMode::Legal).to_string();
+    (position_key(&reached) == position_key(fen)).then_some((start_clean, uci))
+}
+
 /// A FEN the engine can be given: parsed and written back, so nothing but a
 /// position reaches the engine's command line.
 pub fn clean_fen(fen: &str) -> Option<String> {
@@ -547,6 +717,31 @@ mod tests {
         assert!(clean_fen("not a fen").is_none());
     }
 
+    #[test]
+    fn stockfish_versions_compare() {
+        assert_eq!(stockfish_version("Stockfish 16").as_deref(), Some("16"));
+        assert_eq!(stockfish_version("Stockfish 17.1").as_deref(), Some("17.1"));
+        assert_eq!(stockfish_version("Stockfish dev-20260922-0a215d6c"), None);
+        assert_eq!(stockfish_version("Lc0 v0.31.2"), None);
+        assert!(older("16", "19"));
+        assert!(older("17", "17.1"));
+        assert!(!older("19", "19"));
+        assert!(!older("19.1", "19"));
+    }
+
+    #[test]
+    fn history_must_lead_to_the_position() {
+        let start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        let sans: Vec<String> = ["e4", "e5", "Nf3", "Nc6+"].iter().map(|s| s.to_string()).collect();
+        let fen = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3";
+        let (s, uci) = history_to_uci(start, &sans, fen).unwrap();
+        assert_eq!(s, start);
+        assert_eq!(uci, vec!["e2e4", "e7e5", "g1f3", "b8c6"]);
+        // Moves that end somewhere else are not used.
+        assert!(history_to_uci(start, &sans[..3], fen).is_none());
+        assert!(history_to_uci(start, &["e5".to_string()], fen).is_none());
+    }
+
     /// The real thing, where it is installed: `cargo test -- --ignored real_stockfish`.
     #[tokio::test]
     #[ignore]
@@ -559,7 +754,7 @@ mod tests {
         println!("engine: {:?} at {:?}", status.name, status.path);
         // After 1.e4 e5 2.Qh5 Nc6 3.Bc4 Nf6?? White mates: Qxf7#.
         let fen = clean_fen("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4").unwrap();
-        let (gen, mut rx) = engine.analyse(&fen, 3).await.unwrap();
+        let (gen, _, mut rx) = engine.analyse(&fen, None, 3).await.unwrap();
         let mut last = None;
         while let Ok(Ok(s)) = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
             if s.gen != gen { continue; }
@@ -606,7 +801,8 @@ done
 
         // Black to move: the engine's +25 for Black is -25 for White.
         let fen = clean_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").unwrap();
-        let (gen, mut rx) = engine.analyse(&fen, 1).await.unwrap();
+        let (gen, remembered, mut rx) = engine.analyse(&fen, None, 1).await.unwrap();
+        assert!(remembered.is_none());
         let mut last = None;
         while let Ok(Ok(s)) = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
             if s.gen == gen { let d = s.depth; last = Some(s); if d == 2 { break; } }
@@ -625,6 +821,11 @@ done
             }
         };
         assert!(done, "stopping ends the search");
+
+        // The same position again: the deepest result comes back at once.
+        let (_, remembered, _rx) = engine.analyse(&fen, None, 1).await.unwrap();
+        let r = remembered.expect("remembered");
+        assert!(r.cached && r.depth == 2, "{r:?}");
 
         // Choosing an engine outside the standard locations is refused.
         assert!(engine.configure(Some("/bin/sh".into()), None, None).await.is_err());

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Chess } from "chess.js";
-import { addCloudWatch, getCloudWatches } from "../api";
+import { addCloudWatch, getCloudWatches, type EngineHistory } from "../api";
 import { CLOUD_WATCH_REMOVED, CLOUD_WATCH_UPDATED } from "./ActivityIndicator";
 import LocalEngine from "./LocalEngine";
 
@@ -141,6 +141,8 @@ function fmtEval(m: CloudMove, whiteToMove: boolean): string {
 }
 
 interface Props {
+  /** How the position arose, for the local engine (repetitions). */
+  history?: EngineHistory;
   /** The position to evaluate. */
   fen: string;
   /** Name for a deepen watch, shown in the activity panel. */
@@ -151,7 +153,7 @@ interface Props {
 
 /** Renders as the contents of a panel (header row + body) — the host supplies the
  *  panel chrome, so it fits both the Games mosaic and the Analysis tab column. */
-export default function CloudEngine({ fen, watchLabel, onPlayLine }: Props) {
+export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Props) {
   // Default to Lichess (Stockfish) — deep, real evals for popular positions. A
   // versioned key so flipping the default from chessdb actually takes effect on
   // existing installs (the old key was auto-written on every load). An explicit
@@ -344,7 +346,7 @@ export default function CloudEngine({ fen, watchLabel, onPlayLine }: Props) {
         </span>
       </div>
       {engineSource === "local" ? (
-        <LocalEngine fen={fen} lineCount={lichessLineCount} onPlayLine={onPlayLine} />
+        <LocalEngine fen={fen} history={history} lineCount={lichessLineCount} onPlayLine={onPlayLine} />
       ) : engineStatus === "loading" ? (
         <div className="p-3 text-center text-on-surface-variant text-body-sm">Analysing…</div>
       ) : engineStatus === "offline" ? (

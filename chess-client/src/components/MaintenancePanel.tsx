@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
+import ExternalLinkIcon from "./ExternalLinkIcon";
 import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
@@ -9,7 +10,7 @@ import { useJobProgress } from "../hooks/useJobProgress";
 import SourcesPanel from "./SourcesPanel";
 import MergePlayersDialog from "./MergePlayersDialog";
 import { StatusInfo, ScheduleInfo } from "../types";
-import { serverUrl, serverToken, setServerSettings, DEFAULT_SERVER_URL, getSchedule, getJobs } from "../api";
+import { apiUrl, serverUrl, serverToken, setServerSettings, DEFAULT_SERVER_URL, getSchedule, getJobs } from "../api";
 
 interface Props {
   onRunWizard: () => void;
@@ -186,12 +187,35 @@ function ServerConnectionSection({ status, connection = "connected" }: {
 function VersionFooter({ status }: { status: StatusInfo | null }) {
   const [appVersion, setAppVersion] = useState<string | null>(null);
   useEffect(() => { getVersion().then(setAppVersion).catch(() => {}); }, []);
+  // The server's engine (#309), and whether a newer Stockfish is out. An
+  // older server has no /engine and simply shows none.
+  const [engine, setEngine] = useState<{ name: string | null; update_available: boolean; latest: { version: string; url: string } | null } | null>(null);
+  useEffect(() => {
+    if (!status?.version) return;
+    fetch(apiUrl("/engine"))
+      .then((r) => (r.ok ? r.json() : null))
+      .then(setEngine)
+      .catch(() => {});
+  }, [status?.version]);
   const server = status?.version
     ? `Server ${status.version}${status.api_version != null ? ` · API ${status.api_version}` : ""}`
     : "Server unreachable";
   return (
     <div className="pt-2 text-center text-label-md text-on-surface-variant select-text">
       LPDO {appVersion ?? "…"} · {server}
+      {engine?.name && <> · {engine.name}</>}
+      {engine?.update_available && engine.latest && (
+        <>
+          {" — "}
+          <button
+            onClick={() => void openUrl(engine.latest!.url)}
+            className="text-primary hover:underline inline-flex items-center"
+            title="A newer Stockfish is out. Install it on the server, in /usr/local/bin/stockfish on Linux."
+          >
+            Stockfish {engine.latest.version} is available<ExternalLinkIcon />
+          </button>
+        </>
+      )}
     </div>
   );
 }
