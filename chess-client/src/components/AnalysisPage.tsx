@@ -12,7 +12,7 @@ import CloudEngine from "./CloudEngine";
 import { useGamePgn } from "../lib/useGamePgn";
 import { useNeighbourResize } from "../lib/panelResize";
 import { fetchPgns, savePgnFile } from "../lib/exportPgn";
-import ExportPdfDialog, { ExportableGame } from "./games/ExportPdfDialog";
+import PrintDialog, { ExportableGame } from "./games/PrintDialog";
 
 // The Analysis board (#220): the editable, multi-game workbench. Several games
 // open at once as mini-board tabs (A). The active game is edited in a full
@@ -273,7 +273,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
               className={`w-6 h-6 inline-flex items-center justify-center rounded-full text-body-md transition-colors duration-short3 ease-standard ${
                 railMenu ? "bg-on-surface/12 text-on-surface" : "text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12"
               }`}
-              title="Close, export or print the open games"
+              title="Print, export or close the open games"
             >
               ⋯
             </button>
@@ -283,7 +283,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
               return (
                 <div style={{ position: "fixed", left: menuAt!.x, top: menuAt!.y }} className="z-30 py-1 rounded-md bg-surface-container-high shadow-xl min-w-52">
                   <button className={item} onClick={() => void exportPgn()}>Export {which} as PGN…</button>
-                  <button className={item} onClick={() => void printPdf()}>Print {which} as PDF…</button>
+                  <button className={item} onClick={() => void printPdf()}>Print {which}…</button>
                   <div className="my-1 h-px bg-outline-variant" />
                   {pickedNow.length > 0 && (
                     <button className={item} onClick={() => { setRailMenu(false); onCloseMany(pickedNow); setPicked(new Set()); }}>
@@ -541,7 +541,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
         </Panel>
       </Group>
       {pdfGames && (
-        <ExportPdfDialog games={pdfGames} flipped={active?.flipped ?? false} onClose={() => setPdfGames(null)} />
+        <PrintDialog games={pdfGames} flipped={active?.flipped ?? false} onClose={() => setPdfGames(null)} />
       )}
     </div>
   );

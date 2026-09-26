@@ -110,6 +110,7 @@ pub fn run() {
             local::append_pgn_file,
             local::write_pgn_file,
             local::write_binary_file,
+            local::print_pdf,
             local::write_temp_pgn_file,
             pgn_index::pgn_open,
             pgn_index::pgn_query,

@@ -24,7 +24,7 @@ import {
 import { serializeMovetext } from "../lib/serializeMovetext";
 import { gameUrlFromPgn } from "../lib/useGamePgn";
 import GameMoreMenu from "./games/GameMoreMenu";
-import ExportPdfDialog from "./games/ExportPdfDialog";
+import PrintDialog from "./games/PrintDialog";
 import { appendScratchMove, clearScratchMarks, replayAsScratch, sansToCursor, type ScratchMove } from "../lib/scratchLine";
 import type { CalArrow, CslCircle } from "../lib/parseAnnotations";
 import { nagsToString, nagToSymbol } from "../lib/parseAnnotations";
@@ -566,7 +566,7 @@ function GameActionsBar({
   lineSans: string[];
   ply: number;
   startFen: string;
-  /** Opens the PDF export dialog (the board has the whole game in hand). */
+  /** Opens the Print dialog (the board has the whole game in hand). */
   onExportPdf: () => void;
   onDetailChanged: () => void;
   /** Fires when the user clicks "Edit game…" — host enters inline edit mode. */
@@ -2081,7 +2081,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
           </div>
 
           {pdfOpen && detail && (
-        <ExportPdfDialog detail={detail} flipped={flipped} onClose={() => setPdfOpen(false)} />
+        <PrintDialog detail={detail} flipped={flipped} onClose={() => setPdfOpen(false)} />
       )}
       {/* Variation choice menu — M3 menu surface (works in view & edit mode) */}
           {varChoice && (

@@ -377,6 +377,24 @@ pub async fn write_binary_file(path: String, bytes: Vec<u8>) -> Result<(), Strin
     write_atomically(&PathBuf::from(&path), &bytes)
 }
 
+/// Print a finished PDF: write it under the temp directory and hand it to
+/// whatever opens PDFs on this machine, which has the print dialog, a
+/// preview and the printer list — none of which a webview offers for a
+/// document it did not render itself. `name` is what the viewer shows.
+#[tauri::command]
+pub async fn print_pdf(name: String, bytes: Vec<u8>) -> Result<String, String> {
+    let dir = std::env::temp_dir().join("lpdo-print");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let safe: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || "-_. ".contains(c) { c } else { '_' })
+        .collect();
+    let path = dir.join(if safe.is_empty() { "game.pdf".to_string() } else { safe });
+    write_atomically(&path, &bytes)?;
+    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|e| e.to_string())?;
+    Ok(path.display().to_string())
+}
+
 #[tauri::command]
 pub async fn write_pgn_file(path: String, content: String) -> Result<(), String> {
     write_atomically(&PathBuf::from(&path), content.as_bytes())

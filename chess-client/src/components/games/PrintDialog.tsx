@@ -2,8 +2,9 @@ import { useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 
-// Printing a game: A4, two columns, the main line in bold and variations
-// indented in brackets, the way a chess book sets it. Diagrams come from the
+// Printing a game (or saving it as a PDF, which is the same pages as a file):
+// A4, two columns, the main line in bold and variations indented in brackets,
+// the way a chess book sets it. Diagrams come from the
 // movetext itself — a comment holding `[#]`, which is what ChessBase writes
 // when its author asks for one — so an imported annotator's diagrams are kept.
 
@@ -22,7 +23,7 @@ export interface ExportableGame {
   pgn: string | null;
 }
 
-export default function ExportPdfDialog({
+export default function PrintDialog({
   detail,
   games,
   flipped,
@@ -43,40 +44,59 @@ export default function ExportPdfDialog({
   const [figurines, setFigurines] = useState(true);
   const [newPagePerGame, setNewPagePerGame] = useState(false);
   const [compact, setCompact] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"print" | "save" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const markers = list.reduce((n, g) => n + (g.pgn?.match(/\[#\]/g) ?? []).length, 0);
   const printable = list.filter((g) => g.pgn);
 
-  async function doExport() {
-    setError(null);
-    setBusy(true);
-    try {
-      // The PDF machinery (pdf-lib and the piece outlines) is a good half of
-      // the app's JavaScript and is used only here, so it is fetched when
-      // someone actually exports rather than at startup.
-      const { buildGamesPdf } = await import("../../lib/pdfExport");
-      const bytes = await buildGamesPdf(
-        printable.map((g) => ({
-          white: g.white, black: g.black,
-          white_elo: g.white_elo, black_elo: g.black_elo,
-          event: g.event, date: g.date,
-          result: g.result, eco: g.eco, pgn: g.pgn ?? "",
-        })),
-        { flipped: fromBlack, diagramAtEnd, figurines, newPagePerGame, compact, producer: "LPDO" },
-      );
+  async function build(): Promise<{ bytes: Uint8Array; name: string }> {
+    // The PDF machinery (pdf-lib and the piece outlines) is a good half of
+    // the app's JavaScript and is used only here, so it is fetched when
+    // someone actually prints rather than at startup.
+    const { buildGamesPdf } = await import("../../lib/pdfExport");
+    const bytes = await buildGamesPdf(
+      printable.map((g) => ({
+        white: g.white, black: g.black,
+        white_elo: g.white_elo, black_elo: g.black_elo,
+        event: g.event, date: g.date,
+        result: g.result, eco: g.eco, pgn: g.pgn ?? "",
+      })),
+      { flipped: fromBlack, diagramAtEnd, figurines, newPagePerGame, compact, producer: "LPDO" },
+    );
+    const first = printable[0];
+    const name = many
+      ? `${(first.date ?? "").slice(0, 10) || "games"}-${printable.length}-games.pdf`
+      : `${(first.date ?? "").slice(0, 10) || "game"}-${surname(first.white)}-${surname(first.black)}.pdf`;
+    return { bytes, name };
+  }
 
-      const first = printable[0];
-      const name = many
-        ? `${(first.date ?? "").slice(0, 10) || "games"}-${printable.length}-games.pdf`
-        : `${(first.date ?? "").slice(0, 10) || "game"}-${surname(first.white)}-${surname(first.black)}.pdf`;
+  /** Print: the pages go to the PDF viewer, whose print dialog knows the
+   *  printers. The webview cannot print a document it did not draw. */
+  async function doPrint() {
+    setError(null);
+    setBusy("print");
+    try {
+      const { bytes, name } = await build();
+      await invoke("print_pdf", { name, bytes: Array.from(bytes) });
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusy(null);
+    }
+  }
+
+  async function doSave() {
+    setError(null);
+    setBusy("save");
+    try {
+      const { bytes, name } = await build();
       const lastDir = localStorage.getItem(PDF_EXPORT_DIR_KEY) ?? "";
       const path = await save({
         defaultPath: lastDir ? `${lastDir}/${name}` : name,
         filters: [{ name: "PDF", extensions: ["pdf"] }],
       });
-      if (!path) { setBusy(false); return; }        // cancelled
+      if (!path) { setBusy(null); return; }        // cancelled
 
       await invoke("write_binary_file", { path, bytes: Array.from(bytes) });
       const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
@@ -84,7 +104,7 @@ export default function ExportPdfDialog({
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-      setBusy(false);
+      setBusy(null);
     }
   }
 
@@ -97,12 +117,13 @@ export default function ExportPdfDialog({
         onClick={(e) => e.stopPropagation()}
       >
         <div>
-          <h2 className="text-title-lg text-on-surface">{many ? `Print ${printable.length} games as PDF` : "Export as PDF"}</h2>
+          <h2 className="text-title-lg text-on-surface">{many ? `Print ${printable.length} games` : "Print this game"}</h2>
           <p className="text-body-sm text-on-surface-variant mt-1">
             Two columns on A4, the main line in bold and variations in brackets.
-            {many ? " The games follow one another in the order they are open." : ""} The
-            {many ? " games themselves travel" : " game itself travels"} in the file, so this PDF can be
-            added back to the database like a PGN.
+            {many ? " The games follow one another in the order they are open." : ""} Print opens the pages in
+            your PDF viewer, where you choose the printer; Save as PDF keeps them as a file. Either way the
+            {many ? " games themselves travel" : " game itself travels"} inside, so the PDF can be added back
+            to the database like a PGN.
           </p>
         </div>
 
@@ -148,11 +169,18 @@ export default function ExportPdfDialog({
             Cancel
           </button>
           <button
-            onClick={() => void doExport()}
-            disabled={busy || printable.length === 0}
+            onClick={() => void doSave()}
+            disabled={busy !== null || printable.length === 0}
+            className="h-9 px-4 inline-flex items-center rounded-full text-primary text-label-lg hover:bg-primary/8 disabled:opacity-50 transition-colors duration-short3 ease-standard"
+          >
+            {busy === "save" ? "Writing…" : "Save as PDF…"}
+          </button>
+          <button
+            onClick={() => void doPrint()}
+            disabled={busy !== null || printable.length === 0}
             className="h-9 px-4 inline-flex items-center rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 disabled:opacity-50 transition-all duration-short3 ease-standard"
           >
-            {busy ? "Writing…" : many ? `Save ${printable.length} games as PDF…` : "Save PDF…"}
+            {busy === "print" ? "Preparing…" : "Print…"}
           </button>
         </div>
       </div>

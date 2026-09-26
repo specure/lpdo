@@ -29,7 +29,7 @@ interface Props {
   /** The game's own address, when its PGN names one. */
   gameUrl: string | null;
   /** Offered only where a whole game is in hand (the board, not a preview):
-   *  saving the game as a file, as PGN or as a printed PDF. */
+   *  saving the game as a PGN file, or printing it (or saving it as PDF). */
   onExportPgn?: () => void;
   onExportPdf?: () => void;
 }
@@ -137,7 +137,7 @@ export default function GameMoreMenu({ pgn, fen, lineSans, ply, startFen, gameUr
           )}
           {onExportPdf && (
             <button className={item} onClick={() => { setOpen(false); onExportPdf(); }} disabled={!pgn}>
-              Export as PDF…
+              Print…
             </button>
           )}
           <div className="my-1 h-px bg-outline-variant" />
