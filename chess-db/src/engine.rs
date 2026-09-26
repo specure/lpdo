@@ -37,6 +37,10 @@ const KNOWN_LOCATIONS: &[&str] = &[
     "/usr/bin/lc0",
     "/usr/local/bin/lc0",
     "/opt/homebrew/bin/lc0",
+    // Windows has no package location; this is the one docs/chess-engine.md
+    // tells people to use.
+    r"C:\Program Files\Stockfish\stockfish.exe",
+    r"C:\Program Files\Lc0\lc0.exe",
 ];
 const PATH_NAMES: &[&str] = &["stockfish", "lc0"];
 

@@ -215,9 +215,10 @@ function InstallGuide({ status, checking, onCheck }: { status: EngineStatus; che
         <div>
           <div className="text-label-lg">Install Stockfish</div>
           <p className="text-on-surface-variant mt-1">
-            Download it from stockfishchess.org, unpack it, and name the program in the settings file
-            below.
+            Download the Windows build from stockfishchess.org, unpack it, and copy the program to
+            this path, renamed to stockfish.exe (it takes an administrator account):
           </p>
+          <code className={code}>C:\Program Files\Stockfish\stockfish.exe</code>
         </div>
       )}
       <div>
@@ -233,6 +234,13 @@ function InstallGuide({ status, checking, onCheck }: { status: EngineStatus; che
       {status.error && status.path && (
         <p className="text-error">{status.error}</p>
       )}
+      <button
+        onClick={() => void openUrl("https://github.com/specure/lpdo/blob/main/docs/chess-engine.md")}
+        className="text-primary hover:underline inline-flex items-center text-body-sm"
+      >
+        The full guide, for every system<ExternalLinkIcon />
+      </button>
+      <div />
       <button
         onClick={onCheck}
         disabled={checking}
