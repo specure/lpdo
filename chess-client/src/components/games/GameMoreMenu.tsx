@@ -42,6 +42,8 @@ export interface MenuEntry {
   label: string;
   onClick: () => void;
   disabled?: boolean;
+  /** Draw a divider above this entry. */
+  separated?: boolean;
 }
 
 /** The site an address belongs to, for naming the link — "lichess.org" for
@@ -166,9 +168,12 @@ export default function GameMoreMenu({ pgn, fen, lineSans, ply, startFen, gameUr
             <>
               <div className="my-1 h-px bg-outline-variant" />
               {extras.map((x) => (
-                <button key={x.label} className={item} disabled={x.disabled} onClick={() => { setOpen(false); x.onClick(); }}>
-                  {x.label}
-                </button>
+                <div key={x.label}>
+                  {x.separated && <div className="my-1 h-px bg-outline-variant" />}
+                  <button className={item} disabled={x.disabled} onClick={() => { setOpen(false); x.onClick(); }}>
+                    {x.label}
+                  </button>
+                </div>
               ))}
             </>
           )}

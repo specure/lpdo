@@ -6,7 +6,7 @@ import { CursorPath } from "../lib/moveTreeNav";
 import MiniBoard from "./games/MiniBoard";
 import MoveList from "./games/MoveList";
 import GamePreviewHeader from "./games/GamePreviewHeader";
-import GameMoreMenu from "./games/GameMoreMenu";
+import GameMoreMenu, { MenuEntry } from "./games/GameMoreMenu";
 import GameBoard from "./GameBoard";
 import CloudEngine from "./CloudEngine";
 import { useGamePgn } from "../lib/useGamePgn";
@@ -72,22 +72,8 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
   // games since closed drop out.
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
   const pickedNow = [...picked].filter((k) => tabs.some((t) => t.key === k));
-  // The menu is positioned on the page, not in the rail: the rail is narrow
-  // and clips whatever hangs out of it.
-  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
-  const railMenu = menuAt !== null;
-  const setRailMenu = (open: boolean) => { if (!open) setMenuAt(null); };
-  const railMenuRef = useRef<HTMLDivElement>(null);
   const [railNote, setRailNote] = useState<string | null>(null);
   const [pdfGames, setPdfGames] = useState<{ games: ExportableGame[]; primary: "print" | "save" } | null>(null);
-  useEffect(() => {
-    if (!railMenu) return;
-    const onDown = (e: MouseEvent) => {
-      if (railMenuRef.current && !railMenuRef.current.contains(e.target as Node)) setRailMenu(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [railMenu]);
   useEffect(() => {
     if (!railNote) return;
     const t = window.setTimeout(() => setRailNote(null), 4000);
@@ -122,7 +108,6 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
   /** The games a rail-menu command works on, in rail order. */
   const targets = (scope: "all" | "picked") => (scope === "picked" ? tabs.filter((t) => picked.has(t.key)) : tabs);
   async function exportPgn(scope: "all" | "picked") {
-    setRailMenu(false);
     const list = targets(scope);
     try {
       const pgns = await fetchPgns(list.map((t) => t.game.id));
@@ -133,7 +118,6 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
     }
   }
   async function printPdf(primary: "print" | "save", scope: "all" | "picked") {
-    setRailMenu(false);
     const list = targets(scope);
     try {
       const pgns = await fetchPgns(list.map((t) => t.game.id));
@@ -143,24 +127,33 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
       setRailNote(`Could not load the games: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
-  // The rail's commands, offered again in the board's More menu: that is
-  // where print and export are looked for, and the rail's own menu is easy
-  // to miss. Only with more than one game open — for one, the game's own
-  // entries above say the same.
-  const railExtras = (() => {
+  // Commands over the open games live in the board's More menu, where print
+  // and export are looked for — a menu of the rail's own was easy to miss.
+  // Only with more than one game open: for one, the game's own entries say
+  // the same, and its ✕ closes it.
+  const railExtras: MenuEntry[] = (() => {
     if (tabs.length < 2) return [];
     const n = pickedNow.length;
     const subset = n > 0 && n < tabs.length;
-    const all = "all games";
     return [
       ...(subset ? [
         { label: `Print the ${n} selected…`, onClick: () => void printPdf("print", "picked") },
         { label: `Export the ${n} selected as PDF…`, onClick: () => void printPdf("save", "picked") },
         { label: `Export the ${n} selected as PGN…`, onClick: () => void exportPgn("picked") },
       ] : []),
-      { label: `Print ${all}…`, onClick: () => void printPdf("print", "all") },
-      { label: `Export ${all} as PDF…`, onClick: () => void printPdf("save", "all") },
-      { label: `Export ${all} as PGN…`, onClick: () => void exportPgn("all") },
+      { label: "Print all games…", onClick: () => void printPdf("print", "all"), separated: subset },
+      { label: "Export all games as PDF…", onClick: () => void printPdf("save", "all") },
+      { label: "Export all games as PGN…", onClick: () => void exportPgn("all") },
+      ...(subset ? [{
+        label: `Close the ${n} selected`, separated: true,
+        onClick: () => { onCloseMany(pickedNow); setPicked(new Set()); },
+      }] : []),
+      {
+        label: "Close others", separated: !subset, disabled: !active,
+        onClick: () => onCloseMany(tabs.filter((t) => t.key !== activeKey).map((t) => t.key)),
+      },
+      { label: "Close all", onClick: () => onCloseMany(tabs.map((t) => t.key)) },
+      ...(n > 0 ? [{ label: "Select none", separated: true, onClick: () => setPicked(new Set()) }] : []),
     ];
   })();
   async function openRelated(game: GameSummary) {
@@ -291,8 +284,9 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
       >
       <div className="h-full flex flex-col min-h-0">
         {/* The rail is also the export list: what is open, in this order, is
-            what "Export all" writes. The count says how much room is left. */}
-        <div className="shrink-0 flex items-center gap-1 pb-1 pr-2.5" ref={railMenuRef}>
+            what "Print all games" writes (from the More menu above the
+            board). The count says how much room is left. */}
+        <div className="shrink-0 flex items-center gap-1 pb-1 pr-2.5">
           <span
             className={`flex-1 min-w-0 truncate text-label-sm ${full ? "text-error" : "text-on-surface-variant"}`}
             title={full
@@ -301,60 +295,6 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
           >
             {tabs.length} of {capacity}{pickedNow.length ? ` · ${pickedNow.length} selected` : ""}
           </span>
-          <div className="relative">
-            <button
-              onClick={(e) => {
-                const r = e.currentTarget.getBoundingClientRect();
-                setMenuAt(railMenu ? null : { x: r.left, y: r.bottom + 4 });
-              }}
-              className={`w-6 h-6 inline-flex items-center justify-center rounded-full text-body-md transition-colors duration-short3 ease-standard ${
-                railMenu ? "bg-on-surface/12 text-on-surface" : "text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12"
-              }`}
-              title="Print, export or close the open games"
-            >
-              ⋯
-            </button>
-            {railMenu && (() => {
-              const item = "w-full text-left px-3 py-1.5 text-label-md text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 disabled:opacity-40 disabled:hover:bg-transparent transition-colors duration-short3 ease-standard whitespace-nowrap";
-              // A picked subset gets its own entries above the ones for all;
-              // picking every game, or none, is the same as all.
-              const subset = pickedNow.length > 0 && pickedNow.length < tabs.length;
-              const n = pickedNow.length;
-              return (
-                <div style={{ position: "fixed", left: menuAt!.x, top: menuAt!.y }} className="z-30 py-1 rounded-md bg-surface-container-high shadow-xl min-w-52">
-                  {subset && (
-                    <>
-                      <button className={item} onClick={() => void exportPgn("picked")}>Export {n} selected as PGN…</button>
-                      <button className={item} onClick={() => void printPdf("save", "picked")}>Export {n} selected as PDF…</button>
-                      <button className={item} onClick={() => void printPdf("print", "picked")}>Print {n} selected…</button>
-                      <div className="my-1 h-px bg-outline-variant" />
-                    </>
-                  )}
-                  <button className={item} onClick={() => void exportPgn("all")}>Export all as PGN…</button>
-                  <button className={item} onClick={() => void printPdf("save", "all")}>Export all as PDF…</button>
-                  <button className={item} onClick={() => void printPdf("print", "all")}>Print all…</button>
-                  <div className="my-1 h-px bg-outline-variant" />
-                  {subset && (
-                    <button className={item} onClick={() => { setRailMenu(false); onCloseMany(pickedNow); setPicked(new Set()); }}>
-                      Close {pickedNow.length} selected
-                    </button>
-                  )}
-                  <button className={item} disabled={!active || tabs.length < 2} onClick={() => { setRailMenu(false); onCloseMany(tabs.filter((t) => t.key !== activeKey).map((t) => t.key)); }}>
-                    Close others
-                  </button>
-                  <button className={item} onClick={() => { setRailMenu(false); onCloseMany(tabs.map((t) => t.key)); }}>
-                    Close all
-                  </button>
-                  {pickedNow.length > 0 && (
-                    <>
-                      <div className="my-1 h-px bg-outline-variant" />
-                      <button className={item} onClick={() => { setRailMenu(false); setPicked(new Set()); }}>Select none</button>
-                    </>
-                  )}
-                </div>
-              );
-            })()}
-          </div>
         </div>
         {railNote && <div className="shrink-0 mb-1 mr-2.5 px-1.5 py-1 rounded-sm text-label-sm bg-surface-container-high text-on-surface">{railNote}</div>}
       {/* Right padding keeps the cards clear of the scrollbar, which WebKitGTK
