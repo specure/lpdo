@@ -10,7 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 const PDF_EXPORT_DIR_KEY = "pdfExportDir";
 
 /** What the dialog needs of a game — GameDetail satisfies it. */
-interface ExportableGame {
+export interface ExportableGame {
   white: string;
   black: string;
   white_elo: number | null;
@@ -24,21 +24,30 @@ interface ExportableGame {
 
 export default function ExportPdfDialog({
   detail,
+  games,
   flipped,
   onClose,
 }: {
-  detail: ExportableGame;
+  /** The one game to print — or, with `games`, ignored. */
+  detail?: ExportableGame;
+  /** Several games, printed one after another in this order. */
+  games?: ExportableGame[];
   /** The board's current orientation, offered as the diagrams' point of view. */
   flipped: boolean;
   onClose: () => void;
 }) {
+  const list = games ?? (detail ? [detail] : []);
+  const many = list.length > 1;
   const [fromBlack, setFromBlack] = useState(flipped);
   const [diagramAtEnd, setDiagramAtEnd] = useState(false);
   const [figurines, setFigurines] = useState(true);
+  const [newPagePerGame, setNewPagePerGame] = useState(false);
+  const [compact, setCompact] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const markers = (detail.pgn?.match(/\[#\]/g) ?? []).length;
+  const markers = list.reduce((n, g) => n + (g.pgn?.match(/\[#\]/g) ?? []).length, 0);
+  const printable = list.filter((g) => g.pgn);
 
   async function doExport() {
     setError(null);
@@ -47,18 +56,21 @@ export default function ExportPdfDialog({
       // The PDF machinery (pdf-lib and the piece outlines) is a good half of
       // the app's JavaScript and is used only here, so it is fetched when
       // someone actually exports rather than at startup.
-      const { buildGamePdf } = await import("../../lib/pdfExport");
-      const bytes = await buildGamePdf(
-        {
-          white: detail.white, black: detail.black,
-          white_elo: detail.white_elo, black_elo: detail.black_elo,
-          event: detail.event, date: detail.date,
-          result: detail.result, eco: detail.eco, pgn: detail.pgn ?? "",
-        },
-        { flipped: fromBlack, diagramAtEnd, figurines, producer: "LPDO" },
+      const { buildGamesPdf } = await import("../../lib/pdfExport");
+      const bytes = await buildGamesPdf(
+        printable.map((g) => ({
+          white: g.white, black: g.black,
+          white_elo: g.white_elo, black_elo: g.black_elo,
+          event: g.event, date: g.date,
+          result: g.result, eco: g.eco, pgn: g.pgn ?? "",
+        })),
+        { flipped: fromBlack, diagramAtEnd, figurines, newPagePerGame, compact, producer: "LPDO" },
       );
 
-      const name = `${(detail.date ?? "").slice(0, 10) || "game"}-${surname(detail.white)}-${surname(detail.black)}.pdf`;
+      const first = printable[0];
+      const name = many
+        ? `${(first.date ?? "").slice(0, 10) || "games"}-${printable.length}-games.pdf`
+        : `${(first.date ?? "").slice(0, 10) || "game"}-${surname(first.white)}-${surname(first.black)}.pdf`;
       const lastDir = localStorage.getItem(PDF_EXPORT_DIR_KEY) ?? "";
       const path = await save({
         defaultPath: lastDir ? `${lastDir}/${name}` : name,
@@ -85,19 +97,33 @@ export default function ExportPdfDialog({
         onClick={(e) => e.stopPropagation()}
       >
         <div>
-          <h2 className="text-title-lg text-on-surface">Export as PDF</h2>
+          <h2 className="text-title-lg text-on-surface">{many ? `Print ${printable.length} games as PDF` : "Export as PDF"}</h2>
           <p className="text-body-sm text-on-surface-variant mt-1">
-            Two columns on A4, the main line in bold and variations in brackets. The game itself
-            travels in the file, so this PDF can be added back to the database like a PGN.
+            Two columns on A4, the main line in bold and variations in brackets.
+            {many ? " The games follow one another in the order they are open." : ""} The
+            {many ? " games themselves travel" : " game itself travels"} in the file, so this PDF can be
+            added back to the database like a PGN.
           </p>
         </div>
 
         <div className="space-y-2">
           <p className="text-body-sm text-on-surface-variant">
             {markers > 0
-              ? `${markers} diagram${markers > 1 ? "s" : ""} marked in the game will be drawn.`
-              : "This game marks no diagrams. Add one in the move comments with [#]."}
+              ? `${markers} diagram${markers > 1 ? "s" : ""} marked in the game${many ? "s" : ""} will be drawn.`
+              : `${many ? "These games mark" : "This game marks"} no diagrams. Add one while editing, with the Diagram button.`}
           </p>
+          {many && (
+            <>
+              <label className={row}>
+                <input type="checkbox" checked={newPagePerGame} onChange={(e) => setNewPagePerGame(e.target.checked)} className="accent-primary" />
+                Start each game on a new page
+              </label>
+              <label className={row}>
+                <input type="checkbox" checked={compact} onChange={(e) => setCompact(e.target.checked)} className="accent-primary" />
+                Compact: no comments or diagrams, as a bulletin prints them
+              </label>
+            </>
+          )}
           <label className={row}>
             <input type="checkbox" checked={figurines} onChange={(e) => setFigurines(e.target.checked)} className="accent-primary" />
             Print pieces as figurines (♘f3) rather than letters (Nf3)
@@ -123,10 +149,10 @@ export default function ExportPdfDialog({
           </button>
           <button
             onClick={() => void doExport()}
-            disabled={busy || !detail.pgn}
+            disabled={busy || printable.length === 0}
             className="h-9 px-4 inline-flex items-center rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 disabled:opacity-50 transition-all duration-short3 ease-standard"
           >
-            {busy ? "Writing…" : "Save PDF…"}
+            {busy ? "Writing…" : many ? `Save ${printable.length} games as PDF…` : "Save PDF…"}
           </button>
         </div>
       </div>

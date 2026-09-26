@@ -70,7 +70,13 @@ interface Diagram {
   flipped: boolean;
 }
 
-type Block = Para | Diagram;
+/** Where one game ends and the next begins: a gap and a rule, or a new page. */
+interface GameBreak {
+  kind: "break";
+  newPage: boolean;
+}
+
+type Block = Para | Diagram | GameBreak;
 
 /** What the header block prints. Anything missing here is read from the PGN's
  *  own tags, which is where the round and the site usually are. */
@@ -99,6 +105,11 @@ export interface PdfOptions {
   figurines?: boolean;
   /** Shown in the running header, e.g. "LPDO 0.19.0". */
   producer?: string;
+  /** With several games: start each on a fresh page rather than flowing on. */
+  newPagePerGame?: boolean;
+  /** Bulletin style: the moves alone, no comments and no diagrams — the most
+   *  games on the least paper. */
+  compact?: boolean;
 }
 
 
@@ -112,38 +123,46 @@ function isPiece(first: string | undefined): first is "K" | "Q" | "R" | "B" | "N
 const DIAGRAM_MARKER = /\s*\[#\]\s*/;
 
 export async function buildGamePdf(input: PdfGame, opts: PdfOptions): Promise<Uint8Array> {
+  return buildGamesPdf([input], opts);
+}
+
+/** Several games in one document, in the order given: each with its own
+ *  heading, flowing on after a rule (or on a new page), the way a printed
+ *  bulletin sets them. All their PGN travels in the metadata. */
+export async function buildGamesPdf(inputs: PdfGame[], opts: PdfOptions): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
   const fonts = {
     text: await doc.embedFont(StandardFonts.TimesRoman),
     bold: await doc.embedFont(StandardFonts.TimesRomanBold),
     italic: await doc.embedFont(StandardFonts.TimesRomanItalic),
   };
+  const compact = !!opts.compact;
+  const games = inputs.map(withPgnTags);
 
-  const game = withPgnTags(input);
-  const tree = parsePgnTree(game.pgn);
-  const blocks = [
-    ...headerBlocks(game, fonts),
-    ...movetextBlocks(tree, fonts, !!opts.flipped, opts.figurines !== false),
-  ];
-  if (opts.diagramAtEnd) {
-    const last = tree.mainLine[tree.mainLine.length - 1];
-    blocks.push({ kind: "diagram", fen: last ? last.fen : tree.startFen, flipped: !!opts.flipped });
-  }
-  if (game.result) {
-    blocks.push({
-      kind: "para",
-      indent: 0,
-      spaceBefore: 4,
-      runs: [{ text: prettyResult(game.result), font: fonts.bold, size: SIZE.move, color: INK }],
-    });
-  }
+  const blocks: Block[] = [];
+  games.forEach((game, i) => {
+    if (i > 0) blocks.push({ kind: "break", newPage: !!opts.newPagePerGame });
+    const tree = parsePgnTree(game.pgn);
+    blocks.push(...headerBlocks(game, fonts));
+    blocks.push(...movetextBlocks(tree, fonts, !!opts.flipped, opts.figurines !== false, compact));
+    if (opts.diagramAtEnd && !compact) {
+      const last = tree.mainLine[tree.mainLine.length - 1];
+      blocks.push({ kind: "diagram", fen: last ? last.fen : tree.startFen, flipped: !!opts.flipped });
+    }
+    if (game.result) {
+      blocks.push(para([run(prettyResult(game.result), fonts.bold, SIZE.move, INK)], 0, 4));
+    }
+  });
 
-  layout(doc, blocks, fonts, runningHeader(game, opts.producer));
+  const header = games.length === 1
+    ? runningHeader(games[0], opts.producer)
+    : [opts.producer ?? "LPDO", `${games.length} games`].join(" — ");
+  layout(doc, blocks, fonts, header);
 
-  doc.setTitle(`${game.white} – ${game.black}`);
+  doc.setTitle(games.length === 1 ? `${games[0].white} – ${games[0].black}` : `${games.length} games`);
   doc.setAuthor(opts.producer ?? "LPDO");
-  doc.setSubject(describe(game));
-  setXmpWithPgn(doc, game);
+  doc.setSubject(games.length === 1 ? describe(games[0]) : games.map(describe).join("; ").slice(0, 500));
+  setXmpWithPgn(doc, games);
 
   return doc.save();
 }
@@ -210,7 +229,7 @@ function para(runs: Run[], indent: number, spaceBefore: number): Para {
 
 /** Walk the tree into paragraphs: the main line as one flowing paragraph, each
  *  variation as its own bracketed, indented one — the shape a printed game has. */
-function movetextBlocks(tree: AnnotatedGame, fonts: Fonts, flipped: boolean, figurines: boolean): Block[] {
+function movetextBlocks(tree: AnnotatedGame, fonts: Fonts, flipped: boolean, figurines: boolean, compact = false): Block[] {
   const blocks: Block[] = [];
   let current: Run[] = [];
   const flush = (indent: number, spaceBefore: number) => {
@@ -220,7 +239,7 @@ function movetextBlocks(tree: AnnotatedGame, fonts: Fonts, flipped: boolean, fig
 
   // A marker in the game's opening comment asks for the starting position —
   // which is how a game that begins from a diagram is annotated.
-  if (tree.startComment) {
+  if (tree.startComment && !compact) {
     const text = tree.startComment.replace(DIAGRAM_MARKER, " ").trim();
     if (text) blocks.push(para([run(text, fonts.italic, SIZE.variation, MUTED)], 0, 0));
     if (DIAGRAM_MARKER.test(tree.startComment)) {
@@ -256,7 +275,7 @@ function movetextBlocks(tree: AnnotatedGame, fonts: Fonts, flipped: boolean, fig
         current.push(run(`${prefix}${tail}`, moveFont, size, INK));
       }
 
-      const comment = node.annotations.comment ?? "";
+      const comment = compact ? "" : node.annotations.comment ?? "";
       const wantsDiagram = DIAGRAM_MARKER.test(comment);
       const text = comment.replace(DIAGRAM_MARKER, " ").trim();
       if (text) current.push(run(`${text} `, fonts.italic, size, MUTED));
@@ -314,6 +333,25 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
   };
 
   for (const block of blocks) {
+    if (block.kind === "break") {
+      if (block.newPage) {
+        // Straight to a fresh page, whatever column we are in.
+        column = 1;
+        nextColumn();
+        continue;
+      }
+      // A gap and a short rule, unless the column is fresh anyway.
+      if (y < PAGE.height - MARGIN.top - 1) {
+        if (y - 22 < MARGIN.bottom) { nextColumn(); continue; }
+        y -= 10;
+        page.drawLine({
+          start: { x: columnLeft(), y }, end: { x: columnLeft() + COLUMN_WIDTH * 0.4, y },
+          thickness: 0.5, color: MUTED,
+        });
+        y -= 12;
+      }
+      continue;
+    }
     if (block.kind === "diagram") {
       const size = DIAGRAM_WIDTH;
       const height = size + 14;               // board plus the file letters below
@@ -590,17 +628,19 @@ function prettyResult(result: string): string {
 
 /** Put the game's PGN in the document's XMP metadata, so the PDF can be read
  *  back as a game. The printed page is a view; this is the game itself. */
-function setXmpWithPgn(doc: PDFDocument, game: PdfGame) {
+function setXmpWithPgn(doc: PDFDocument, games: PdfGame[]) {
+  const pgn = games.map((g) => g.pgn.trim()).join("\n\n") + "\n";
+  const title = games.length === 1 ? describe(games[0]) : `${games.length} games`;
   const xmp = `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/">
   <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
     <rdf:Description rdf:about=""
         xmlns:dc="http://purl.org/dc/elements/1.1/"
         xmlns:lpdo="https://github.com/specure/lpdo/ns/pgn/1.0/">
-      <dc:title><rdf:Alt><rdf:li xml:lang="x-default">${xml(describe(game))}</rdf:li></rdf:Alt></dc:title>
+      <dc:title><rdf:Alt><rdf:li xml:lang="x-default">${xml(title)}</rdf:li></rdf:Alt></dc:title>
       <dc:format>application/pdf</dc:format>
-      <lpdo:games>1</lpdo:games>
-      <lpdo:pgn>${xml(game.pgn)}</lpdo:pgn>
+      <lpdo:games>${games.length}</lpdo:games>
+      <lpdo:pgn>${xml(pgn)}</lpdo:pgn>
     </rdf:Description>
   </rdf:RDF>
 </x:xmpmeta>
