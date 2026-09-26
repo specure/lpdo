@@ -44,6 +44,8 @@ export default function LocalEngine({
   history,
   lineCount,
   onPlayLine,
+  paused = false,
+  onTogglePause,
 }: {
   /** Which of the server's engines: Stockfish, or Lc0 (shown as win/draw/loss). */
   kind?: EngineKind;
@@ -52,6 +54,9 @@ export default function LocalEngine({
   history?: EngineHistory;
   lineCount: number;
   onPlayLine?: (sans: string[]) => void;
+  /** Paused from the Engine panel's tab: no search runs. */
+  paused?: boolean;
+  onTogglePause?: () => void;
 }) {
   const [status, setStatus] = useState<EngineStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
@@ -89,7 +94,7 @@ export default function LocalEngine({
     esRef.current = null;
     setSnap(null);
     setStreamError(null);
-    if (!status?.available || !running) return;
+    if (!status?.available || !running || paused) return;
     const t = window.setTimeout(() => {
       const es = new EventSource(engineAnalyseUrl(fen, lineCount, historyRef.current, kind));
       esRef.current = es;
@@ -111,7 +116,7 @@ export default function LocalEngine({
       esRef.current?.close();
       esRef.current = null;
     };
-  }, [fen, historyKey, lineCount, status?.available, running, kind]);
+  }, [fen, historyKey, lineCount, status?.available, running, kind, paused]);
 
   // A new position starts a new search, even if the last one was stopped.
   useEffect(() => { setRunning(true); }, [fen]);
@@ -133,7 +138,8 @@ export default function LocalEngine({
   const lines = snap?.lines ?? [];
   const scores = lines.map((l) => moverScore(l.eval_cp, l.mate, white));
   const best = scores.length ? Math.max(...scores) : 0;
-  const speed = snap?.nps ? `${(snap.nps / 1e6).toFixed(snap.nps >= 1e7 ? 0 : 1)} Mn/s` : "";
+  // Stockfish counts in millions a second, Lc0 in thousands.
+  const speed = !snap?.nps ? "" : snap.nps >= 1e6 ? `${(snap.nps / 1e6).toFixed(snap.nps >= 1e7 ? 0 : 1)} Mn/s` : `${Math.round(snap.nps / 1e3)}k n/s`;
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -147,11 +153,16 @@ export default function LocalEngine({
             : speed ? ` · ${speed}` : ""}
         </span>
         <button
-          onClick={() => setRunning((r) => !r)}
+          onClick={() => {
+            if (paused) onTogglePause?.();
+            else if (!running) setRunning(true);
+            else if (onTogglePause) onTogglePause();
+            else setRunning(false);
+          }}
           className="h-6 px-2 shrink-0 rounded-full text-label-sm text-primary hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard"
-          title={running ? "Stop the engine" : "Analyse this position again"}
+          title={paused ? "Run the engine" : running ? "Pause the engine" : "Analyse this position again"}
         >
-          {running ? "Stop" : "Analyse"}
+          {paused ? "Run" : running ? "Pause" : "Analyse"}
         </button>
       </div>
       {status.update_available && status.latest && (
@@ -167,7 +178,7 @@ export default function LocalEngine({
       <div className="flex-1 overflow-y-auto p-2">
         {lines.length === 0 ? (
           <div className="p-2 text-center text-on-surface-variant text-body-sm">
-            {running ? "Analysing…" : "Stopped."}
+            {paused ? "Paused." : running ? "Analysing…" : "Stopped."}
           </div>
         ) : lines.slice(0, lineCount).map((l, i) => (
           <div key={l.multipv} className="w-full flex items-baseline gap-2 px-2 py-1 rounded-sm hover:bg-on-surface/8 transition-colors duration-short3 ease-standard">
