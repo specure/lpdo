@@ -130,9 +130,9 @@ export default function PrintDialog({
           <p className="text-body-sm text-on-surface-variant mt-1">
             Two columns on A4, the main line in bold and variations in brackets.
             {many ? " The games follow one another in the order they are open." : ""} Print opens the pages in
-            your PDF viewer, where you choose the printer; Save as PDF keeps them as a file. Either way the
-            {many ? " games themselves travel" : " game itself travels"} inside, so the PDF can be added back
-            to the database like a PGN.
+            your PDF viewer, where you choose the printer. Save as PDF keeps them as a file that carries the
+            {many ? " games themselves" : " game itself"}, so it can be added back to the database like a PGN.
+            A file made with the print dialog's "print to file" is only a picture of the pages.
           </p>
         </div>
 
