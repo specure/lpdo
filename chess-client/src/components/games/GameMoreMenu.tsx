@@ -28,6 +28,10 @@ interface Props {
   startFen: string;
   /** The game's own address, when its PGN names one. */
   gameUrl: string | null;
+  /** Offered only where a whole game is in hand (the board, not a preview):
+   *  saving the game as a file, as PGN or as a printed PDF. */
+  onExportPgn?: () => void;
+  onExportPdf?: () => void;
 }
 
 /** The site an address belongs to, for naming the link — "lichess.org" for
@@ -50,7 +54,7 @@ export function lichessGameUrl(startFen: string, sans: string[], ply = 0): strin
   return `https://lichess.org/analysis/pgn/${encodeURIComponent(pvString(startFen, sans))}#${at}`;
 }
 
-export default function GameMoreMenu({ pgn, fen, lineSans, ply, startFen, gameUrl }: Props) {
+export default function GameMoreMenu({ pgn, fen, lineSans, ply, startFen, gameUrl, onExportPgn, onExportPdf }: Props) {
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -125,6 +129,17 @@ export default function GameMoreMenu({ pgn, fen, lineSans, ply, startFen, gameUr
           <button className={item} onClick={() => go(lichessPositionUrl(fen))}>
             Analyse this position on Lichess<ExternalLinkIcon />
           </button>
+          {(onExportPgn || onExportPdf) && <div className="my-1 h-px bg-outline-variant" />}
+          {onExportPgn && (
+            <button className={item} onClick={() => { setOpen(false); onExportPgn(); }} disabled={!pgn}>
+              Export as PGN…
+            </button>
+          )}
+          {onExportPdf && (
+            <button className={item} onClick={() => { setOpen(false); onExportPdf(); }} disabled={!pgn}>
+              Export as PDF…
+            </button>
+          )}
           <div className="my-1 h-px bg-outline-variant" />
           <button className={item} onClick={() => copy(pgn ?? "", "PGN")} disabled={!pgn}>
             Copy the game's PGN

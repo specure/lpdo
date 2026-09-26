@@ -1226,6 +1226,8 @@ export function MovesEditorAnnotation({ editor }: { editor: MovesEditor }) {
           {editor.canDraw && <GraphicsPalette editor={editor} />}
           {editor.canDraw && showMove && <span className="w-px h-4 bg-outline-variant" />}
           {showMove && <NagPalette editor={editor} />}
+          {showMove && <span className="w-px h-4 bg-outline-variant" />}
+          {showMove && <DiagramToggle editor={editor} />}
           {editor.canDraw && (
             <span className="text-label-sm text-on-surface-variant/70 select-none ml-auto pl-2">
               Ctrl+click circle · Ctrl+drag arrow
@@ -1254,6 +1256,36 @@ export function MovesEditorAnnotation({ editor }: { editor: MovesEditor }) {
         />
       )}
     </div>
+  );
+}
+
+/** Mark this move as one to show a board for when the game is printed (#265).
+ *  The mark is ChessBase's `[#]` inside the move's comment, so a game marked
+ *  here prints the same way there — and one annotated there prints here. */
+function DiagramToggle({ editor }: { editor: MovesEditor }) {
+  const marked = /\[#\]/.test(editor.moveComment);
+  const toggle = () => {
+    const comment = editor.moveComment;
+    editor.setMoveComment(
+      marked
+        ? comment.replace(/\s*\[#\]\s*/, " ").trim()
+        : `${comment.trim()} [#]`.trim(),
+    );
+  };
+  return (
+    <button
+      onClick={toggle}
+      className={`h-7 px-2.5 inline-flex items-center gap-1 rounded-full text-label-md transition-colors duration-short3 ease-standard ${
+        marked
+          ? "bg-secondary-container text-on-secondary-container"
+          : "text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12"
+      }`}
+      title={marked
+        ? "A board is printed here when the game is exported as a PDF. Click to remove it."
+        : "Print a board of this position when the game is exported as a PDF"}
+    >
+      ▦ Diagram
+    </button>
   );
 }
 

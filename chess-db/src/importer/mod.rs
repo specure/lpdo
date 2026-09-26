@@ -135,14 +135,15 @@ fn add_issue_to_collection(conn: &Connection, issue_id: i32, collection_id: i32)
 
 /// Expand a path into a list of .pgn files. A file path returns just that file;
 /// a directory is read non-recursively (matches existing behaviour). Accepts
-/// plain `.pgn` and the compressed forms the importer can decompress:
-/// `.zip`, `.zst`/`.zstd`, `.7z`.
+/// plain `.pgn`, the compressed forms the importer can decompress
+/// (`.zip`, `.zst`/`.zstd`, `.7z`), and a `.pdf` this app exported, which
+/// carries its game in the document's metadata (#265).
 fn collect_pgn_files(path: &Path) -> Result<Vec<std::path::PathBuf>> {
     if path.is_file() {
         if is_supported_input(path) {
             Ok(vec![path.to_path_buf()])
         } else {
-            anyhow::bail!("not a .pgn/.zip/.zst/.7z file: {}", path.display());
+            anyhow::bail!("not a .pgn/.zip/.zst/.7z/.pdf file: {}", path.display());
         }
     } else if path.is_dir() {
         let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(path)?
@@ -165,7 +166,7 @@ fn is_supported_input(p: &Path) -> bool {
             .and_then(|s| s.to_str())
             .map(|s| s.to_ascii_lowercase())
             .as_deref(),
-        Some("pgn") | Some("zip") | Some("zst") | Some("zstd") | Some("7z")
+        Some("pgn") | Some("zip") | Some("zst") | Some("zstd") | Some("7z") | Some("pdf")
     )
 }
 
@@ -225,6 +226,21 @@ type ImportReader = (Box<dyn Read>, Option<TempPgn>, u64, Arc<AtomicU64>);
 /// Returns the decompressing reader, an optional temp-file drop guard, the byte
 /// total the progress bar measures against, and the shared byte counter the
 /// caller passes to `process_pgn_stream` for a real progress bar.
+/// The PGN inside a PDF this app exported: it lives in the document's XMP
+/// metadata, which is written as plain (uncompressed) XML, so it can be lifted
+/// out by reading the bytes — no PDF parser, and nothing to go wrong on a file
+/// that simply has no such metadata.
+fn pgn_from_pdf(bytes: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(bytes);
+    let start = text.find("<lpdo:pgn>")? + "<lpdo:pgn>".len();
+    let end = text[start..].find("</lpdo:pgn>")? + start;
+    let pgn = text[start..end]
+        .replace("&gt;", ">")
+        .replace("&lt;", "<")
+        .replace("&amp;", "&");
+    (!pgn.trim().is_empty()).then_some(pgn)
+}
+
 fn open_import_reader(path: &Path) -> Result<ImportReader> {
     let ext = path
         .extension()
@@ -296,6 +312,22 @@ fn open_import_reader(path: &Path) -> Result<ImportReader> {
                 sz,
                 count,
             ))
+        }
+        // A PDF exported by LPDO carries the game in its XMP metadata (#265), so
+        // the printed page can be read back as a game. Any other PDF — a
+        // scanned bulletin, a ChessBase printout — holds no movetext we can
+        // read, and says so rather than importing nothing.
+        "pdf" => {
+            let bytes = std::fs::read(path)?;
+            let pgn = pgn_from_pdf(&bytes).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no game found in {}: only a PDF exported by LPDO carries its PGN",
+                    path.display()
+                )
+            })?;
+            let sz = pgn.len() as u64;
+            count.store(sz, Ordering::Relaxed);
+            Ok((Box::new(std::io::Cursor::new(pgn.into_bytes())), None, sz, count))
         }
         other => anyhow::bail!("unsupported file type '.{}': {}", other, path.display()),
     }
@@ -2114,6 +2146,37 @@ mod bulk_index_tests {
             )
             .unwrap();
         assert_eq!(by_name, 200);
+    }
+}
+
+#[cfg(test)]
+mod pdf_import_tests {
+    use super::pgn_from_pdf;
+
+    /// What our own export writes: the PGN inside an XMP packet, XML-escaped.
+    fn pdf_with(metadata: &str) -> Vec<u8> {
+        format!("%PDF-1.7\n<< /Type /Metadata /Subtype /XML >>\nstream\n{metadata}\nendstream\n%%EOF")
+            .into_bytes()
+    }
+
+    #[test]
+    fn reads_the_game_out_of_our_own_pdf() {
+        let pdf = pdf_with("<lpdo:pgn>[White &quot;A&quot;]\n\n1. e4 e5 *</lpdo:pgn>");
+        let pgn = pgn_from_pdf(&pdf).expect("a game");
+        assert!(pgn.contains("1. e4 e5"), "{pgn}");
+    }
+
+    #[test]
+    fn unescapes_what_xml_escaped() {
+        let pdf = pdf_with("<lpdo:pgn>1. e4 {a &amp; b &lt;fine&gt;} e5 *</lpdo:pgn>");
+        assert_eq!(pgn_from_pdf(&pdf).unwrap(), "1. e4 {a & b <fine>} e5 *");
+    }
+
+    #[test]
+    fn any_other_pdf_holds_no_game() {
+        assert!(pgn_from_pdf(b"%PDF-1.4 a scanned bulletin").is_none());
+        assert!(pgn_from_pdf(&pdf_with("<lpdo:pgn></lpdo:pgn>")).is_none(), "empty is no game");
+        assert!(pgn_from_pdf(&pdf_with("<lpdo:pgn>1. e4 *")).is_none(), "unterminated is no game");
     }
 }
 
