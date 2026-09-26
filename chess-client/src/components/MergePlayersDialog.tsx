@@ -147,7 +147,9 @@ export default function MergePlayersDialog({
             disabled={!ready || busy !== null}
             className="h-9 px-4 inline-flex items-center rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 disabled:opacity-50 transition-all duration-short3 ease-standard"
           >
-            {busy ?? (targets.length > 1 ? `Merge ${targets.length} players` : "Merge")}
+            {/* Counts everyone involved, the survivor included — the same
+                number the selection chip shows, and what you see in the list. */}
+            {busy ?? (targets.length > 0 ? `Merge ${targets.length + 1} players` : "Merge")}
           </button>
         </div>
       </div>
