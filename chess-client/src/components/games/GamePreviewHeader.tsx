@@ -7,8 +7,8 @@ import { GameSummary } from "../../types";
 // hand — showing it costs no request.
 
 export default function GamePreviewHeader({ game }: { game: GameSummary }) {
+  const result = game.result === "1/2-1/2" ? "½-½" : game.result;
   const details = [
-    game.result === "1/2-1/2" ? "½-½" : game.result,
     game.date ?? null,
     game.event,
     // "?" and "-" are PGN's ways of saying the round is unknown.
@@ -24,6 +24,7 @@ export default function GamePreviewHeader({ game }: { game: GameSummary }) {
         {" – "}
         {game.black}
         {game.black_elo != null && <span className="tabular-nums opacity-70"> ({game.black_elo})</span>}
+        {result && <span className="tabular-nums"> {result}</span>}
       </span>
       <span className="truncate text-label-sm text-on-surface-variant" title={game.event ?? undefined}>
         {details}
