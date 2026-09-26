@@ -28,7 +28,7 @@ const LINE_HEIGHT = 12.4;
 /** How wide a diagram is drawn: about two thirds of the column, the proportion
  *  a printed game uses — a board the full column width swamps the moves. */
 const DIAGRAM_WIDTH = COLUMN_WIDTH * 0.66;
-const SIZE = { move: 9.2, variation: 8.4, header: 10.5, small: 8.2, running: 9, title: 14 };
+const SIZE = { move: 9.2, variation: 8.4, header: 10.5, small: 8.2, running: 9 };
 const INK = rgb(0, 0, 0);
 const MUTED = rgb(0.32, 0.32, 0.32);
 /** The board's colours on screen (index.css, light theme), so a printed
@@ -100,8 +100,8 @@ export interface PdfGame {
 export interface PdfOptions {
   /** Draw diagrams from Black's side (unless a game says otherwise). */
   flipped?: boolean;
-  /** A title for a document of several games, printed above the first game
-   *  and used in the running header and metadata instead of "N games". */
+  /** A title for a document of several games, used in the running header
+   *  and the metadata instead of "N games". */
   title?: string;
   /** Add a diagram of the final position even when the movetext asks for none. */
   diagramAtEnd?: boolean;
@@ -145,18 +145,15 @@ export async function buildGamesPdf(inputs: PdfGame[], opts: PdfOptions): Promis
   const compact = !!opts.compact;
   const games = inputs.map(withPgnTags);
 
+  // The title goes in the running header, where it names every page; it is
+  // not repeated above the first game.
   const title = opts.title?.trim() || "";
   const blocks: Block[] = [];
-  if (games.length > 1 && title) {
-    blocks.push(para([run(title, fonts.bold, SIZE.title, INK)], 0, 0));
-  }
   games.forEach((game, i) => {
     if (i > 0) blocks.push({ kind: "break", newPage: !!opts.newPagePerGame });
     const flipped = game.flipped ?? !!opts.flipped;
     const tree = parsePgnTree(game.pgn);
-    const heading = headerBlocks(game, fonts);
-    if (i === 0 && title) heading[0] = { ...heading[0], spaceBefore: 6 } as Block;
-    blocks.push(...heading);
+    blocks.push(...headerBlocks(game, fonts));
     blocks.push(...movetextBlocks(tree, fonts, flipped, opts.figurines !== false, compact));
     if (opts.diagramAtEnd && !compact) {
       const last = tree.mainLine[tree.mainLine.length - 1];
@@ -346,7 +343,7 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
     y = PAGE.height - MARGIN.top;
   };
 
-  for (const block of blocks) {
+  for (const [index, block] of blocks.entries()) {
     if (block.kind === "break") {
       if (block.newPage) {
         // Straight to a fresh page, whatever column we are in.
@@ -369,7 +366,12 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
     if (block.kind === "diagram") {
       const size = DIAGRAM_WIDTH;
       const height = size + 14;               // board plus the file letters below
-      if (y - height < MARGIN.bottom) nextColumn();
+      // A diagram keeps the paragraph after it — the result, when it is the
+      // final position — in the same column: a board on one page and "1-0"
+      // alone on the next reads as a mistake.
+      const next = blocks[index + 1];
+      const keep = next && next.kind === "para" ? next.spaceBefore + LINE_HEIGHT : 0;
+      if (y - height - 6 - keep < MARGIN.bottom) nextColumn();
       drawDiagram(page, fonts, block, columnLeft(), y - height + 6, size);
       y -= height + 6;
       continue;
