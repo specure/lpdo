@@ -710,7 +710,18 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                         ))}
                         <div className="px-3 py-1 truncate">Event</div>
                       </div>
-                      <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto">
+                      {/* Enter opens the selection in Analysis, like the preview's
+                          button; a double-click opens the game clicked. */}
+                      <div
+                        ref={scrollRef}
+                        onScroll={onScroll}
+                        onKeyDown={(e) => {
+                          if (e.key !== "Enter" || !selectedGame || !onOpenInAnalysis) return;
+                          e.preventDefault();
+                          void openInAnalysis([selectedGame, ...extras]);
+                        }}
+                        className="flex-1 overflow-y-auto"
+                      >
                         {error && <div className="p-4 text-center text-error text-body-md">{error}</div>}
                         {!error && !loading && games.length === 0 && (
                           <div className="p-4 text-center text-on-surface-variant text-body-md">No games found</div>
@@ -722,7 +733,11 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                             <button
                               key={game.id}
                               onClick={(e) => pickGame(game, e)}
-                              title="Ctrl-click or Shift-click selects several games to open in Analysis together"
+                              onDoubleClick={(e) => {
+                                if (!onOpenInAnalysis || e.ctrlKey || e.metaKey || e.shiftKey) return;
+                                void openInAnalysis([game]);
+                              }}
+                              title="Double-click or Enter opens the game in Analysis. Ctrl-click or Shift-click selects several."
                               style={{ display: "grid", gridTemplateColumns: gridCols }}
                               className={`w-full items-baseline text-body-sm text-left transition-colors duration-short3 ease-standard ${
                                 selected ? "bg-secondary-container text-on-secondary-container" : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
