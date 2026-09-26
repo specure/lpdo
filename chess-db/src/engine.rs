@@ -59,13 +59,11 @@ pub struct EngineSettings {
 
 impl Default for EngineSettings {
     fn default() -> Self {
-        // Half the logical cores — about one per physical core on machines
-        // with two threads per core: the server also answers queries while
-        // it analyses.
-        let cores = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(2);
-        // An eighth of the memory, 256 MB to 4 GB — out of the budget it
-        // shares with the database (see db::memory).
-        Self { path: None, threads: (cores / 2).clamp(1, 16), hash_mb: crate::db::default_engine_hash_mb() }
+        // One thread per physical core: the second hardware thread of a core
+        // adds little to Stockfish, and the server also answers queries while
+        // it analyses. An eighth of the memory for hash, 256 MB to 4 GB — out
+        // of the budget it shares with the database (see db::memory).
+        Self { path: None, threads: physical_cores().clamp(1, 64), hash_mb: crate::db::default_engine_hash_mb() }
     }
 }
 
@@ -97,6 +95,8 @@ pub struct EngineStatus {
     /// The server's logical processors and memory, for choosing threads and
     /// hash (memory is None where it cannot be read).
     pub cores: u32,
+    /// Physical cores: the most threads LPDO recommends.
+    pub physical_cores: u32,
     pub memory_mb: Option<u64>,
     /// What the server may use of the memory, the database's share of it
     /// (the rest after the engine's hash), and the largest hash allowed.
@@ -334,6 +334,7 @@ impl Engine {
             latest,
             update_available,
             cores: std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1),
+            physical_cores: physical_cores(),
             memory_mb: crate::db::total_ram_mb(),
             budget_mb: crate::db::server_budget_mb(),
             database_mb: crate::db::db_limit_mb(hash_mb),
@@ -731,6 +732,38 @@ fn parse_info(t: &str) -> Option<Info> {
     Some(info)
 }
 
+/// Physical processor cores. Linux counts distinct (package, core) pairs in
+/// /proc/cpuinfo (every logical one where it lists no core ids), macOS asks
+/// sysctl; elsewhere, or if that fails, two hardware threads per core are
+/// assumed.
+pub fn physical_cores() -> u32 {
+    let logical = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1);
+    let counted = (|| -> Option<u32> {
+        if let Ok(text) = std::fs::read_to_string("/proc/cpuinfo") {
+            let mut cores = std::collections::HashSet::new();
+            let (mut pkg, mut core) = (None::<String>, None::<String>);
+            for line in text.lines().chain(std::iter::once("")) {
+                if line.trim().is_empty() {
+                    if let (Some(p), Some(c)) = (pkg.take(), core.take()) { cores.insert((p, c)); }
+                    continue;
+                }
+                let (k, v) = line.split_once(':')?;
+                match k.trim() {
+                    "physical id" => pkg = Some(v.trim().to_string()),
+                    "core id" => core = Some(v.trim().to_string()),
+                    _ => {}
+                }
+            }
+            // No core ids (ARM, for one): such processors rarely run two
+            // threads per core, so count every logical one.
+            return Some(if cores.is_empty() { logical } else { cores.len() as u32 });
+        }
+        let out = std::process::Command::new("sysctl").args(["-n", "hw.physicalcpu"]).output().ok()?;
+        String::from_utf8(out.stdout).ok()?.trim().parse().ok()
+    })();
+    counted.unwrap_or((logical / 2).max(1)).clamp(1, logical)
+}
+
 /// How many legal moves `fen` has (already validated by `clean_fen`).
 fn legal_moves(fen: &str) -> u32 {
     use shakmaty::{fen::Fen, CastlingMode, Position};
@@ -821,6 +854,14 @@ mod tests {
         );
         assert!(clean_fen("8/8/8/8/8/8/8/8 w - - 0 1\ngo infinite").is_none());
         assert!(clean_fen("not a fen").is_none());
+    }
+
+    #[test]
+    fn physical_cores_are_counted() {
+        let logical = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1);
+        let physical = physical_cores();
+        println!("physical {physical} of {logical} logical");
+        assert!(physical >= 1 && physical <= logical);
     }
 
     #[test]

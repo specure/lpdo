@@ -236,6 +236,7 @@ interface EngineInfo {
   latest: { version: string; url: string } | null;
   update_available: boolean;
   cores: number;
+  physical_cores: number;
   memory_mb: number | null;
   budget_mb: number;
   database_mb: number;
@@ -354,8 +355,8 @@ function EngineSection() {
       })()}
       {info && (
         <p className="text-label-sm text-on-surface-variant">
-          Threads default to half the server's logical cores — about one per physical core — since it
-          also answers everyone's queries. The hash comes out of the same memory budget as the
+          Threads default to one per physical core ({info.physical_cores} of {info.cores} logical here),
+          since the server also answers everyone's queries. The hash comes out of the same memory budget as the
           database — it defaults to an eighth of the memory, at most 4 GB, and the database keeps at least
           2 GB. More hash keeps more of an analysis when you move on and come back; less leaves the
           database more room for large jobs such as removing duplicates. To use an engine outside the
@@ -375,6 +376,7 @@ function EngineSection() {
       {info?.available && info.name?.startsWith("Stockfish") && (
         <EngineBench
           engine={info.name}
+          physicalCores={info.physical_cores}
           threads={Number.isFinite(t) ? t : info.settings.threads}
           hash={Number.isFinite(h) ? h : info.settings.hash_mb}
           onUse={(threads, hash_mb) => void save({ threads, hash_mb })}
@@ -404,8 +406,8 @@ async function runBench(threads: number, hash_mb: number, depth: number): Promis
   return (await r.json()) as BenchResult;
 }
 
-function EngineBench({ engine, threads, hash, onUse }: {
-  engine: string | null; threads: number; hash: number; onUse: (threads: number, hash_mb: number) => void;
+function EngineBench({ engine, physicalCores, threads, hash, onUse }: {
+  engine: string | null; physicalCores: number; threads: number; hash: number; onUse: (threads: number, hash_mb: number) => void;
 }) {
   const [results, setResults] = useState<BenchResult[]>(() => {
     try { return JSON.parse(localStorage.getItem(BENCH_KEY) ?? "[]") as BenchResult[]; } catch { return []; }
@@ -459,11 +461,12 @@ function EngineBench({ engine, threads, hash, onUse }: {
       )}
       {error && <p className="text-body-sm text-error">{error}</p>}
       {results.length > 0 && (() => {
-        // The recommended run with the engine in use: the fewest threads that
-        // reach 80% of the fastest speed. The last threads add little — on a
-        // 16-core machine 32 threads were 20% faster than 16 — and leave the
-        // server nothing for its queries. Ties go to the most recent run.
-        const own = results.filter((r) => r.engine === engine);
+        // The recommended run with the engine in use: at most one thread per
+        // physical core — a core's second hardware thread adds a noisy 20-45%
+        // and leaves the server nothing for its queries — and of those, the
+        // fewest threads that reach 80% of the fastest. Ties go to the most
+        // recent run.
+        const own = results.filter((r) => r.engine === engine && r.threads <= physicalCores);
         const fastest = own.length ? Math.max(...own.map((r) => r.nps)) : 0;
         const top = own
           .filter((r) => r.nps >= 0.8 * fastest)
@@ -493,7 +496,7 @@ function EngineBench({ engine, threads, hash, onUse }: {
                     {r === top && (
                       <span
                         className="mr-1 text-label-sm font-normal text-on-secondary-container cursor-help"
-                        title="The fewest threads that reach 80% of the fastest speed measured: more add little, and take processor time the server needs for queries."
+                        title={`At most one thread per physical core (${physicalCores} here), and of those the fewest that reach 80% of the fastest: more add little, and take processor time the server needs for queries.`}
                       >
                         recommended
                       </span>
