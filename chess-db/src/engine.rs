@@ -494,6 +494,7 @@ impl Engine {
     /// Change the engine or its options. `path` must be one of the engines
     /// found in the standard locations (see the module note); `None` keeps
     /// the current choice.
+    #[cfg(test)]
     pub async fn configure(&self, path: Option<String>, threads: Option<u32>, hash_mb: Option<u32>) -> Result<EngineStatus, String> {
         self.configure_all(path, threads, hash_mb, None, None, None, None, None, None).await
     }
