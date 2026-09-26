@@ -663,16 +663,8 @@ function GameActionsBar({
         >
           Edit game…
         </button>
-        <button
-          onClick={handleExport}
-          disabled={!detail.pgn}
-          className={tonalBtn}
-          title="Save the game as a .pgn file"
-        >
-          Export PGN…
-        </button>
-        {/* Lichess, the clipboard, and the game's own address when its PGN
-            names one — together, so the bar keeps to one row. */}
+        {/* Exports, Lichess, the clipboard, and the game's own address when
+            its PGN names one — together, so the bar keeps to one row. */}
         <GameMoreMenu
           pgn={detail.pgn}
           fen={fen}
@@ -680,6 +672,7 @@ function GameActionsBar({
           ply={ply}
           startFen={startFen}
           gameUrl={gameUrlFromPgn(detail.pgn)}
+          onExportPgn={() => void handleExport()}
           onExportPdf={onExportPdf}
         />
         {/* Restore stays inline with the other actions — it's a recovery action,
