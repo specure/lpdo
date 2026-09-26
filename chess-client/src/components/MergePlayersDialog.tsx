@@ -128,7 +128,9 @@ export default function MergePlayersDialog({
           excludeId={keep?.id}
         />
 
-        {ready && keep && (
+        {/* What the merge would do, shown whether or not it is allowed yet —
+            an unacknowledged warning must not hide the consequences. */}
+        {keep && targets.length > 0 && (
           <div className="text-body-sm text-on-surface-variant bg-surface-container rounded-sm px-3 py-2">
             <span className="font-medium text-on-surface">{movedGames.toLocaleString()}</span> game(s) will move
             from <span className="font-medium text-on-surface">{targets.length}</span> record
