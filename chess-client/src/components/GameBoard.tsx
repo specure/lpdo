@@ -1309,6 +1309,15 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     setScratchFrom(piece && piece.color === chess.turn() ? square : null);
   }, [useAnnotated, movesEditor.active, currentFen, scratchFrom, tryScratchDrop]);
 
+  // Editing ended while a scratch line was carried in: a save reloads the game
+  // and clears it, a discard must take the line with it.
+  const wasEditingRef = useRef(false);
+  useEffect(() => {
+    const was = wasEditingRef.current;
+    wasEditingRef.current = movesEditor.active;
+    if (was && !movesEditor.active && scratch) discardScratch();
+  }, [movesEditor.active, scratch, discardScratch]);
+
   // Moves pushed down by the host (Reference row, Engine line). Played one by
   // one from the current position; a move that doesn't fit stops the line.
   const playRequestSeqRef = useRef<number | null>(null);
@@ -1778,15 +1787,22 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             detail={detail}
             onDetailChanged={() => { setDetailReloadKey((k) => k + 1); onGameMutated?.(); }}
             onStartEditMoves={() => {
-              // Editing starts from the game, never from a scratch line: the
-              // line is dropped first and the editor opens where it branched.
+              if (!annotatedGame) return;
+              // A scratch line comes along into the edit: its moves become
+              // ordinary moves of the session, to be saved with Done or thrown
+              // away with Discard like anything else typed in there.
               if (scratch) {
-                const at = resolvePathSafe(scratch.saved.mainLine, scratch.anchor.steps);
-                discardScratch();
-                if (at) movesEditor.start(scratch.saved, at.line, Math.min(scratch.anchor.index, at.line.length), at.breadcrumbs);
+                // The editor works on its own clone, so the viewer keeps the
+                // scratch line as it was: if the edit is discarded, the line
+                // goes with it (see the exit effect below).
+                const carried = clearScratchMarks(annotatedGame);
+                const at = resolvePathSafe(carried.mainLine, cursor.steps);
+                if (at) movesEditor.start(carried, at.line, Math.min(cursor.index, at.line.length), at.breadcrumbs, true);
+                setScratchFrom(null);
+                setScratchPromotion(null);
                 return;
               }
-              if (annotatedGame) movesEditor.start(annotatedGame, activeLine, activeIndex, breadcrumbs);
+              movesEditor.start(annotatedGame, activeLine, activeIndex, breadcrumbs);
             }}
             detailsOpen={detailsOpen}
             onToggleDetails={() => setDetailsOpen((o) => !o)}
