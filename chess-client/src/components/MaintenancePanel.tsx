@@ -387,7 +387,7 @@ function EngineSection() {
 // fixed depth, reporting nodes per second and the time taken, with the threads
 // and hash in the fields above. Results collect in a table so configurations
 // can be compared; the defaults come from rules, not from a benchmark.
-interface BenchResult { engine: string; threads: number; hash_mb: number; depth: number; nodes: number; nps: number; ms: number }
+interface BenchResult { engine: string; threads: number; hash_mb: number; depth: number; nodes: number; nps: number; ms: number; at?: number }
 const BENCH_KEY = "engineBenchResults";
 /** One length: depth 16 takes some ten seconds on a 16-thread machine. */
 const BENCH_DEPTH = 16;
@@ -428,7 +428,7 @@ function EngineBench({ threads, hash }: { threads: number; hash: number }) {
   async function once() {
     setError(null);
     setRunning(`Running with ${threads} threads and ${hash} MB hash`);
-    try { keep(await runBench(threads, hash, BENCH_DEPTH)); }
+    try { keep({ ...(await runBench(threads, hash, BENCH_DEPTH)), at: Date.now() }); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setRunning(null); }
   }
@@ -459,7 +459,8 @@ function EngineBench({ threads, hash }: { threads: number; hash: number }) {
           <table className="w-full text-body-sm tabular-nums">
             <thead className="text-label-sm text-on-surface-variant">
               <tr className="text-right">
-                <th className="text-left font-normal py-1">Engine</th>
+                <th className="text-left font-normal py-1">When</th>
+                <th className="text-left font-normal">Engine</th>
                 <th className="font-normal">Threads</th>
                 <th className="font-normal">Hash</th>
                 <th className="font-normal">Speed</th>
@@ -469,7 +470,8 @@ function EngineBench({ threads, hash }: { threads: number; hash: number }) {
             <tbody>
               {results.map((r, i) => (
                 <tr key={i} className="text-right border-t border-outline/20">
-                  <td className="text-left py-0.5">{r.engine}</td>
+                  <td className="text-left py-0.5 whitespace-nowrap">{r.at ? fmtWhen(r.at) : "—"}</td>
+                  <td className="text-left">{r.engine}</td>
                   <td>{r.threads}</td>
                   <td>{r.hash_mb} MB</td>
                   <td className="font-semibold">{fmtNps(r.nps)}</td>
@@ -485,6 +487,15 @@ function EngineBench({ threads, hash }: { threads: number; hash: number }) {
       )}
     </div>
   );
+}
+
+/** "18:42" today, "26 Sep 18:42" before. */
+function fmtWhen(at: number): string {
+  const d = new Date(at);
+  const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === new Date().toDateString()
+    ? time
+    : `${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })} ${time}`;
 }
 
 function fmtNps(nps: number): string {
