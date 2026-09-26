@@ -11,7 +11,7 @@
 // the metadata is the game itself.
 
 import { PDFDocument, PDFFont, PDFPage, PDFName, StandardFonts, rgb, RGB } from "pdf-lib";
-import fontkit from "@pdf-lib/fontkit";
+import { PIECE_OUTLINES, PIECE_UNITS_PER_EM } from "./pieceOutlines";
 import { Chess } from "chess.js";
 import { parsePgnTree, AnnotatedGame, MoveNode } from "./parsePgnTree";
 import { getMoveNum } from "./moveTreeNav";
@@ -33,12 +33,15 @@ const MUTED = rgb(0.32, 0.32, 0.32);
 const SQUARE_LIGHT = rgb(0.93, 0.93, 0.95);
 const SQUARE_DARK = rgb(0.51, 0.58, 0.78);
 
-/** One piece of text with the font it is drawn in. */
+/** One piece of text with the font it is drawn in. A run with `piece` set is
+ *  a figurine — drawn from the piece outlines rather than from a font, so the
+ *  move text and the diagrams show the same pieces. */
 interface Run {
   text: string;
   font: PDFFont;
   size: number;
   color: RGB;
+  piece?: string;
 }
 
 /** A paragraph of runs, indented by `indent` points. */
@@ -76,8 +79,6 @@ export interface PdfGame {
 }
 
 export interface PdfOptions {
-  /** The bundled symbols font (Noto Sans Symbols 2), for the diagram pieces. */
-  symbolsFont: Uint8Array;
   /** Draw diagrams from Black's side. */
   flipped?: boolean;
   /** Add a diagram of the final position even when the movetext asks for none. */
@@ -90,11 +91,6 @@ export interface PdfOptions {
   producer?: string;
 }
 
-/** White and black pieces as the symbols font has them (U+2654…U+265F). */
-const GLYPH: Record<string, string> = {
-  K: "♔", Q: "♕", R: "♖", B: "♗", N: "♘", P: "♙",
-  k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟",
-};
 
 /** A SAN move that names a piece — a figurine can stand in for that letter.
  *  Pawn moves ("e4", "exd5") name none, and castling is written out. */
@@ -107,13 +103,10 @@ const DIAGRAM_MARKER = /\s*\[#\]\s*/;
 
 export async function buildGamePdf(input: PdfGame, opts: PdfOptions): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
-  doc.registerFontkit(fontkit);
-
   const fonts = {
     text: await doc.embedFont(StandardFonts.TimesRoman),
     bold: await doc.embedFont(StandardFonts.TimesRomanBold),
     italic: await doc.embedFont(StandardFonts.TimesRomanItalic),
-    symbols: await doc.embedFont(opts.symbolsFont, { subset: true }),
   };
 
   const game = withPgnTags(input);
@@ -188,7 +181,7 @@ function headerBlocks(game: PdfGame, fonts: Fonts): Block[] {
 
 // ── Movetext → blocks ────────────────────────────────────────────────────────
 
-interface Fonts { text: PDFFont; bold: PDFFont; italic: PDFFont; symbols: PDFFont }
+interface Fonts { text: PDFFont; bold: PDFFont; italic: PDFFont }
 
 function run(text: string, font: PDFFont, size: number, color: RGB): Run {
   return { text, font, size, color };
@@ -232,7 +225,7 @@ function movetextBlocks(tree: AnnotatedGame, fonts: Fonts, flipped: boolean, fig
         // runs. The symbols font has no bold, so a main-line move's figurine is
         // a shade lighter than its square; at this size that reads as normal.
         current.push(run(prefix, moveFont, size, INK));
-        current.push(run(GLYPH[node.san[0]], fonts.symbols, size * 1.02, INK));
+        current.push({ ...run(" ", fonts.text, size, INK), piece: node.san[0] });
         current.push(run(tail, moveFont, size, INK));
       } else {
         current.push(run(`${prefix}${tail}`, moveFont, size, INK));
@@ -308,9 +301,15 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
     for (const line of lines) {
       if (y - LINE_HEIGHT < MARGIN.bottom) nextColumn();
       let x = columnLeft() + block.indent;
-      for (const piece of line) {
-        page.drawText(piece.text, { x, y: y - LINE_HEIGHT + 3, size: piece.size, font: piece.font, color: piece.color });
-        x += piece.font.widthOfTextAtSize(piece.text, piece.size);
+      for (const item of line) {
+        if (item.piece) {
+          // Sits on the text baseline, like the letter it replaces.
+          drawPiece(page, item.piece, x + item.size * 0.06, y - LINE_HEIGHT + 3, item.size * 0.92);
+          x += item.size * 1.02;
+          continue;
+        }
+        page.drawText(item.text, { x, y: y - LINE_HEIGHT + 3, size: item.size, font: item.font, color: item.color });
+        x += item.font.widthOfTextAtSize(item.text, item.size);
       }
       y -= LINE_HEIGHT;
     }
@@ -338,6 +337,14 @@ function wrap(runs: Run[], width: number): Run[][] {
   let line: Run[] = [];
   let used = 0;
   for (const r of runs) {
+    if (r.piece) {
+      // A figurine is one indivisible "word" as wide as its em box.
+      const w = r.size * 1.02;
+      if (used + w > width && used > 0) { lines.push(line); line = []; used = 0; }
+      line.push(r);
+      used += w;
+      continue;
+    }
     for (const word of r.text.split(/(?<=\s)/)) {
       if (!word) continue;
       const w = r.font.widthOfTextAtSize(word, r.size);
@@ -379,14 +386,15 @@ function drawDiagram(page: PDFPage, fonts: Fonts, diagram: Diagram, x: number, y
         ? grid[rank][7 - file]
         : grid[7 - rank][file];
       if (!cell) continue;
-      const glyph = GLYPH[cell];
-      const glyphSize = square * 0.86;
-      const w = fonts.symbols.widthOfTextAtSize(glyph, glyphSize);
-      page.drawText(glyph, {
-        x: left + file * square + (square - w) / 2,
-        y: bottom + rank * square + square * 0.17,
-        size: glyphSize, font: fonts.symbols, color: INK,
-      });
+      // A piece stands on its square: its baseline a shade above the square's
+      // lower edge, its height about three quarters of the em above that.
+      const size = square * 0.92;
+      drawPiece(
+        page, cell,
+        left + file * square + (square - size) / 2,
+        bottom + rank * square + square * 0.12,
+        size,
+      );
     }
   }
   page.drawRectangle({
@@ -408,6 +416,21 @@ function drawDiagram(page: PDFPage, fonts: Fonts, diagram: Diagram, x: number, y
       size: 6.5, font: fonts.text, color: MUTED,
     });
   }
+}
+
+/** One piece, `size` points tall, its baseline at (`x`, `y`).
+ *
+ *  Drawn in two passes so a piece is opaque on any colour of square, the way a
+ *  printed diagram has it: the filled (Black) outline in white first, then the
+ *  piece's own outline in black. A white piece would otherwise be a see-through
+ *  drawing with the square showing through it. */
+function drawPiece(page: PDFPage, piece: string, x: number, y: number, size: number) {
+  const scale = size / PIECE_UNITS_PER_EM;
+  const solid = PIECE_OUTLINES[piece.toLowerCase()];
+  const own = PIECE_OUTLINES[piece];
+  if (!own || !solid) return;
+  page.drawSvgPath(solid, { x, y, scale, color: rgb(1, 1, 1), borderColor: rgb(1, 1, 1), borderWidth: size * 0.03 });
+  page.drawSvgPath(own, { x, y, scale, color: INK });
 }
 
 /** FEN placement → 8 rows of 8 cells, rank 8 first, "" for an empty square. */

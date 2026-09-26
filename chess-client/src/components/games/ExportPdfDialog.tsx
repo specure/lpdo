@@ -2,7 +2,6 @@ import { useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { buildGamePdf } from "../../lib/pdfExport";
-import symbolsFontUrl from "../../assets/fonts/NotoSansSymbols2-Regular.ttf?url";
 
 // Printing a game: A4, two columns, the main line in bold and variations
 // indented in brackets, the way a chess book sets it. Diagrams come from the
@@ -46,7 +45,6 @@ export default function ExportPdfDialog({
     setError(null);
     setBusy(true);
     try {
-      const font = new Uint8Array(await (await fetch(symbolsFontUrl)).arrayBuffer());
       const bytes = await buildGamePdf(
         {
           white: detail.white, black: detail.black,
@@ -54,7 +52,7 @@ export default function ExportPdfDialog({
           event: detail.event, date: detail.date,
           result: detail.result, eco: detail.eco, pgn: detail.pgn ?? "",
         },
-        { symbolsFont: font, flipped: fromBlack, diagramAtEnd, figurines, producer: "LPDO" },
+        { flipped: fromBlack, diagramAtEnd, figurines, producer: "LPDO" },
       );
 
       const name = `${(detail.date ?? "").slice(0, 10) || "game"}-${surname(detail.white)}-${surname(detail.black)}.pdf`;
