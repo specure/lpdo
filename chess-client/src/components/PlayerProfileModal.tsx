@@ -73,8 +73,8 @@ function buildPrefillTags(
 interface Props {
   player: PlayerInfo;
   onClose: () => void;
-  /** Called after merging a duplicate into this player (keep id, dropped id). */
-  onPlayersMerged?: (keepId: number, dropId: number) => void;
+  /** Called after merging duplicates into this player (keep id, dropped ids). */
+  onPlayersMerged?: (keepId: number, dropIds: number[]) => void;
 }
 
 function WDL({ w, d, l }: { w: number; d: number; l: number }) {
@@ -633,8 +633,8 @@ export default function PlayerProfileModal({ player, onClose, onPlayersMerged }:
         <MergePlayersDialog
           initialKeep={player}
           onClose={() => setMergeOpen(false)}
-          onMerged={(keepId, dropId) => {
-            onPlayersMerged?.(keepId, dropId);
+          onMerged={(keepId, dropIds) => {
+            onPlayersMerged?.(keepId, dropIds);
             onClose(); // this player's stats are now stale; reopen fresh if needed
           }}
         />
