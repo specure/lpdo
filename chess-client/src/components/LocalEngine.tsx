@@ -139,7 +139,9 @@ export default function LocalEngine({
     <div className="flex-1 flex flex-col min-h-0">
       <div className="px-3 py-1 shrink-0 flex items-center justify-between gap-2 text-label-sm text-on-surface-variant border-b border-outline/40">
         <span className="min-w-0 truncate" title={status.path ?? undefined}>
-          {status.name ?? "Engine"}{snap ? ` · depth ${snap.depth}` : ""}
+          {status.name ?? "Engine"}
+          {snap ? (kind === "lc0" ? ` · ${fmtNodes(snap.nodes)} nodes` : ` · depth ${snap.depth}`) : ""}
+          {snap?.done && !snap.cached ? " · done" : ""}
           {snap?.cached
             ? <span title="Remembered from an earlier search; the engine is deepening it"> (cached)</span>
             : speed ? ` · ${speed}` : ""}
@@ -184,6 +186,11 @@ export default function LocalEngine({
       </div>
     </div>
   );
+}
+
+/** "956k", "10.0M": Lc0 is measured in nodes. */
+function fmtNodes(n: number): string {
+  return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n);
 }
 
 /** Lc0's view of a line: White wins, draw, Black wins, as percentages, with a

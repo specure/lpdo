@@ -134,8 +134,11 @@ settings on one machine), and hash hardly shows in a benchmark. One run is
 marked *recommended*: at most one thread per physical core, and of those the
 fewest threads that reach 80% of the fastest; **Use** sets it.
 
-A search stops when you move to another position or close the panel, and after
-five minutes at the latest.
+A search stops when you move to another position or close the panel, when it
+reaches its threshold, and after five minutes at the latest. The thresholds are
+set per engine under Maintenance (0 for none): **depth 40** for Stockfish, and
+**10 million nodes** for Lc0 — Lc0's "depth" is only the average length of the
+lines it explores, so nodes are its measure (about five minutes on an RTX 4090).
 
 ## Measuring speed
 
@@ -233,6 +236,17 @@ The server also finds networks beside the program. Maintenance → *Others* →
 by default) and the search threads (0 lets Lc0 choose: its work is on the
 graphics card). Another network file can be named in `lc0.json` beside
 `engine.json`, as `{ "weights": "/path/to/net.pb.gz" }`.
+
+**Smart pruning** — Lc0 ending a search once its best move cannot be
+overtaken — is off by default: the Engine panel shows several lines, and with it
+on the second and third stop improving as soon as the first is settled. Switch
+it on to have only the best move, or to spare the card.
+
+**Benchmark:** the Lc0 card runs Lc0's standard `lc0 benchmark` — 34 positions,
+ten seconds each, about six minutes — with the program, network and backend set
+there. Only the full run is comparable between machines: Lc0 gets faster as each
+search goes on (on an RTX 4090, 62,000 nodes/s for the standard run against
+12,000 with three seconds a position, and 6,400 for `lc0 bench`).
 
 The Linux service can use an NVIDIA card as installed: its device files are
 open to every user, and the service's home, where CUDA keeps compiled kernels,

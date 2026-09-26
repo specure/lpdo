@@ -96,6 +96,14 @@ pub struct EngineSettings {
     pub weights: Option<String>,
     /// Lc0's backend ("cuda-fp16", "opencl", …). None: the engine picks.
     pub backend: Option<String>,
+    /// Stop a search here, 0 for no limit: a depth for Stockfish (its depth
+    /// is how far it has searched), a node count for Lc0 (whose "depth" is
+    /// only the average length of its playouts, so nodes are the measure).
+    pub max_depth: u32,
+    pub max_nodes: u64,
+    /// Lc0's smart pruning: end a search once the best move cannot be
+    /// overtaken. Off by default — the other lines stop improving too.
+    pub smart_pruning: bool,
 }
 
 impl Default for EngineSettings {
@@ -113,8 +121,12 @@ impl EngineSettings {
             Kind::Stockfish => Self {
                 path: None, threads: physical_cores().clamp(1, 64),
                 hash_mb: crate::db::default_engine_hash_mb(), weights: None, backend: None,
+                max_depth: 40, max_nodes: 0, smart_pruning: false,
             },
-            Kind::Lc0 => Self { path: None, threads: 0, hash_mb: 0, weights: None, backend: None },
+            Kind::Lc0 => Self {
+                path: None, threads: 0, hash_mb: 0, weights: None, backend: None,
+                max_depth: 0, max_nodes: 10_000_000, smart_pruning: false,
+            },
         }
     }
 }
@@ -467,7 +479,7 @@ impl Engine {
     /// found in the standard locations (see the module note); `None` keeps
     /// the current choice.
     pub async fn configure(&self, path: Option<String>, threads: Option<u32>, hash_mb: Option<u32>) -> Result<EngineStatus, String> {
-        self.configure_all(path, threads, hash_mb, None, None).await
+        self.configure_all(path, threads, hash_mb, None, None, None, None, None).await
     }
 
     /// As `configure`, with Lc0's network and backend. The network must be one
@@ -479,6 +491,9 @@ impl Engine {
         hash_mb: Option<u32>,
         weights: Option<String>,
         backend: Option<String>,
+        max_depth: Option<u32>,
+        max_nodes: Option<u64>,
+        smart_pruning: Option<bool>,
     ) -> Result<EngineStatus, String> {
         {
             let mut s = self.settings.lock().await;
@@ -509,6 +524,9 @@ impl Engine {
                 }
                 s.weights = Some(w);
             }
+            if let Some(d) = max_depth { s.max_depth = d.min(245); }
+            if let Some(n) = max_nodes { s.max_nodes = n.min(1_000_000_000_000); }
+            if let Some(p) = smart_pruning { s.smart_pruning = p; }
             if let Some(b) = backend {
                 if b.is_empty() { s.backend = None; }
                 else if valid_backend(&b) { s.backend = Some(b); }
@@ -628,7 +646,15 @@ impl Engine {
             _ => format!("position fen {fen}"),
         };
         send(&mut r.stdin, &position).await?;
-        send(&mut r.stdin, "go infinite").await?;
+        // Stop at the configured threshold; the time cap below is the net
+        // under it (and under "no limit").
+        let limits = { let s = self.settings.lock().await; (s.max_depth, s.max_nodes) };
+        let go = match (self.kind, limits) {
+            (Kind::Stockfish, (d, _)) if d > 0 => format!("go depth {d}"),
+            (Kind::Lc0, (_, n)) if n > 0 => format!("go nodes {n}"),
+            _ => "go infinite".to_string(),
+        };
+        send(&mut r.stdin, &go).await?;
         drop(running);
 
         // The cap: an analysis nobody asked about again ends by itself.
@@ -669,19 +695,36 @@ impl Engine {
             let r = r.as_ref().ok_or("no engine")?;
             (r.path.clone(), r.name.clone())
         };
-        if !name.starts_with("Stockfish") {
-            return Err(format!("the benchmark is Stockfish's own; {name} has none LPDO knows how to run"));
-        }
         let settings = self.settings.lock().await.clone();
-        let threads = threads.unwrap_or(settings.threads).clamp(1, 256);
-        let hash_mb = hash_mb.unwrap_or(settings.hash_mb).clamp(16, 65536);
-        let depth = depth.unwrap_or(16).clamp(1, 30);
+        let (args, threads, hash_mb, depth) = match self.kind {
+            Kind::Stockfish => {
+                if !name.starts_with("Stockfish") {
+                    return Err(format!("{name} has no benchmark LPDO knows how to run"));
+                }
+                let threads = threads.unwrap_or(settings.threads).clamp(1, 256);
+                let hash_mb = hash_mb.unwrap_or(settings.hash_mb).clamp(16, 65536);
+                let depth = depth.unwrap_or(16).clamp(1, 30);
+                (vec!["bench".to_string(), hash_mb.to_string(), threads.to_string(), depth.to_string()], threads, hash_mb, depth)
+            }
+            // Lc0's standard benchmark: 34 positions, 10 s each. Shorter runs
+            // are not comparable — its speed grows as a search goes on (the
+            // cache fills, batches grow): 12k nodes/s at 3 s a position
+            // against 62k at 10 s on one machine.
+            Kind::Lc0 => {
+                let weights = settings.weights.clone().or_else(|| self.networks(Some(&path)).into_iter().next())
+                    .ok_or("Lc0 has no network")?;
+                let mut a = vec!["benchmark".to_string(), format!("--weights={weights}")];
+                if let Some(b) = settings.backend.as_deref().filter(|b| valid_backend(b)) { a.push(format!("--backend={b}")); }
+                if settings.threads > 0 { a.push(format!("--threads={}", settings.threads)); }
+                (a, settings.threads, 0, 0)
+            }
+        };
         self.stop(self.current_gen()).await;
 
         let out = tokio::time::timeout(
             Duration::from_secs(20 * 60),
             Command::new(&path)
-                .args(["bench", &hash_mb.to_string(), &threads.to_string(), &depth.to_string()])
+                .args(&args)
                 .stdin(std::process::Stdio::null())
                 .kill_on_drop(true)
                 .output(),
@@ -780,6 +823,13 @@ async fn start(path: &str, settings: &EngineSettings, kind: Kind) -> Result<(Chi
                 }
                 if settings.threads > 0 {
                     send(&mut stdin, &format!("setoption name Threads value {}", settings.threads)).await?;
+                }
+                // Lc0 ends a search early once the best move cannot be
+                // overtaken in the nodes left ("smart pruning"): right for
+                // playing, wrong for analysis, where the other lines matter
+                // too and the node limit should mean what it says.
+                if !settings.smart_pruning {
+                    send(&mut stdin, "setoption name SmartPruningFactor value 0").await?;
                 }
             }
         }

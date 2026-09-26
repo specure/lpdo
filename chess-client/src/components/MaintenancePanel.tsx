@@ -230,7 +230,7 @@ interface EngineInfo {
   path: string | null;
   name: string | null;
   error: string | null;
-  settings: { path: string | null; threads: number; hash_mb: number };
+  settings: { path: string | null; threads: number; hash_mb: number; max_depth: number };
   found: string[];
   settings_file: string;
   latest: { version: string; url: string } | null;
@@ -251,6 +251,7 @@ function EngineSection() {
   const [info, setInfo] = useState<EngineInfo | null>(null);
   const [threads, setThreads] = useState("");
   const [hash, setHash] = useState("");
+  const [depth, setDepth] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -259,6 +260,7 @@ function EngineSection() {
     setInfo(d);
     setThreads(String(d.settings.threads));
     setHash(String(d.settings.hash_mb));
+    setDepth(String(d.settings.max_depth));
   }
   useEffect(() => {
     fetch(apiUrl("/engine"))
@@ -267,7 +269,7 @@ function EngineSection() {
       .catch((e) => setError(String(e)));
   }, []);
 
-  async function save(patch: { path?: string; threads?: number; hash_mb?: number }) {
+  async function save(patch: { path?: string; threads?: number; hash_mb?: number; max_depth?: number }) {
     setBusy(true);
     setError(null);
     setNote(null);
@@ -289,7 +291,9 @@ function EngineSection() {
 
   const t = parseInt(threads, 10);
   const h = parseInt(hash, 10);
-  const changed = !!info && ((Number.isFinite(t) && t !== info.settings.threads) || (Number.isFinite(h) && h !== info.settings.hash_mb));
+  const dp = parseInt(depth, 10);
+  const changed = !!info && ((Number.isFinite(t) && t !== info.settings.threads) || (Number.isFinite(h) && h !== info.settings.hash_mb)
+    || (Number.isFinite(dp) && dp !== info.settings.max_depth));
   const field = "w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums";
 
   return (
@@ -300,7 +304,7 @@ function EngineSection() {
       </p>
       {info && !info.available && (
         <p className="text-body-sm text-on-surface-variant">
-          No engine was found on the server. The Engine panel's <em>Local</em> tab shows how to install one.
+          No engine was found on the server. The Engine panel's <em>Stockfish</em> tab shows how to install one.
         </p>
       )}
       {info && info.found.length > 0 && (
@@ -327,8 +331,16 @@ function EngineSection() {
             <input type="number" min={16} max={info.max_hash_mb} step={256} value={hash} onChange={(e) => setHash(e.target.value)} className={field} />
             <span className="text-on-surface-variant">MB</span>
           </label>
+          <label className="flex items-center gap-2" title="The search stops at this depth; 0 searches until you move on (five minutes at most)">
+            <span>Stop at depth</span>
+            <input type="number" min={0} max={245} value={depth} onChange={(e) => setDepth(e.target.value)} className={field} />
+          </label>
           <ActionButton
-            onClick={() => void save({ threads: Number.isFinite(t) ? t : undefined, hash_mb: Number.isFinite(h) ? h : undefined })}
+            onClick={() => void save({
+              threads: Number.isFinite(t) ? t : undefined,
+              hash_mb: Number.isFinite(h) ? h : undefined,
+              max_depth: Number.isFinite(dp) ? dp : undefined,
+            })}
             disabled={busy || !changed}
           >
             Save
@@ -405,7 +417,7 @@ interface Lc0Info {
   path: string | null;
   name: string | null;
   error: string | null;
-  settings: { path: string | null; threads: number; weights: string | null; backend: string | null };
+  settings: { path: string | null; threads: number; weights: string | null; backend: string | null; max_nodes: number; smart_pruning: boolean };
   found: string[];
   networks: string[];
   weights: string | null;
@@ -418,14 +430,15 @@ function Lc0Section() {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  function take(d: Lc0Info) { setInfo(d); setThreads(String(d.settings.threads)); }
+  const [nodes, setNodes] = useState("");
+  function take(d: Lc0Info) { setInfo(d); setThreads(String(d.settings.threads)); setNodes(String(d.settings.max_nodes)); }
   useEffect(() => {
     fetch(apiUrl("/engine?engine=lc0"))
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
       .then(take)
       .catch((e) => setError(String(e)));
   }, []);
-  async function save(patch: { path?: string; weights?: string; backend?: string; threads?: number }) {
+  async function save(patch: { path?: string; weights?: string; backend?: string; threads?: number; max_nodes?: number; smart_pruning?: boolean }) {
     setBusy(true);
     setError(null);
     setNote(null);
@@ -445,6 +458,7 @@ function Lc0Section() {
     }
   }
   const t = parseInt(threads, 10);
+  const n = parseInt(nodes.replace(/[\s,.]/g, ""), 10);
   const select = "flex-1 min-w-0 h-8 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface";
   const name = (p: string) => p.split(/[\\/]/).pop();
   return (
@@ -491,18 +505,139 @@ function Lc0Section() {
             <input type="number" min={0} max={64} value={threads} onChange={(e) => setThreads(e.target.value)}
               className="w-16 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
           </label>
-          <ActionButton onClick={() => void save({ threads: t })} disabled={busy || !Number.isFinite(t) || t === info.settings.threads}>Save</ActionButton>
+          <label className="flex items-center gap-2" title="The search stops after this many nodes; 0 searches until you move on (five minutes at most)">
+            <span>Stop at</span>
+            <input value={nodes} onChange={(e) => setNodes(e.target.value)} inputMode="numeric"
+              className="w-28 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
+            <span className="text-on-surface-variant">nodes</span>
+          </label>
+          <ActionButton
+            onClick={() => void save({ threads: Number.isFinite(t) ? t : undefined, max_nodes: Number.isFinite(n) ? n : undefined })}
+            disabled={busy || ((!Number.isFinite(t) || t === info.settings.threads) && (!Number.isFinite(n) || n === info.settings.max_nodes))}
+          >
+            Save
+          </ActionButton>
         </div>
+      )}
+      {info && (
+        <label className="flex items-start gap-2 text-body-sm text-on-surface cursor-pointer">
+          <input type="checkbox" checked={info.settings.smart_pruning} disabled={busy}
+            onChange={(e) => void save({ smart_pruning: e.target.checked })} className="accent-primary mt-1" />
+          <span>
+            Stop early once the best move is settled (smart pruning)
+            <span className="block text-label-sm text-on-surface-variant">
+              Recommended off: the Engine panel shows several lines, and with it on the second and third stop
+              improving as soon as the first is certain. On suits wanting only the best move, or sparing the
+              graphics card — a search then often ends well before the node limit.
+            </span>
+          </span>
+        </label>
       )}
       <p className="text-label-sm text-on-surface-variant">
         Threads 0 lets Lc0 choose: its work is on the graphics card, so a few search threads suffice.
+        Lc0 is limited by nodes, not depth — its "depth" is only the average length of the lines it
+        explores; 10 million nodes take about five minutes on a fast card.
+        
         Networks are found in the data directory's networks folder and beside the program; another file
         can be named in {info ? <span className="font-mono">{info.settings_file}</span> : "lc0.json"} on the server.
       </p>
       {note && <p className="text-body-sm text-success">{note}</p>}
       {error && <p className="text-body-sm text-error">{error}</p>}
       {info?.error && !info.available && <p className="text-body-sm text-error">{info.error}</p>}
+      {info?.available && info.networks.length > 0 && (
+        <Lc0Bench network={info.weights ? name(info.weights) ?? info.weights : "?"} backend={info.settings.backend || "automatic"} />
+      )}
     </SectionCard>
+  );
+}
+
+// Lc0's standard benchmark (`lc0 benchmark`: 34 positions, 10 s each) with the
+// program, network and backend set above. Only the standard run gives figures
+// comparable between machines: Lc0's speed grows as each search goes on.
+interface Lc0BenchRow { at: number; network: string; backend: string; nps: number; nodes: number; ms: number }
+const LC0_BENCH_KEY = "lc0BenchResults";
+
+function Lc0Bench({ network, backend }: { network: string; backend: string }) {
+  const [rows, setRows] = useState<Lc0BenchRow[]>(() => {
+    try { return JSON.parse(localStorage.getItem(LC0_BENCH_KEY) ?? "[]") as Lc0BenchRow[]; } catch { return []; }
+  });
+  const [running, setRunning] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!running) return;
+    const started = Date.now();
+    setElapsed(0);
+    const t = window.setInterval(() => setElapsed(Math.round((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(t);
+  }, [running]);
+  async function run() {
+    setError(null);
+    setRunning(true);
+    try {
+      const r = await fetch(apiUrl("/engine/bench?engine=lc0"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
+      const b = (await r.json()) as { nps: number; nodes: number; ms: number };
+      setRows((prev) => {
+        const next = [{ at: Date.now(), network, backend, nps: b.nps, nodes: b.nodes, ms: b.ms }, ...prev].slice(0, 40);
+        try { localStorage.setItem(LC0_BENCH_KEY, JSON.stringify(next)); } catch { /* per-device convenience only */ }
+        return next;
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunning(false);
+    }
+  }
+  const mmss = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  return (
+    <div className="space-y-2 pt-2 border-t border-outline/40">
+      <div className="flex items-center gap-2">
+        <span className="text-title-sm">Benchmark</span>
+        <div className="flex-1" />
+        <ActionButton onClick={() => void run()} disabled={running}>Run the standard benchmark</ActionButton>
+      </div>
+      <p className="text-label-sm text-on-surface-variant">
+        Lc0's own benchmark: 34 positions, ten seconds each — about six minutes, during which Lc0 does not
+        analyse. Only this full run gives figures comparable with other machines: Lc0 gets faster as each
+        search goes on.
+      </p>
+      {running && (
+        <p className="text-body-sm text-on-surface flex items-center gap-2">
+          <span className="inline-block w-3 h-3 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+          Running with {network}, backend {backend} — {mmss(elapsed)} of about 5:45
+        </p>
+      )}
+      {error && <p className="text-body-sm text-error">{error}</p>}
+      {rows.length > 0 && (
+        <table className="w-full text-body-sm tabular-nums">
+          <thead className="text-label-sm text-on-surface-variant">
+            <tr className="text-right">
+              <th className="text-left font-normal py-1">When</th>
+              <th className="text-left font-normal">Network</th>
+              <th className="text-left font-normal">Backend</th>
+              <th className="font-normal">Speed</th>
+              <th className="font-normal">Nodes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i} className="text-right border-t border-outline/20">
+                <td className="text-left py-0.5 whitespace-nowrap">{fmtWhen(r.at)}</td>
+                <td className="text-left font-mono truncate max-w-40" title={r.network}>{r.network}</td>
+                <td className="text-left">{r.backend}</td>
+                <td className="font-semibold">{r.nps >= 1000 ? `${(r.nps / 1000).toFixed(1)}k n/s` : `${r.nps} n/s`}</td>
+                <td>{(r.nodes / 1e6).toFixed(1)}M</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
   );
 }
 

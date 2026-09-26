@@ -1784,6 +1784,11 @@ struct EngineConfigBody {
     /// Lc0 only: the network file and the backend.
     weights: Option<String>,
     backend: Option<String>,
+    /// Where a search stops: Stockfish's depth, Lc0's nodes; 0 = no limit.
+    max_depth: Option<u32>,
+    max_nodes: Option<u64>,
+    /// Lc0 only: end a search once its best move is settled.
+    smart_pruning: Option<bool>,
 }
 
 async fn engine_configure_handler(
@@ -1793,7 +1798,7 @@ async fn engine_configure_handler(
 ) -> ApiResult<crate::engine::EngineStatus> {
     let engine = pick_engine(&state, &w)?;
     let status = engine
-        .configure_all(body.path, body.threads, body.hash_mb, body.weights, body.backend)
+        .configure_all(body.path, body.threads, body.hash_mb, body.weights, body.backend, body.max_depth, body.max_nodes, body.smart_pruning)
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     // The database gets what Stockfish's hash leaves of the memory budget.
