@@ -26,6 +26,9 @@ export interface LoadedGame {
   /** The PGN has movetext, but none of it could be read as moves — shown as
    *  such, not as a game without moves (#286). */
   unreadable?: boolean;
+  /** The PGN as the server holds it — the previews offer it for copying.
+   *  Not persisted anywhere: the Analysis tabs store only ids and cursors. */
+  pgn: string | null;
   /** Where the game can be watched online, from the PGN's own tags — Lichess
    *  broadcasts write GameURL, and Site is a URL for online games. null when
    *  the game names no address (most OTB games from TWIC and Megabase). */
@@ -82,6 +85,7 @@ export async function loadGamePgn(gameId: number): Promise<LoadedGame> {
   const d: { white: string; black: string; result: string | null; date: string | null; event: string | null; pgn: string | null } = await r.json();
   return {
     id: gameId, white: d.white, black: d.black, result: d.result, date: d.date, event: d.event,
+    pgn: d.pgn,
     gameUrl: gameUrlFromPgn(d.pgn),
     ...buildPlayback(d.pgn),
   };

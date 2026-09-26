@@ -7,7 +7,7 @@ import PositionBoard from "./PositionBoard";
 import PositionMoves from "./PositionMoves";
 import MiniBoard from "./games/MiniBoard";
 import GamePreviewHeader from "./games/GamePreviewHeader";
-import OnlineGameLink from "./games/OnlineGameLink";
+import GameShareMenu from "./games/GameShareMenu";
 import MoveList from "./games/MoveList";
 import CloudEngine, { pvString } from "./CloudEngine";
 import { useNeighbourResize } from "../lib/panelResize";
@@ -669,7 +669,13 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                               {selectedGame && (
                                 <div className="shrink-0 px-2 py-1 border-b border-outline/40 flex items-center gap-2">
                                   <GamePreviewHeader game={selectedGame} />
-                                  {loadedGame.gameUrl && <OnlineGameLink url={loadedGame.gameUrl} />}
+                                  <GameShareMenu
+                                    pgn={loadedGame.pgn}
+                                    fen={loadedGame.fens[selectedPly] ?? loadedGame.fens[0]}
+                                    lineSans={loadedGame.moves.map((m) => m.san)}
+                                    startFen={loadedGame.fens[0]}
+                                    gameUrl={loadedGame.gameUrl}
+                                  />
                                   {onOpenInAnalysis && (
                                     <button
                                       onClick={() => onOpenInAnalysis(selectedGame)}
