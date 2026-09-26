@@ -187,15 +187,18 @@ function ServerConnectionSection({ status, connection = "connected" }: {
 function VersionFooter({ status }: { status: StatusInfo | null }) {
   const [appVersion, setAppVersion] = useState<string | null>(null);
   useEffect(() => { getVersion().then(setAppVersion).catch(() => {}); }, []);
-  // The server's engine (#309), and whether a newer Stockfish is out. An
-  // older server has no /engine and simply shows none.
-  const [engine, setEngine] = useState<{ name: string | null; update_available: boolean; latest: { version: string; url: string } | null } | null>(null);
+  // The server's engines (#309) and whether a newer release is out; only
+  // those switched on. An older server has no /engine and shows none.
+  type FooterEngine = { name: string | null; enabled?: boolean; update_available: boolean; latest: { version: string; url: string } | null };
+  const [engines, setEngines] = useState<FooterEngine[]>([]);
   useEffect(() => {
     if (!status?.version) return;
-    fetch(apiUrl("/engine"))
-      .then((r) => (r.ok ? r.json() : null))
-      .then(setEngine)
-      .catch(() => {});
+    (async () => {
+      const on = await fetch(apiUrl("/engines")).then((r) => (r.ok ? r.json() : { stockfish: true, lc0: false })).catch(() => ({ stockfish: true, lc0: false }));
+      const kinds = (["stockfish", "lc0"] as const).filter((k) => on[k]);
+      const got = await Promise.all(kinds.map((k) => fetch(apiUrl(`/engine?engine=${k}`)).then((r) => (r.ok ? r.json() : null)).catch(() => null)));
+      setEngines(got.filter((e): e is FooterEngine => !!e && !!e.name));
+    })();
   }, [status?.version]);
   const server = status?.version
     ? `Server ${status.version}${status.api_version != null ? ` · API ${status.api_version}` : ""}`
@@ -203,20 +206,35 @@ function VersionFooter({ status }: { status: StatusInfo | null }) {
   return (
     <div className="pt-2 text-center text-label-md text-on-surface-variant select-text">
       LPDO {appVersion ?? "…"} · {server}
-      {engine?.name && <> · {engine.name}</>}
-      {engine?.update_available && engine.latest && (
-        <>
-          {" — "}
-          <button
-            onClick={() => void openUrl(engine.latest!.url)}
-            className="text-primary hover:underline inline-flex items-center"
-            title="A newer Stockfish is out. Install it on the server, in /usr/local/bin/stockfish on Linux."
-          >
-            Stockfish {engine.latest.version} is available<ExternalLinkIcon />
-          </button>
-        </>
-      )}
+      {engines.map((engine) => (
+        <span key={engine.name}>
+          {" · "}{engine.name}
+          {engine.update_available && engine.latest && (
+            <>
+              {" — "}
+              <button
+                onClick={() => void openUrl(engine.latest!.url)}
+                className="text-primary hover:underline inline-flex items-center"
+                title="A newer release is out. Install it on the server."
+              >
+                {engine.name?.split(" ")[0]} {engine.latest.version} is available<ExternalLinkIcon />
+              </button>
+            </>
+          )}
+        </span>
+      ))}
     </div>
+  );
+}
+
+/** An engine's on/off switch, at the top of its card: off, its tab leaves the
+ *  Engine panel and the server neither runs nor asks it. */
+function EngineSwitch({ label, on, busy, onChange }: { label: string; on: boolean; busy?: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <label className="flex items-center gap-2 text-body-sm text-on-surface cursor-pointer">
+      <input type="checkbox" checked={on} disabled={busy} onChange={(e) => onChange(e.target.checked)} className="accent-primary" />
+      <span>{label}</span>
+    </label>
   );
 }
 
@@ -226,6 +244,7 @@ function VersionFooter({ status }: { status: StatusInfo | null }) {
 // limited to engines the server found in the standard locations; another path
 // goes in engine.json on the server (see engine.rs for why).
 interface EngineInfo {
+  enabled?: boolean;
   available: boolean;
   path: string | null;
   name: string | null;
@@ -269,7 +288,7 @@ function EngineSection() {
       .catch((e) => setError(String(e)));
   }, []);
 
-  async function save(patch: { path?: string; threads?: number; hash_mb?: number; max_depth?: number }) {
+  async function save(patch: { path?: string; threads?: number; hash_mb?: number; max_depth?: number; enabled?: boolean }) {
     setBusy(true);
     setError(null);
     setNote(null);
@@ -297,11 +316,14 @@ function EngineSection() {
   const field = "w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums";
 
   return (
-    <SectionCard title="Stockfish" status={info ? (info.available ? info.name ?? "running" : "none found") : undefined}>
+    <SectionCard title="Stockfish" status={info ? (info.enabled === false ? "switched off" : info.available ? info.name ?? "running" : "none found") : undefined}>
       <p className="text-body-sm text-on-surface-variant">
         The engine behind the Engine panel's <em>Stockfish</em> tab, running on the server — the
         strongest free engine, measured in centipawns. LPDO uses one you install; any UCI engine works.
       </p>
+      {info && (
+        <EngineSwitch label="Use Stockfish" on={info.enabled !== false} busy={busy} onChange={(on) => void save({ enabled: on })} />
+      )}
       {info && !info.available && (
         <p className="text-body-sm text-on-surface-variant">
           No engine was found on the server. The Engine panel's <em>Stockfish</em> tab shows how to install one.
@@ -413,6 +435,11 @@ const LC0_BACKENDS = [
 ];
 
 interface Lc0Info {
+  enabled?: boolean;
+  version?: string | null;
+  latest?: { version: string; url: string } | null;
+  update_available?: boolean;
+  os?: string;
   available: boolean;
   path: string | null;
   name: string | null;
@@ -438,7 +465,7 @@ function Lc0Section() {
       .then(take)
       .catch((e) => setError(String(e)));
   }, []);
-  async function save(patch: { path?: string; weights?: string; backend?: string; threads?: number; max_nodes?: number; smart_pruning?: boolean }) {
+  async function save(patch: { path?: string; weights?: string; backend?: string; threads?: number; max_nodes?: number; smart_pruning?: boolean; enabled?: boolean }) {
     setBusy(true);
     setError(null);
     setNote(null);
@@ -462,11 +489,32 @@ function Lc0Section() {
   const select = "flex-1 min-w-0 h-8 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface";
   const name = (p: string) => p.split(/[\\/]/).pop();
   return (
-    <SectionCard title="Lc0" status={info ? (info.available ? info.name ?? "running" : "not installed") : undefined}>
+    <SectionCard title="Lc0" status={info ? (info.enabled === false ? "switched off" : info.available ? info.name ?? "running" : "not installed") : undefined}>
       <p className="text-body-sm text-on-surface-variant">
         Leela Chess Zero, the second engine on the server: a neural network that gives its chances as win,
         draw and loss. Optional — it needs a graphics card to be fast.
       </p>
+      {info && (
+        <EngineSwitch
+          label="Use Lc0 — switched off, it is not started and holds no graphics memory"
+          on={info.enabled !== false} busy={busy} onChange={(on) => void save({ enabled: on })}
+        />
+      )}
+      {info?.update_available && info.latest && (
+        <p className="text-body-sm text-on-surface">
+          Lc0 {info.latest.version} is available — this server runs {info.version}.{" "}
+          <button onClick={() => void openUrl(info.latest!.url)} className="text-primary hover:underline inline-flex items-center">
+            Download<ExternalLinkIcon />
+          </button>
+          {info.os === "linux" && (
+            <> On Linux it is built from source:{" "}
+              <button onClick={() => void openUrl("https://github.com/specure/lpdo/blob/main/docs/chess-engine.md#the-program")} className="text-primary hover:underline inline-flex items-center">
+                the build steps<ExternalLinkIcon />
+              </button>.
+            </>
+          )}
+        </p>
+      )}
       {info && !info.available && (
         <p className="text-body-sm text-on-surface-variant">
           Lc0 was not found on the server. The Engine panel's <em>Lc0</em> tab says how to install it.
@@ -647,29 +695,35 @@ function Lc0Bench({ network, backend }: { network: string; backend: string }) {
 // server keeps positions to itself; the local engine analyses those.
 function CloudEnginesSection() {
   const [maxMove, setMaxMove] = useState<number | null>(null);
+  // Each service on or off; an older server has no switches and asks both.
+  const [services, setServices] = useState<{ chessdb: boolean; lichess: boolean }>({ chessdb: true, lichess: true });
   const [value, setValue] = useState("");
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     fetch(apiUrl("/cloud-eval/settings"))
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
-      .then((d: { max_move: number }) => { setMaxMove(d.max_move); setValue(String(d.max_move)); })
+      .then((d: { max_move: number; chessdb?: boolean; lichess?: boolean }) => {
+        setMaxMove(d.max_move); setValue(String(d.max_move));
+        setServices({ chessdb: d.chessdb !== false, lichess: d.lichess !== false });
+      })
       .catch((e) => setError(String(e)));
   }, []);
   const n = parseInt(value, 10);
-  async function save() {
+  async function save(patch: { max_move?: number; chessdb?: boolean; lichess?: boolean } = {}) {
     setError(null);
     setNote(null);
     try {
       const r = await fetch(apiUrl("/cloud-eval/settings"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ max_move: n }),
+        body: JSON.stringify({ max_move: maxMove ?? 20, ...services, ...(Number.isFinite(n) ? { max_move: n } : {}), ...patch }),
       });
       if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
-      const d = (await r.json()) as { max_move: number };
+      const d = (await r.json()) as { max_move: number; chessdb?: boolean; lichess?: boolean };
       setMaxMove(d.max_move);
       setValue(String(d.max_move));
+      setServices({ chessdb: d.chessdb !== false, lichess: d.lichess !== false });
       setNote("Saved.");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -684,13 +738,19 @@ function CloudEnginesSection() {
         Stockfish and Lc0 on the server analyse everything after it.
       </p>
       {maxMove != null && (
+        <div className="flex items-center gap-6">
+          <EngineSwitch label="Use chessdb.cn" on={services.chessdb} onChange={(on) => void save({ chessdb: on })} />
+          <EngineSwitch label="Use Lichess" on={services.lichess} onChange={(on) => void save({ lichess: on })} />
+        </div>
+      )}
+      {maxMove != null && (
         <div className="flex items-center gap-2 text-body-sm text-on-surface">
           <span>Ask them up to move</span>
           <input
             type="number" min={0} max={500} value={value} onChange={(e) => setValue(e.target.value)}
             className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums"
           />
-          <ActionButton onClick={() => void save()} disabled={!Number.isFinite(n) || n < 0 || n === maxMove}>Save</ActionButton>
+          <ActionButton onClick={() => void save({ max_move: n })} disabled={!Number.isFinite(n) || n < 0 || n === maxMove}>Save</ActionButton>
         </div>
       )}
       <p className="text-label-sm text-on-surface-variant">0 asks them about every move. The default is 20.</p>

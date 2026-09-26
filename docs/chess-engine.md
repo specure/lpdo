@@ -112,6 +112,14 @@ anyone who can reach the server could otherwise make it run any program.
 On Linux the server runs as a system service that cannot see home directories,
 so keep the engine outside `/home` — `/usr/local/bin` or `/opt` work.
 
+## Switching engines on and off
+
+Maintenance → **Engines** has a switch for each of the four: chessdb.cn and
+Lichess (the cloud engines), Stockfish and Lc0. Switched off, an engine's tab
+leaves the Engine panel and the server neither runs nor asks it — Lc0 then
+holds no graphics memory. LPDO checks once a day for new releases of Stockfish
+and Lc0 and shows a notice when the server runs an older one.
+
 ## Settings
 
 | Setting | Default | |

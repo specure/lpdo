@@ -104,6 +104,9 @@ pub struct EngineSettings {
     /// Lc0's smart pruning: end a search once the best move cannot be
     /// overtaken. Off by default — the other lines stop improving too.
     pub smart_pruning: bool,
+    /// Switched off, the engine is not started (Lc0 then holds no GPU
+    /// memory), its tab leaves the Engine panel and analysis is refused.
+    pub enabled: bool,
 }
 
 impl Default for EngineSettings {
@@ -121,11 +124,11 @@ impl EngineSettings {
             Kind::Stockfish => Self {
                 path: None, threads: physical_cores().clamp(1, 64),
                 hash_mb: crate::db::default_engine_hash_mb(), weights: None, backend: None,
-                max_depth: 40, max_nodes: 0, smart_pruning: false,
+                max_depth: 40, max_nodes: 0, smart_pruning: false, enabled: true,
             },
             Kind::Lc0 => Self {
                 path: None, threads: 0, hash_mb: 0, weights: None, backend: None,
-                max_depth: 0, max_nodes: 10_000_000, smart_pruning: false,
+                max_depth: 0, max_nodes: 10_000_000, smart_pruning: false, enabled: true,
             },
         }
     }
@@ -140,6 +143,8 @@ fn valid_backend(b: &str) -> bool {
 #[derive(Clone, Debug, Serialize)]
 pub struct EngineStatus {
     pub kind: Kind,
+    /// Switched on in the settings (see EngineSettings::enabled).
+    pub enabled: bool,
     pub available: bool,
     /// The engine in use (or that would be used).
     pub path: Option<String>,
@@ -341,7 +346,10 @@ impl Engine {
     /// The newest Stockfish release, from GitHub. Asked at most once a day
     /// (an hour after a failure), and never for long: a server without
     /// internet access just does not say.
-    async fn latest_stockfish(&self) -> Option<LatestRelease> {
+    /// The newest release of this engine, from GitHub: Stockfish's tags are
+    /// "sf_19", Lc0's "v0.32.1" (its release candidates are marked
+    /// pre-release, which the "latest" endpoint leaves out).
+    async fn latest_release(&self) -> Option<LatestRelease> {
         let mut cached = self.latest.lock().await;
         if let Some((at, value)) = cached.as_ref() {
             let ttl = if value.is_some() { Duration::from_secs(24 * 3600) } else { Duration::from_secs(3600) };
@@ -353,16 +361,18 @@ impl Engine {
                 .timeout(Duration::from_secs(4))
                 .build()
                 .ok()?;
+            let (repo, url) = match self.kind {
+                Kind::Stockfish => ("official-stockfish/Stockfish", "https://stockfishchess.org/download/"),
+                Kind::Lc0 => ("LeelaChessZero/lc0", "https://lczero.org/play/download/"),
+            };
             let v: serde_json::Value = client
-                .get("https://api.github.com/repos/official-stockfish/Stockfish/releases/latest")
+                .get(format!("https://api.github.com/repos/{repo}/releases/latest"))
                 .send().await.ok()?
                 .error_for_status().ok()?
                 .json().await.ok()?;
             let tag = v.get("tag_name")?.as_str()?;
-            Some(LatestRelease {
-                version: tag.strip_prefix("sf_").unwrap_or(tag).to_string(),
-                url: "https://stockfishchess.org/download/".to_string(),
-            })
+            let version = tag.strip_prefix("sf_").or_else(|| tag.strip_prefix('v')).unwrap_or(tag);
+            Some(LatestRelease { version: version.to_string(), url: url.to_string() })
         }
         .await;
         *cached = Some((std::time::Instant::now(), fetched.clone()));
@@ -432,18 +442,23 @@ impl Engine {
     }
 
     pub async fn status(&self) -> EngineStatus {
-        let _ = self.ensure_started().await;
+        let enabled = self.settings.lock().await.enabled;
+        if enabled { let _ = self.ensure_started().await; }
         let settings = self.settings.lock().await.clone();
         let hash_mb = settings.hash_mb;
         let (found, searched) = self.found();
         let name = self.running.lock().await.as_ref().map(|r| r.name.clone());
-        let version = name.as_deref().and_then(stockfish_version);
-        // Only worth asking for Stockfish, or when there is no engine yet.
-        let latest = if self.kind == Kind::Stockfish && (name.is_none() || name.as_deref().is_some_and(|n| n.starts_with("Stockfish"))) {
-            self.latest_stockfish().await
-        } else {
-            None
+        let version = name.as_deref().and_then(|n| match self.kind {
+            Kind::Stockfish => stockfish_version(n),
+            Kind::Lc0 => lc0_version(n),
+        });
+        // Asked for the engine this slot is named after, or when there is none
+        // yet (the install guidance can then name the newest release).
+        let ours = |n: &str| match self.kind {
+            Kind::Stockfish => n.starts_with("Stockfish"),
+            Kind::Lc0 => n.starts_with("Lc0"),
         };
+        let latest = if enabled && name.as_deref().is_none_or(ours) { self.latest_release().await } else { None };
         let update_available = matches!((&version, &latest), (Some(v), Some(l)) if older(v, &l.version));
         let running = self.running.lock().await;
         let error = self.last_error.lock().await.clone();
@@ -452,6 +467,7 @@ impl Engine {
         let weights = settings.weights.clone().or_else(|| networks.first().cloned());
         EngineStatus {
             kind: self.kind,
+            enabled,
             available: running.is_some(),
             path: running.as_ref().map(|r| r.path.clone()).or_else(|| settings.path.clone()).or_else(|| found.first().cloned()),
             name: running.as_ref().map(|r| r.name.clone()),
@@ -479,7 +495,7 @@ impl Engine {
     /// found in the standard locations (see the module note); `None` keeps
     /// the current choice.
     pub async fn configure(&self, path: Option<String>, threads: Option<u32>, hash_mb: Option<u32>) -> Result<EngineStatus, String> {
-        self.configure_all(path, threads, hash_mb, None, None, None, None, None).await
+        self.configure_all(path, threads, hash_mb, None, None, None, None, None, None).await
     }
 
     /// As `configure`, with Lc0's network and backend. The network must be one
@@ -494,6 +510,7 @@ impl Engine {
         max_depth: Option<u32>,
         max_nodes: Option<u64>,
         smart_pruning: Option<bool>,
+        enabled: Option<bool>,
     ) -> Result<EngineStatus, String> {
         {
             let mut s = self.settings.lock().await;
@@ -527,6 +544,7 @@ impl Engine {
             if let Some(d) = max_depth { s.max_depth = d.min(245); }
             if let Some(n) = max_nodes { s.max_nodes = n.min(1_000_000_000_000); }
             if let Some(p) = smart_pruning { s.smart_pruning = p; }
+            if let Some(e) = enabled { s.enabled = e; }
             if let Some(b) = backend {
                 if b.is_empty() { s.backend = None; }
                 else if valid_backend(&b) { s.backend = Some(b); }
@@ -609,6 +627,9 @@ impl Engine {
         // skews its figures badly (one run took ten times as long).
         if self.benching.try_lock().is_err() {
             return Err("the engine is being benchmarked — try again when it is done".to_string());
+        }
+        if !self.settings.lock().await.enabled {
+            return Err("this engine is switched off (Maintenance → Engines)".to_string());
         }
         self.ensure_started().await?;
         let rx = self.tx.subscribe();
@@ -1016,6 +1037,22 @@ pub fn stockfish_version(name: &str) -> Option<String> {
     v.chars().next()?.is_ascii_digit().then(|| v.to_string())
 }
 
+/// The release number in an Lc0 name: "Lc0 v0.32.1" → "0.32.1"; a
+/// development or release-candidate build ("v0.33.0-rc0", "v0.33.0-dev")
+/// has none, so it is never called out of date.
+pub fn lc0_version(name: &str) -> Option<String> {
+    let v = name.strip_prefix("Lc0 ")?.split_whitespace().next()?;
+    let v = v.strip_prefix('v').unwrap_or(v);
+    (v.chars().next()?.is_ascii_digit() && v.chars().all(|c| c.is_ascii_digit() || c == '.')).then(|| v.to_string())
+}
+
+/// Just the switch: whether the engine is on, without starting it.
+impl Engine {
+    pub async fn enabled(&self) -> bool {
+        self.settings.lock().await.enabled
+    }
+}
+
 /// `a` is an older release than `b` ("16" < "17.1" < "19").
 pub fn older(a: &str, b: &str) -> bool {
     let parts = |v: &str| v.split('.').map(|p| p.parse::<u32>().unwrap_or(0)).collect::<Vec<_>>();
@@ -1107,6 +1144,9 @@ mod tests {
         assert!(older("17", "17.1"));
         assert!(!older("19", "19"));
         assert!(!older("19.1", "19"));
+        assert_eq!(lc0_version("Lc0 v0.32.1").as_deref(), Some("0.32.1"));
+        assert_eq!(lc0_version("Lc0 v0.33.0-rc0"), None);
+        assert!(older("0.32.1", "0.33.0"));
     }
 
     #[test]

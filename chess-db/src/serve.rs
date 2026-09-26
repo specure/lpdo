@@ -1254,6 +1254,7 @@ async fn cloud_eval_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<crate::cloud_eval::CloudEval> {
     let zobrist = fen_zobrist(&q.fen)?;
+    if !crate::cloud_eval::settings().chessdb { return Ok(Json(crate::cloud_eval::disabled_chessdb())); }
     if crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(crate::cloud_eval::capped_chessdb())); }
     Ok(Json(crate::cloud_eval::query(&q.fen, zobrist, q.refresh).await))
 }
@@ -1264,13 +1265,13 @@ async fn cloud_eval_lines_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<Vec<crate::cloud_eval::MoveLine>> {
     let zobrist = fen_zobrist(&q.fen)?;
-    if crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(Vec::new())); }
+    if !crate::cloud_eval::settings().chessdb || crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(Vec::new())); }
     Ok(Json(crate::cloud_eval::query_lines(&q.fen, zobrist, q.refresh).await))
 }
 
 /// Ask chessdb.cn to analyse an as-yet-unknown position (best-effort).
 async fn cloud_eval_queue_handler(Query(q): Query<CloudEvalQuery>) -> StatusCode {
-    if crate::cloud_eval::beyond_cap(&q.fen) { return StatusCode::CONFLICT; }
+    if !crate::cloud_eval::settings().chessdb || crate::cloud_eval::beyond_cap(&q.fen) { return StatusCode::CONFLICT; }
     crate::cloud_eval::queue(&q.fen).await;
     StatusCode::OK
 }
@@ -1281,6 +1282,7 @@ async fn lichess_eval_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<crate::cloud_eval::LichessEval> {
     let zobrist = fen_zobrist(&q.fen)?;
+    if !crate::cloud_eval::settings().lichess { return Ok(Json(crate::cloud_eval::disabled_lichess())); }
     if crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(crate::cloud_eval::capped_lichess())); }
     Ok(Json(crate::cloud_eval::query_lichess(&q.fen, zobrist, q.refresh).await))
 }
@@ -1299,8 +1301,8 @@ async fn cloud_watch_add_handler(
     Query(q): Query<WatchQuery>,
 ) -> ApiResult<crate::cloud_eval::Watch> {
     let zobrist = fen_zobrist(&q.fen)?;
-    if crate::cloud_eval::beyond_cap(&q.fen) {
-        return Err((StatusCode::CONFLICT, "past the move the cloud engines are asked up to".to_string()));
+    if !crate::cloud_eval::settings().chessdb || crate::cloud_eval::beyond_cap(&q.fen) {
+        return Err((StatusCode::CONFLICT, "chessdb is switched off, or the position is past the move it is asked up to".to_string()));
     }
     Ok(Json(crate::cloud_eval::add_watch(&q.fen, zobrist, &q.label).await))
 }
@@ -1321,7 +1323,7 @@ async fn cloud_settings_put_handler(
 struct CloudSettingsClamp;
 impl CloudSettingsClamp {
     fn clamp(s: crate::cloud_eval::CloudSettings) -> crate::cloud_eval::CloudSettings {
-        crate::cloud_eval::CloudSettings { max_move: s.max_move.min(500) }
+        crate::cloud_eval::CloudSettings { max_move: s.max_move.min(500), ..s }
     }
 }
 
@@ -1772,6 +1774,18 @@ fn pick_engine(state: &AppState, which: &WhichEngine) -> std::result::Result<Arc
     }
 }
 
+/// Which engines are switched on — the Engine panel's tabs — without starting
+/// any of them.
+async fn engines_enabled_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let cloud = crate::cloud_eval::settings();
+    Json(serde_json::json!({
+        "chessdb": cloud.chessdb,
+        "lichess": cloud.lichess,
+        "stockfish": state.engine.enabled().await,
+        "lc0": state.lc0.enabled().await,
+    }))
+}
+
 async fn engine_status_handler(State(state): State<AppState>, Query(w): Query<WhichEngine>) -> ApiResult<crate::engine::EngineStatus> {
     Ok(Json(pick_engine(&state, &w)?.status().await))
 }
@@ -1789,6 +1803,8 @@ struct EngineConfigBody {
     max_nodes: Option<u64>,
     /// Lc0 only: end a search once its best move is settled.
     smart_pruning: Option<bool>,
+    /// Switch the engine on or off.
+    enabled: Option<bool>,
 }
 
 async fn engine_configure_handler(
@@ -1798,7 +1814,7 @@ async fn engine_configure_handler(
 ) -> ApiResult<crate::engine::EngineStatus> {
     let engine = pick_engine(&state, &w)?;
     let status = engine
-        .configure_all(body.path, body.threads, body.hash_mb, body.weights, body.backend, body.max_depth, body.max_nodes, body.smart_pruning)
+        .configure_all(body.path, body.threads, body.hash_mb, body.weights, body.backend, body.max_depth, body.max_nodes, body.smart_pruning, body.enabled)
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     // The database gets what Stockfish's hash leaves of the memory budget.
@@ -2514,6 +2530,7 @@ pub async fn run(
         .route("/engine",                              get(engine_status_handler).put(engine_configure_handler))
         .route("/engine/analyse",                      get(engine_analyse_handler))
         .route("/engine/stop",                         post(engine_stop_handler))
+        .route("/engines",                             get(engines_enabled_handler))
         .route("/engine/bench",                        post(engine_bench_handler))
         .route("/cloud-eval/lines",                    get(cloud_eval_lines_handler))
         .route("/cloud-eval/queue",                    post(cloud_eval_queue_handler))

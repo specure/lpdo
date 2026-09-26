@@ -164,6 +164,20 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
     return v === "chessdb" || v === "stockfish" || v === "lc0" ? v : "lichess";
   })());
   useEffect(() => { localStorage.setItem("engineSourceV2", engineSource); }, [engineSource]);
+  // Which sources are switched on (Maintenance → Engines). An older server
+  // has no /engines: then the cloud ones and Stockfish, as before.
+  const [enabled, setEnabled] = useState<Record<EngineSource, boolean>>({ chessdb: true, lichess: true, stockfish: true, lc0: true });
+  useEffect(() => {
+    fetch("/api/engines")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d) setEnabled({ chessdb: d.chessdb !== false, lichess: d.lichess !== false, stockfish: d.stockfish !== false, lc0: d.lc0 !== false }); })
+      .catch(() => {});
+  }, []);
+  const sources = (["chessdb", "lichess", "stockfish", "lc0"] as EngineSource[]).filter((s) => enabled[s]);
+  // The chosen source switched off: take the first one left.
+  useEffect(() => {
+    if (sources.length && !sources.includes(engineSource)) setEngineSource(sources[0]);
+  }, [sources.join(","), engineSource]);
   const [engineMoves, setEngineMoves] = useState<CloudMove[]>([]);          // chessdb
   const [engineLines, setEngineLines] = useState<Record<string, string[]>>({}); // uci → continuation SAN (lazy)
   const [lichessEval, setLichessEval] = useState<LichessEval | null>(null); // lichess
@@ -330,7 +344,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
     <>
       <div className="px-3 py-2 shrink-0 flex items-center justify-between border-b border-outline/40">
         <div className="flex gap-0.5">
-          {(["chessdb", "lichess", "stockfish", "lc0"] as EngineSource[]).map((src) => (
+          {sources.map((src) => (
             <button
               key={src}
               onClick={() => setEngineSource(src)}
@@ -350,7 +364,11 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
           via {engineSource === "chessdb" ? "chessdb.cn" : engineSource === "lichess" ? "lichess.org" : "the server"}
         </span>
       </div>
-      {engineSource === "stockfish" || engineSource === "lc0" ? (
+      {sources.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center text-center text-on-surface-variant text-body-sm px-3">
+          Every engine is switched off. Switch one on under Maintenance → Engines.
+        </div>
+      ) : engineSource === "stockfish" || engineSource === "lc0" ? (
         <LocalEngine kind={engineSource} fen={fen} history={history} lineCount={lichessLineCount} onPlayLine={onPlayLine} />
       ) : engineStatus === "loading" ? (
         <div className="p-3 text-center text-on-surface-variant text-body-sm">Analysing…</div>
