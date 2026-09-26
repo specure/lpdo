@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { pvString } from "../CloudEngine";
 import ExternalLinkIcon from "../ExternalLinkIcon";
@@ -54,6 +54,21 @@ export default function GameMoreMenu({ pgn, fen, lineSans, ply, startFen, gameUr
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  // Which edge the menu hangs from. In a preview the button sits near the
+  // right of its panel, where a left-anchored menu runs off the edge, so it
+  // measures itself once it is up and flips if it doesn't fit.
+  const [alignRight, setAlignRight] = useState(false);
+
+  useLayoutEffect(() => {
+    if (!open) { setAlignRight(false); return; }
+    const menu = menuRef.current;
+    const box = boxRef.current;
+    if (!menu || !box) return;
+    const room = menu.getBoundingClientRect();
+    const limit = (box.closest("[data-panel]") ?? document.documentElement).getBoundingClientRect().right;
+    if (room.right > Math.min(limit, window.innerWidth) - 8) setAlignRight(true);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -93,7 +108,10 @@ export default function GameMoreMenu({ pgn, fen, lineSans, ply, startFen, gameUr
       </button>
       {note && <span className="ml-2 text-label-sm text-on-surface-variant">{note}</span>}
       {open && (
-        <div className="absolute left-0 top-8 z-30 py-1 rounded-md bg-surface-container-high shadow-xl min-w-56">
+        <div
+          ref={menuRef}
+          className={`absolute top-8 z-30 py-1 rounded-md bg-surface-container-high shadow-xl min-w-56 ${alignRight ? "right-0" : "left-0"}`}
+        >
           {gameUrl && (
             <button className={item} onClick={() => go(gameUrl)} title={gameUrl}>
               {urlHost(gameUrl)
