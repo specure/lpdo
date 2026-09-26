@@ -473,12 +473,14 @@ fn build_games_sql(
     let collection_filter = if collection_id.is_some() { "AND EXISTS (SELECT 1 FROM game_collections gc WHERE gc.game_id = g.id AND gc.collection_id = ?)" } else { "" };
     let visibility_filter = if visibility.is_some()    { "AND g.visibility = ?" } else { "" };
     let deleted_filter    = if include_deleted { "" } else { "AND g.deleted_at IS NULL" };
-    // Engines play under ratings no person reaches, so the rating alone tells
-    // them apart (see HUMAN_ELO_CEILING). An unrated game stays: it is far more
-    // likely to be an old human game than an engine one.
+    // Engines play under ratings no person reaches (see HUMAN_ELO_CEILING),
+    // and the broadcasts title them BOT (engine_games) — which catches the
+    // weaker ones rated like strong humans. An unrated game stays: it is far
+    // more likely to be an old human game than an engine one.
     let engine_filter: String = if exclude_engines {
         let ceiling = crate::db::queries::HUMAN_ELO_CEILING;
-        format!("AND COALESCE(g.white_elo, 0) <= {ceiling} AND COALESCE(g.black_elo, 0) <= {ceiling}")
+        format!("AND COALESCE(g.white_elo, 0) <= {ceiling} AND COALESCE(g.black_elo, 0) <= {ceiling} \
+                 AND g.id NOT IN (SELECT game_id FROM engine_games)")
     } else {
         String::new()
     };

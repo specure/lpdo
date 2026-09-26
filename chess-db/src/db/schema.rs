@@ -286,6 +286,33 @@ pub fn init(conn: &Connection) -> Result<()> {
         println!("Done.");
     }
 
+    // Engine games (#296, first step): games where either side carries the
+    // PGN title BOT, which is how the Lichess broadcasts tag TCEC engines. A
+    // side table rather than a games column, so the games appender's column
+    // order is untouched. The "Engine games" switch hides these in addition to
+    // anything rated above HUMAN_ELO_CEILING — weaker engines are rated like
+    // strong online players and slipped through. Filled at import; existing
+    // games are found once, when the table is created, by reading the stored
+    // tags of the games that can hold them (broadcast imports and TCEC sites)
+    // rather than every PGN in the database.
+    let had_engine_games: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM duckdb_tables() WHERE table_name = 'engine_games')",
+        [], |r| r.get(0),
+    )?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS engine_games (game_id INTEGER PRIMARY KEY);")?;
+    if !had_engine_games {
+        println!("Finding engine games (one-time migration)…");
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO engine_games
+             SELECT g.id FROM games g
+             WHERE (g.issue_id IN (SELECT id FROM source_items WHERE source_key = 'lichess-broadcasts')
+                    OR g.site ILIKE '%tcec%'
+                    OR g.site ILIKE '%lichess.org/broadcast%')
+               AND g.pgn LIKE '%Title \"BOT\"]%';",
+        )?;
+        println!("Done.");
+    }
+
     // Move fingerprints (#—): a hash of the canonical SAN sequence and of that
     // sequence minus its last half-move. New games are hashed at import; existing
     // rows read NULL and are backfilled by the next `dedup_games` pass (a
