@@ -495,6 +495,26 @@ mod tests {
         assert!(other.pgn.contains("Nfd2"), "the other knight is still its own move: {}", other.pgn);
     }
 
+    /// The case the chess world disagrees about: two knights could reach the
+    /// square, but one of them is pinned, so only one move is legal. ChessBase
+    /// disambiguates anyway ("Nge2"); most other programs don't ("Ne2"). PGN's
+    /// rule counts legal moves, so the short form is the canonical one — and
+    /// either spelling now lands on it, which is the whole point: the two
+    /// exports of one game stop looking like different games.
+    #[test]
+    fn a_pinned_rival_needs_no_disambiguation() {
+        // 1.e4 e5 2.Nc3 Bb4 3.d3 Nf6: the c3 knight is pinned along b4-c3-d2-e1,
+        // so only the g1 knight can legally go to e2.
+        let head = "[White \"A\"]\n[Black \"B\"]\n\n1. e4 e5 2. Nc3 Bb4 3. d3 Nf6 4. ";
+        let chessbase = parse_one(&format!("{head}Nge2 *"));
+        let others = parse_one(&format!("{head}Ne2 *"));
+        assert!(chessbase.pgn.ends_with("Ne2"), "ChessBase spelling normalised: {}", chessbase.pgn);
+        assert_eq!(
+            chessbase.pgn.lines().last(), others.pgn.lines().last(),
+            "both exports of the same game now store the same movetext",
+        );
+    }
+
     /// Check and mate suffixes come from the position, not from the source.
     #[test]
     fn check_and_mate_suffixes_are_written_from_the_position() {
