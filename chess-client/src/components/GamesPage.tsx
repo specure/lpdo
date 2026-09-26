@@ -177,8 +177,8 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     }
     setExtras((prev) => (prev.some((g) => g.id === game.id) ? prev.filter((g) => g.id !== game.id) : [...prev, game]));
   }
-  // Several games selected: they can be printed or exported from the
-  // preview's More menu, in the order the list shows them.
+  // The selected games — one or several — can be printed or exported from
+  // the preview's More menu, in the order the list shows them.
   const [printGames, setPrintGames] = useState<{ games: ExportableGame[]; primary: "print" | "save" } | null>(null);
   const [exportNote, setExportNote] = useState<string | null>(null);
   useEffect(() => {
@@ -205,7 +205,9 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     const list = selectedInOrder();
     try {
       const pgns = await fetchPgns(list.map((g) => g.id));
-      if (await savePgnFile(list, pgns.filter((p): p is string => p !== null))) setExportNote(`${list.length} games saved as PGN`);
+      if (await savePgnFile(list, pgns.filter((p): p is string => p !== null))) {
+        setExportNote(list.length === 1 ? "Game saved as PGN" : `${list.length} games saved as PGN`);
+      }
     } catch (e) {
       setExportNote(`Could not export: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -759,6 +761,11 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                                     startFen={loadedGame.fens[0]}
                                     gameUrl={loadedGame.gameUrl}
                                     extras={selectionEntries}
+                                    // One game: the board's own entries. Several: the
+                                    // "N selected" ones below take over.
+                                    onExportPgn={extras.length === 0 ? () => void exportSelectedPgn() : undefined}
+                                    onExportPdf={extras.length === 0 ? () => void printSelected("save") : undefined}
+                                    onPrint={extras.length === 0 ? () => void printSelected("print") : undefined}
                                   />
                                   {onOpenInAnalysis && (
                                     <button
