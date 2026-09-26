@@ -374,8 +374,10 @@ function EngineSection() {
       {error && <p className="text-body-sm text-error">{error}</p>}
       {info?.available && info.name?.startsWith("Stockfish") && (
         <EngineBench
+          engine={info.name}
           threads={Number.isFinite(t) ? t : info.settings.threads}
           hash={Number.isFinite(h) ? h : info.settings.hash_mb}
+          onUse={(threads, hash_mb) => void save({ threads, hash_mb })}
         />
       )}
     </SectionCard>
@@ -402,7 +404,9 @@ async function runBench(threads: number, hash_mb: number, depth: number): Promis
   return (await r.json()) as BenchResult;
 }
 
-function EngineBench({ threads, hash }: { threads: number; hash: number }) {
+function EngineBench({ engine, threads, hash, onUse }: {
+  engine: string | null; threads: number; hash: number; onUse: (threads: number, hash_mb: number) => void;
+}) {
   const [results, setResults] = useState<BenchResult[]>(() => {
     try { return JSON.parse(localStorage.getItem(BENCH_KEY) ?? "[]") as BenchResult[]; } catch { return []; }
   });
@@ -454,7 +458,12 @@ function EngineBench({ threads, hash }: { threads: number; hash: number }) {
         </p>
       )}
       {error && <p className="text-body-sm text-error">{error}</p>}
-      {results.length > 0 && (
+      {results.length > 0 && (() => {
+        // The fastest run with the engine in use — "fastest", not "best":
+        // the last threads often add little and leave nothing for the server.
+        const own = results.filter((r) => r.engine === engine);
+        const top = own.length ? own.reduce((a, b) => (b.nps > a.nps ? b : a)) : null;
+        return (
         <div className="overflow-x-auto">
           <table className="w-full text-body-sm tabular-nums">
             <thead className="text-label-sm text-on-surface-variant">
@@ -465,17 +474,32 @@ function EngineBench({ threads, hash }: { threads: number; hash: number }) {
                 <th className="font-normal">Hash</th>
                 <th className="font-normal">Speed</th>
                 <th className="font-normal">Time</th>
+                <th className="font-normal"></th>
               </tr>
             </thead>
             <tbody>
               {results.map((r, i) => (
-                <tr key={i} className="text-right border-t border-outline/20">
+                <tr key={i} className={`text-right border-t border-outline/20 ${r === top ? "bg-secondary-container/60" : ""}`}>
                   <td className="text-left py-0.5 whitespace-nowrap">{r.at ? fmtWhen(r.at) : "—"}</td>
                   <td className="text-left">{r.engine}</td>
                   <td>{r.threads}</td>
                   <td>{r.hash_mb} MB</td>
-                  <td className="font-semibold">{fmtNps(r.nps)}</td>
+                  <td className="font-semibold">
+                    {r === top && <span className="mr-1 text-label-sm font-normal text-on-secondary-container">fastest</span>}
+                    {fmtNps(r.nps)}
+                  </td>
                   <td>{(r.ms / 1000).toFixed(1)} s</td>
+                  <td className="pl-2">
+                    {r.engine === engine && !(r.threads === threads && r.hash_mb === hash) && (
+                      <button
+                        onClick={() => onUse(r.threads, r.hash_mb)}
+                        className="h-6 px-2 rounded-full text-label-sm text-primary hover:bg-primary/8 active:bg-primary/12"
+                        title={`Set ${r.threads} threads and ${r.hash_mb} MB hash`}
+                      >
+                        Use
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -484,7 +508,8 @@ function EngineBench({ threads, hash }: { threads: number; hash: number }) {
             Clear results
           </button>
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
