@@ -357,8 +357,9 @@ fn fetch_activity_live(fide_id: u64) -> Result<ActivitySummary> {
         .header("Referer", format!("{}/profile/{}/chart", RATINGS_BASE, fide_id))
         .send()
         .context("fetch chart data")?
-        .json()
-        .context("parse chart data")?;
+        .text()
+        .context("read chart data")
+        .and_then(|t| parse_chart_json(&t))?;
 
     let mut summary = ActivitySummary::default();
     for row in rows {
@@ -534,7 +535,7 @@ pub fn rating_history(fide_id: u64) -> Result<Vec<RatingPoint>> {
     if !resp.status().is_success() {
         return Ok(vec![]);
     }
-    let rows: Vec<Row> = resp.json().context("parse chart data")?;
+    let rows: Vec<Row> = parse_chart_json(&resp.text().context("read chart data")?)?;
 
     let mut points = Vec::new();
     for row in rows {
@@ -545,4 +546,21 @@ pub fn rating_history(fide_id: u64) -> Result<Vec<RatingPoint>> {
         }
     }
     Ok(points)
+}
+
+/// FIDE's chart endpoint began prefixing its JSON with a byte-order mark,
+/// which serde rejects ("expected value at line 1 column 1"). Strip it.
+fn parse_chart_json<T: serde::de::DeserializeOwned>(text: &str) -> anyhow::Result<T> {
+    serde_json::from_str(text.trim_start_matches('\u{feff}')).context("parse chart data")
+}
+
+#[cfg(test)]
+mod chart_bom_tests {
+    #[test]
+    fn chart_json_with_a_byte_order_mark_parses() {
+        let v: Vec<serde_json::Value> = super::parse_chart_json("\u{feff}[{\"date_2\":\"2025-Jan\"}]").unwrap();
+        assert_eq!(v.len(), 1);
+        let v: Vec<serde_json::Value> = super::parse_chart_json("[]").unwrap();
+        assert!(v.is_empty());
+    }
 }

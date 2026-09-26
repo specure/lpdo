@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import ExternalLinkIcon from "./ExternalLinkIcon";
 import { PlayerInfo, PlayerStats, OpeningLine, FidePlayer, FideActivity, FideRecentGame, GameSummary } from "../types";
 import { Tag, defaultNewGameTags } from "../lib/pgnEditor";
 import AddGameDialog from "./AddGameDialog";
@@ -435,6 +437,13 @@ export default function PlayerProfileModal({ player, onClose, onPlayersMerged }:
             )}
           </div>
           <div className="flex items-center gap-2">
+            {player.fide_id && (
+              <button
+                onClick={() => void openUrl(`https://ratings.fide.com/profile/${player.fide_id}`)}
+                title={`https://ratings.fide.com/profile/${player.fide_id}`}
+                className="h-8 px-3 inline-flex items-center rounded-full text-primary text-label-md hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard"
+              >FIDE profile<ExternalLinkIcon /></button>
+            )}
             <button
               onClick={() => setMergeOpen(true)}
               title="Merge a duplicate player record into this one"
