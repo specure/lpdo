@@ -13,6 +13,7 @@ mod auth;
 mod cloud_eval;
 mod db;
 mod dedup;
+mod engine;
 mod fide;
 mod importer;
 mod jobs;

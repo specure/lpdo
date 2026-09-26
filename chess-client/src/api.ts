@@ -92,6 +92,14 @@ export function jobEventsUrl(jobId: string): string {
   return token ? `${base}?token=${encodeURIComponent(token)}` : base;
 }
 
+/** Absolute SSE URL for the local engine's analysis of a position (#309). */
+export function engineAnalyseUrl(fen: string, lines: number): string {
+  const path = `/engine/analyse?fen=${encodeURIComponent(fen)}&lines=${lines}`;
+  const base = import.meta.env.DEV ? "/api" + path : serverUrl() + path;
+  const token = serverToken();
+  return token ? `${base}&token=${encodeURIComponent(token)}` : base;
+}
+
 export interface JobRequest {
   type: string;
   params?: Record<string, unknown>;
