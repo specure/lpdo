@@ -6,6 +6,7 @@ import PlayerPicker from "./PlayerPicker";
 import PositionBoard from "./PositionBoard";
 import PositionMoves from "./PositionMoves";
 import MiniBoard from "./games/MiniBoard";
+import GamePreviewHeader from "./games/GamePreviewHeader";
 import MoveList from "./games/MoveList";
 import CloudEngine, { pvString } from "./CloudEngine";
 import { useNeighbourResize } from "../lib/panelResize";
@@ -664,18 +665,23 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                         <div className={panel}>
                           {loadedGame ? (
                             <>
-                              {onOpenInAnalysis && selectedGame && (
-                                <div className="shrink-0 px-2 py-1 border-b border-outline/40 flex justify-end">
-                                  <button
-                                    onClick={() => onOpenInAnalysis(selectedGame)}
-                                    className="text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 px-2.5 h-7 rounded-full transition-colors duration-short3 ease-standard"
-                                    title="Open this game in the editable Analysis board"
-                                  >
-                                    Open in Analysis ↗
-                                  </button>
+                              {selectedGame && (
+                                <div className="shrink-0 px-2 py-1 border-b border-outline/40 flex items-center gap-2">
+                                  <GamePreviewHeader game={selectedGame} />
+                                  {onOpenInAnalysis && (
+                                    <button
+                                      onClick={() => onOpenInAnalysis(selectedGame)}
+                                      className="shrink-0 text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 px-2.5 h-7 rounded-full transition-colors duration-short3 ease-standard"
+                                      title="Open this game in the editable Analysis board"
+                                    >
+                                      Open in Analysis ↗
+                                    </button>
+                                  )}
                                 </div>
                               )}
-                              <MiniBoard game={loadedGame} ply={selectedPly} setPly={setSelectedPly} />
+                              {/* The header above already names the players and
+                                  the result, so the board's own line would repeat it. */}
+                              <MiniBoard game={loadedGame} ply={selectedPly} setPly={setSelectedPly} showHeader={!selectedGame} />
                             </>
                           ) : (
                             <div className="flex-1 flex items-center justify-center text-center text-on-surface-variant text-body-sm px-3">
