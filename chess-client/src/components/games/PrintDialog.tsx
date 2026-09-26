@@ -60,7 +60,6 @@ export default function PrintDialog({
   const [sideToMove, setSideToMove] = useState(false);
   const [title, setTitle] = useState("");
   const [figurines, setFigurines] = useState(true);
-  const [compact, setCompact] = useState(false);
   const markers = list.reduce((n, g) => n + (g.pgn?.match(/\[#\]/g) ?? []).length, 0);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -87,7 +86,7 @@ export default function PrintDialog({
         event: g.event, date: g.date,
         result: g.result, eco: g.eco, pgn: g.pgn ?? "", flipped: g.flipped,
       })),
-      { flipped, sideToMove, figurines, compact, title, producer: "LPDO" },
+      { flipped, sideToMove, figurines, title, producer: "LPDO" },
     );
     const first = printable[0];
     const slug = title.trim().replace(/[^\p{L}\p{N}]+/gu, "_").replace(/^_|_$/g, "");
@@ -122,7 +121,7 @@ export default function PrintDialog({
     return () => window.clearTimeout(timer);
     // The games themselves do not change while the dialog is up.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sideToMove, title, figurines, compact, printable.length]);
+  }, [sideToMove, title, figurines, printable.length]);
 
   /** Print: the pages are drawn into the window and the system's print
    *  dialog opens on them (lib/printPages.ts). */
@@ -222,19 +221,14 @@ export default function PrintDialog({
                     title="Named in the page header"
                   />
                 </label>
-                <label className={row}>
-                  <input type="checkbox" checked={compact} onChange={(e) => setCompact(e.target.checked)} className="accent-primary" />
-                  Compact: no comments or diagrams, as a bulletin prints them
-                </label>
               </>
             )}
             <label className={row}>
               <input type="checkbox" checked={figurines} onChange={(e) => setFigurines(e.target.checked)} className="accent-primary" />
               Print pieces as figurines (♘f3) rather than letters (Nf3)
             </label>
-            {/* Only when a diagram will be drawn: marked in a game, and not
-                dropped by Compact. */}
-            {markers > 0 && !compact && (
+            {/* Only when a game marks a diagram. */}
+            {markers > 0 && (
               <label className={row}>
                 <input type="checkbox" checked={sideToMove} onChange={(e) => setSideToMove(e.target.checked)} className="accent-primary" />
                 Draw each diagram from the side to move
