@@ -196,6 +196,9 @@ Longer-form design documents for planned or in-progress work live in
 - [Running the server on another machine](docs/remote-server.md) — putting the
   database on one computer and using it from LPDO on others over the local
   network, with the access token that guards it.
+- [Duplicate games and duplicate players](docs/duplicates.md) — what LPDO
+  removes by itself, what it deliberately leaves alone, and how to merge player
+  records that reach the database under several spellings.
 
 ## Player-name normalisation
 
