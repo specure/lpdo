@@ -1793,6 +1793,12 @@ fn flush_players(
     Ok(())
 }
 
+/// Either side titled BOT in the tag section.
+fn is_engine_pgn(pgn: &str) -> bool {
+    let tags = pgn.split("\n\n").next().unwrap_or("");
+    tags.contains("[WhiteTitle \"BOT\"]") || tags.contains("[BlackTitle \"BOT\"]")
+}
+
 struct GameRow {
     id: u32,
     issue_id: i32,
@@ -1863,6 +1869,11 @@ fn flush_games(conn: &Connection, games: &[GameRow], fast: bool) -> Result<()> {
             }
             Ok(())
         })?;
+    }
+    // Games an engine played, by the PGN title the Lichess broadcasts give
+    // engines (see engine_games in schema.rs).
+    for g in games.iter().filter(|g| is_engine_pgn(&g.pgn)) {
+        conn.execute("INSERT OR IGNORE INTO engine_games VALUES (?)", duckdb::params![g.id])?;
     }
     // Same rationale as flush_players: retire the ids as soon as they're live.
     if let Some(max_id) = games.iter().map(|g| g.id).max() {
@@ -2268,5 +2279,17 @@ mod compressed_input_tests {
         assert!(!staged_dir.exists(), "temp dir removed after guard dropped");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod engine_tag_tests {
+    #[test]
+    fn bot_title_in_the_tags_marks_an_engine_game() {
+        assert!(super::is_engine_pgn("[White \"ice4\"]\n[WhiteTitle \"BOT\"]\n\n1. e4 *"));
+        assert!(super::is_engine_pgn("[BlackTitle \"BOT\"]\n\n1. e4 *"));
+        assert!(!super::is_engine_pgn("[WhiteTitle \"GM\"]\n\n1. e4 *"));
+        // A comment mentioning it is not a tag.
+        assert!(!super::is_engine_pgn("[White \"A\"]\n\n1. e4 {[WhiteTitle \"BOT\"]} *"));
     }
 }

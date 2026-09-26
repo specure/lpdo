@@ -124,7 +124,8 @@ pub fn position_moves(
     // Unrated games stay: far more likely an old human game than an engine one.
     let engine_filter = if exclude_engines {
         format!("AND COALESCE(g.white_elo, 0) <= {HUMAN_ELO_CEILING} \
-                 AND COALESCE(g.black_elo, 0) <= {HUMAN_ELO_CEILING}")
+                 AND COALESCE(g.black_elo, 0) <= {HUMAN_ELO_CEILING} \
+                 AND g.id NOT IN (SELECT game_id FROM engine_games)")
     } else {
         String::new()
     };
@@ -137,6 +138,7 @@ pub fn position_moves(
                    CASE WHEN p.move_number % 2 = 0 THEN g.black_elo  ELSE g.white_elo END AS opp_elo,
                    CASE WHEN p.move_number % 2 = 0 THEN pw.name      ELSE pb.name     END AS player_name,
                    g.date,
+                   g.id IN (SELECT game_id FROM engine_games) AS by_engine,
                    CASE
                        WHEN p.move_number % 2 = 0 THEN
                            CASE g.result WHEN '1-0' THEN 1.0 WHEN '1/2-1/2' THEN 0.5 WHEN '0-1' THEN 0.0 END
@@ -196,9 +198,10 @@ pub fn position_moves(
                    split_part(player_name, ',', 1) AS surname,
                    MAX(player_elo) AS max_elo
             FROM pos
-            -- The upper bound keeps engines out (see HUMAN_ELO_CEILING); they
-            -- still count in the games/percentages above.
+            -- Engines stay out of the names even with engine games counted:
+            -- the upper bound (HUMAN_ELO_CEILING) and the BOT title.
             WHERE player_elo BETWEEN 2500 AND {HUMAN_ELO_CEILING}
+              AND NOT by_engine
             GROUP BY next_move, split_part(player_name, ',', 1)
         ),
         elite_agg AS (
@@ -438,6 +441,43 @@ fn format_size(bytes: u64) -> String {
         format!("{:.1} MB", bytes as f64 / MB as f64)
     } else {
         format!("{} KB", bytes / 1024)
+    }
+}
+
+#[cfg(test)]
+mod engine_filter_tests {
+    use super::*;
+
+    /// Two games reach the same position with 1.e4: a human one, and one
+    /// between engines rated like humans (2950) but titled BOT, as the
+    /// Lichess broadcasts tag TCEC. The switch hides the engine game, and
+    /// the engines never appear among the players of a move.
+    #[test]
+    fn bot_titled_games_are_engine_games() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO players (id, name, name_normalized) VALUES
+               (1, 'Carlsen, Magnus', 'carlsen magnus'), (2, 'Caruana, Fabiano', 'caruana fabiano'),
+               (3, '4ku 5.1', '4ku 5.1'), (4, 'ice4 6.1.1', 'ice4 6.1.1');
+             INSERT INTO games (id, white_id, black_id, white_elo, black_elo, date, result, pgn) VALUES
+               (1, 1, 2, 2830, 2800, '2024-01-01', '1-0', '[White \"Carlsen, Magnus\"]\n\n1. e4 1-0'),
+               (2, 3, 4, 2950, 3100, '2025-01-01', '0-1', '[White \"4ku 5.1\"]\n[WhiteTitle \"BOT\"]\n\n1. e4 0-1');
+             INSERT INTO engine_games VALUES (2);
+             INSERT INTO positions (game_id, move_number, zobrist_hash, next_move) VALUES
+               (1, 0, 42, 'e4'), (2, 0, 42, 'e4');",
+        )
+        .unwrap();
+        let moves = |exclude: bool| position_moves(
+            &conn, 42, None, None, None, "any", None, None, None, None, None, None, None, None, exclude,
+        ).unwrap();
+
+        let with = moves(false);
+        assert_eq!(with[0].games, 2);
+        assert_eq!(with[0].elite.as_deref(), Some("Carlsen"));
+
+        let without = moves(true);
+        assert_eq!(without[0].games, 1);
     }
 }
 
