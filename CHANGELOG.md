@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-09-26
+
+### Added
+- **Print a game, or save it as a PDF** — two columns on A4, the main line in
+  bold and variations indented in brackets, the way a chess book sets it, with
+  figurines if you like them. Diagrams are drawn where the game asks for one —
+  a `[#]` in a comment, which is what ChessBase writes, or the new Diagram
+  button while editing — in the board's own colours, with a mark for the side
+  to move. "Print…" and "Export as PDF…" sit in the More menu; the dialog shows
+  the pages as they will print and redraws them as you change an option, and
+  Print hands them to the system's print dialog. (#265, #303, #304)
+- **A PDF from LPDO reads back as its games** — the PGN travels inside the
+  file, so an exported PDF can be added to the database like a PGN file.
+  (#265, #303)
+- **Print or export several games at once** — the Analysis board holds up to
+  20 games, and its column of open games doubles as the list to print:
+  reorder them with ▲▼, select some with Ctrl- or Shift-click, and print or
+  export all or the selected ones, as one PDF or one PGN, from the More menu
+  above the board. The Games and Players lists do the same for the games
+  selected there, and open several in Analysis in one go. (#304)
+- **Double-click or Enter opens a game in Analysis** from the Games and
+  Players lists and from the Analysis page's Games tab. (#305)
+- **The FIDE ID in a player's profile opens their FIDE page** in the browser.
+  (#308)
+
+### Fixed
+- **The board no longer fails to draw** after every move ("The board failed to
+  draw"): two boards on one page shared an element id. (#303)
+- **Engine games stay hidden with the "Engine games" switch off** — the switch
+  looked only at ratings above 3400, and weaker engines are rated like strong
+  online players. Games the Lichess broadcasts tag as played by a BOT are now
+  left out as well, and engines never appear among a move's "Played by" names.
+  (#307)
+- **"GM Magnus Carlsen" is Carlsen** — online platforms and some broadcasts
+  write names with the title in front and sometimes a rating after, which made
+  a separate player record beside "Carlsen, Magnus". The automatic player
+  merge now joins such a record to the plain one when, without the title, it
+  is that name as written or as "Firstname Lastname"; only when exactly one
+  record matches, and never across two FIDE IDs. On one 13.9M-game database
+  this merged 223 records into 217 players. (#306)
+- **A player's FIDE section loads again** — it showed only "parse chart data"
+  after FIDE changed its chart response, and the title read "—" for players
+  FIDE lists with several titles ("GM WGM"). (#308)
+
 ## [0.19.0] - 2026-09-26
 
 ### Added
@@ -1138,7 +1182,8 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/specure/lpdo/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/specure/lpdo/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/specure/lpdo/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/specure/lpdo/compare/v0.16.0...v0.17.0
