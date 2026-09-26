@@ -113,6 +113,9 @@ export interface PdfOptions {
   producer?: string;
   /** With several games: start each on a fresh page rather than flowing on. */
   newPagePerGame?: boolean;
+  /** Draw each diagram from the side to move — the way a puzzle or a
+   *  critical position is set — rather than from one fixed side. */
+  sideToMove?: boolean;
   /** Bulletin style: the moves alone, no comments and no diagrams — the most
    *  games on the least paper. */
   compact?: boolean;
@@ -168,6 +171,9 @@ export async function buildGamesPdf(inputs: PdfGame[], opts: PdfOptions): Promis
   const header = games.length === 1
     ? runningHeader(games[0], opts.producer)
     : [opts.producer ?? "LPDO", many].join(" — ");
+  if (opts.sideToMove) {
+    for (const b of blocks) if (b.kind === "diagram") b.flipped = b.fen.split(" ")[1] === "b";
+  }
   layout(doc, blocks, fonts, header);
 
   doc.setTitle(games.length === 1 ? `${games[0].white} – ${games[0].black}` : many);

@@ -44,7 +44,8 @@ export default function PrintDialog({
   detail?: ExportableGame;
   /** Several games, printed one after another in this order. */
   games?: ExportableGame[];
-  /** The board's current orientation, offered as the diagrams' point of view. */
+  /** The orientation of the board this was opened from: the diagrams'
+   *  point of view for games that carry none of their own. */
   flipped: boolean;
   /** What the dialog ends in: the system print dialog, or a file. The menu
    *  entry that opened it says which; the options are the same pages. */
@@ -53,15 +54,14 @@ export default function PrintDialog({
 }) {
   const list = games ?? (detail ? [detail] : []);
   const many = list.length > 1;
-  // Games from the Analysis rail carry their board's orientation; the
-  // question is only asked when some game carries none.
-  const askOrientation = list.some((g) => g.flipped === undefined);
-  const [fromBlack, setFromBlack] = useState(flipped);
+  // Diagrams are drawn the way each game's board stands (a game from the
+  // Analysis rail carries its own; otherwise the board this was opened
+  // from), or, on request, from the side to move.
+  const [sideToMove, setSideToMove] = useState(false);
   const [title, setTitle] = useState("");
-  const [diagramAtEnd, setDiagramAtEnd] = useState(false);
   const [figurines, setFigurines] = useState(true);
-  const [newPagePerGame, setNewPagePerGame] = useState(false);
   const [compact, setCompact] = useState(false);
+  const markers = list.reduce((n, g) => n + (g.pgn?.match(/\[#\]/g) ?? []).length, 0);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -87,7 +87,7 @@ export default function PrintDialog({
         event: g.event, date: g.date,
         result: g.result, eco: g.eco, pgn: g.pgn ?? "", flipped: g.flipped,
       })),
-      { flipped: fromBlack, diagramAtEnd, figurines, newPagePerGame, compact, title, producer: "LPDO" },
+      { flipped, sideToMove, figurines, compact, title, producer: "LPDO" },
     );
     const first = printable[0];
     const slug = title.trim().replace(/[^\p{L}\p{N}]+/gu, "_").replace(/^_|_$/g, "");
@@ -122,7 +122,7 @@ export default function PrintDialog({
     return () => window.clearTimeout(timer);
     // The games themselves do not change while the dialog is up.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromBlack, title, diagramAtEnd, figurines, newPagePerGame, compact, printable.length]);
+  }, [sideToMove, title, figurines, compact, printable.length]);
 
   /** Print: the pages are drawn into the window and the system's print
    *  dialog opens on them (lib/printPages.ts). */
@@ -223,10 +223,6 @@ export default function PrintDialog({
                   />
                 </label>
                 <label className={row}>
-                  <input type="checkbox" checked={newPagePerGame} onChange={(e) => setNewPagePerGame(e.target.checked)} className="accent-primary" />
-                  Start each game on a new page
-                </label>
-                <label className={row}>
                   <input type="checkbox" checked={compact} onChange={(e) => setCompact(e.target.checked)} className="accent-primary" />
                   Compact: no comments or diagrams, as a bulletin prints them
                 </label>
@@ -236,14 +232,12 @@ export default function PrintDialog({
               <input type="checkbox" checked={figurines} onChange={(e) => setFigurines(e.target.checked)} className="accent-primary" />
               Print pieces as figurines (♘f3) rather than letters (Nf3)
             </label>
-            <label className={row}>
-              <input type="checkbox" checked={diagramAtEnd} onChange={(e) => setDiagramAtEnd(e.target.checked)} className="accent-primary" />
-              Add a diagram of the final position
-            </label>
-            {askOrientation && (
+            {/* Only when a diagram will be drawn: marked in a game, and not
+                dropped by Compact. */}
+            {markers > 0 && !compact && (
               <label className={row}>
-                <input type="checkbox" checked={fromBlack} onChange={(e) => setFromBlack(e.target.checked)} className="accent-primary" />
-                Draw the diagrams from Black's side
+                <input type="checkbox" checked={sideToMove} onChange={(e) => setSideToMove(e.target.checked)} className="accent-primary" />
+                Draw each diagram from the side to move
               </label>
             )}
           </div>
