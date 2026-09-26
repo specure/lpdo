@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { apiUrl } from "../api";
 import type { UpdateState } from "../hooks/useUpdateCheck";
 
 /** Notify-only strip shown under the top app bar. Covers three cases:
@@ -65,5 +67,59 @@ function Link({ url, label }: { url: string; label: string }) {
     >
       {label}
     </button>
+  );
+}
+
+/** The same strip for the server's chess engine (#309): shown when the
+ *  server runs a Stockfish older than the newest release. Dismissing hides
+ *  it until the next Stockfish release. Asks the server once per connection;
+ *  a server without an engine endpoint (older than 0.20) shows nothing. */
+const ENGINE_DISMISS_KEY = "engineUpdateDismissed";
+
+export function EngineUpdateBanner({ serverVersion }: { serverVersion: string | null }) {
+  const [engine, setEngine] = useState<{
+    name: string | null;
+    version: string | null;
+    update_available: boolean;
+    latest: { version: string; url: string } | null;
+    os: string;
+  } | null>(null);
+  const [dismissed, setDismissed] = useState<string | null>(() => {
+    try { return localStorage.getItem(ENGINE_DISMISS_KEY); } catch { return null; }
+  });
+  useEffect(() => {
+    if (!serverVersion) return;
+    fetch(apiUrl("/engine"))
+      .then((r) => (r.ok ? r.json() : null))
+      .then(setEngine)
+      .catch(() => {});
+  }, [serverVersion]);
+
+  if (!engine?.update_available || !engine.latest || dismissed === engine.latest.version) return null;
+  const latest = engine.latest;
+  return (
+    <div className="flex items-center gap-3 px-4 py-2 bg-primary-container text-on-primary-container shrink-0 text-label-md">
+      <span className="w-2 h-2 rounded-full bg-primary shrink-0" />
+      <span className="flex-1 min-w-0 truncate">
+        Stockfish {latest.version} is available — the server runs {engine.name ?? `Stockfish ${engine.version}`}.
+        {engine.os === "linux" ? " Install it on the server as /usr/local/bin/stockfish." : " Install it on the server."}
+      </span>
+      <button
+        onClick={() => { void openUrl(latest.url); }}
+        className="inline-flex items-center h-7 px-3 rounded-full bg-primary text-on-primary text-label-md hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard"
+      >
+        Download
+      </button>
+      <button
+        onClick={() => {
+          try { localStorage.setItem(ENGINE_DISMISS_KEY, latest.version); } catch { /* per-device convenience only */ }
+          setDismissed(latest.version);
+        }}
+        className="w-7 h-7 inline-flex items-center justify-center rounded-full text-on-primary-container hover:bg-on-primary-container/8 active:bg-on-primary-container/12 transition-colors duration-short3 ease-standard"
+        title="Dismiss until the next Stockfish release"
+      >
+        ✕
+      </button>
+    </div>
   );
 }

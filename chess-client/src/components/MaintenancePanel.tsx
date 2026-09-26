@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
+import ExternalLinkIcon from "./ExternalLinkIcon";
 import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
@@ -9,7 +10,7 @@ import { useJobProgress } from "../hooks/useJobProgress";
 import SourcesPanel from "./SourcesPanel";
 import MergePlayersDialog from "./MergePlayersDialog";
 import { StatusInfo, ScheduleInfo } from "../types";
-import { serverUrl, serverToken, setServerSettings, DEFAULT_SERVER_URL, getSchedule, getJobs } from "../api";
+import { apiUrl, serverUrl, serverToken, setServerSettings, DEFAULT_SERVER_URL, getSchedule, getJobs } from "../api";
 
 interface Props {
   onRunWizard: () => void;
@@ -186,14 +187,359 @@ function ServerConnectionSection({ status, connection = "connected" }: {
 function VersionFooter({ status }: { status: StatusInfo | null }) {
   const [appVersion, setAppVersion] = useState<string | null>(null);
   useEffect(() => { getVersion().then(setAppVersion).catch(() => {}); }, []);
+  // The server's engine (#309), and whether a newer Stockfish is out. An
+  // older server has no /engine and simply shows none.
+  const [engine, setEngine] = useState<{ name: string | null; update_available: boolean; latest: { version: string; url: string } | null } | null>(null);
+  useEffect(() => {
+    if (!status?.version) return;
+    fetch(apiUrl("/engine"))
+      .then((r) => (r.ok ? r.json() : null))
+      .then(setEngine)
+      .catch(() => {});
+  }, [status?.version]);
   const server = status?.version
     ? `Server ${status.version}${status.api_version != null ? ` · API ${status.api_version}` : ""}`
     : "Server unreachable";
   return (
     <div className="pt-2 text-center text-label-md text-on-surface-variant select-text">
       LPDO {appVersion ?? "…"} · {server}
+      {engine?.name && <> · {engine.name}</>}
+      {engine?.update_available && engine.latest && (
+        <>
+          {" — "}
+          <button
+            onClick={() => void openUrl(engine.latest!.url)}
+            className="text-primary hover:underline inline-flex items-center"
+            title="A newer Stockfish is out. Install it on the server, in /usr/local/bin/stockfish on Linux."
+          >
+            Stockfish {engine.latest.version} is available<ExternalLinkIcon />
+          </button>
+        </>
+      )}
     </div>
   );
+}
+
+// ── Chess engine (#309) ──────────────────────────────────────────────────────
+// The engine on the server, for the Engine panel's "Local" analysis: which one
+// of those installed runs, with how many threads and how much hash. Choosing is
+// limited to engines the server found in the standard locations; another path
+// goes in engine.json on the server (see engine.rs for why).
+interface EngineInfo {
+  available: boolean;
+  path: string | null;
+  name: string | null;
+  error: string | null;
+  settings: { path: string | null; threads: number; hash_mb: number };
+  found: string[];
+  settings_file: string;
+  latest: { version: string; url: string } | null;
+  update_available: boolean;
+  cores: number;
+  physical_cores: number;
+  memory_mb: number | null;
+  budget_mb: number;
+  database_mb: number;
+  max_hash_mb: number;
+}
+
+function gb(mb: number): string {
+  return mb >= 1024 ? `${(mb / 1024).toFixed(mb % 1024 === 0 ? 0 : 1)} GB` : `${mb} MB`;
+}
+
+function EngineSection() {
+  const [info, setInfo] = useState<EngineInfo | null>(null);
+  const [threads, setThreads] = useState("");
+  const [hash, setHash] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+
+  function take(d: EngineInfo) {
+    setInfo(d);
+    setThreads(String(d.settings.threads));
+    setHash(String(d.settings.hash_mb));
+  }
+  useEffect(() => {
+    fetch(apiUrl("/engine"))
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
+      .then(take)
+      .catch((e) => setError(String(e)));
+  }, []);
+
+  async function save(patch: { path?: string; threads?: number; hash_mb?: number }) {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      const r = await fetch(apiUrl("/engine"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
+      take((await r.json()) as EngineInfo);
+      setNote("Saved — the engine restarted with the new settings.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const t = parseInt(threads, 10);
+  const h = parseInt(hash, 10);
+  const changed = !!info && ((Number.isFinite(t) && t !== info.settings.threads) || (Number.isFinite(h) && h !== info.settings.hash_mb));
+  const field = "w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums";
+
+  return (
+    <SectionCard title="Chess engine" status={info ? (info.available ? info.name ?? "running" : "none found") : undefined}>
+      <p className="text-body-sm text-on-surface-variant">
+        The engine behind the Engine panel's <em>Local</em> analysis, running on the server. LPDO uses
+        an engine you install; Stockfish is free and among the strongest.
+      </p>
+      {info && !info.available && (
+        <p className="text-body-sm text-on-surface-variant">
+          No engine was found on the server. The Engine panel's <em>Local</em> tab shows how to install one.
+        </p>
+      )}
+      {info && info.found.length > 0 && (
+        <label className="flex items-center gap-2 text-body-sm text-on-surface">
+          <span className="w-16 shrink-0">Engine</span>
+          <select
+            value={info.path ?? ""}
+            onChange={(e) => void save({ path: e.target.value })}
+            disabled={busy}
+            className="flex-1 min-w-0 h-8 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface font-mono"
+          >
+            {info.found.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </label>
+      )}
+      {info && (
+        <div className="flex items-center gap-4 text-body-sm text-on-surface flex-wrap">
+          <label className="flex items-center gap-2">
+            <span className="w-16 shrink-0">Threads</span>
+            <input type="number" min={1} max={256} value={threads} onChange={(e) => setThreads(e.target.value)} className={field} />
+          </label>
+          <label className="flex items-center gap-2">
+            <span>Hash</span>
+            <input type="number" min={16} max={info.max_hash_mb} step={256} value={hash} onChange={(e) => setHash(e.target.value)} className={field} />
+            <span className="text-on-surface-variant">MB</span>
+          </label>
+          <ActionButton
+            onClick={() => void save({ threads: Number.isFinite(t) ? t : undefined, hash_mb: Number.isFinite(h) ? h : undefined })}
+            disabled={busy || !changed}
+          >
+            Save
+          </ActionButton>
+        </div>
+      )}
+      {info && (() => {
+        // The memory budget, split as typed: the engine's hash, the database the rest.
+        const hashNow = Number.isFinite(h) ? Math.min(Math.max(h, 16), info.max_hash_mb) : info.settings.hash_mb;
+        const dbNow = Math.max(info.budget_mb - hashNow, Math.min(2048, info.budget_mb));
+        const pct = (mb: number) => `${Math.round((mb / info.budget_mb) * 100)}%`;
+        return (
+          <div className="space-y-1">
+            <div className="text-body-sm text-on-surface">
+              Memory: the server may use {gb(info.budget_mb)}{info.memory_mb ? ` of the machine's ${gb(info.memory_mb)}` : ""} —
+              engine hash {gb(hashNow)}, database {gb(dbNow)}.
+            </div>
+            <div className="h-2 rounded-full overflow-hidden flex bg-surface-container" title="The server's memory budget: engine hash and database">
+              <div className="bg-primary" style={{ width: pct(hashNow) }} />
+              <div className="bg-tertiary/60" style={{ width: pct(dbNow) }} />
+            </div>
+          </div>
+        );
+      })()}
+      {info && (
+        <p className="text-label-sm text-on-surface-variant">
+          Threads default to one per physical core ({info.physical_cores} of {info.cores} logical here),
+          since the server also answers everyone's queries. The hash comes out of the same memory budget as the
+          database — it defaults to an eighth of the memory, at most 4 GB, and the database keeps at least
+          2 GB. More hash keeps more of an analysis when you move on and come back; less leaves the
+          database more room for large jobs such as removing duplicates. To use an engine outside the
+          standard locations, name it in <span className="font-mono">{info.settings_file}</span> on the server.
+        </p>
+      )}
+      {info?.update_available && info.latest && (
+        <p className="text-body-sm text-on-surface">
+          Stockfish {info.latest.version} is available.{" "}
+          <button onClick={() => void openUrl(info.latest!.url)} className="text-primary hover:underline inline-flex items-center">
+            Download<ExternalLinkIcon />
+          </button>
+        </p>
+      )}
+      {note && <p className="text-body-sm text-success">{note}</p>}
+      {error && <p className="text-body-sm text-error">{error}</p>}
+      {info?.available && info.name?.startsWith("Stockfish") && (
+        <EngineBench
+          engine={info.name}
+          physicalCores={info.physical_cores}
+          threads={Number.isFinite(t) ? t : info.settings.threads}
+          hash={Number.isFinite(h) ? h : info.settings.hash_mb}
+          onUse={(threads, hash_mb) => void save({ threads, hash_mb })}
+        />
+      )}
+    </SectionCard>
+  );
+}
+
+// ── Engine benchmark ──────────────────────────────────────────────────────────
+// Stockfish's `bench` on the server: a fixed set of positions searched to a
+// fixed depth, reporting nodes per second and the time taken, with the threads
+// and hash in the fields above. Results collect in a table so configurations
+// can be compared; the defaults come from rules, not from a benchmark.
+interface BenchResult { engine: string; threads: number; hash_mb: number; depth: number; nodes: number; nps: number; ms: number; at?: number }
+const BENCH_KEY = "engineBenchResults";
+/** One length: depth 16 takes some ten seconds on a 16-thread machine. */
+const BENCH_DEPTH = 16;
+
+async function runBench(threads: number, hash_mb: number, depth: number): Promise<BenchResult> {
+  const r = await fetch(apiUrl("/engine/bench"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ threads, hash_mb, depth }),
+  });
+  if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
+  return (await r.json()) as BenchResult;
+}
+
+function EngineBench({ engine, physicalCores, threads, hash, onUse }: {
+  engine: string | null; physicalCores: number; threads: number; hash: number; onUse: (threads: number, hash_mb: number) => void;
+}) {
+  const [results, setResults] = useState<BenchResult[]>(() => {
+    try { return JSON.parse(localStorage.getItem(BENCH_KEY) ?? "[]") as BenchResult[]; } catch { return []; }
+  });
+  const [running, setRunning] = useState<string | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    const started = Date.now();
+    setElapsed(0);
+    const t = window.setInterval(() => setElapsed(Math.round((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(t);
+  }, [running]);
+  const [error, setError] = useState<string | null>(null);
+
+  function keep(r: BenchResult) {
+    setResults((prev) => {
+      const next = [r, ...prev].slice(0, 40);
+      try { localStorage.setItem(BENCH_KEY, JSON.stringify(next)); } catch { /* per-device convenience only */ }
+      return next;
+    });
+  }
+
+  async function once() {
+    setError(null);
+    setRunning(`Running with ${threads} threads and ${hash} MB hash`);
+    try { keep({ ...(await runBench(threads, hash, BENCH_DEPTH)), at: Date.now() }); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setRunning(null); }
+  }
+
+  const btn = "h-8 px-3 inline-flex items-center rounded-full text-primary text-label-md hover:bg-primary/8 active:bg-primary/12 disabled:opacity-40 transition-colors duration-short3 ease-standard";
+  return (
+    <div className="space-y-2 pt-2 border-t border-outline/40">
+      <div className="flex items-center gap-2 flex-wrap text-body-sm text-on-surface">
+        <span className="text-title-sm">Benchmark</span>
+        <div className="flex-1" />
+        <ActionButton onClick={() => void once()} disabled={running !== null}>Run with these settings</ActionButton>
+      </div>
+      <p className="text-label-sm text-on-surface-variant">
+        Stockfish's own benchmark with the threads and hash above: a fixed set of positions searched to
+        depth {BENCH_DEPTH}. Compare the <b>speed</b> — it shows what more threads bring. The time varies
+        from run to run with several threads, and the hash hardly shows in a benchmark; it pays off in
+        long analyses. The engine does not analyse while this runs.
+      </p>
+      {running && (
+        <p className="text-body-sm text-on-surface flex items-center gap-2">
+          <span className="inline-block w-3 h-3 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+          {running} — {elapsed} s
+        </p>
+      )}
+      {error && <p className="text-body-sm text-error">{error}</p>}
+      {results.length > 0 && (() => {
+        // The recommended run with the engine in use: at most one thread per
+        // physical core — a core's second hardware thread adds a noisy 20-45%
+        // and leaves the server nothing for its queries — and of those, the
+        // fewest threads that reach 80% of the fastest. Ties go to the most
+        // recent run.
+        const own = results.filter((r) => r.engine === engine && r.threads <= physicalCores);
+        const fastest = own.length ? Math.max(...own.map((r) => r.nps)) : 0;
+        const top = own
+          .filter((r) => r.nps >= 0.8 * fastest)
+          .reduce<BenchResult | null>((best, r) => (!best || r.threads < best.threads ? r : best), null);
+        return (
+        <div className="overflow-x-auto">
+          <table className="w-full text-body-sm tabular-nums">
+            <thead className="text-label-sm text-on-surface-variant">
+              <tr className="text-right">
+                <th className="text-left font-normal py-1">When</th>
+                <th className="text-left font-normal">Engine</th>
+                <th className="font-normal">Threads</th>
+                <th className="font-normal">Hash</th>
+                <th className="font-normal">Speed</th>
+                <th className="font-normal">Time</th>
+                <th className="font-normal"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {results.map((r, i) => (
+                <tr key={i} className={`text-right border-t border-outline/20 ${r === top ? "bg-secondary-container/60" : ""}`}>
+                  <td className="text-left py-0.5 whitespace-nowrap">{r.at ? fmtWhen(r.at) : "—"}</td>
+                  <td className="text-left">{r.engine}</td>
+                  <td>{r.threads}</td>
+                  <td>{r.hash_mb} MB</td>
+                  <td className="font-semibold">
+                    {r === top && (
+                      <span
+                        className="mr-1 text-label-sm font-normal text-on-secondary-container cursor-help"
+                        title={`At most one thread per physical core (${physicalCores} here), and of those the fewest that reach 80% of the fastest: more add little, and take processor time the server needs for queries.`}
+                      >
+                        recommended
+                      </span>
+                    )}
+                    {fmtNps(r.nps)}
+                  </td>
+                  <td>{(r.ms / 1000).toFixed(1)} s</td>
+                  <td className="pl-2">
+                    {r === top && !(r.threads === threads && r.hash_mb === hash) && (
+                      <button
+                        onClick={() => onUse(r.threads, r.hash_mb)}
+                        className="h-6 px-2 rounded-full text-label-sm text-primary hover:bg-primary/8 active:bg-primary/12"
+                        title={`Set ${r.threads} threads and ${r.hash_mb} MB hash`}
+                      >
+                        Use
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <button onClick={() => { setResults([]); try { localStorage.removeItem(BENCH_KEY); } catch { /* ignore */ } }} className={`${btn} mt-1`}>
+            Clear results
+          </button>
+        </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+/** "18:42" today, "26 Sep 18:42" before. */
+function fmtWhen(at: number): string {
+  const d = new Date(at);
+  const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === new Date().toDateString()
+    ? time
+    : `${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })} ${time}`;
+}
+
+function fmtNps(nps: number): string {
+  return nps >= 1e6 ? `${(nps / 1e6).toFixed(1)} Mn/s` : `${Math.round(nps / 1e3)} kn/s`;
 }
 
 // Diagnostics — the crash log, readable after the reload that follows a crash.
@@ -1233,6 +1579,7 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
 
           <div className={`${grid} ${tab === "others" ? "" : "hidden"}`}>
             <ServerConnectionSection status={status} connection={connection} />
+            <EngineSection />
             <BackupSection />
             <DiagnosticsSection />
           </div>

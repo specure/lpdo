@@ -55,15 +55,65 @@ pub fn clear_stray_transaction(conn: &Connection) {
     let _ = conn.execute_batch("COMMIT");
 }
 
-/// Returns 80% of total system RAM as a DuckDB memory_limit string (e.g. "38GiB").
-/// Falls back to "8GiB" if total RAM cannot be determined.
-fn memory_limit_str() -> String {
-    let total_kb = read_total_ram_kb().unwrap_or(0);
-    if total_kb == 0 {
-        return "8GiB".to_string();
-    }
-    let limit_gib = (total_kb * 80 / 100) / (1024 * 1024);
-    format!("{}GiB", limit_gib.max(1))
+// ── Memory: one budget for the database and the chess engine ────────────────
+//
+// The server may use 80% of the machine's memory. The chess engine's hash
+// (#309) comes out of that budget and the database gets the rest, so the two
+// cannot together claim more than the machine has. The engine's hash is read
+// from engine.json beside the database; changing it under Maintenance sets
+// the database's limit again at once.
+
+/// Total physical memory in MB, where the system says.
+pub fn total_ram_mb() -> Option<u64> {
+    read_total_ram_kb().map(|kb| kb / 1024).filter(|&m| m > 0)
+}
+
+/// What the server may use: 80% of memory (8 GB where it is not known).
+pub fn server_budget_mb() -> u64 {
+    total_ram_mb().map(|m| m * 80 / 100).unwrap_or(8192)
+}
+
+/// The database keeps at least this much, whatever the engine is given.
+pub const DB_MIN_MB: u64 = 2048;
+
+/// The largest hash the engine may have: the budget less the database's floor.
+pub fn max_engine_hash_mb() -> u32 {
+    server_budget_mb().saturating_sub(DB_MIN_MB).clamp(16, 65536) as u32
+}
+
+/// The engine's hash when nobody has chosen one: an eighth of memory, 256 MB
+/// to 4 GB, and within what the budget allows.
+pub fn default_engine_hash_mb() -> u32 {
+    let eighth = total_ram_mb().map(|m| (m / 8) as u32).unwrap_or(256);
+    // A round figure: whole 256 MB steps (3840, not 3983).
+    (eighth.clamp(256, 4096).min(max_engine_hash_mb()) / 256 * 256).max(256.min(max_engine_hash_mb()))
+}
+
+/// The engine's hash as configured in `data_dir/engine.json`, else the default.
+pub fn engine_hash_mb(data_dir: &Path) -> u32 {
+    std::fs::read_to_string(data_dir.join("engine.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("hash_mb").and_then(|h| h.as_u64()))
+        .map(|h| (h as u32).min(max_engine_hash_mb()))
+        .unwrap_or_else(default_engine_hash_mb)
+}
+
+/// The database's share: the budget less the engine's hash.
+pub fn db_limit_mb(engine_hash_mb: u32) -> u64 {
+    server_budget_mb().saturating_sub(engine_hash_mb as u64).max(DB_MIN_MB.min(server_budget_mb()))
+}
+
+/// Set the database's memory limit for a given engine hash. The server's
+/// connections share one database instance, so one call covers them all.
+pub fn apply_memory_limit(conn: &Connection, engine_hash_mb: u32) -> Result<()> {
+    conn.execute_batch(&format!("SET memory_limit='{}MiB';", db_limit_mb(engine_hash_mb)))?;
+    Ok(())
+}
+
+fn memory_limit_str(path: &Path) -> String {
+    let data_dir = path.parent().unwrap_or(Path::new("."));
+    format!("{}MiB", db_limit_mb(engine_hash_mb(data_dir)))
 }
 
 /// Read total system RAM in kilobytes.
@@ -111,7 +161,7 @@ fn read_total_ram_kb() -> Option<u64> {
 
 pub fn open(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
-    let mem_limit = memory_limit_str();
+    let mem_limit = memory_limit_str(path);
     conn.execute_batch(&format!(
         "SET threads=4;
          SET memory_limit='{mem_limit}';
@@ -247,5 +297,36 @@ mod tx_tests {
         assert!(can_create_index(&conn), "the connection is at least usable again");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod memory_budget_tests {
+    use super::*;
+
+    /// Whatever the machine: the engine's default fits the budget, the two
+    /// shares never exceed it, and the database keeps its floor.
+    #[test]
+    fn the_shares_add_up() {
+        let budget = server_budget_mb();
+        let max = max_engine_hash_mb() as u64;
+        assert!(default_engine_hash_mb() as u64 <= max);
+        for hash in [16u32, 256, default_engine_hash_mb(), max as u32] {
+            let db = db_limit_mb(hash);
+            assert!(db >= DB_MIN_MB.min(budget), "db {db} for hash {hash}");
+            assert!(db + hash as u64 <= budget.max(DB_MIN_MB + 16), "db {db} + hash {hash} > budget {budget}");
+        }
+    }
+
+    /// DuckDB takes the limit as written, and it changes on a live instance.
+    #[test]
+    fn the_limit_applies_at_runtime() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_memory_limit(&conn, 1024).unwrap();
+        let set: String = conn.query_row("SELECT current_setting('memory_limit')", [], |r| r.get(0)).unwrap();
+        let clone = conn.try_clone().unwrap();
+        let seen: String = clone.query_row("SELECT current_setting('memory_limit')", [], |r| r.get(0)).unwrap();
+        assert_eq!(set, seen, "one instance, one limit");
+        println!("memory_limit for 1 GB of hash: {set} (budget {} MB)", server_budget_mb());
     }
 }

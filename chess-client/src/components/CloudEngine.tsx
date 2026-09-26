@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Chess } from "chess.js";
-import { addCloudWatch, getCloudWatches } from "../api";
+import { addCloudWatch, getCloudWatches, type EngineHistory } from "../api";
 import { CLOUD_WATCH_REMOVED, CLOUD_WATCH_UPDATED } from "./ActivityIndicator";
+import LocalEngine from "./LocalEngine";
 
 // Cloud engine evaluation of one position (#221), from chessdb.cn or Lichess
 // (Stockfish) through the daemon, which caches by position. Lifted out of the
@@ -23,15 +24,15 @@ function parseNote(note: string): { mark: string; opp: string; oppStrong: string
   return m ? { mark: m[1], opp: m[2], oppStrong: m[3] } : null;
 }
 
-type EngineSource = "chessdb" | "lichess";
+type EngineSource = "chessdb" | "lichess" | "local";
 type EngineStatus = "loading" | "ok" | "unknown" | "offline";
 
 // Lichess (Stockfish) cloud eval — a few deep PV lines, White-relative eval + depth.
-interface LichessLine { evalCp: number | null; mate: number | null; pvUci: string[]; }
+export interface LichessLine { evalCp: number | null; mate: number | null; pvUci: string[]; }
 interface LichessEval { status: EngineStatus; depth: number; knodes: number; lines: LichessLine[]; }
 
 /** Convert a UCI principal variation to SAN by replaying it from `fen`. */
-function pvToSan(fen: string, pvUci: string[]): string[] {
+export function pvToSan(fen: string, pvUci: string[]): string[] {
   const chess = new Chess(fen);
   const sans: string[] = [];
   for (const uci of pvUci) {
@@ -62,7 +63,7 @@ export function pvString(fen: string, sans: string[]): string {
  *  to the position after it; without it the line is read-only (the Analysis board
  *  has no notion of "play this line" that isn't an edit). Rendered on a single
  *  line by the parent (overflow-hidden), so the tail truncates to fit. */
-function PvLine({ startFen, sans, onPick, mark }: { startFen: string; sans: string[]; onPick?: (prefix: string[]) => void; mark?: string }) {
+export function PvLine({ startFen, sans, onPick, mark }: { startFen: string; sans: string[]; onPick?: (prefix: string[]) => void; mark?: string }) {
   const parts = startFen.split(" ");
   let n = parseInt(parts[5] || "1", 10);
   let white = parts[1] !== "b";
@@ -87,7 +88,7 @@ function PvLine({ startFen, sans, onPick, mark }: { startFen: string; sans: stri
 }
 
 /** Lichess eval (White-relative): "+0.14", "-2.36", "M1" / "-M1". */
-function fmtLichess(l: LichessLine): string {
+export function fmtLichess(l: LichessLine): string {
   if (l.mate !== null) return l.mate > 0 ? `M${l.mate}` : `-M${-l.mate}`;
   const p = (l.evalCp ?? 0) / 100;
   return (p > 0 ? "+" : "") + p.toFixed(2);
@@ -105,7 +106,7 @@ const LOST_CP = -70;      // best move worse than -0.70 ⇒ position lost, all m
 
 /** Eval from the side-to-move's perspective, in centipawns (mate ⇒ ±huge, nearer
  *  mates ranked higher). Lichess evals are White-relative, so flip for Black. */
-function moverScore(evalCp: number | null, mate: number | null, whiteToMove: boolean): number {
+export function moverScore(evalCp: number | null, mate: number | null, whiteToMove: boolean): number {
   if (mate != null && mate !== 0) {
     const m = whiteToMove ? mate : -mate;
     return m > 0 ? 100000 - m : -100000 - m;
@@ -117,7 +118,7 @@ function moverScore(evalCp: number | null, mate: number | null, whiteToMove: boo
 /** chessdb-style quality mark for a line, given the position's best score:
  *  "!" = best (tied for top), "" = normal (within 0.05 of best), "?" = weak
  *  (>0.05 behind). Everything is "?" in a lost position (best worse than LOST_CP). */
-function moveMark(best: number, score: number): string {
+export function moveMark(best: number, score: number): string {
   if (best < LOST_CP) return "?";
   const drop = best - score;
   return drop <= STRONG_MARK_CP ? "!" : drop <= STRONG_CP ? "" : "?";
@@ -126,7 +127,7 @@ function moveMark(best: number, score: number): string {
 /** Colour for a side-to-move score: green = good for the player to move, red =
  *  bad. Deliberately not the displayed (White-relative) sign, so with Black to
  *  move a good -0.40 is green. */
-function evalColor(moverCp: number): string {
+export function evalColor(moverCp: number): string {
   return moverCp > 0 ? "text-success" : moverCp < 0 ? "text-error" : "text-on-surface-variant";
 }
 
@@ -140,6 +141,8 @@ function fmtEval(m: CloudMove, whiteToMove: boolean): string {
 }
 
 interface Props {
+  /** How the position arose, for the local engine (repetitions). */
+  history?: EngineHistory;
   /** The position to evaluate. */
   fen: string;
   /** Name for a deepen watch, shown in the activity panel. */
@@ -150,12 +153,12 @@ interface Props {
 
 /** Renders as the contents of a panel (header row + body) — the host supplies the
  *  panel chrome, so it fits both the Games mosaic and the Analysis tab column. */
-export default function CloudEngine({ fen, watchLabel, onPlayLine }: Props) {
+export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Props) {
   // Default to Lichess (Stockfish) — deep, real evals for popular positions. A
   // versioned key so flipping the default from chessdb actually takes effect on
   // existing installs (the old key was auto-written on every load). An explicit
   // toggle to chessdb still persists.
-  const [engineSource, setEngineSource] = useState<EngineSource>(() => (localStorage.getItem("engineSourceV2") === "chessdb" ? "chessdb" : "lichess"));
+  const [engineSource, setEngineSource] = useState<EngineSource>(() => (() => { const v = localStorage.getItem("engineSourceV2"); return v === "chessdb" || v === "local" ? v : "lichess"; })());
   useEffect(() => { localStorage.setItem("engineSourceV2", engineSource); }, [engineSource]);
   const [engineMoves, setEngineMoves] = useState<CloudMove[]>([]);          // chessdb
   const [engineLines, setEngineLines] = useState<Record<string, string[]>>({}); // uci → continuation SAN (lazy)
@@ -195,6 +198,7 @@ export default function CloudEngine({ fen, watchLabel, onPlayLine }: Props) {
   // Lichess services through the daemon).
   useEffect(() => {
     engineAbort.current?.abort();
+    if (engineSource === "local") return; // LocalEngine asks the server itself
     const ctrl = new AbortController();
     engineAbort.current = ctrl;
     setEngineStatus("loading");
@@ -322,24 +326,28 @@ export default function CloudEngine({ fen, watchLabel, onPlayLine }: Props) {
     <>
       <div className="px-3 py-2 shrink-0 flex items-center justify-between border-b border-outline/40">
         <div className="flex gap-0.5">
-          {(["chessdb", "lichess"] as EngineSource[]).map((src) => (
+          {(["chessdb", "lichess", "local"] as EngineSource[]).map((src) => (
             <button
               key={src}
               onClick={() => setEngineSource(src)}
               className={`h-6 px-2 rounded-full text-label-sm transition-colors duration-short3 ease-standard ${engineSource === src ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8"}`}
             >
-              {src === "chessdb" ? "chessdb" : "Lichess"}
+              {src === "chessdb" ? "chessdb" : src === "lichess" ? "Lichess" : "Local"}
             </button>
           ))}
         </div>
         <span
           className="text-label-sm text-on-surface-variant/70 cursor-help"
-          title={engineSource === "chessdb" ? "Free cloud analysis from the community database chessdb.cn" : "Cloud Stockfish evaluations from lichess.org — only popular positions are cached"}
+          title={engineSource === "chessdb" ? "Free cloud analysis from the community database chessdb.cn"
+            : engineSource === "lichess" ? "Cloud Stockfish evaluations from lichess.org — only popular positions are cached"
+            : "An engine installed on the LPDO server, analysing live"}
         >
-          via {engineSource === "chessdb" ? "chessdb.cn" : "lichess.org"}
+          via {engineSource === "chessdb" ? "chessdb.cn" : engineSource === "lichess" ? "lichess.org" : "the server"}
         </span>
       </div>
-      {engineStatus === "loading" ? (
+      {engineSource === "local" ? (
+        <LocalEngine fen={fen} history={history} lineCount={lichessLineCount} onPlayLine={onPlayLine} />
+      ) : engineStatus === "loading" ? (
         <div className="p-3 text-center text-on-surface-variant text-body-sm">Analysing…</div>
       ) : engineStatus === "offline" ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center text-on-surface-variant text-body-sm px-3">

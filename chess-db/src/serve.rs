@@ -50,6 +50,8 @@ pub struct AppState {
     /// Live phase of the wizard's first-run setup pipeline (#40 C4). Authoritative
     /// while the server is up; the on-disk sentinel covers restarts/crashes.
     pub setup: Arc<std::sync::Mutex<SetupPhase>>,
+    /// The local UCI engine (#309), started on first use.
+    pub engine: Arc<crate::engine::Engine>,
 }
 
 /// Phase of the wizard-driven first-run setup pipeline. `Idle` covers both
@@ -1724,6 +1726,123 @@ async fn job_events_handler(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
+// ── Local engine (#309) ───────────────────────────────────────────────────────
+
+async fn engine_status_handler(State(state): State<AppState>) -> ApiResult<crate::engine::EngineStatus> {
+    Ok(Json(state.engine.status().await))
+}
+
+#[derive(Deserialize)]
+struct EngineConfigBody {
+    path: Option<String>,
+    threads: Option<u32>,
+    hash_mb: Option<u32>,
+}
+
+async fn engine_configure_handler(
+    State(state): State<AppState>,
+    Json(body): Json<EngineConfigBody>,
+) -> ApiResult<crate::engine::EngineStatus> {
+    let status = state
+        .engine
+        .configure(body.path, body.threads, body.hash_mb)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    // The database gets what the engine's hash leaves of the memory budget.
+    let hash = status.settings.hash_mb;
+    state
+        .writer
+        .run(move |c| crate::db::apply_memory_limit(c, hash))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(status))
+}
+
+#[derive(Deserialize)]
+struct EngineAnalyseQuery {
+    fen: String,
+    /// The game's starting position and the SAN moves from it to `fen`,
+    /// comma-separated — how the position arose, for repetitions.
+    start: Option<String>,
+    moves: Option<String>,
+    #[serde(default = "default_engine_lines")]
+    lines: u32,
+}
+fn default_engine_lines() -> u32 { 3 }
+
+/// Stops its search when the client's stream goes away — the reader closed
+/// the panel, moved on, or lost the connection.
+struct StopOnDrop {
+    engine: Arc<crate::engine::Engine>,
+    gen: u64,
+}
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        let (engine, gen) = (self.engine.clone(), self.gen);
+        tokio::spawn(async move { engine.stop(gen).await });
+    }
+}
+
+/// Analyse a position and stream the engine's progress as server-sent
+/// events, one snapshot per update, until the search ends or a newer
+/// request takes the engine.
+async fn engine_analyse_handler(
+    State(state): State<AppState>,
+    Query(q): Query<EngineAnalyseQuery>,
+) -> std::result::Result<Sse<impl tokio_stream::Stream<Item = std::result::Result<Event, Infallible>>>, (StatusCode, String)> {
+    let fen = crate::engine::clean_fen(&q.fen).ok_or((StatusCode::BAD_REQUEST, "not a legal position".to_string()))?;
+    let history = match (&q.start, &q.moves) {
+        (Some(start), Some(moves)) if !moves.is_empty() => {
+            let sans: Vec<String> = moves.split(',').map(|m| m.to_string()).collect();
+            crate::engine::history_to_uci(start, &sans, &fen)
+        }
+        _ => None,
+    };
+    let (gen, remembered, rx) = state
+        .engine
+        .analyse(&fen, history, q.lines)
+        .await
+        .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e))?;
+    let guard = Arc::new(StopOnDrop { engine: state.engine.clone(), gen });
+    let first = tokio_stream::iter(remembered);
+    let stream = first.chain(tokio_stream::wrappers::BroadcastStream::new(rx)
+        .filter_map(|r| r.ok()))
+        // A newer search has the engine: this stream is over.
+        .take_while(move |s| s.gen <= gen)
+        .filter(move |s| s.gen == gen)
+        .map(move |s| {
+            let _keep = &guard;
+            Ok(Event::default().json_data(&s).unwrap_or_default())
+        });
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+#[derive(Deserialize, Default)]
+struct EngineBenchBody {
+    threads: Option<u32>,
+    hash_mb: Option<u32>,
+    depth: Option<u32>,
+}
+
+/// Stockfish's benchmark with the given (or current) threads and hash.
+async fn engine_bench_handler(
+    State(state): State<AppState>,
+    Json(body): Json<EngineBenchBody>,
+) -> ApiResult<crate::engine::BenchResult> {
+    state
+        .engine
+        .bench(body.threads, body.hash_mb, body.depth)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::CONFLICT, e))
+}
+
+async fn engine_stop_handler(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
+    let gen = state.engine.current_gen();
+    state.engine.stop(gen).await;
+    Ok(Json(serde_json::json!({ "stopped": gen })))
+}
+
 // ── First-run setup pipeline (#40 C4) ─────────────────────────────────────────
 
 /// Start the wizard's first-run pipeline. For each enabled source (deep-history
@@ -2291,7 +2410,8 @@ pub async fn run(
     crate::scheduler::spawn(jobs.clone(), reads.clone(), db_path.clone());
 
     let setup = Arc::new(std::sync::Mutex::new(SetupPhase::Idle));
-    let state = AppState { reads, writer, jobs, db_path, setup };
+    let engine = crate::engine::Engine::new(db_path.parent().unwrap_or(std::path::Path::new(".")));
+    let state = AppState { reads, writer, jobs, db_path, setup, engine };
 
     // A leftover sentinel means a prior first-run setup didn't finish cleanly. The
     // unbootable case was already handled by the startup safety-net (which wipes +
@@ -2332,6 +2452,10 @@ pub async fn run(
         .route("/position",                            get(position_handler))
         .route("/position/moves",                      get(position_moves_handler))
         .route("/cloud-eval",                          get(cloud_eval_handler))
+        .route("/engine",                              get(engine_status_handler).put(engine_configure_handler))
+        .route("/engine/analyse",                      get(engine_analyse_handler))
+        .route("/engine/stop",                         post(engine_stop_handler))
+        .route("/engine/bench",                        post(engine_bench_handler))
         .route("/cloud-eval/lines",                    get(cloud_eval_lines_handler))
         .route("/cloud-eval/queue",                    post(cloud_eval_queue_handler))
         .route("/cloud-eval/watch",                    post(cloud_watch_add_handler).delete(cloud_watch_delete_handler))

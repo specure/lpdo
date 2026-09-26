@@ -12,6 +12,7 @@ import CloudEngine from "./CloudEngine";
 import { useGamePgn } from "../lib/useGamePgn";
 import { useNeighbourResize } from "../lib/panelResize";
 import { fetchPgns, savePgnFile } from "../lib/exportPgn";
+import type { EngineHistory } from "../api";
 import PrintDialog, { ExportableGame } from "./games/PrintDialog";
 
 // The Analysis board (#220): the editable, multi-game workbench. Several games
@@ -175,9 +176,13 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
   // identity per position update would feed back into itself.
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
-  const handlePositionChange = useCallback((fen: string, gameId: number, cursor: CursorPath) => {
+  // How the board's position arose, for the local engine. Not part of the
+  // tab's saved state: the board reports it again whenever it moves.
+  const [history, setHistory] = useState<EngineHistory | undefined>(undefined);
+  const handlePositionChange = useCallback((fen: string, gameId: number, cursor: CursorPath, h?: EngineHistory) => {
     const tab = tabsRef.current.find((t) => t.game.id === gameId);
     if (tab) onTabState(tab.key, { fen, cursor });
+    setHistory(h);
   }, [onTabState]);
   const handleFlippedChange = useCallback((flipped: boolean) => {
     if (activeKey) onTabState(activeKey, { flipped });
@@ -443,7 +448,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
                 </div>
               )
             ) : tab === "engine" ? (
-              <CloudEngine fen={effFen} watchLabel={active ? `${active.game.white} – ${active.game.black}` : "Position"} onPlayLine={playSans} />
+              <CloudEngine fen={effFen} history={history} watchLabel={active ? `${active.game.white} – ${active.game.black}` : "Position"} onPlayLine={playSans} />
             ) : (
               <div className="flex-1 min-h-0 flex flex-col">
                 {/* Enter opens the previewed game, a double-click the game
