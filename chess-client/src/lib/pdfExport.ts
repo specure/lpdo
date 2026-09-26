@@ -49,6 +49,9 @@ interface Run {
    *  so a line never ends on the piece and starts on its square. */
   piece?: string;
   prefix?: string;
+  /** A colour swatch instead of text: the hollow or filled square that says
+   *  which player is White and which is Black in the heading. */
+  swatch?: "white" | "black";
 }
 
 /** A paragraph of runs, indented by `indent` points. */
@@ -175,11 +178,19 @@ function headerBlocks(game: PdfGame, fonts: Fonts): Block[] {
   const when = game.date && !game.date.startsWith("????") ? game.date.replace(/-/g, ".") : "";
 
   const blocks: Block[] = [];
+  // A hollow square before White, a filled one before Black — the way a
+  // printed game says which is which, since a list of two names does not:
+  // the second name is Black here, but the bottom player is White on any
+  // board on screen.
   blocks.push(para([
+    { ...run("", fonts.bold, SIZE.header, INK), swatch: "white" },
     run(name(game.white, game.white_elo), fonts.bold, SIZE.header, INK),
     ...(game.eco ? [run(`   ${game.eco}`, fonts.bold, SIZE.small, MUTED)] : []),
   ], 0, 1));
-  blocks.push(para([run(name(game.black, game.black_elo), fonts.bold, SIZE.header, INK)], 0, 0));
+  blocks.push(para([
+    { ...run("", fonts.bold, SIZE.header, INK), swatch: "black" },
+    run(name(game.black, game.black_elo), fonts.bold, SIZE.header, INK),
+  ], 0, 0));
   if (where || when) {
     blocks.push(para([run([where, when].filter(Boolean).join("  "), fonts.text, SIZE.small, MUTED)], 0, 1));
   }
@@ -318,6 +329,16 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
       if (y - LINE_HEIGHT < MARGIN.bottom) nextColumn();
       let x = columnLeft() + block.indent;
       for (const item of line) {
+        if (item.swatch) {
+          const side = item.size * 0.72;
+          page.drawRectangle({
+            x, y: y - LINE_HEIGHT + 3 + item.size * 0.06, width: side, height: side,
+            color: item.swatch === "black" ? INK : rgb(1, 1, 1),
+            borderColor: INK, borderWidth: 0.7,
+          });
+          x += swatchWidth(item.size);
+          continue;
+        }
         if (item.piece) {
           // Number, then the piece on the text baseline like the letter it
           // replaces, then the square — the piece taking only the width it
@@ -377,6 +398,11 @@ function wrap(runs: Run[], width: number): Run[][] {
   let line: Run[] = [];
   let used = 0;
   for (const r of runs) {
+    if (r.swatch) {
+      line.push(r);
+      used += swatchWidth(r.size);
+      continue;
+    }
     if (r.piece) {
       // A figurine move is one indivisible word: number, piece and square.
       const w = figurineRunWidth(r);
@@ -482,6 +508,11 @@ function figurineScale(size: number): number {
 function figurineWidth(piece: string, size: number): number {
   const box = PIECE_SET_BOXES[piece];
   return (box.x1 - box.x0) * figurineScale(size) + size * 0.05;
+}
+
+/** The colour swatch and the gap after it, in the heading. */
+function swatchWidth(size: number): number {
+  return size * 0.72 + size * 0.45;
 }
 
 /** A whole figurine move — number, piece, square — as one width. */
