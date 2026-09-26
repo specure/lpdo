@@ -227,6 +227,24 @@ function VersionFooter({ status }: { status: StatusInfo | null }) {
   );
 }
 
+/** How many lines Stockfish shows in the Engine panel — only for Stockfish
+ *  does each extra line cost search time. Per device. */
+function StockfishLines() {
+  const read = () => { try { return localStorage.getItem("stockfishLineCount") ?? localStorage.getItem("lichessLineCount"); } catch { return null; } };
+  const [lines, setLines] = useState(() => { const n = parseInt(read() ?? "", 10); return Number.isFinite(n) && n > 0 ? Math.min(n, 20) : 5; });
+  const pick = (n: number) => { setLines(n); try { localStorage.setItem("stockfishLineCount", String(n)); } catch { /* per-device convenience only */ } };
+  const pill = (on: boolean) => `h-7 min-w-8 px-2 rounded-full text-label-md ${on ? "bg-primary text-on-primary" : "bg-surface-container text-on-surface-variant hover:bg-on-surface/8"}`;
+  return (
+    <div className="flex items-center gap-3 text-body-sm text-on-surface flex-wrap" title="Each extra line makes Stockfish search a little slower; the other engines show all theirs at no cost">
+      <span className="w-16 shrink-0">Lines</span>
+      <div className="flex items-center gap-1">
+        {[3, 5, 8, 12].map((n) => <button key={n} onClick={() => pick(n)} className={pill(lines === n)}>{n}</button>)}
+      </div>
+      <span className="text-label-sm text-on-surface-variant">on this computer; takes effect when the Engine panel next opens</span>
+    </div>
+  );
+}
+
 /** An engine's on/off switch, at the top of its card: off, its tab leaves the
  *  Engine panel and the server neither runs nor asks it. */
 function EngineSwitch({ label, on, busy, onChange }: { label: string; on: boolean; busy?: boolean; onChange: (on: boolean) => void }) {
@@ -369,6 +387,7 @@ function EngineSection() {
           </ActionButton>
         </div>
       )}
+      {info && <StockfishLines />}
       {info && (() => {
         // The memory budget, split as typed: the engine's hash, the database the rest.
         const hashNow = Number.isFinite(h) ? Math.min(Math.max(h, 16), info.max_hash_mb) : info.settings.hash_mb;
@@ -689,47 +708,16 @@ function Lc0Bench({ network, backend }: { network: string; backend: string }) {
   );
 }
 
-// ── Engine panel ──────────────────────────────────────────────────────────────
-// How the Engine panel shows its analysis — per device, like the panel's
-// layout, since two people looking at one server may want different amounts.
-function EnginePanelSection() {
-  const read = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
-  const write = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* per-device convenience only */ } };
-  const [lines, setLines] = useState(() => {
-    const n = parseInt(read("lichessLineCount") ?? "", 10);
-    return Number.isFinite(n) && n > 0 ? Math.min(n, 20) : 5;
-  });
-  const [stats, setStats] = useState(() => read("lichessShowStats") !== "false");
-  const pill = (on: boolean) => `h-7 min-w-8 px-2 rounded-full text-label-md ${on ? "bg-primary text-on-primary" : "bg-surface-container text-on-surface-variant hover:bg-on-surface/8"}`;
+/** Lichess's Replies & Strong columns: chessdb-style counts from the
+ *  positions after each move, a few extra requests per move. Per device. */
+function LichessStats() {
+  const [on, setOn] = useState(() => { try { return localStorage.getItem("lichessShowStats") !== "false"; } catch { return true; } });
   return (
-    <SectionCard title="Engine panel">
-      <p className="text-body-sm text-on-surface-variant">
-        How the Engine panel shows its analysis, on this computer.
-      </p>
-      <div className="flex items-center gap-3 text-body-sm text-on-surface">
-        <span className="w-20 shrink-0">Lines</span>
-        <div className="flex items-center gap-1">
-          {[3, 5, 8, 12].map((n) => (
-            <button key={n} onClick={() => { setLines(n); write("lichessLineCount", String(n)); }} className={pill(lines === n)}>{n}</button>
-          ))}
-        </div>
-      </div>
-      <p className="text-label-sm text-on-surface-variant">
-        Candidate moves shown by Lichess, Stockfish and Lc0 — more lines take the local engines a little
-        longer to reach the same depth. chessdb always lists every move it knows.
-      </p>
-      <label className="flex items-start gap-2 text-body-sm text-on-surface cursor-pointer">
-        <input type="checkbox" checked={stats} onChange={(e) => { setStats(e.target.checked); write("lichessShowStats", String(e.target.checked)); }} className="accent-primary mt-1" />
-        <span>
-          Replies &amp; Strong for Lichess
-          <span className="block text-label-sm text-on-surface-variant">
-            chessdb-style columns — how many replies Lichess knows after each move, and how many of them
-            are strong. A few extra requests per move.
-          </span>
-        </span>
-      </label>
-      <p className="text-label-sm text-on-surface-variant">Takes effect the next time the Engine panel opens.</p>
-    </SectionCard>
+    <EngineSwitch
+      label="Replies & Strong columns (a few extra requests per move)"
+      on={on}
+      onChange={(v) => { setOn(v); try { localStorage.setItem("lichessShowStats", String(v)); } catch { /* per-device convenience only */ } }}
+    />
   );
 }
 
@@ -782,9 +770,18 @@ function CloudEnginesSection() {
         Stockfish and Lc0 on the server analyse everything after it.
       </p>
       {maxMove != null && (
-        <div className="flex items-center gap-6">
-          <EngineSwitch label="Use chessdb.cn" on={services.chessdb} onChange={(on) => void save({ chessdb: on })} />
-          <EngineSwitch label="Use Lichess" on={services.lichess} onChange={(on) => void save({ lichess: on })} />
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1">
+            <div className="text-title-sm">chessdb.cn</div>
+            <EngineSwitch label="Use chessdb.cn" on={services.chessdb} onChange={(on) => void save({ chessdb: on })} />
+            <p className="text-label-sm text-on-surface-variant">A community database of engine evaluations; lists every move it knows, with its replies and strong replies.</p>
+          </div>
+          <div className="space-y-1">
+            <div className="text-title-sm">Lichess</div>
+            <EngineSwitch label="Use Lichess" on={services.lichess} onChange={(on) => void save({ lichess: on })} />
+            <LichessStats />
+            <p className="text-label-sm text-on-surface-variant">Stockfish evaluations cached in Lichess's cloud — popular positions only; every cached line is shown.</p>
+          </div>
         </div>
       )}
       {maxMove != null && (
@@ -2006,7 +2003,6 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
               <EngineSection />
               <Lc0Section />
               <CloudEnginesSection />
-              <EnginePanelSection />
             </div>
           </div>
 

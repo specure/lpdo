@@ -201,8 +201,11 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
   // per-move requests) vs plain lines, and how many lines to show/analyse.
   // Set under Maintenance → Engines → Engine panel (per device).
   const [lichessShowStats] = useState(() => localStorage.getItem("lichessShowStats") !== "false");
-  const [lichessLineCount] = useState(() => {
-    const n = parseInt(localStorage.getItem("lichessLineCount") ?? "", 10);
+  // Stockfish's lines (Maintenance → Engines → Stockfish): only there does
+  // each extra line cost search time. Lichess shows every line its cloud has,
+  // Lc0 up to ten (its search is the same however many it reports).
+  const [stockfishLineCount] = useState(() => {
+    const n = parseInt(localStorage.getItem("stockfishLineCount") ?? localStorage.getItem("lichessLineCount") ?? "", 10);
     return Number.isFinite(n) && n > 0 ? Math.min(n, 20) : 5;
   });
 
@@ -285,7 +288,8 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
     const oppWhite = fen.split(" ")[1] === "b"; // opponent (after our move) is White iff we're Black
     const ctrl = new AbortController();
     setLichessStats({});
-    for (const l of lichessEval.lines.slice(0, lichessLineCount)) {
+    // One request per line: the top five only, with every line on screen.
+    for (const l of lichessEval.lines.slice(0, 5)) {
       const uci = l.pvUci[0];
       if (!uci) continue;
       let childFen: string;
@@ -308,7 +312,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
         .catch(() => {});
     }
     return () => ctrl.abort();
-  }, [fen, engineSource, lichessEval, lichessShowStats, lichessLineCount]);
+  }, [fen, engineSource, lichessEval, lichessShowStats]);
 
   // Seed the set of actively-watched positions on mount (a watch may still be
   // running from before this panel was last shown).
@@ -511,7 +515,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
                     <span className="w-14 text-right">Eval</span>
                   </div>
                 )}
-                {lichessEval.lines.slice(0, lichessLineCount).map((l, i) => {
+                {lichessEval.lines.map((l, i) => {
                   const sans = pvToSan(fen, l.pvUci);
                   const st = lichessStats[l.pvUci[0]];
                   return (
@@ -535,7 +539,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
       {(["stockfish", "lc0"] as const).filter((k) => enabled[k]).map((k) => (
         <div key={k} className={engineSource === k ? "flex-1 flex flex-col min-h-0" : "hidden"}>
           <LocalEngine
-            kind={k} fen={fen} history={history} lineCount={lichessLineCount} onPlayLine={onPlayLine}
+            kind={k} fen={fen} history={history} lineCount={k === "stockfish" ? stockfishLineCount : 10} onPlayLine={onPlayLine}
             paused={!running[k]} onTogglePause={() => toggleRunning(k)}
           />
         </div>
