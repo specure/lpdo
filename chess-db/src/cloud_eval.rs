@@ -538,10 +538,14 @@ pub struct CloudSettings {
     /// Each service switched on or off; off, it is never contacted.
     pub chessdb: bool,
     pub lichess: bool,
+    /// For Lichess's lines: a move within this many centipawns of the best is
+    /// strong — marked "!", and counted among the strong replies. chessdb.cn
+    /// marks its own.
+    pub lichess_strong_cp: u32,
 }
 
 impl Default for CloudSettings {
-    fn default() -> Self { Self { max_move: 20, chessdb: true, lichess: true } }
+    fn default() -> Self { Self { max_move: 20, chessdb: true, lichess: true, lichess_strong_cp: 5 } }
 }
 
 static SETTINGS_FILE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();

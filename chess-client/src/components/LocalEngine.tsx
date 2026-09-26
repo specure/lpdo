@@ -15,7 +15,7 @@ interface EngineStatus {
   path: string | null;
   name: string | null;
   error: string | null;
-  settings: { path: string | null; threads: number; hash_mb: number; replies?: boolean };
+  settings: { path: string | null; threads: number; hash_mb: number; replies?: boolean; strong_cp?: number; strong_pct?: number };
   found: string[];
   searched: string[];
   settings_file: string;
@@ -196,7 +196,15 @@ export default function LocalEngine({
   const white = fen.split(" ")[1] !== "b";
   const lines = snap?.lines ?? [];
   const scores = lines.map((l) => moverScore(l.eval_cp, l.mate, white));
-  const best = scores.length ? Math.max(...scores) : 0;
+  // Marks by the engine's threshold for strong moves, the one its helpers
+  // count the strong replies by: Stockfish in centipawns, Lc0 in expected
+  // score (win plus half the draws, for the side to move).
+  const byWdl = kind === "lc0" && lines.length > 0 && lines.every((l) => l.wdl);
+  const markScores = byWdl
+    ? lines.map((l) => { const [w, d, b] = l.wdl!; return ((white ? w : b) + d / 2) / 1000; })
+    : scores;
+  const markBest = markScores.length ? Math.max(...markScores) : 0;
+  const markThreshold = byWdl ? (status.settings.strong_pct ?? 1) / 100 : kind === "lc0" ? 10 : (status.settings.strong_cp ?? 10);
   // Stockfish counts in millions a second, Lc0 in thousands.
   const speed = !snap?.nps ? "" : snap.nps >= 1e6 ? `${(snap.nps / 1e6).toFixed(snap.nps >= 1e7 ? 0 : 1)} Mn/s` : `${Math.round(snap.nps / 1e3)}k n/s`;
 
@@ -254,7 +262,7 @@ export default function LocalEngine({
           return (
           <div key={l.multipv} className="w-full flex items-baseline gap-2 px-2 py-1 rounded-sm hover:bg-on-surface/8 transition-colors duration-short3 ease-standard">
             <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface-variant">
-              <PvLine startFen={fen} sans={pvToSan(fen, l.pv_uci)} onPick={onPlayLine} mark={moveMark(best, scores[i]) || undefined} />
+              <PvLine startFen={fen} sans={pvToSan(fen, l.pv_uci)} onPick={onPlayLine} mark={moveMark(markBest, markScores[i], markThreshold)} />
             </div>
             {repliesOn && (
               <>

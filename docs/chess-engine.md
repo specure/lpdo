@@ -173,6 +173,15 @@ it has got, and "…" while it waits for a free helper.
   under a second on an RTX 4090) counting the replies it explored within 1% of
   expected score of the best.
 
+**Marks.** The same threshold marks the moves: a move within it of the best
+is **!**, any other **?**. So a move marked **!** is one of the strong replies
+counted for the move before it. Each engine has its own threshold — Stockfish
+0.10 pawns, Lc0 1% of expected score, Lichess 0.05 pawns (with the cloud
+engines) — while chessdb.cn marks its moves and counts its strong replies by
+its own rule, which LPDO cannot change. The marks come from the main search and
+the counts from the helpers' shorter one, so near the threshold the two can
+now and then disagree.
+
 All of it is set in the engine's card on Maintenance → Engines.
 
 ## Measuring speed

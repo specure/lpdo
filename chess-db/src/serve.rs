@@ -1330,7 +1330,7 @@ async fn cloud_settings_put_handler(
 struct CloudSettingsClamp;
 impl CloudSettingsClamp {
     fn clamp(s: crate::cloud_eval::CloudSettings) -> crate::cloud_eval::CloudSettings {
-        crate::cloud_eval::CloudSettings { max_move: s.max_move.min(500), ..s }
+        crate::cloud_eval::CloudSettings { max_move: s.max_move.min(500), lichess_strong_cp: s.lichess_strong_cp.min(500), ..s }
     }
 }
 

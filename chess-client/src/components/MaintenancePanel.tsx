@@ -297,24 +297,24 @@ function RepliesSettings({ kind, settings, busy, onSave }: {
           </span>
         </span>
       </label>
-      {on && (
-        <div className="flex items-center gap-4 text-body-sm text-on-surface flex-wrap">
+      <div className="flex items-center gap-4 text-body-sm text-on-surface flex-wrap">
           {kind === "stockfish" ? (
             <>
+              {on && <>
               <label className="flex items-center gap-2" title="Single-threaded helpers, each counting one candidate: as many as the lines counts them all at once"><span>Helpers</span><input type="number" min={1} max={64} value={threads} onChange={(e) => setThreads(e.target.value)} className={field} /></label>
               <label className="flex items-center gap-2"><span>Hash</span><input type="number" min={16} max={4096} step={64} value={hash} onChange={(e) => setHash(e.target.value)} className={field} /><span className="text-on-surface-variant">MB</span></label>
               <label className="flex items-center gap-2" title="Each candidate's replies are searched to this depth"><span>Depth</span><input type="number" min={1} max={60} value={depth} onChange={(e) => setDepth(e.target.value)} className={field} /></label>
-              <label className="flex items-center gap-2" title="A reply is strong within this much of the opponent's best (chessdb uses 0.05)"><span>Strong within</span><input value={pawns} onChange={(e) => setPawns(e.target.value)} inputMode="decimal" className={field} /><span className="text-on-surface-variant">pawns</span></label>
+              </>}
+              <label className="flex items-center gap-2" title="A move within this much of the best is strong: marked ! in the Engine panel, and counted among the strong replies (chessdb uses 0.05)"><span>Strong within</span><input value={pawns} onChange={(e) => setPawns(e.target.value)} inputMode="decimal" className={field} /><span className="text-on-surface-variant">pawns</span></label>
             </>
           ) : (
             <>
-              <label className="flex items-center gap-2" title="Nodes Lc0 spends on each candidate's replies"><span>Nodes per move</span><input value={nodes} onChange={(e) => setNodes(e.target.value)} inputMode="numeric" className="w-28 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" /></label>
-              <label className="flex items-center gap-2" title="A reply is strong within this much expected score of the opponent's best"><span>Strong within</span><input value={pct} onChange={(e) => setPct(e.target.value)} inputMode="decimal" className={field} /><span className="text-on-surface-variant">% score</span></label>
+              {on && <label className="flex items-center gap-2" title="Nodes Lc0 spends on each candidate's replies"><span>Nodes per move</span><input value={nodes} onChange={(e) => setNodes(e.target.value)} inputMode="numeric" className="w-28 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" /></label>}
+              <label className="flex items-center gap-2" title="A move within this much expected score of the best is strong: marked ! in the Engine panel, and counted among the strong replies"><span>Strong within</span><input value={pct} onChange={(e) => setPct(e.target.value)} inputMode="decimal" className={field} /><span className="text-on-surface-variant">% score</span></label>
             </>
           )}
           <ActionButton onClick={saveAll} disabled={busy}>Save</ActionButton>
         </div>
-      )}
     </div>
   );
 }
@@ -807,32 +807,39 @@ function CloudEnginesSection() {
   // Each service on or off; an older server has no switches and asks both.
   const [services, setServices] = useState<{ chessdb: boolean; lichess: boolean }>({ chessdb: true, lichess: true });
   const [value, setValue] = useState("");
+  // Lichess's threshold for strong moves, in centipawns; shown in pawns.
+  const [strongCp, setStrongCp] = useState(5);
+  const [pawns, setPawns] = useState("0.05");
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  type Settings = { max_move: number; chessdb?: boolean; lichess?: boolean; lichess_strong_cp?: number };
+  function show(d: Settings) {
+    setMaxMove(d.max_move); setValue(String(d.max_move));
+    setServices({ chessdb: d.chessdb !== false, lichess: d.lichess !== false });
+    const cp = d.lichess_strong_cp ?? 5;
+    setStrongCp(cp); setPawns((cp / 100).toFixed(2));
+  }
   useEffect(() => {
     fetch(apiUrl("/cloud-eval/settings"))
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
-      .then((d: { max_move: number; chessdb?: boolean; lichess?: boolean }) => {
-        setMaxMove(d.max_move); setValue(String(d.max_move));
-        setServices({ chessdb: d.chessdb !== false, lichess: d.lichess !== false });
-      })
+      .then(show)
       .catch((e) => setError(String(e)));
   }, []);
   const n = parseInt(value, 10);
-  async function save(patch: { max_move?: number; chessdb?: boolean; lichess?: boolean } = {}) {
+  const pawnsCp = Math.round(Number(pawns.replace(",", ".")) * 100);
+  async function save(patch: Partial<Settings> = {}) {
     setError(null);
     setNote(null);
     try {
       const r = await fetch(apiUrl("/cloud-eval/settings"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ max_move: maxMove ?? 20, ...services, ...(Number.isFinite(n) ? { max_move: n } : {}), ...patch }),
+        // The whole settings each time: the server takes what is left out as
+        // its default.
+        body: JSON.stringify({ max_move: maxMove ?? 20, ...services, lichess_strong_cp: strongCp, ...(Number.isFinite(n) ? { max_move: n } : {}), ...patch }),
       });
       if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
-      const d = (await r.json()) as { max_move: number; chessdb?: boolean; lichess?: boolean };
-      setMaxMove(d.max_move);
-      setValue(String(d.max_move));
-      setServices({ chessdb: d.chessdb !== false, lichess: d.lichess !== false });
+      show((await r.json()) as Settings);
       setNote("Saved.");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -851,12 +858,20 @@ function CloudEnginesSection() {
           <div className="space-y-1">
             <div className="text-title-sm">chessdb.cn</div>
             <EngineSwitch label="Use chessdb.cn" on={services.chessdb} onChange={(on) => void save({ chessdb: on })} />
-            <p className="text-label-sm text-on-surface-variant">A community database of engine evaluations; lists every move it knows, with its replies and strong replies.</p>
+            <p className="text-label-sm text-on-surface-variant">A community database of engine evaluations; lists every move it knows, with its replies and strong replies. It marks moves and counts strong replies by its own rule.</p>
           </div>
           <div className="space-y-1">
             <div className="text-title-sm">Lichess</div>
             <EngineSwitch label="Use Lichess" on={services.lichess} onChange={(on) => void save({ lichess: on })} />
             <LichessStats />
+            <div className="flex items-center gap-2 text-body-sm text-on-surface flex-wrap"
+              title="A move within this much of the best is strong: marked ! in the Engine panel, and counted among the strong replies">
+              <span>Strong within</span>
+              <input value={pawns} onChange={(e) => setPawns(e.target.value)} inputMode="decimal"
+                className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
+              <span className="text-on-surface-variant">pawns</span>
+              <ActionButton onClick={() => void save({ lichess_strong_cp: pawnsCp })} disabled={!Number.isFinite(pawnsCp) || pawnsCp < 0 || pawnsCp === strongCp}>Save</ActionButton>
+            </div>
             <p className="text-label-sm text-on-surface-variant">Stockfish evaluations cached in Lichess's cloud — popular positions only; every cached line is shown.</p>
           </div>
         </div>

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Chess } from "chess.js";
-import { addCloudWatch, getCloudWatches, type EngineHistory } from "../api";
+import { addCloudWatch, apiUrl, getCloudWatches, type EngineHistory } from "../api";
 import { CLOUD_WATCH_REMOVED, CLOUD_WATCH_UPDATED } from "./ActivityIndicator";
 import LocalEngine from "./LocalEngine";
 
@@ -94,15 +94,14 @@ export function fmtLichess(l: LichessLine): string {
   return (p > 0 ? "+" : "") + p.toFixed(2);
 }
 
-// Bringing chessdb's "power move" lens to Stockfish (#221). Reverse-engineered
-// from chessdb: a move within ~0.05 of the best is "strong" (chessdb marks the
-// best "!" and treats anything >0.05 worse as "?"), AND — crucially — once the
-// position itself is lost (best move worse than ~-0.7, i.e. win% under ~45%),
-// chessdb marks *everything* "?": no point flagging the opponent's "good" replies
-// when you're already lost. These constants match that behaviour.
-const STRONG_MARK_CP = 1; // within 0.01 of best ⇒ "!" (chessdb marks equal-best near-ties too)
-const STRONG_CP = 5;      // ≤0.05 behind best = normal; >0.05 = weak (?). Measured boundary.
-const LOST_CP = -70;      // best move worse than -0.70 ⇒ position lost, all moves "?"
+// Bringing chessdb's "power move" lens to the other engines (#221). For each
+// of them one threshold decides what is strong: a move within it of the best
+// is marked "!", any other "?", and the Strong column counts the opponent's
+// replies within it of their best — so a move marked "!" is one of the strong
+// replies to the move before. Lichess's threshold is set with the cloud
+// engines, Stockfish's and Lc0's in their cards (Maintenance → Engines);
+// chessdb.cn marks and counts by its own rule.
+export const DEFAULT_LICHESS_STRONG_CP = 5;
 
 /** Eval from the side-to-move's perspective, in centipawns (mate ⇒ ±huge, nearer
  *  mates ranked higher). Lichess evals are White-relative, so flip for Black. */
@@ -115,13 +114,10 @@ export function moverScore(evalCp: number | null, mate: number | null, whiteToMo
   return whiteToMove ? cp : -cp;
 }
 
-/** chessdb-style quality mark for a line, given the position's best score:
- *  "!" = best (tied for top), "" = normal (within 0.05 of best), "?" = weak
- *  (>0.05 behind). Everything is "?" in a lost position (best worse than LOST_CP). */
-export function moveMark(best: number, score: number): string {
-  if (best < LOST_CP) return "?";
-  const drop = best - score;
-  return drop <= STRONG_MARK_CP ? "!" : drop <= STRONG_CP ? "" : "?";
+/** "!" for a strong move — within `threshold` of the best, in the scores'
+ *  own unit (centipawns, or Lc0's expected score) — "?" for any other. */
+export function moveMark(best: number, score: number, threshold: number): string {
+  return best - score <= threshold ? "!" : "?";
 }
 
 /** Colour for a side-to-move score: green = good for the player to move, red =
@@ -201,6 +197,14 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
   // per-move requests) vs plain lines, and how many lines to show/analyse.
   // Set under Maintenance → Engines → Engine panel (per device).
   const [lichessShowStats] = useState(() => localStorage.getItem("lichessShowStats") !== "false");
+  // Lichess's threshold for strong moves (Maintenance → Engines, on the server).
+  const [lichessStrongCp, setLichessStrongCp] = useState(DEFAULT_LICHESS_STRONG_CP);
+  useEffect(() => {
+    fetch(apiUrl("/cloud-eval/settings"))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { lichess_strong_cp?: number } | null) => { if (d?.lichess_strong_cp != null) setLichessStrongCp(d.lichess_strong_cp); })
+      .catch(() => {});
+  }, []);
   // The local engines' lines (Maintenance → Engines, per device): each extra
   // line costs Stockfish search time, Lc0 nothing. Lichess shows every line
   // its cloud has.
@@ -315,7 +319,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
 
   // Power-move stats for Lichess (async, after the lines are on screen): for each
   // top line, fetch the child position's cloud eval and count the opponent's
-  // replies + how many are "strong" (within STRONG_CP of the best). Sparse — only
+  // replies + how many are "strong" (within the threshold of the best). Sparse — only
   // where Lichess has the child position cached.
   useEffect(() => {
     if (engineSource !== "lichess" || !lichessShowStats || !lichessEval?.lines.length) { setLichessStats({}); return; }
@@ -338,15 +342,13 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
           if (!ce || ce.status !== "ok" || !ce.lines.length) return;
           const scores = ce.lines.map((x) => moverScore(x.evalCp, x.mate, oppWhite));
           const best = Math.max(...scores);
-          // If the opponent is lost after this move, none of their replies are
-          // "strong" — don't imply they have good options.
-          const strong = best < LOST_CP ? 0 : scores.filter((s) => best - s <= STRONG_CP).length;
+          const strong = scores.filter((s) => best - s <= lichessStrongCp).length;
           setLichessStats((prev) => ({ ...prev, [uci]: { replies: ce.lines.length, strong } }));
         })
         .catch(() => {});
     }
     return () => ctrl.abort();
-  }, [fen, engineSource, lichessEval, lichessShowStats]);
+  }, [fen, engineSource, lichessEval, lichessShowStats, lichessStrongCp]);
 
   // Seed the set of actively-watched positions on mount (a watch may still be
   // running from before this panel was last shown).
@@ -555,7 +557,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
                   return (
                     <div key={i} className="w-full flex items-baseline gap-2 px-2 py-1 rounded-sm hover:bg-on-surface/8 transition-colors duration-short3 ease-standard">
                       <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface-variant">
-                        <PvLine startFen={fen} sans={sans} onPick={onPlayLine} mark={moveMark(lmBest, lmScores[i]) || undefined} />
+                        <PvLine startFen={fen} sans={sans} onPick={onPlayLine} mark={moveMark(lmBest, lmScores[i], lichessStrongCp)} />
                       </div>
                       {lichessShowStats && <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface-variant">{st ? st.replies : "—"}</span>}
                       {lichessShowStats && <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface">{st ? st.strong : "—"}</span>}
