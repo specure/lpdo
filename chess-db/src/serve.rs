@@ -1743,12 +1743,19 @@ async fn engine_configure_handler(
     State(state): State<AppState>,
     Json(body): Json<EngineConfigBody>,
 ) -> ApiResult<crate::engine::EngineStatus> {
-    state
+    let status = state
         .engine
         .configure(body.path, body.threads, body.hash_mb)
         .await
-        .map(Json)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    // The database gets what the engine's hash leaves of the memory budget.
+    let hash = status.settings.hash_mb;
+    state
+        .writer
+        .run(move |c| crate::db::apply_memory_limit(c, hash))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(status))
 }
 
 #[derive(Deserialize)]

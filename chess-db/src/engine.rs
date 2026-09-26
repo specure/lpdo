@@ -63,10 +63,9 @@ impl Default for EngineSettings {
         // with two threads per core: the server also answers queries while
         // it analyses.
         let cores = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(2);
-        // A sixteenth of the memory, 256 MB to 4 GB: the database wants the
-        // memory too (DuckDB's limit is 80% of it).
-        let hash_mb = memory_mb().map(|m| (m / 16) as u32).unwrap_or(256).clamp(256, 4096);
-        Self { path: None, threads: (cores / 2).clamp(1, 16), hash_mb }
+        // An eighth of the memory, 256 MB to 4 GB — out of the budget it
+        // shares with the database (see db::memory).
+        Self { path: None, threads: (cores / 2).clamp(1, 16), hash_mb: crate::db::default_engine_hash_mb() }
     }
 }
 
@@ -99,6 +98,11 @@ pub struct EngineStatus {
     /// hash (memory is None where it cannot be read).
     pub cores: u32,
     pub memory_mb: Option<u64>,
+    /// What the server may use of the memory, the database's share of it
+    /// (the rest after the engine's hash), and the largest hash allowed.
+    pub budget_mb: u64,
+    pub database_mb: u64,
+    pub max_hash_mb: u32,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -303,6 +307,7 @@ impl Engine {
     pub async fn status(&self) -> EngineStatus {
         let _ = self.ensure_started().await;
         let settings = self.settings.lock().await.clone();
+        let hash_mb = settings.hash_mb;
         let (found, searched) = Self::found();
         let name = self.running.lock().await.as_ref().map(|r| r.name.clone());
         let version = name.as_deref().and_then(stockfish_version);
@@ -329,7 +334,10 @@ impl Engine {
             latest,
             update_available,
             cores: std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1),
-            memory_mb: memory_mb(),
+            memory_mb: crate::db::total_ram_mb(),
+            budget_mb: crate::db::server_budget_mb(),
+            database_mb: crate::db::db_limit_mb(hash_mb),
+            max_hash_mb: crate::db::max_engine_hash_mb(),
         }
     }
 
@@ -351,7 +359,7 @@ impl Engine {
                 s.path = Some(p);
             }
             if let Some(t) = threads { s.threads = t.clamp(1, 256); }
-            if let Some(h) = hash_mb { s.hash_mb = h.clamp(16, 65536); }
+            if let Some(h) = hash_mb { s.hash_mb = h.clamp(16, crate::db::max_engine_hash_mb()); }
             let json = serde_json::to_string_pretty(&*s).map_err(|e| e.to_string())?;
             std::fs::write(&self.settings_file, json)
                 .map_err(|e| format!("{}: {e}", self.settings_file.display()))?;
@@ -716,13 +724,6 @@ fn parse_info(t: &str) -> Option<Info> {
         info.line = Some(Line { multipv, eval_cp: if mate.is_some() { None } else { cp }, mate, pv_uci: pv });
     }
     Some(info)
-}
-
-/// Physical memory in MB, where the system says (Linux: /proc/meminfo).
-fn memory_mb() -> Option<u64> {
-    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let kb: u64 = text.lines().find(|l| l.starts_with("MemTotal:"))?.split_whitespace().nth(1)?.parse().ok()?;
-    Some(kb / 1024)
 }
 
 /// How many legal moves `fen` has (already validated by `clean_fen`).

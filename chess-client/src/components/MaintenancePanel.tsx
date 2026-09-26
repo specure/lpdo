@@ -237,6 +237,13 @@ interface EngineInfo {
   update_available: boolean;
   cores: number;
   memory_mb: number | null;
+  budget_mb: number;
+  database_mb: number;
+  max_hash_mb: number;
+}
+
+function gb(mb: number): string {
+  return mb >= 1024 ? `${(mb / 1024).toFixed(mb % 1024 === 0 ? 0 : 1)} GB` : `${mb} MB`;
 }
 
 function EngineSection() {
@@ -316,7 +323,7 @@ function EngineSection() {
           </label>
           <label className="flex items-center gap-2">
             <span>Hash</span>
-            <input type="number" min={16} max={65536} step={64} value={hash} onChange={(e) => setHash(e.target.value)} className={field} />
+            <input type="number" min={16} max={info.max_hash_mb} step={256} value={hash} onChange={(e) => setHash(e.target.value)} className={field} />
             <span className="text-on-surface-variant">MB</span>
           </label>
           <ActionButton
@@ -327,11 +334,31 @@ function EngineSection() {
           </ActionButton>
         </div>
       )}
+      {info && (() => {
+        // The memory budget, split as typed: the engine's hash, the database the rest.
+        const hashNow = Number.isFinite(h) ? Math.min(Math.max(h, 16), info.max_hash_mb) : info.settings.hash_mb;
+        const dbNow = Math.max(info.budget_mb - hashNow, Math.min(2048, info.budget_mb));
+        const pct = (mb: number) => `${Math.round((mb / info.budget_mb) * 100)}%`;
+        return (
+          <div className="space-y-1">
+            <div className="text-body-sm text-on-surface">
+              Memory: the server may use {gb(info.budget_mb)}{info.memory_mb ? ` of the machine's ${gb(info.memory_mb)}` : ""} —
+              engine hash {gb(hashNow)}, database {gb(dbNow)}.
+            </div>
+            <div className="h-2 rounded-full overflow-hidden flex bg-surface-container" title="The server's memory budget: engine hash and database">
+              <div className="bg-primary" style={{ width: pct(hashNow) }} />
+              <div className="bg-tertiary/60" style={{ width: pct(dbNow) }} />
+            </div>
+          </div>
+        );
+      })()}
       {info && (
         <p className="text-label-sm text-on-surface-variant">
           Threads default to half the server's logical cores — about one per physical core — since it
-          also answers everyone's queries. Hash defaults to a sixteenth of its memory, between 256 MB
-          and 4 GB; more keeps more of an analysis when you move on and come back. To use an engine outside the
+          also answers everyone's queries. The hash comes out of the same memory budget as the
+          database — it defaults to an eighth of the memory, at most 4 GB, and the database keeps at least
+          2 GB. More hash keeps more of an analysis when you move on and come back; less leaves the
+          database more room for large jobs such as removing duplicates. To use an engine outside the
           standard locations, name it in <span className="font-mono">{info.settings_file}</span> on the server.
         </p>
       )}

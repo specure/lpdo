@@ -117,7 +117,14 @@ so keep the engine outside `/home` — `/usr/local/bin` or `/opt` work.
 | Setting | Default | |
 |---|---|---|
 | Threads | half the server's logical cores | About one per physical core; the server also answers everyone's queries while it analyses. |
-| Hash | a sixteenth of the memory, 256 MB – 4 GB | More keeps more of an analysis when you move on and come back; the database needs memory too. |
+| Hash | an eighth of the memory, 256 MB – 4 GB | More keeps more of an analysis when you move on and come back. |
+
+**Memory is one budget.** The server may use 80% of the machine's memory. The
+engine's hash comes out of it and the database gets the rest, keeping at least
+2 GB — on a 32 GB machine, 4 GB of hash leaves the database about 21 GB. The
+card shows the split as you type; saving applies it to both at once. Less hash
+leaves the database more room for large jobs such as removing duplicates,
+which slow down (they spill to disk) rather than fail when memory is short.
 
 Maintenance → Chess engine → **Benchmark** runs Stockfish's own benchmark
 with the threads and hash set there, and keeps the results in a table: change
