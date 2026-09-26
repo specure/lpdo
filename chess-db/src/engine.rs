@@ -26,49 +26,108 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{broadcast, Mutex, Notify};
 
-/// Where package managers put Stockfish, besides `$PATH` (a service's PATH is
-/// short: Debian installs to /usr/games, which systemd units rarely include).
-const KNOWN_LOCATIONS: &[&str] = &[
-    "/usr/games/stockfish",
-    "/usr/bin/stockfish",
-    "/usr/local/bin/stockfish",
-    "/opt/homebrew/bin/stockfish",
-    "/snap/bin/stockfish",
-    "/usr/bin/lc0",
-    "/usr/local/bin/lc0",
-    "/opt/homebrew/bin/lc0",
-    // Windows has no package location; this is the one docs/chess-engine.md
-    // tells people to use.
-    r"C:\Program Files\Stockfish\stockfish.exe",
-    r"C:\Program Files\Lc0\lc0.exe",
-];
-const PATH_NAMES: &[&str] = &["stockfish", "lc0"];
+/// The two local engines (#309): Stockfish, the default, and Lc0 (Leela
+/// Chess Zero), optional because it wants a GPU. Each has its own process,
+/// settings file and places it is looked for.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    Stockfish,
+    Lc0,
+}
+
+impl Kind {
+    pub fn parse(s: Option<&str>) -> Option<Kind> {
+        match s.unwrap_or("stockfish") {
+            "stockfish" => Some(Kind::Stockfish),
+            "lc0" => Some(Kind::Lc0),
+            _ => None,
+        }
+    }
+    fn settings_file(self) -> &'static str {
+        match self { Kind::Stockfish => "engine.json", Kind::Lc0 => "lc0.json" }
+    }
+    fn path_names(self) -> &'static [&'static str] {
+        match self { Kind::Stockfish => &["stockfish"], Kind::Lc0 => &["lc0"] }
+    }
+    /// Where package managers and the install guide put the engine, besides
+    /// `$PATH` (a service's PATH is short: Debian installs to /usr/games,
+    /// which systemd units rarely include). Windows has no package location;
+    /// these are the ones docs/chess-engine.md tells people to use.
+    fn known_locations(self) -> &'static [&'static str] {
+        match self {
+            Kind::Stockfish => &[
+                "/usr/games/stockfish",
+                "/usr/bin/stockfish",
+                "/usr/local/bin/stockfish",
+                "/opt/homebrew/bin/stockfish",
+                "/snap/bin/stockfish",
+                r"C:\Program Files\Stockfish\stockfish.exe",
+            ],
+            Kind::Lc0 => &[
+                "/usr/local/bin/lc0",
+                "/usr/bin/lc0",
+                "/opt/homebrew/bin/lc0",
+                r"C:\Program Files\Lc0\lc0.exe",
+            ],
+        }
+    }
+    /// How long the engine may take to start. Lc0 loads its network onto the
+    /// GPU (and compiles kernels the first time), which takes seconds.
+    fn handshake(self) -> Duration {
+        match self { Kind::Stockfish => Duration::from_secs(10), Kind::Lc0 => Duration::from_secs(90) }
+    }
+}
 
 /// No search runs longer than this unless the client asks again.
 const MAX_SEARCH: Duration = Duration::from_secs(300);
-const HANDSHAKE: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct EngineSettings {
     /// The engine to run. None: the first one found.
     pub path: Option<String>,
+    /// Search threads. For Lc0, 0 leaves it to the engine.
     pub threads: u32,
+    /// Stockfish's hash table. Lc0 keeps its network on the GPU and does not
+    /// use it.
     pub hash_mb: u32,
+    /// Lc0's network file. None: the first one found.
+    pub weights: Option<String>,
+    /// Lc0's backend ("cuda-fp16", "opencl", …). None: the engine picks.
+    pub backend: Option<String>,
 }
 
 impl Default for EngineSettings {
-    fn default() -> Self {
-        // One thread per physical core: the second hardware thread of a core
-        // adds little to Stockfish, and the server also answers queries while
-        // it analyses. An eighth of the memory for hash, 256 MB to 4 GB — out
-        // of the budget it shares with the database (see db::memory).
-        Self { path: None, threads: physical_cores().clamp(1, 64), hash_mb: crate::db::default_engine_hash_mb() }
+    fn default() -> Self { Self::for_kind(Kind::Stockfish) }
+}
+
+impl EngineSettings {
+    fn for_kind(kind: Kind) -> Self {
+        match kind {
+            // One thread per physical core: the second hardware thread of a
+            // core adds little to Stockfish, and the server also answers
+            // queries while it analyses. An eighth of the memory for hash,
+            // 256 MB to 4 GB — out of the budget it shares with the database
+            // (see db::memory).
+            Kind::Stockfish => Self {
+                path: None, threads: physical_cores().clamp(1, 64),
+                hash_mb: crate::db::default_engine_hash_mb(), weights: None, backend: None,
+            },
+            Kind::Lc0 => Self { path: None, threads: 0, hash_mb: 0, weights: None, backend: None },
+        }
     }
+}
+
+/// A backend name as Lc0 spells them: letters, digits and dashes only, so
+/// nothing but an option value reaches the engine's command line.
+fn valid_backend(b: &str) -> bool {
+    !b.is_empty() && b.len() <= 40 && b.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct EngineStatus {
+    pub kind: Kind,
     pub available: bool,
     /// The engine in use (or that would be used).
     pub path: Option<String>,
@@ -103,6 +162,10 @@ pub struct EngineStatus {
     pub budget_mb: u64,
     pub database_mb: u64,
     pub max_hash_mb: u32,
+    /// Lc0: the network in use, and the network files found in the standard
+    /// places (the data directory's networks/, beside the program).
+    pub weights: Option<String>,
+    pub networks: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -118,6 +181,10 @@ pub struct Line {
     pub eval_cp: Option<i32>,
     pub mate: Option<i32>,
     pub pv_uci: Vec<String>,
+    /// Win / draw / loss in permille, from White's point of view: White's
+    /// win, the draw, Black's win. Lc0 always reports it; Stockfish too,
+    /// since UCI_ShowWDL is switched on.
+    pub wdl: Option<[u32; 3]>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -161,6 +228,8 @@ struct Running {
 }
 
 pub struct Engine {
+    kind: Kind,
+    data_dir: PathBuf,
     settings_file: PathBuf,
     settings: Mutex<EngineSettings>,
     running: Mutex<Option<Running>>,
@@ -219,13 +288,27 @@ fn position_key(fen: &str) -> String {
 
 impl Engine {
     pub fn new(data_dir: &Path) -> Arc<Self> {
-        let settings_file = data_dir.join("engine.json");
+        Self::new_kind(data_dir, Kind::Stockfish)
+    }
+
+    pub fn new_kind(data_dir: &Path, kind: Kind) -> Arc<Self> {
+        let settings_file = data_dir.join(kind.settings_file());
         let settings = std::fs::read_to_string(&settings_file)
             .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+            .and_then(|s| {
+                // Fields the file leaves out take this kind's defaults.
+                let mut base = serde_json::to_value(EngineSettings::for_kind(kind)).ok()?;
+                let over: serde_json::Value = serde_json::from_str(&s).ok()?;
+                if let (Some(b), Some(o)) = (base.as_object_mut(), over.as_object()) {
+                    for (k, v) in o { b.insert(k.clone(), v.clone()); }
+                }
+                serde_json::from_value(base).ok()
+            })
+            .unwrap_or_else(|| EngineSettings::for_kind(kind));
         let (tx, _) = broadcast::channel(64);
         Arc::new(Self {
+            kind,
+            data_dir: data_dir.to_path_buf(),
             settings_file,
             settings: Mutex::new(settings),
             running: Mutex::new(None),
@@ -274,8 +357,13 @@ impl Engine {
         fetched
     }
 
-    /// Engines found in the standard locations, in order of preference.
-    pub fn found() -> (Vec<String>, Vec<String>) {
+    /// Engines of this kind found in the standard locations, in order of
+    /// preference, and where the server looked.
+    pub fn found(&self) -> (Vec<String>, Vec<String>) {
+        Self::found_kind(self.kind)
+    }
+
+    pub fn found_kind(kind: Kind) -> (Vec<String>, Vec<String>) {
         let mut searched: Vec<String> = Vec::new();
         let mut found: Vec<String> = Vec::new();
         let mut consider = |p: PathBuf| {
@@ -291,28 +379,55 @@ impl Engine {
         };
         if let Some(path) = std::env::var_os("PATH") {
             for dir in std::env::split_paths(&path) {
-                for name in PATH_NAMES {
+                for name in kind.path_names() {
                     consider(dir.join(name));
                     #[cfg(windows)]
                     consider(dir.join(format!("{name}.exe")));
                 }
             }
         }
-        for loc in KNOWN_LOCATIONS {
+        for loc in kind.known_locations() {
             consider(PathBuf::from(loc));
         }
         (found, searched)
+    }
+
+    /// Lc0 network files in the standard places: `networks/` in the data
+    /// directory, the data directory itself, and beside the Lc0 program.
+    pub fn networks(&self, engine_path: Option<&str>) -> Vec<String> {
+        if self.kind != Kind::Lc0 { return Vec::new(); }
+        let mut dirs = vec![self.data_dir.join("networks"), self.data_dir.clone()];
+        if let Some(dir) = engine_path.and_then(|p| Path::new(p).parent()) { dirs.push(dir.to_path_buf()); }
+        dirs.push(PathBuf::from("/usr/local/share/lc0"));
+        dirs.push(PathBuf::from("/usr/share/lc0"));
+        let mut out = Vec::new();
+        for d in dirs {
+            let Ok(entries) = std::fs::read_dir(&d) else { continue };
+            let mut files: Vec<String> = entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.is_file())
+                .filter(|p| {
+                    let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    n.ends_with(".pb.gz") || n.ends_with(".pb") || n.ends_with(".onnx")
+                })
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
+            files.sort();
+            for f in files { if !out.contains(&f) { out.push(f); } }
+        }
+        out
     }
 
     pub async fn status(&self) -> EngineStatus {
         let _ = self.ensure_started().await;
         let settings = self.settings.lock().await.clone();
         let hash_mb = settings.hash_mb;
-        let (found, searched) = Self::found();
+        let (found, searched) = self.found();
         let name = self.running.lock().await.as_ref().map(|r| r.name.clone());
         let version = name.as_deref().and_then(stockfish_version);
         // Only worth asking for Stockfish, or when there is no engine yet.
-        let latest = if name.is_none() || name.as_deref().is_some_and(|n| n.starts_with("Stockfish")) {
+        let latest = if self.kind == Kind::Stockfish && (name.is_none() || name.as_deref().is_some_and(|n| n.starts_with("Stockfish"))) {
             self.latest_stockfish().await
         } else {
             None
@@ -320,7 +435,11 @@ impl Engine {
         let update_available = matches!((&version, &latest), (Some(v), Some(l)) if older(v, &l.version));
         let running = self.running.lock().await;
         let error = self.last_error.lock().await.clone();
+        let path_now = running.as_ref().map(|r| r.path.clone()).or_else(|| settings.path.clone()).or_else(|| found.first().cloned());
+        let networks = self.networks(path_now.as_deref());
+        let weights = settings.weights.clone().or_else(|| networks.first().cloned());
         EngineStatus {
+            kind: self.kind,
             available: running.is_some(),
             path: running.as_ref().map(|r| r.path.clone()).or_else(|| settings.path.clone()).or_else(|| found.first().cloned()),
             name: running.as_ref().map(|r| r.name.clone()),
@@ -339,6 +458,8 @@ impl Engine {
             budget_mb: crate::db::server_budget_mb(),
             database_mb: crate::db::db_limit_mb(hash_mb),
             max_hash_mb: crate::db::max_engine_hash_mb(),
+            weights,
+            networks,
         }
     }
 
@@ -346,10 +467,23 @@ impl Engine {
     /// found in the standard locations (see the module note); `None` keeps
     /// the current choice.
     pub async fn configure(&self, path: Option<String>, threads: Option<u32>, hash_mb: Option<u32>) -> Result<EngineStatus, String> {
+        self.configure_all(path, threads, hash_mb, None, None).await
+    }
+
+    /// As `configure`, with Lc0's network and backend. The network must be one
+    /// of those found in the standard places, for the reason the engine must.
+    pub async fn configure_all(
+        &self,
+        path: Option<String>,
+        threads: Option<u32>,
+        hash_mb: Option<u32>,
+        weights: Option<String>,
+        backend: Option<String>,
+    ) -> Result<EngineStatus, String> {
         {
             let mut s = self.settings.lock().await;
             if let Some(p) = path {
-                let (found, _) = Self::found();
+                let (found, _) = self.found();
                 if !found.contains(&p) {
                     return Err(format!(
                         "{p} is not one of the engines found in the standard locations. \
@@ -359,8 +493,27 @@ impl Engine {
                 }
                 s.path = Some(p);
             }
-            if let Some(t) = threads { s.threads = t.clamp(1, 256); }
-            if let Some(h) = hash_mb { s.hash_mb = h.clamp(16, crate::db::max_engine_hash_mb()); }
+            let min_threads = if self.kind == Kind::Lc0 { 0 } else { 1 };
+            if let Some(t) = threads { s.threads = t.clamp(min_threads, 256); }
+            if let Some(h) = hash_mb {
+                if self.kind == Kind::Stockfish { s.hash_mb = h.clamp(16, crate::db::max_engine_hash_mb()); }
+            }
+            if let Some(w) = weights {
+                let path_now = s.path.clone().or_else(|| self.found().0.into_iter().next());
+                if !self.networks(path_now.as_deref()).contains(&w) {
+                    return Err(format!(
+                        "{w} is not a network file in the standard places. Put it in {} or name it in {} on the server.",
+                        self.data_dir.join("networks").display(),
+                        self.settings_file.display()
+                    ));
+                }
+                s.weights = Some(w);
+            }
+            if let Some(b) = backend {
+                if b.is_empty() { s.backend = None; }
+                else if valid_backend(&b) { s.backend = Some(b); }
+                else { return Err(format!("{b:?} is not a backend name")); }
+            }
             let json = serde_json::to_string_pretty(&*s).map_err(|e| e.to_string())?;
             std::fs::write(&self.settings_file, json)
                 .map_err(|e| format!("{}: {e}", self.settings_file.display()))?;
@@ -392,7 +545,7 @@ impl Engine {
             *running = None; // it died; start another
         }
         let settings = self.settings.lock().await.clone();
-        let path = match settings.path.clone().or_else(|| Self::found().0.into_iter().next()) {
+        let path = match settings.path.clone().or_else(|| self.found().0.into_iter().next()) {
             Some(p) => p,
             None => {
                 let msg = "No chess engine found on the server.".to_string();
@@ -400,7 +553,11 @@ impl Engine {
                 return Err(msg);
             }
         };
-        match start(&path, &settings).await {
+        let mut settings = settings;
+        if self.kind == Kind::Lc0 && settings.weights.is_none() {
+            settings.weights = self.networks(Some(&path)).into_iter().next();
+        }
+        match start(&path, &settings, self.kind).await {
             Ok((child, stdin, stdout, name)) => {
                 let search = self.search.clone();
                 let idle = self.idle.clone();
@@ -582,7 +739,7 @@ async fn send(stdin: &mut ChildStdin, line: &str) -> Result<(), String> {
 
 /// Spawn the engine and run the UCI handshake. Returns the process, its
 /// pipes and the name it reports.
-async fn start(path: &str, settings: &EngineSettings) -> Result<(Child, ChildStdin, BufReader<ChildStdout>, String), String> {
+async fn start(path: &str, settings: &EngineSettings, kind: Kind) -> Result<(Child, ChildStdin, BufReader<ChildStdout>, String), String> {
     let mut child = Command::new(path)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -606,8 +763,26 @@ async fn start(path: &str, settings: &EngineSettings) -> Result<(Child, ChildStd
             if let Some(n) = t.strip_prefix("id name ") { name = n.to_string(); }
             if t == "uciok" { break; }
         }
-        send(&mut stdin, &format!("setoption name Threads value {}", settings.threads)).await?;
-        send(&mut stdin, &format!("setoption name Hash value {}", settings.hash_mb)).await?;
+        // Win/draw/loss with every line: Lc0's own view of a position, and
+        // Stockfish's estimate of it.
+        send(&mut stdin, "setoption name UCI_ShowWDL value true").await?;
+        match kind {
+            Kind::Stockfish => {
+                send(&mut stdin, &format!("setoption name Threads value {}", settings.threads)).await?;
+                send(&mut stdin, &format!("setoption name Hash value {}", settings.hash_mb)).await?;
+            }
+            Kind::Lc0 => {
+                if let Some(w) = &settings.weights {
+                    send(&mut stdin, &format!("setoption name WeightsFile value {w}")).await?;
+                }
+                if let Some(b) = settings.backend.as_deref().filter(|b| valid_backend(b)) {
+                    send(&mut stdin, &format!("setoption name Backend value {b}")).await?;
+                }
+                if settings.threads > 0 {
+                    send(&mut stdin, &format!("setoption name Threads value {}", settings.threads)).await?;
+                }
+            }
+        }
         send(&mut stdin, "isready").await?;
         loop {
             line.clear();
@@ -618,7 +793,7 @@ async fn start(path: &str, settings: &EngineSettings) -> Result<(Child, ChildStd
         }
         Ok::<String, String>(name)
     };
-    let name = tokio::time::timeout(HANDSHAKE, handshake)
+    let name = tokio::time::timeout(kind.handshake(), handshake)
         .await
         .map_err(|_| "no answer to the UCI handshake — is it a chess engine?".to_string())??;
     Ok((child, stdin, stdout, if name.is_empty() { path.to_string() } else { name }))
@@ -658,6 +833,8 @@ async fn read_engine(
                         if !s.white_to_move {
                             l.eval_cp = l.eval_cp.map(|c| -c);
                             l.mate = l.mate.map(|m| -m);
+                            // The engine's win is Black's here: swap ends.
+                            l.wdl = l.wdl.map(|[w, d, b]| [b, d, w]);
                         }
                         let last_of_set = l.multipv == s.want;
                         s.lines.insert(l.multipv, l);
@@ -705,6 +882,7 @@ fn parse_info(t: &str) -> Option<Info> {
     let toks: Vec<&str> = it.collect();
     let mut info = Info { depth: None, nodes: None, nps: None, line: None };
     let (mut multipv, mut cp, mut mate, mut bound, mut pv) = (1u32, None, None, false, Vec::new());
+    let mut wdl: Option<[u32; 3]> = None;
     let mut i = 0;
     while i < toks.len() {
         match toks[i] {
@@ -712,6 +890,11 @@ fn parse_info(t: &str) -> Option<Info> {
             "nodes" => { info.nodes = toks.get(i + 1).and_then(|v| v.parse().ok()); i += 2; }
             "nps" => { info.nps = toks.get(i + 1).and_then(|v| v.parse().ok()); i += 2; }
             "multipv" => { multipv = toks.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(1); i += 2; }
+            "wdl" => {
+                let n = |k: usize| toks.get(i + k).and_then(|v| v.parse::<u32>().ok());
+                if let (Some(w), Some(d), Some(l)) = (n(1), n(2), n(3)) { wdl = Some([w, d, l]); }
+                i += 4;
+            }
             "score" => {
                 match toks.get(i + 1) {
                     Some(&"cp") => cp = toks.get(i + 2).and_then(|v| v.parse().ok()),
@@ -727,7 +910,7 @@ fn parse_info(t: &str) -> Option<Info> {
         }
     }
     if !pv.is_empty() && !bound && (cp.is_some() || mate.is_some()) {
-        info.line = Some(Line { multipv, eval_cp: if mate.is_some() { None } else { cp }, mate, pv_uci: pv });
+        info.line = Some(Line { multipv, eval_cp: if mate.is_some() { None } else { cp }, mate, pv_uci: pv, wdl });
     }
     Some(info)
 }
@@ -917,6 +1100,50 @@ mod tests {
         let b = engine.bench(Some(1), Some(16), Some(8)).await.unwrap();
         println!("bench: {b:?}");
         assert!(b.nodes > 0 && b.nps > 0);
+        engine.shutdown().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Lc0 where it is built: `LC0=/path/to/lc0 LC0_NET=/path/to/net.pb.gz
+    /// cargo test -- --ignored real_lc0`.
+    #[tokio::test]
+    #[ignore]
+    async fn real_lc0() {
+        let (Ok(bin), Ok(net)) = (std::env::var("LC0"), std::env::var("LC0_NET")) else {
+            panic!("set LC0 and LC0_NET");
+        };
+        let dir = std::env::temp_dir().join(format!("lpdo-lc0-test-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("networks")).unwrap();
+        let net_copy = dir.join("networks").join(Path::new(&net).file_name().unwrap());
+        std::fs::copy(&net, &net_copy).unwrap();
+        std::fs::write(dir.join("lc0.json"), serde_json::json!({ "path": bin }).to_string()).unwrap();
+
+        let engine = Engine::new_kind(&dir, Kind::Lc0);
+        let status = engine.status().await;
+        assert!(status.available, "{:?}", status.error);
+        assert_eq!(status.networks, vec![net_copy.to_string_lossy().to_string()]);
+        println!("engine: {:?}, network {:?}", status.name, status.weights);
+
+        // After 1.e4: Black to move, so the engine's view is flipped to White's.
+        let fen = clean_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").unwrap();
+        let (gen, _, mut rx) = engine.analyse(&fen, None, 3).await.unwrap();
+        let mut last = None;
+        let until = std::time::Instant::now() + Duration::from_secs(20);
+        while std::time::Instant::now() < until {
+            match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
+                Ok(Ok(s)) if s.gen == gen => { let enough = s.nodes > 100_000 && s.lines.len() == 3; last = Some(s); if enough { break; } }
+                Ok(Ok(_)) => {}
+                _ => break,
+            }
+        }
+        let s = last.expect("snapshots");
+        for l in &s.lines {
+            println!("  {:?} wdl(W,D,B) {:?} cp {:?}", l.pv_uci.first(), l.wdl, l.eval_cp);
+        }
+        println!("depth {} nodes {} nps {}", s.depth, s.nodes, s.nps);
+        let wdl = s.lines[0].wdl.expect("wdl");
+        assert_eq!(wdl.iter().sum::<u32>(), 1000);
+        engine.stop(gen).await;
         engine.shutdown().await;
         let _ = std::fs::remove_dir_all(&dir);
     }

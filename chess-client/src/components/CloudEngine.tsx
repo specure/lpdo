@@ -24,7 +24,7 @@ function parseNote(note: string): { mark: string; opp: string; oppStrong: string
   return m ? { mark: m[1], opp: m[2], oppStrong: m[3] } : null;
 }
 
-type EngineSource = "chessdb" | "lichess" | "local";
+type EngineSource = "chessdb" | "lichess" | "stockfish" | "lc0";
 type EngineStatus = "loading" | "ok" | "unknown" | "offline" | "capped";
 
 // Lichess (Stockfish) cloud eval — a few deep PV lines, White-relative eval + depth.
@@ -158,7 +158,11 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
   // versioned key so flipping the default from chessdb actually takes effect on
   // existing installs (the old key was auto-written on every load). An explicit
   // toggle to chessdb still persists.
-  const [engineSource, setEngineSource] = useState<EngineSource>(() => (() => { const v = localStorage.getItem("engineSourceV2"); return v === "chessdb" || v === "local" ? v : "lichess"; })());
+  const [engineSource, setEngineSource] = useState<EngineSource>(() => (() => {
+    const v = localStorage.getItem("engineSourceV2");
+    if (v === "local") return "stockfish"; // the one local engine before Lc0
+    return v === "chessdb" || v === "stockfish" || v === "lc0" ? v : "lichess";
+  })());
   useEffect(() => { localStorage.setItem("engineSourceV2", engineSource); }, [engineSource]);
   const [engineMoves, setEngineMoves] = useState<CloudMove[]>([]);          // chessdb
   const [engineLines, setEngineLines] = useState<Record<string, string[]>>({}); // uci → continuation SAN (lazy)
@@ -198,7 +202,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
   // Lichess services through the daemon).
   useEffect(() => {
     engineAbort.current?.abort();
-    if (engineSource === "local") return; // LocalEngine asks the server itself
+    if (engineSource === "stockfish" || engineSource === "lc0") return; // LocalEngine asks the server itself
     const ctrl = new AbortController();
     engineAbort.current = ctrl;
     setEngineStatus("loading");
@@ -326,13 +330,13 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
     <>
       <div className="px-3 py-2 shrink-0 flex items-center justify-between border-b border-outline/40">
         <div className="flex gap-0.5">
-          {(["chessdb", "lichess", "local"] as EngineSource[]).map((src) => (
+          {(["chessdb", "lichess", "stockfish", "lc0"] as EngineSource[]).map((src) => (
             <button
               key={src}
               onClick={() => setEngineSource(src)}
               className={`h-6 px-2 rounded-full text-label-sm transition-colors duration-short3 ease-standard ${engineSource === src ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8"}`}
             >
-              {src === "chessdb" ? "chessdb" : src === "lichess" ? "Lichess" : "Local"}
+              {src === "chessdb" ? "chessdb" : src === "lichess" ? "Lichess" : src === "stockfish" ? "Stockfish" : "Lc0"}
             </button>
           ))}
         </div>
@@ -340,13 +344,14 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
           className="text-label-sm text-on-surface-variant/70 cursor-help"
           title={engineSource === "chessdb" ? "Free cloud analysis from the community database chessdb.cn"
             : engineSource === "lichess" ? "Cloud Stockfish evaluations from lichess.org — only popular positions are cached"
-            : "An engine installed on the LPDO server, analysing live"}
+            : engineSource === "stockfish" ? "Stockfish installed on the LPDO server, analysing live"
+            : "Lc0 (Leela Chess Zero) on the LPDO server: a neural network on its graphics card, giving win/draw/loss"}
         >
           via {engineSource === "chessdb" ? "chessdb.cn" : engineSource === "lichess" ? "lichess.org" : "the server"}
         </span>
       </div>
-      {engineSource === "local" ? (
-        <LocalEngine fen={fen} history={history} lineCount={lichessLineCount} onPlayLine={onPlayLine} />
+      {engineSource === "stockfish" || engineSource === "lc0" ? (
+        <LocalEngine kind={engineSource} fen={fen} history={history} lineCount={lichessLineCount} onPlayLine={onPlayLine} />
       ) : engineStatus === "loading" ? (
         <div className="p-3 text-center text-on-surface-variant text-body-sm">Analysing…</div>
       ) : engineStatus === "capped" ? (
@@ -354,7 +359,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
         // Cloud engines): past it, positions stay on this server.
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center text-on-surface-variant text-body-sm px-3">
           <span>The cloud engines are asked only in the opening, up to the move set under Maintenance → Others → Cloud engines. Positions later in a game stay on your server.</span>
-          <button onClick={() => setEngineSource("local")} className="h-8 px-3 rounded-full text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard">Analyse with the Local engine</button>
+          <button onClick={() => setEngineSource("stockfish")} className="h-8 px-3 rounded-full text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard">Analyse with Stockfish on the server</button>
         </div>
       ) : engineStatus === "offline" ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center text-on-surface-variant text-body-sm px-3">

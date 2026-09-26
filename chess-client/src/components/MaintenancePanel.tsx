@@ -386,6 +386,126 @@ function EngineSection() {
   );
 }
 
+// ── Lc0 (#309) ───────────────────────────────────────────────────────────────
+// The second local engine, optional because it wants a graphics card. Its
+// program, network file and backend; the network and program are chosen among
+// those the server found, like Stockfish's.
+const LC0_BACKENDS = [
+  { value: "", label: "Automatic" },
+  { value: "cuda-fp16", label: "cuda-fp16 — NVIDIA, fastest" },
+  { value: "cuda", label: "cuda — NVIDIA, full precision" },
+  { value: "onnx-dml", label: "onnx-dml — any GPU on Windows" },
+  { value: "metal", label: "metal — Apple" },
+  { value: "opencl", label: "opencl — older networks only" },
+  { value: "eigen", label: "eigen — processor, slow" },
+];
+
+interface Lc0Info {
+  available: boolean;
+  path: string | null;
+  name: string | null;
+  error: string | null;
+  settings: { path: string | null; threads: number; weights: string | null; backend: string | null };
+  found: string[];
+  networks: string[];
+  weights: string | null;
+  settings_file: string;
+}
+
+function Lc0Section() {
+  const [info, setInfo] = useState<Lc0Info | null>(null);
+  const [threads, setThreads] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  function take(d: Lc0Info) { setInfo(d); setThreads(String(d.settings.threads)); }
+  useEffect(() => {
+    fetch(apiUrl("/engine?engine=lc0"))
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
+      .then(take)
+      .catch((e) => setError(String(e)));
+  }, []);
+  async function save(patch: { path?: string; weights?: string; backend?: string; threads?: number }) {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      const r = await fetch(apiUrl("/engine?engine=lc0"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
+      take((await r.json()) as Lc0Info);
+      setNote("Saved — Lc0 restarted with the new settings.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const t = parseInt(threads, 10);
+  const select = "flex-1 min-w-0 h-8 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface";
+  const name = (p: string) => p.split(/[\\/]/).pop();
+  return (
+    <SectionCard title="Lc0" status={info ? (info.available ? info.name ?? "running" : "not installed") : undefined}>
+      <p className="text-body-sm text-on-surface-variant">
+        Leela Chess Zero, the second engine on the server: a neural network that gives its chances as win,
+        draw and loss. Optional — it needs a graphics card to be fast.
+      </p>
+      {info && !info.available && (
+        <p className="text-body-sm text-on-surface-variant">
+          Lc0 was not found on the server. The Engine panel's <em>Lc0</em> tab says how to install it.
+        </p>
+      )}
+      {info && info.found.length > 0 && (
+        <label className="flex items-center gap-2 text-body-sm text-on-surface">
+          <span className="w-16 shrink-0">Program</span>
+          <select value={info.path ?? ""} onChange={(e) => void save({ path: e.target.value })} disabled={busy} className={`${select} font-mono`}>
+            {info.found.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </label>
+      )}
+      {info && (
+        <label className="flex items-center gap-2 text-body-sm text-on-surface">
+          <span className="w-16 shrink-0">Network</span>
+          {info.networks.length > 0 ? (
+            <select value={info.weights ?? ""} onChange={(e) => void save({ weights: e.target.value })} disabled={busy} className={`${select} font-mono`}>
+              {info.networks.map((p) => <option key={p} value={p} title={p}>{name(p)}</option>)}
+            </select>
+          ) : (
+            <span className="text-on-surface-variant">none found — put a .pb.gz file in the server's networks folder</span>
+          )}
+        </label>
+      )}
+      {info && (
+        <div className="flex items-center gap-4 text-body-sm text-on-surface flex-wrap">
+          <label className="flex items-center gap-2 flex-1 min-w-60">
+            <span className="w-16 shrink-0">Backend</span>
+            <select value={info.settings.backend ?? ""} onChange={(e) => void save({ backend: e.target.value })} disabled={busy} className={select}>
+              {LC0_BACKENDS.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
+            </select>
+          </label>
+          <label className="flex items-center gap-2">
+            <span>Threads</span>
+            <input type="number" min={0} max={64} value={threads} onChange={(e) => setThreads(e.target.value)}
+              className="w-16 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
+          </label>
+          <ActionButton onClick={() => void save({ threads: t })} disabled={busy || !Number.isFinite(t) || t === info.settings.threads}>Save</ActionButton>
+        </div>
+      )}
+      <p className="text-label-sm text-on-surface-variant">
+        Threads 0 lets Lc0 choose: its work is on the graphics card, so a few search threads suffice.
+        Networks are found in the data directory's networks folder and beside the program; another file
+        can be named in {info ? <span className="font-mono">{info.settings_file}</span> : "lc0.json"} on the server.
+      </p>
+      {note && <p className="text-body-sm text-success">{note}</p>}
+      {error && <p className="text-body-sm text-error">{error}</p>}
+      {info?.error && !info.available && <p className="text-body-sm text-error">{info.error}</p>}
+    </SectionCard>
+  );
+}
+
 // ── Cloud engines ─────────────────────────────────────────────────────────────
 // How far into a game chessdb.cn and Lichess are asked. A lookup sends the
 // position there (and chessdb keeps what it is asked), so past the opening the
@@ -1639,6 +1759,7 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
           <div className={`${grid} ${tab === "others" ? "" : "hidden"}`}>
             <ServerConnectionSection status={status} connection={connection} />
             <EngineSection />
+            <Lc0Section />
             <CloudEnginesSection />
             <BackupSection />
             <DiagnosticsSection />

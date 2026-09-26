@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { apiUrl, engineAnalyseUrl, type EngineHistory } from "../api";
+import { apiUrl, engineAnalyseUrl, type EngineHistory, type EngineKind } from "../api";
 import ExternalLinkIcon from "./ExternalLinkIcon";
 import { PvLine, pvToSan, fmtLichess, moverScore, moveMark, evalColor } from "./CloudEngine";
 
@@ -19,6 +19,8 @@ interface EngineStatus {
   searched: string[];
   settings_file: string;
   os: string;
+  networks: string[];
+  weights: string | null;
   version: string | null;
   latest: { version: string; url: string } | null;
   update_available: boolean;
@@ -29,18 +31,22 @@ interface Snapshot {
   depth: number;
   nodes: number;
   nps: number;
-  lines: { multipv: number; eval_cp: number | null; mate: number | null; pv_uci: string[] }[];
+  /** `wdl`: White's win, the draw, Black's win, in permille. */
+  lines: { multipv: number; eval_cp: number | null; mate: number | null; pv_uci: string[]; wdl?: [number, number, number] | null }[];
   done: boolean;
   /** Remembered from an earlier search of this position. */
   cached?: boolean;
 }
 
 export default function LocalEngine({
+  kind = "stockfish",
   fen,
   history,
   lineCount,
   onPlayLine,
 }: {
+  /** Which of the server's engines: Stockfish, or Lc0 (shown as win/draw/loss). */
+  kind?: EngineKind;
   fen: string;
   /** How the position arose — lets the engine see repetitions. */
   history?: EngineHistory;
@@ -61,7 +67,7 @@ export default function LocalEngine({
     setChecking(true);
     setStatusError(null);
     try {
-      const res = await fetch(apiUrl("/engine"));
+      const res = await fetch(apiUrl(`/engine?engine=${kind}`));
       if (!res.ok) throw new Error((await res.text()) || `${res.status}`);
       setStatus((await res.json()) as EngineStatus);
     } catch (e) {
@@ -70,7 +76,7 @@ export default function LocalEngine({
       setChecking(false);
     }
   }
-  useEffect(() => { void loadStatus(); }, []);
+  useEffect(() => { setStatus(null); void loadStatus(); }, [kind]);
 
   // Analyse the position on the board: a new stream per position, a moment
   // after the board settles. Closing the stream stops the search on the
@@ -85,7 +91,7 @@ export default function LocalEngine({
     setStreamError(null);
     if (!status?.available || !running) return;
     const t = window.setTimeout(() => {
-      const es = new EventSource(engineAnalyseUrl(fen, lineCount, historyRef.current));
+      const es = new EventSource(engineAnalyseUrl(fen, lineCount, historyRef.current, kind));
       esRef.current = es;
       es.onmessage = (ev) => {
         const s = JSON.parse(ev.data) as Snapshot;
@@ -105,7 +111,7 @@ export default function LocalEngine({
       esRef.current?.close();
       esRef.current = null;
     };
-  }, [fen, historyKey, lineCount, status?.available, running]);
+  }, [fen, historyKey, lineCount, status?.available, running, kind]);
 
   // A new position starts a new search, even if the last one was stopped.
   useEffect(() => { setRunning(true); }, [fen]);
@@ -115,6 +121,9 @@ export default function LocalEngine({
   }
   if (!status) {
     return <div className="p-3 text-center text-on-surface-variant text-body-sm">Looking for an engine…</div>;
+  }
+  if (kind === "lc0" && (!status.available || status.networks.length === 0)) {
+    return <Lc0Guide status={status} checking={checking} onCheck={() => void loadStatus()} />;
   }
   if (!status.available) {
     return <InstallGuide status={status} checking={checking} onCheck={() => void loadStatus()} />;
@@ -163,12 +172,94 @@ export default function LocalEngine({
             <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface-variant">
               <PvLine startFen={fen} sans={pvToSan(fen, l.pv_uci)} onPick={onPlayLine} mark={moveMark(best, scores[i]) || undefined} />
             </div>
-            <span className={`shrink-0 w-14 text-right tabular-nums font-mono text-body-sm ${evalColor(scores[i])}`}>
-              {fmtLichess({ evalCp: l.eval_cp, mate: l.mate, pvUci: l.pv_uci })}
-            </span>
+            {kind === "lc0" && l.wdl
+              ? <WdlCell wdl={l.wdl} />
+              : (
+                <span className={`shrink-0 w-14 text-right tabular-nums font-mono text-body-sm ${evalColor(scores[i])}`}>
+                  {fmtLichess({ evalCp: l.eval_cp, mate: l.mate, pvUci: l.pv_uci })}
+                </span>
+              )}
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+/** Lc0's view of a line: White wins, draw, Black wins, as percentages, with a
+ *  bar in the board's colours — its evaluation is a probability, not pawns. */
+function WdlCell({ wdl }: { wdl: [number, number, number] }) {
+  const [w, d, b] = wdl.map((v) => Math.round(v / 10));
+  return (
+    <span
+      className="shrink-0 w-32 flex items-center gap-1.5 justify-end tabular-nums font-mono text-body-sm text-on-surface"
+      title={`White wins ${w}%, draw ${d}%, Black wins ${b}%`}
+    >
+      <span>{w}·{d}·{b}</span>
+      <span className="w-10 h-2 flex rounded-sm overflow-hidden border border-outline/60">
+        <span className="bg-white" style={{ width: `${wdl[0] / 10}%` }} />
+        <span className="bg-outline/60" style={{ width: `${wdl[1] / 10}%` }} />
+        <span className="bg-neutral-900" style={{ width: `${wdl[2] / 10}%` }} />
+      </span>
+    </span>
+  );
+}
+
+/** No Lc0, or no network for it: what it needs, and where things go. */
+function Lc0Guide({ status, checking, onCheck }: { status: EngineStatus; checking: boolean; onCheck: () => void }) {
+  const code = "block font-mono text-label-md bg-surface-container rounded-sm px-2 py-1 mt-1 select-all";
+  const netDir = status.settings_file.replace(/lc0\.json$/, "networks");
+  return (
+    <div className="flex-1 overflow-y-auto p-3 space-y-3 text-body-sm text-on-surface">
+      <div>
+        <div className="text-title-sm">{status.available ? "Lc0 has no network" : "No Lc0 on the server"}</div>
+        <p className="text-on-surface-variant mt-1">
+          Lc0 (Leela Chess Zero) judges a position with a neural network and gives its chances as win, draw
+          and loss. It is optional: it needs a graphics card to be fast — with an NVIDIA card it analyses
+          tens of thousands of positions a second, on a processor a few hundred.
+        </p>
+      </div>
+      {!status.available && (
+        <div>
+          <div className="text-label-lg">Install Lc0 on the server</div>
+          {status.os === "windows" && (
+            <p className="text-on-surface-variant mt-1">
+              Download it from lczero.org — the CUDA build for an NVIDIA card, the onnx-dml build for any
+              other — and put lc0.exe in C:\Program Files\Lc0.
+            </p>
+          )}
+          {status.os === "macos" && <code className={code}>brew install lc0</code>}
+          {status.os === "linux" && (
+            <p className="text-on-surface-variant mt-1">
+              Lc0 publishes no Linux download; it is built from source, with the backend for the graphics
+              card, and installed as /usr/local/bin/lc0. The guide has the steps.
+            </p>
+          )}
+        </div>
+      )}
+      <div>
+        <div className="text-label-lg">A network</div>
+        <p className="text-on-surface-variant mt-1">
+          Download one from lczero.org (Play → Networks) — a medium network such as t3-512x15x16h suits a
+          modern card — and put the .pb.gz file on the server in
+        </p>
+        <code className={code}>{netDir}</code>
+      </div>
+      {status.error && status.path && <p className="text-error">{status.error}</p>}
+      <button
+        onClick={() => void openUrl("https://github.com/specure/lpdo/blob/main/docs/chess-engine.md#leela-chess-zero")}
+        className="text-primary hover:underline inline-flex items-center text-body-sm"
+      >
+        The guide: installing Lc0<ExternalLinkIcon />
+      </button>
+      <div />
+      <button
+        onClick={onCheck}
+        disabled={checking}
+        className="h-8 px-3 rounded-full bg-primary text-on-primary text-label-md hover:brightness-110 disabled:opacity-50 transition-all duration-short3 ease-standard"
+      >
+        {checking ? "Checking…" : "Check again"}
+      </button>
     </div>
   );
 }

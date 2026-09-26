@@ -52,6 +52,8 @@ pub struct AppState {
     pub setup: Arc<std::sync::Mutex<SetupPhase>>,
     /// The local UCI engine (#309), started on first use.
     pub engine: Arc<crate::engine::Engine>,
+    /// The second local engine, Lc0 (optional: it wants a GPU).
+    pub lc0: Arc<crate::engine::Engine>,
 }
 
 /// Phase of the wizard-driven first-run setup pipeline. `Idle` covers both
@@ -1753,10 +1755,25 @@ async fn job_events_handler(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
-// ── Local engine (#309) ───────────────────────────────────────────────────────
+// ── Local engines (#309) ──────────────────────────────────────────────────────
+// Stockfish and Lc0. Every endpoint takes `engine=lc0` for the second one;
+// without it, Stockfish — so clients from before Lc0 keep working.
 
-async fn engine_status_handler(State(state): State<AppState>) -> ApiResult<crate::engine::EngineStatus> {
-    Ok(Json(state.engine.status().await))
+#[derive(Deserialize, Default)]
+struct WhichEngine {
+    engine: Option<String>,
+}
+
+fn pick_engine(state: &AppState, which: &WhichEngine) -> std::result::Result<Arc<crate::engine::Engine>, (StatusCode, String)> {
+    match crate::engine::Kind::parse(which.engine.as_deref()) {
+        Some(crate::engine::Kind::Stockfish) => Ok(state.engine.clone()),
+        Some(crate::engine::Kind::Lc0) => Ok(state.lc0.clone()),
+        None => Err((StatusCode::BAD_REQUEST, "engine is stockfish or lc0".to_string())),
+    }
+}
+
+async fn engine_status_handler(State(state): State<AppState>, Query(w): Query<WhichEngine>) -> ApiResult<crate::engine::EngineStatus> {
+    Ok(Json(pick_engine(&state, &w)?.status().await))
 }
 
 #[derive(Deserialize)]
@@ -1764,24 +1781,30 @@ struct EngineConfigBody {
     path: Option<String>,
     threads: Option<u32>,
     hash_mb: Option<u32>,
+    /// Lc0 only: the network file and the backend.
+    weights: Option<String>,
+    backend: Option<String>,
 }
 
 async fn engine_configure_handler(
     State(state): State<AppState>,
+    Query(w): Query<WhichEngine>,
     Json(body): Json<EngineConfigBody>,
 ) -> ApiResult<crate::engine::EngineStatus> {
-    let status = state
-        .engine
-        .configure(body.path, body.threads, body.hash_mb)
+    let engine = pick_engine(&state, &w)?;
+    let status = engine
+        .configure_all(body.path, body.threads, body.hash_mb, body.weights, body.backend)
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
-    // The database gets what the engine's hash leaves of the memory budget.
-    let hash = status.settings.hash_mb;
-    state
-        .writer
-        .run(move |c| crate::db::apply_memory_limit(c, hash))
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // The database gets what Stockfish's hash leaves of the memory budget.
+    if status.kind == crate::engine::Kind::Stockfish {
+        let hash = status.settings.hash_mb;
+        state
+            .writer
+            .run(move |c| crate::db::apply_memory_limit(c, hash))
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
     Ok(Json(status))
 }
 
@@ -1794,6 +1817,7 @@ struct EngineAnalyseQuery {
     moves: Option<String>,
     #[serde(default = "default_engine_lines")]
     lines: u32,
+    engine: Option<String>,
 }
 fn default_engine_lines() -> u32 { 3 }
 
@@ -1825,12 +1849,12 @@ async fn engine_analyse_handler(
         }
         _ => None,
     };
-    let (gen, remembered, rx) = state
-        .engine
+    let engine = pick_engine(&state, &WhichEngine { engine: q.engine.clone() })?;
+    let (gen, remembered, rx) = engine
         .analyse(&fen, history, q.lines)
         .await
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e))?;
-    let guard = Arc::new(StopOnDrop { engine: state.engine.clone(), gen });
+    let guard = Arc::new(StopOnDrop { engine: engine.clone(), gen });
     let first = tokio_stream::iter(remembered);
     let stream = first.chain(tokio_stream::wrappers::BroadcastStream::new(rx)
         .filter_map(|r| r.ok()))
@@ -1854,19 +1878,20 @@ struct EngineBenchBody {
 /// Stockfish's benchmark with the given (or current) threads and hash.
 async fn engine_bench_handler(
     State(state): State<AppState>,
+    Query(w): Query<WhichEngine>,
     Json(body): Json<EngineBenchBody>,
 ) -> ApiResult<crate::engine::BenchResult> {
-    state
-        .engine
+    pick_engine(&state, &w)?
         .bench(body.threads, body.hash_mb, body.depth)
         .await
         .map(Json)
         .map_err(|e| (StatusCode::CONFLICT, e))
 }
 
-async fn engine_stop_handler(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
-    let gen = state.engine.current_gen();
-    state.engine.stop(gen).await;
+async fn engine_stop_handler(State(state): State<AppState>, Query(w): Query<WhichEngine>) -> ApiResult<serde_json::Value> {
+    let engine = pick_engine(&state, &w)?;
+    let gen = engine.current_gen();
+    engine.stop(gen).await;
     Ok(Json(serde_json::json!({ "stopped": gen })))
 }
 
@@ -2439,7 +2464,8 @@ pub async fn run(
     let setup = Arc::new(std::sync::Mutex::new(SetupPhase::Idle));
     let engine = crate::engine::Engine::new(db_path.parent().unwrap_or(std::path::Path::new(".")));
     crate::cloud_eval::init_settings(db_path.parent().unwrap_or(std::path::Path::new(".")));
-    let state = AppState { reads, writer, jobs, db_path, setup, engine };
+    let lc0 = crate::engine::Engine::new_kind(db_path.parent().unwrap_or(std::path::Path::new(".")), crate::engine::Kind::Lc0);
+    let state = AppState { reads, writer, jobs, db_path, setup, engine, lc0 };
 
     // A leftover sentinel means a prior first-run setup didn't finish cleanly. The
     // unbootable case was already handled by the startup safety-net (which wipes +
