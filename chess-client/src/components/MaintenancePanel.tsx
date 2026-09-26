@@ -187,15 +187,18 @@ function ServerConnectionSection({ status, connection = "connected" }: {
 function VersionFooter({ status }: { status: StatusInfo | null }) {
   const [appVersion, setAppVersion] = useState<string | null>(null);
   useEffect(() => { getVersion().then(setAppVersion).catch(() => {}); }, []);
-  // The server's engine (#309), and whether a newer Stockfish is out. An
-  // older server has no /engine and simply shows none.
-  const [engine, setEngine] = useState<{ name: string | null; update_available: boolean; latest: { version: string; url: string } | null } | null>(null);
+  // The server's engines (#309) and whether a newer release is out; only
+  // those switched on. An older server has no /engine and shows none.
+  type FooterEngine = { name: string | null; enabled?: boolean; update_available: boolean; latest: { version: string; url: string } | null };
+  const [engines, setEngines] = useState<FooterEngine[]>([]);
   useEffect(() => {
     if (!status?.version) return;
-    fetch(apiUrl("/engine"))
-      .then((r) => (r.ok ? r.json() : null))
-      .then(setEngine)
-      .catch(() => {});
+    (async () => {
+      const on = await fetch(apiUrl("/engines")).then((r) => (r.ok ? r.json() : { stockfish: true, lc0: false })).catch(() => ({ stockfish: true, lc0: false }));
+      const kinds = (["stockfish", "lc0"] as const).filter((k) => on[k]);
+      const got = await Promise.all(kinds.map((k) => fetch(apiUrl(`/engine?engine=${k}`)).then((r) => (r.ok ? r.json() : null)).catch(() => null)));
+      setEngines(got.filter((e): e is FooterEngine => !!e && !!e.name));
+    })();
   }, [status?.version]);
   const server = status?.version
     ? `Server ${status.version}${status.api_version != null ? ` · API ${status.api_version}` : ""}`
@@ -203,20 +206,35 @@ function VersionFooter({ status }: { status: StatusInfo | null }) {
   return (
     <div className="pt-2 text-center text-label-md text-on-surface-variant select-text">
       LPDO {appVersion ?? "…"} · {server}
-      {engine?.name && <> · {engine.name}</>}
-      {engine?.update_available && engine.latest && (
-        <>
-          {" — "}
-          <button
-            onClick={() => void openUrl(engine.latest!.url)}
-            className="text-primary hover:underline inline-flex items-center"
-            title="A newer Stockfish is out. Install it on the server, in /usr/local/bin/stockfish on Linux."
-          >
-            Stockfish {engine.latest.version} is available<ExternalLinkIcon />
-          </button>
-        </>
-      )}
+      {engines.map((engine) => (
+        <span key={engine.name}>
+          {" · "}{engine.name}
+          {engine.update_available && engine.latest && (
+            <>
+              {" — "}
+              <button
+                onClick={() => void openUrl(engine.latest!.url)}
+                className="text-primary hover:underline inline-flex items-center"
+                title="A newer release is out. Install it on the server."
+              >
+                {engine.name?.split(" ")[0]} {engine.latest.version} is available<ExternalLinkIcon />
+              </button>
+            </>
+          )}
+        </span>
+      ))}
     </div>
+  );
+}
+
+/** An engine's on/off switch, at the top of its card: off, its tab leaves the
+ *  Engine panel and the server neither runs nor asks it. */
+function EngineSwitch({ label, on, busy, onChange }: { label: string; on: boolean; busy?: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <label className="flex items-center gap-2 text-body-sm text-on-surface cursor-pointer">
+      <input type="checkbox" checked={on} disabled={busy} onChange={(e) => onChange(e.target.checked)} className="accent-primary" />
+      <span>{label}</span>
+    </label>
   );
 }
 
@@ -226,11 +244,12 @@ function VersionFooter({ status }: { status: StatusInfo | null }) {
 // limited to engines the server found in the standard locations; another path
 // goes in engine.json on the server (see engine.rs for why).
 interface EngineInfo {
+  enabled?: boolean;
   available: boolean;
   path: string | null;
   name: string | null;
   error: string | null;
-  settings: { path: string | null; threads: number; hash_mb: number };
+  settings: { path: string | null; threads: number; hash_mb: number; max_depth: number };
   found: string[];
   settings_file: string;
   latest: { version: string; url: string } | null;
@@ -251,6 +270,7 @@ function EngineSection() {
   const [info, setInfo] = useState<EngineInfo | null>(null);
   const [threads, setThreads] = useState("");
   const [hash, setHash] = useState("");
+  const [depth, setDepth] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -259,6 +279,7 @@ function EngineSection() {
     setInfo(d);
     setThreads(String(d.settings.threads));
     setHash(String(d.settings.hash_mb));
+    setDepth(d.settings.max_depth == null ? "" : String(d.settings.max_depth));
   }
   useEffect(() => {
     fetch(apiUrl("/engine"))
@@ -267,7 +288,7 @@ function EngineSection() {
       .catch((e) => setError(String(e)));
   }, []);
 
-  async function save(patch: { path?: string; threads?: number; hash_mb?: number }) {
+  async function save(patch: { path?: string; threads?: number; hash_mb?: number; max_depth?: number; enabled?: boolean }) {
     setBusy(true);
     setError(null);
     setNote(null);
@@ -289,18 +310,23 @@ function EngineSection() {
 
   const t = parseInt(threads, 10);
   const h = parseInt(hash, 10);
-  const changed = !!info && ((Number.isFinite(t) && t !== info.settings.threads) || (Number.isFinite(h) && h !== info.settings.hash_mb));
+  const dp = parseInt(depth, 10);
+  const changed = !!info && ((Number.isFinite(t) && t !== info.settings.threads) || (Number.isFinite(h) && h !== info.settings.hash_mb)
+    || (Number.isFinite(dp) && dp !== info.settings.max_depth));
   const field = "w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums";
 
   return (
-    <SectionCard title="Chess engine" status={info ? (info.available ? info.name ?? "running" : "none found") : undefined}>
+    <SectionCard title="Stockfish" status={info ? (info.enabled === false ? "switched off" : info.available ? info.name ?? "running" : "none found") : undefined}>
       <p className="text-body-sm text-on-surface-variant">
-        The engine behind the Engine panel's <em>Local</em> analysis, running on the server. LPDO uses
-        an engine you install; Stockfish is free and among the strongest.
+        The engine behind the Engine panel's <em>Stockfish</em> tab, running on the server — the
+        strongest free engine, measured in centipawns. LPDO uses one you install; any UCI engine works.
       </p>
+      {info && (
+        <EngineSwitch label="Use Stockfish" on={info.enabled !== false} busy={busy} onChange={(on) => void save({ enabled: on })} />
+      )}
       {info && !info.available && (
         <p className="text-body-sm text-on-surface-variant">
-          No engine was found on the server. The Engine panel's <em>Local</em> tab shows how to install one.
+          No engine was found on the server. The Engine panel's <em>Stockfish</em> tab shows how to install one.
         </p>
       )}
       {info && info.found.length > 0 && (
@@ -327,8 +353,16 @@ function EngineSection() {
             <input type="number" min={16} max={info.max_hash_mb} step={256} value={hash} onChange={(e) => setHash(e.target.value)} className={field} />
             <span className="text-on-surface-variant">MB</span>
           </label>
+          <label className="flex items-center gap-2" title="The search stops at this depth; 0 searches until you move on (five minutes at most)">
+            <span>Stop at depth</span>
+            <input type="number" min={0} max={245} value={depth} onChange={(e) => setDepth(e.target.value)} className={field} />
+          </label>
           <ActionButton
-            onClick={() => void save({ threads: Number.isFinite(t) ? t : undefined, hash_mb: Number.isFinite(h) ? h : undefined })}
+            onClick={() => void save({
+              threads: Number.isFinite(t) ? t : undefined,
+              hash_mb: Number.isFinite(h) ? h : undefined,
+              max_depth: Number.isFinite(dp) ? dp : undefined,
+            })}
             disabled={busy || !changed}
           >
             Save
@@ -386,35 +420,354 @@ function EngineSection() {
   );
 }
 
+// ── Lc0 (#309) ───────────────────────────────────────────────────────────────
+// The second local engine, optional because it wants a graphics card. Its
+// program, network file and backend; the network and program are chosen among
+// those the server found, like Stockfish's.
+const LC0_BACKENDS = [
+  { value: "", label: "Automatic" },
+  { value: "cuda-fp16", label: "cuda-fp16 — NVIDIA, fastest" },
+  { value: "cuda", label: "cuda — NVIDIA, full precision" },
+  { value: "onnx-dml", label: "onnx-dml — any GPU on Windows" },
+  { value: "metal", label: "metal — Apple" },
+  { value: "opencl", label: "opencl — older networks only" },
+  { value: "eigen", label: "eigen — processor, slow" },
+];
+
+interface Lc0Info {
+  enabled?: boolean;
+  version?: string | null;
+  latest?: { version: string; url: string } | null;
+  update_available?: boolean;
+  os?: string;
+  available: boolean;
+  path: string | null;
+  name: string | null;
+  error: string | null;
+  settings: { path: string | null; threads: number; weights: string | null; backend: string | null; max_nodes: number; smart_pruning: boolean };
+  found: string[];
+  networks: string[];
+  weights: string | null;
+  settings_file: string;
+}
+
+function Lc0Section() {
+  const [info, setInfo] = useState<Lc0Info | null>(null);
+  const [threads, setThreads] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [nodes, setNodes] = useState("");
+  function take(d: Lc0Info) { setInfo(d); setThreads(String(d.settings.threads)); setNodes(d.settings.max_nodes == null ? "" : String(d.settings.max_nodes)); }
+  useEffect(() => {
+    fetch(apiUrl("/engine?engine=lc0"))
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
+      .then(take)
+      .catch((e) => setError(String(e)));
+  }, []);
+  async function save(patch: { path?: string; weights?: string; backend?: string; threads?: number; max_nodes?: number; smart_pruning?: boolean; enabled?: boolean }) {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      const r = await fetch(apiUrl("/engine?engine=lc0"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
+      take((await r.json()) as Lc0Info);
+      setNote("Saved — Lc0 restarted with the new settings.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const t = parseInt(threads, 10);
+  const n = parseInt(nodes.replace(/[\s,.]/g, ""), 10);
+  const select = "flex-1 min-w-0 h-8 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface";
+  const name = (p: string) => p.split(/[\\/]/).pop();
+  return (
+    <SectionCard title="Lc0" status={info ? (info.enabled === false ? "switched off" : info.available ? info.name ?? "running" : "not installed") : undefined}>
+      <p className="text-body-sm text-on-surface-variant">
+        Leela Chess Zero, the second engine on the server: a neural network that gives its chances as win,
+        draw and loss. Optional — it needs a graphics card to be fast.
+      </p>
+      {info && (
+        <EngineSwitch
+          label="Use Lc0 — switched off, it is not started and holds no graphics memory"
+          on={info.enabled !== false} busy={busy} onChange={(on) => void save({ enabled: on })}
+        />
+      )}
+      {info?.update_available && info.latest && (
+        <p className="text-body-sm text-on-surface">
+          Lc0 {info.latest.version} is available — this server runs {info.version}.{" "}
+          <button onClick={() => void openUrl(info.latest!.url)} className="text-primary hover:underline inline-flex items-center">
+            Download<ExternalLinkIcon />
+          </button>
+          {info.os === "linux" && (
+            <> On Linux it is built from source:{" "}
+              <button onClick={() => void openUrl("https://github.com/specure/lpdo/blob/main/docs/chess-engine.md#the-program")} className="text-primary hover:underline inline-flex items-center">
+                the build steps<ExternalLinkIcon />
+              </button>.
+            </>
+          )}
+        </p>
+      )}
+      {info && !info.available && (
+        <p className="text-body-sm text-on-surface-variant">
+          Lc0 was not found on the server. The Engine panel's <em>Lc0</em> tab says how to install it.
+        </p>
+      )}
+      {info && info.found.length > 0 && (
+        <label className="flex items-center gap-2 text-body-sm text-on-surface">
+          <span className="w-16 shrink-0">Program</span>
+          <select value={info.path ?? ""} onChange={(e) => void save({ path: e.target.value })} disabled={busy} className={`${select} font-mono`}>
+            {info.found.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </label>
+      )}
+      {info && (
+        <label className="flex items-center gap-2 text-body-sm text-on-surface">
+          <span className="w-16 shrink-0">Network</span>
+          {info.networks.length > 0 ? (
+            <select value={info.weights ?? ""} onChange={(e) => void save({ weights: e.target.value })} disabled={busy} className={`${select} font-mono`}>
+              {info.networks.map((p) => <option key={p} value={p} title={p}>{name(p)}</option>)}
+            </select>
+          ) : (
+            <span className="text-on-surface-variant">none found — put a .pb.gz file in the server's networks folder</span>
+          )}
+        </label>
+      )}
+      {info && (
+        <div className="flex items-center gap-4 text-body-sm text-on-surface flex-wrap">
+          <label className="flex items-center gap-2 flex-1 min-w-60">
+            <span className="w-16 shrink-0">Backend</span>
+            <select value={info.settings.backend ?? ""} onChange={(e) => void save({ backend: e.target.value })} disabled={busy} className={select}>
+              {LC0_BACKENDS.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
+            </select>
+          </label>
+          <label className="flex items-center gap-2">
+            <span>Threads</span>
+            <input type="number" min={0} max={64} value={threads} onChange={(e) => setThreads(e.target.value)}
+              className="w-16 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
+          </label>
+          <label className="flex items-center gap-2" title="The search stops after this many nodes; 0 searches until you move on (five minutes at most)">
+            <span>Stop at</span>
+            <input value={nodes} onChange={(e) => setNodes(e.target.value)} inputMode="numeric"
+              className="w-28 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
+            <span className="text-on-surface-variant">nodes</span>
+          </label>
+          <ActionButton
+            onClick={() => void save({ threads: Number.isFinite(t) ? t : undefined, max_nodes: Number.isFinite(n) ? n : undefined })}
+            disabled={busy || ((!Number.isFinite(t) || t === info.settings.threads) && (!Number.isFinite(n) || n === info.settings.max_nodes))}
+          >
+            Save
+          </ActionButton>
+        </div>
+      )}
+      {info && (
+        <label className="flex items-start gap-2 text-body-sm text-on-surface cursor-pointer">
+          <input type="checkbox" checked={info.settings.smart_pruning} disabled={busy}
+            onChange={(e) => void save({ smart_pruning: e.target.checked })} className="accent-primary mt-1" />
+          <span>
+            Stop early once the best move is settled (smart pruning)
+            <span className="block text-label-sm text-on-surface-variant">
+              Recommended off: the Engine panel shows several lines, and with it on the second and third stop
+              improving as soon as the first is certain. On suits wanting only the best move, or sparing the
+              graphics card — a search then often ends well before the node limit.
+            </span>
+          </span>
+        </label>
+      )}
+      <p className="text-label-sm text-on-surface-variant">
+        Threads 0 lets Lc0 choose: its work is on the graphics card, so a few search threads suffice.
+        Lc0 is limited by nodes, not depth — its "depth" is only the average length of the lines it
+        explores; 10 million nodes take about five minutes on a fast card.
+        
+        Networks are found in the data directory's networks folder and beside the program; another file
+        can be named in {info ? <span className="font-mono">{info.settings_file}</span> : "lc0.json"} on the server.
+      </p>
+      {note && <p className="text-body-sm text-success">{note}</p>}
+      {error && <p className="text-body-sm text-error">{error}</p>}
+      {info?.error && !info.available && <p className="text-body-sm text-error">{info.error}</p>}
+      {info?.available && info.networks.length > 0 && (
+        <Lc0Bench network={info.weights ? name(info.weights) ?? info.weights : "?"} backend={info.settings.backend || "automatic"} />
+      )}
+    </SectionCard>
+  );
+}
+
+// Lc0's standard benchmark (`lc0 benchmark`: 34 positions, 10 s each) with the
+// program, network and backend set above. Only the standard run gives figures
+// comparable between machines: Lc0's speed grows as each search goes on.
+interface Lc0BenchRow { at: number; network: string; backend: string; nps: number; nodes: number; ms: number }
+const LC0_BENCH_KEY = "lc0BenchResults";
+
+function Lc0Bench({ network, backend }: { network: string; backend: string }) {
+  const [rows, setRows] = useState<Lc0BenchRow[]>(() => {
+    try { return JSON.parse(localStorage.getItem(LC0_BENCH_KEY) ?? "[]") as Lc0BenchRow[]; } catch { return []; }
+  });
+  const [running, setRunning] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!running) return;
+    const started = Date.now();
+    setElapsed(0);
+    const t = window.setInterval(() => setElapsed(Math.round((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(t);
+  }, [running]);
+  async function run() {
+    setError(null);
+    setRunning(true);
+    try {
+      const r = await fetch(apiUrl("/engine/bench?engine=lc0"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
+      const b = (await r.json()) as { nps: number; nodes: number; ms: number };
+      setRows((prev) => {
+        const next = [{ at: Date.now(), network, backend, nps: b.nps, nodes: b.nodes, ms: b.ms }, ...prev].slice(0, 40);
+        try { localStorage.setItem(LC0_BENCH_KEY, JSON.stringify(next)); } catch { /* per-device convenience only */ }
+        return next;
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunning(false);
+    }
+  }
+  const mmss = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  return (
+    <div className="space-y-2 pt-2 border-t border-outline/40">
+      <div className="flex items-center gap-2">
+        <span className="text-title-sm">Benchmark</span>
+        <div className="flex-1" />
+        <ActionButton onClick={() => void run()} disabled={running}>Run the standard benchmark (about 6 min)</ActionButton>
+      </div>
+      <p className="text-label-sm text-on-surface-variant">
+        Lc0's own benchmark: 34 positions, ten seconds each — about six minutes, during which Lc0 does not
+        analyse. Only this full run gives figures comparable with other machines: Lc0 gets faster as each
+        search goes on.
+      </p>
+      {running && (
+        <p className="text-body-sm text-on-surface flex items-center gap-2">
+          <span className="inline-block w-3 h-3 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+          Running with {network}, backend {backend} — {mmss(elapsed)} of about 5:45
+        </p>
+      )}
+      {error && <p className="text-body-sm text-error">{error}</p>}
+      {rows.length > 0 && (
+        <table className="w-full text-body-sm tabular-nums">
+          <thead className="text-label-sm text-on-surface-variant">
+            <tr className="text-right">
+              <th className="text-left font-normal py-1">When</th>
+              <th className="text-left font-normal">Network</th>
+              <th className="text-left font-normal">Backend</th>
+              <th className="font-normal">Speed</th>
+              <th className="font-normal">Nodes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i} className="text-right border-t border-outline/20">
+                <td className="text-left py-0.5 whitespace-nowrap">{fmtWhen(r.at)}</td>
+                <td className="text-left font-mono truncate max-w-40" title={r.network}>{r.network}</td>
+                <td className="text-left">{r.backend}</td>
+                <td className="font-semibold">{r.nps >= 1000 ? `${(r.nps / 1000).toFixed(1)}k n/s` : `${r.nps} n/s`}</td>
+                <td>{(r.nodes / 1e6).toFixed(1)}M</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+// ── Engine panel ──────────────────────────────────────────────────────────────
+// How the Engine panel shows its analysis — per device, like the panel's
+// layout, since two people looking at one server may want different amounts.
+function EnginePanelSection() {
+  const read = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
+  const write = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* per-device convenience only */ } };
+  const [lines, setLines] = useState(() => {
+    const n = parseInt(read("lichessLineCount") ?? "", 10);
+    return Number.isFinite(n) && n > 0 ? Math.min(n, 20) : 5;
+  });
+  const [stats, setStats] = useState(() => read("lichessShowStats") !== "false");
+  const pill = (on: boolean) => `h-7 min-w-8 px-2 rounded-full text-label-md ${on ? "bg-primary text-on-primary" : "bg-surface-container text-on-surface-variant hover:bg-on-surface/8"}`;
+  return (
+    <SectionCard title="Engine panel">
+      <p className="text-body-sm text-on-surface-variant">
+        How the Engine panel shows its analysis, on this computer.
+      </p>
+      <div className="flex items-center gap-3 text-body-sm text-on-surface">
+        <span className="w-20 shrink-0">Lines</span>
+        <div className="flex items-center gap-1">
+          {[3, 5, 8, 12].map((n) => (
+            <button key={n} onClick={() => { setLines(n); write("lichessLineCount", String(n)); }} className={pill(lines === n)}>{n}</button>
+          ))}
+        </div>
+      </div>
+      <p className="text-label-sm text-on-surface-variant">
+        Candidate moves shown by Lichess, Stockfish and Lc0 — more lines take the local engines a little
+        longer to reach the same depth. chessdb always lists every move it knows.
+      </p>
+      <label className="flex items-start gap-2 text-body-sm text-on-surface cursor-pointer">
+        <input type="checkbox" checked={stats} onChange={(e) => { setStats(e.target.checked); write("lichessShowStats", String(e.target.checked)); }} className="accent-primary mt-1" />
+        <span>
+          Replies &amp; Strong for Lichess
+          <span className="block text-label-sm text-on-surface-variant">
+            chessdb-style columns — how many replies Lichess knows after each move, and how many of them
+            are strong. A few extra requests per move.
+          </span>
+        </span>
+      </label>
+      <p className="text-label-sm text-on-surface-variant">Takes effect the next time the Engine panel opens.</p>
+    </SectionCard>
+  );
+}
+
 // ── Cloud engines ─────────────────────────────────────────────────────────────
 // How far into a game chessdb.cn and Lichess are asked. A lookup sends the
 // position there (and chessdb keeps what it is asked), so past the opening the
 // server keeps positions to itself; the local engine analyses those.
 function CloudEnginesSection() {
   const [maxMove, setMaxMove] = useState<number | null>(null);
+  // Each service on or off; an older server has no switches and asks both.
+  const [services, setServices] = useState<{ chessdb: boolean; lichess: boolean }>({ chessdb: true, lichess: true });
   const [value, setValue] = useState("");
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     fetch(apiUrl("/cloud-eval/settings"))
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
-      .then((d: { max_move: number }) => { setMaxMove(d.max_move); setValue(String(d.max_move)); })
+      .then((d: { max_move: number; chessdb?: boolean; lichess?: boolean }) => {
+        setMaxMove(d.max_move); setValue(String(d.max_move));
+        setServices({ chessdb: d.chessdb !== false, lichess: d.lichess !== false });
+      })
       .catch((e) => setError(String(e)));
   }, []);
   const n = parseInt(value, 10);
-  async function save() {
+  async function save(patch: { max_move?: number; chessdb?: boolean; lichess?: boolean } = {}) {
     setError(null);
     setNote(null);
     try {
       const r = await fetch(apiUrl("/cloud-eval/settings"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ max_move: n }),
+        body: JSON.stringify({ max_move: maxMove ?? 20, ...services, ...(Number.isFinite(n) ? { max_move: n } : {}), ...patch }),
       });
       if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
-      const d = (await r.json()) as { max_move: number };
+      const d = (await r.json()) as { max_move: number; chessdb?: boolean; lichess?: boolean };
       setMaxMove(d.max_move);
       setValue(String(d.max_move));
+      setServices({ chessdb: d.chessdb !== false, lichess: d.lichess !== false });
       setNote("Saved.");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -426,8 +779,14 @@ function CloudEnginesSection() {
         The Engine panel's <em>chessdb</em> and <em>Lichess</em> analyses look the position up on those
         services, which sends it there — and chessdb keeps what it is asked. Past the opening that means
         the positions of the games you study, often your own. The server asks them only up to a move;
-        the <em>Local</em> engine analyses everything after it.
+        Stockfish and Lc0 on the server analyse everything after it.
       </p>
+      {maxMove != null && (
+        <div className="flex items-center gap-6">
+          <EngineSwitch label="Use chessdb.cn" on={services.chessdb} onChange={(on) => void save({ chessdb: on })} />
+          <EngineSwitch label="Use Lichess" on={services.lichess} onChange={(on) => void save({ lichess: on })} />
+        </div>
+      )}
       {maxMove != null && (
         <div className="flex items-center gap-2 text-body-sm text-on-surface">
           <span>Ask them up to move</span>
@@ -435,7 +794,7 @@ function CloudEnginesSection() {
             type="number" min={0} max={500} value={value} onChange={(e) => setValue(e.target.value)}
             className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums"
           />
-          <ActionButton onClick={() => void save()} disabled={!Number.isFinite(n) || n < 0 || n === maxMove}>Save</ActionButton>
+          <ActionButton onClick={() => void save({ max_move: n })} disabled={!Number.isFinite(n) || n < 0 || n === maxMove}>Save</ActionButton>
         </div>
       )}
       <p className="text-label-sm text-on-surface-variant">0 asks them about every move. The default is 20.</p>
@@ -1496,6 +1855,7 @@ const TABS = [
   { id: "sources", label: "Sources" },
   { id: "databases", label: "Database" },
   { id: "players", label: "Players" },
+  { id: "engines", label: "Engines" },
   { id: "others", label: "Others" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
@@ -1636,10 +1996,22 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
             </div>
           </div>
 
+          {/* Engines — the two on the server side by side, then the cloud ones. */}
+          <div className={tab === "engines" ? "space-y-4" : "hidden"}>
+            <TabLead>
+              The engines behind the Engine panel. Stockfish and Lc0 run on this server, each with its own
+              settings and benchmark; chessdb.cn and Lichess are cloud services, asked only in the opening.
+            </TabLead>
+            <div className={grid}>
+              <EngineSection />
+              <Lc0Section />
+              <CloudEnginesSection />
+              <EnginePanelSection />
+            </div>
+          </div>
+
           <div className={`${grid} ${tab === "others" ? "" : "hidden"}`}>
             <ServerConnectionSection status={status} connection={connection} />
-            <EngineSection />
-            <CloudEnginesSection />
             <BackupSection />
             <DiagnosticsSection />
           </div>

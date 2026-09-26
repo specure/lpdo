@@ -52,6 +52,8 @@ pub struct AppState {
     pub setup: Arc<std::sync::Mutex<SetupPhase>>,
     /// The local UCI engine (#309), started on first use.
     pub engine: Arc<crate::engine::Engine>,
+    /// The second local engine, Lc0 (optional: it wants a GPU).
+    pub lc0: Arc<crate::engine::Engine>,
 }
 
 /// Phase of the wizard-driven first-run setup pipeline. `Idle` covers both
@@ -1252,6 +1254,7 @@ async fn cloud_eval_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<crate::cloud_eval::CloudEval> {
     let zobrist = fen_zobrist(&q.fen)?;
+    if !crate::cloud_eval::settings().chessdb { return Ok(Json(crate::cloud_eval::disabled_chessdb())); }
     if crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(crate::cloud_eval::capped_chessdb())); }
     Ok(Json(crate::cloud_eval::query(&q.fen, zobrist, q.refresh).await))
 }
@@ -1262,13 +1265,13 @@ async fn cloud_eval_lines_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<Vec<crate::cloud_eval::MoveLine>> {
     let zobrist = fen_zobrist(&q.fen)?;
-    if crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(Vec::new())); }
+    if !crate::cloud_eval::settings().chessdb || crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(Vec::new())); }
     Ok(Json(crate::cloud_eval::query_lines(&q.fen, zobrist, q.refresh).await))
 }
 
 /// Ask chessdb.cn to analyse an as-yet-unknown position (best-effort).
 async fn cloud_eval_queue_handler(Query(q): Query<CloudEvalQuery>) -> StatusCode {
-    if crate::cloud_eval::beyond_cap(&q.fen) { return StatusCode::CONFLICT; }
+    if !crate::cloud_eval::settings().chessdb || crate::cloud_eval::beyond_cap(&q.fen) { return StatusCode::CONFLICT; }
     crate::cloud_eval::queue(&q.fen).await;
     StatusCode::OK
 }
@@ -1279,6 +1282,7 @@ async fn lichess_eval_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<crate::cloud_eval::LichessEval> {
     let zobrist = fen_zobrist(&q.fen)?;
+    if !crate::cloud_eval::settings().lichess { return Ok(Json(crate::cloud_eval::disabled_lichess())); }
     if crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(crate::cloud_eval::capped_lichess())); }
     Ok(Json(crate::cloud_eval::query_lichess(&q.fen, zobrist, q.refresh).await))
 }
@@ -1297,8 +1301,8 @@ async fn cloud_watch_add_handler(
     Query(q): Query<WatchQuery>,
 ) -> ApiResult<crate::cloud_eval::Watch> {
     let zobrist = fen_zobrist(&q.fen)?;
-    if crate::cloud_eval::beyond_cap(&q.fen) {
-        return Err((StatusCode::CONFLICT, "past the move the cloud engines are asked up to".to_string()));
+    if !crate::cloud_eval::settings().chessdb || crate::cloud_eval::beyond_cap(&q.fen) {
+        return Err((StatusCode::CONFLICT, "chessdb is switched off, or the position is past the move it is asked up to".to_string()));
     }
     Ok(Json(crate::cloud_eval::add_watch(&q.fen, zobrist, &q.label).await))
 }
@@ -1319,7 +1323,7 @@ async fn cloud_settings_put_handler(
 struct CloudSettingsClamp;
 impl CloudSettingsClamp {
     fn clamp(s: crate::cloud_eval::CloudSettings) -> crate::cloud_eval::CloudSettings {
-        crate::cloud_eval::CloudSettings { max_move: s.max_move.min(500) }
+        crate::cloud_eval::CloudSettings { max_move: s.max_move.min(500), ..s }
     }
 }
 
@@ -1753,10 +1757,37 @@ async fn job_events_handler(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
-// ── Local engine (#309) ───────────────────────────────────────────────────────
+// ── Local engines (#309) ──────────────────────────────────────────────────────
+// Stockfish and Lc0. Every endpoint takes `engine=lc0` for the second one;
+// without it, Stockfish — so clients from before Lc0 keep working.
 
-async fn engine_status_handler(State(state): State<AppState>) -> ApiResult<crate::engine::EngineStatus> {
-    Ok(Json(state.engine.status().await))
+#[derive(Deserialize, Default)]
+struct WhichEngine {
+    engine: Option<String>,
+}
+
+fn pick_engine(state: &AppState, which: &WhichEngine) -> std::result::Result<Arc<crate::engine::Engine>, (StatusCode, String)> {
+    match crate::engine::Kind::parse(which.engine.as_deref()) {
+        Some(crate::engine::Kind::Stockfish) => Ok(state.engine.clone()),
+        Some(crate::engine::Kind::Lc0) => Ok(state.lc0.clone()),
+        None => Err((StatusCode::BAD_REQUEST, "engine is stockfish or lc0".to_string())),
+    }
+}
+
+/// Which engines are switched on — the Engine panel's tabs — without starting
+/// any of them.
+async fn engines_enabled_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let cloud = crate::cloud_eval::settings();
+    Json(serde_json::json!({
+        "chessdb": cloud.chessdb,
+        "lichess": cloud.lichess,
+        "stockfish": state.engine.enabled().await,
+        "lc0": state.lc0.enabled().await,
+    }))
+}
+
+async fn engine_status_handler(State(state): State<AppState>, Query(w): Query<WhichEngine>) -> ApiResult<crate::engine::EngineStatus> {
+    Ok(Json(pick_engine(&state, &w)?.status().await))
 }
 
 #[derive(Deserialize)]
@@ -1764,24 +1795,37 @@ struct EngineConfigBody {
     path: Option<String>,
     threads: Option<u32>,
     hash_mb: Option<u32>,
+    /// Lc0 only: the network file and the backend.
+    weights: Option<String>,
+    backend: Option<String>,
+    /// Where a search stops: Stockfish's depth, Lc0's nodes; 0 = no limit.
+    max_depth: Option<u32>,
+    max_nodes: Option<u64>,
+    /// Lc0 only: end a search once its best move is settled.
+    smart_pruning: Option<bool>,
+    /// Switch the engine on or off.
+    enabled: Option<bool>,
 }
 
 async fn engine_configure_handler(
     State(state): State<AppState>,
+    Query(w): Query<WhichEngine>,
     Json(body): Json<EngineConfigBody>,
 ) -> ApiResult<crate::engine::EngineStatus> {
-    let status = state
-        .engine
-        .configure(body.path, body.threads, body.hash_mb)
+    let engine = pick_engine(&state, &w)?;
+    let status = engine
+        .configure_all(body.path, body.threads, body.hash_mb, body.weights, body.backend, body.max_depth, body.max_nodes, body.smart_pruning, body.enabled)
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
-    // The database gets what the engine's hash leaves of the memory budget.
-    let hash = status.settings.hash_mb;
-    state
-        .writer
-        .run(move |c| crate::db::apply_memory_limit(c, hash))
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // The database gets what Stockfish's hash leaves of the memory budget.
+    if status.kind == crate::engine::Kind::Stockfish {
+        let hash = status.settings.hash_mb;
+        state
+            .writer
+            .run(move |c| crate::db::apply_memory_limit(c, hash))
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
     Ok(Json(status))
 }
 
@@ -1794,6 +1838,7 @@ struct EngineAnalyseQuery {
     moves: Option<String>,
     #[serde(default = "default_engine_lines")]
     lines: u32,
+    engine: Option<String>,
 }
 fn default_engine_lines() -> u32 { 3 }
 
@@ -1825,12 +1870,12 @@ async fn engine_analyse_handler(
         }
         _ => None,
     };
-    let (gen, remembered, rx) = state
-        .engine
+    let engine = pick_engine(&state, &WhichEngine { engine: q.engine.clone() })?;
+    let (gen, remembered, rx) = engine
         .analyse(&fen, history, q.lines)
         .await
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e))?;
-    let guard = Arc::new(StopOnDrop { engine: state.engine.clone(), gen });
+    let guard = Arc::new(StopOnDrop { engine: engine.clone(), gen });
     let first = tokio_stream::iter(remembered);
     let stream = first.chain(tokio_stream::wrappers::BroadcastStream::new(rx)
         .filter_map(|r| r.ok()))
@@ -1854,19 +1899,20 @@ struct EngineBenchBody {
 /// Stockfish's benchmark with the given (or current) threads and hash.
 async fn engine_bench_handler(
     State(state): State<AppState>,
+    Query(w): Query<WhichEngine>,
     Json(body): Json<EngineBenchBody>,
 ) -> ApiResult<crate::engine::BenchResult> {
-    state
-        .engine
+    pick_engine(&state, &w)?
         .bench(body.threads, body.hash_mb, body.depth)
         .await
         .map(Json)
         .map_err(|e| (StatusCode::CONFLICT, e))
 }
 
-async fn engine_stop_handler(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
-    let gen = state.engine.current_gen();
-    state.engine.stop(gen).await;
+async fn engine_stop_handler(State(state): State<AppState>, Query(w): Query<WhichEngine>) -> ApiResult<serde_json::Value> {
+    let engine = pick_engine(&state, &w)?;
+    let gen = engine.current_gen();
+    engine.stop(gen).await;
     Ok(Json(serde_json::json!({ "stopped": gen })))
 }
 
@@ -2439,7 +2485,8 @@ pub async fn run(
     let setup = Arc::new(std::sync::Mutex::new(SetupPhase::Idle));
     let engine = crate::engine::Engine::new(db_path.parent().unwrap_or(std::path::Path::new(".")));
     crate::cloud_eval::init_settings(db_path.parent().unwrap_or(std::path::Path::new(".")));
-    let state = AppState { reads, writer, jobs, db_path, setup, engine };
+    let lc0 = crate::engine::Engine::new_kind(db_path.parent().unwrap_or(std::path::Path::new(".")), crate::engine::Kind::Lc0);
+    let state = AppState { reads, writer, jobs, db_path, setup, engine, lc0 };
 
     // A leftover sentinel means a prior first-run setup didn't finish cleanly. The
     // unbootable case was already handled by the startup safety-net (which wipes +
@@ -2483,6 +2530,7 @@ pub async fn run(
         .route("/engine",                              get(engine_status_handler).put(engine_configure_handler))
         .route("/engine/analyse",                      get(engine_analyse_handler))
         .route("/engine/stop",                         post(engine_stop_handler))
+        .route("/engines",                             get(engines_enabled_handler))
         .route("/engine/bench",                        post(engine_bench_handler))
         .route("/cloud-eval/lines",                    get(cloud_eval_lines_handler))
         .route("/cloud-eval/queue",                    post(cloud_eval_queue_handler))

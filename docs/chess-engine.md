@@ -112,6 +112,14 @@ anyone who can reach the server could otherwise make it run any program.
 On Linux the server runs as a system service that cannot see home directories,
 so keep the engine outside `/home` — `/usr/local/bin` or `/opt` work.
 
+## Switching engines on and off
+
+Maintenance → **Engines** has a switch for each of the four: chessdb.cn and
+Lichess (the cloud engines), Stockfish and Lc0. Switched off, an engine's tab
+leaves the Engine panel and the server neither runs nor asks it — Lc0 then
+holds no graphics memory. LPDO checks once a day for new releases of Stockfish
+and Lc0 and shows a notice when the server runs an older one.
+
 ## Settings
 
 | Setting | Default | |
@@ -134,8 +142,11 @@ settings on one machine), and hash hardly shows in a benchmark. One run is
 marked *recommended*: at most one thread per physical core, and of those the
 fewest threads that reach 80% of the fastest; **Use** sets it.
 
-A search stops when you move to another position or close the panel, and after
-five minutes at the latest.
+A search stops when you move to another position or close the panel, when it
+reaches its threshold, and after five minutes at the latest. The thresholds are
+set per engine under Maintenance (0 for none): **depth 40** for Stockfish, and
+**10 million nodes** for Lc0 — Lc0's "depth" is only the average length of the
+lines it explores, so nodes are its measure (about five minutes on an RTX 4090).
 
 ## Measuring speed
 
@@ -154,6 +165,97 @@ newer Stockfish that searches fewer nodes is not a weaker engine.
 
 ## Leela Chess Zero
 
-[Lc0](https://lczero.org) also speaks UCI and is found as `lc0` in the same
-places, but it needs a neural-network file as well, and a graphics card to be
-fast. Setting it up is not covered yet.
+[Lc0](https://lczero.org) is the second engine, beside Stockfish, in the Engine
+panel's **Lc0** tab. It judges a position with a neural network and gives its
+chances as **win · draw · loss** from White's side — "21·63·17" — rather than
+centipawns. It is optional, because it needs a graphics card to be fast.
+
+Measured on one machine (the network's raw speed, positions per second, with
+`lc0 backendbench`; a real search is somewhat faster, from its cache):
+
+| Hardware | Backend | Network | Positions/s |
+|---|---|---|---|
+| NVIDIA RTX 4090 (external, Thunderbolt 3) | `cuda-fp16` | t3-512x15x16h | ~20,000 |
+| NVIDIA RTX 4090 | `cuda-fp16` | T1-256x10 | ~47,000 |
+| AMD Radeon 8060S (integrated) | `opencl` | 42850 (20×256) | ~580 |
+| 16-core processor | `eigen` | T1-256x10 | ~130 |
+
+With an NVIDIA card it is a real second opinion; without a graphics card it is
+too slow to be useful. Mesa's OpenCL on an AMD graphics chip works but is slow,
+and runs only Lc0's older networks.
+
+It needs two things on the server: **the program** and **a network file**.
+
+### The program
+
+- **Windows:** download it from [lczero.org](https://lczero.org/play/download/) —
+  the CUDA build for an NVIDIA card, the *onnx-dml* build for any other — and
+  put `lc0.exe` in `C:\Program Files\Lc0`.
+- **macOS:** `brew install lc0`.
+- **Linux:** Lc0 publishes no Linux download; it is built from source. For an
+  NVIDIA card:
+
+  1. The driver and CUDA. On Ubuntu the driver's kernel modules come prebuilt
+     and signed, so Secure Boot needs no extra step:
+
+     ```
+     sudo apt install nvidia-driver-595-open linux-modules-nvidia-595-open-generic-hwe-24.04
+     sudo reboot
+     nvidia-smi                        # lists the card
+     sudo apt install nvidia-cuda-toolkit
+     ```
+
+  2. Build Lc0 (it needs `meson`; its Python package, or the release archive
+     from mesonbuild's GitHub run as `python3 meson.py`). `-Dcc_cuda=89` is the
+     RTX 40 series; 86 is the 30 series, 75 the 20 series:
+
+     ```
+     git clone --depth 1 --branch v0.32.1 --recurse-submodules https://github.com/LeelaChessZero/lc0.git
+     cd lc0
+     meson setup build-cuda --buildtype=release -Dplain_cuda=true -Dcudnn=false -Dcc_cuda=89 \
+       -Dopencl=false -Dblas=false -Donnx=false -Dgtest=false
+     ninja -C build-cuda lc0
+     sudo install -m 755 build-cuda/lc0 /usr/local/bin/lc0
+     ```
+
+  A driver upgrade that brings a new CUDA version may need the build repeated.
+
+### A network
+
+Download one from [lczero.org → Networks](https://lczero.org/play/networks/bestnets/)
+and put the `.pb.gz` file in the server's `networks` folder:
+
+| Platform | Folder |
+|---|---|
+| Linux | `/var/lib/lpdo/.chess-db/networks/` |
+| macOS | `/Library/Application Support/LPDO/networks/` |
+| Windows | `C:\ProgramData\LPDO\networks\` |
+
+A medium network such as **t3-512x15x16h** suits a modern card; a small one
+such as T1-256x10 is quicker on a weaker one. On Linux:
+
+```
+sudo install -d -o lpdo -g lpdo /var/lib/lpdo/.chess-db/networks
+sudo install -m 644 -o lpdo -g lpdo t3-512x15x16h-distill-swa-2767500.pb.gz /var/lib/lpdo/.chess-db/networks/
+```
+
+The server also finds networks beside the program. Maintenance → *Others* →
+**Lc0** chooses among the programs and networks found, the backend (automatic
+by default) and the search threads (0 lets Lc0 choose: its work is on the
+graphics card). Another network file can be named in `lc0.json` beside
+`engine.json`, as `{ "weights": "/path/to/net.pb.gz" }`.
+
+**Smart pruning** — Lc0 ending a search once its best move cannot be
+overtaken — is off by default: the Engine panel shows several lines, and with it
+on the second and third stop improving as soon as the first is settled. Switch
+it on to have only the best move, or to spare the card.
+
+**Benchmark:** the Lc0 card runs Lc0's standard `lc0 benchmark` — 34 positions,
+ten seconds each, about six minutes — with the program, network and backend set
+there. Only the full run is comparable between machines: Lc0 gets faster as each
+search goes on (on an RTX 4090, 62,000 nodes/s for the standard run against
+12,000 with three seconds a position, and 6,400 for `lc0 bench`).
+
+The Linux service can use an NVIDIA card as installed: its device files are
+open to every user, and the service's home, where CUDA keeps compiled kernels,
+is writable.

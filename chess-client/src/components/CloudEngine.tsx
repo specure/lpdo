@@ -24,7 +24,7 @@ function parseNote(note: string): { mark: string; opp: string; oppStrong: string
   return m ? { mark: m[1], opp: m[2], oppStrong: m[3] } : null;
 }
 
-type EngineSource = "chessdb" | "lichess" | "local";
+type EngineSource = "chessdb" | "lichess" | "stockfish" | "lc0";
 type EngineStatus = "loading" | "ok" | "unknown" | "offline" | "capped";
 
 // Lichess (Stockfish) cloud eval — a few deep PV lines, White-relative eval + depth.
@@ -158,30 +158,57 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
   // versioned key so flipping the default from chessdb actually takes effect on
   // existing installs (the old key was auto-written on every load). An explicit
   // toggle to chessdb still persists.
-  const [engineSource, setEngineSource] = useState<EngineSource>(() => (() => { const v = localStorage.getItem("engineSourceV2"); return v === "chessdb" || v === "local" ? v : "lichess"; })());
+  const [engineSource, setEngineSource] = useState<EngineSource>(() => (() => {
+    const v = localStorage.getItem("engineSourceV2");
+    if (v === "local") return "stockfish"; // the one local engine before Lc0
+    return v === "chessdb" || v === "stockfish" || v === "lc0" ? v : "lichess";
+  })());
   useEffect(() => { localStorage.setItem("engineSourceV2", engineSource); }, [engineSource]);
+  // Which sources are switched on (Maintenance → Engines). An older server
+  // has no /engines: then the cloud ones and Stockfish, as before.
+  const [enabled, setEnabled] = useState<Record<EngineSource, boolean>>({ chessdb: true, lichess: true, stockfish: true, lc0: true });
+  useEffect(() => {
+    fetch("/api/engines")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d) setEnabled({ chessdb: d.chessdb !== false, lichess: d.lichess !== false, stockfish: d.stockfish !== false, lc0: d.lc0 !== false }); })
+      .catch(() => {});
+  }, []);
+  const sources = (["chessdb", "lichess", "stockfish", "lc0"] as EngineSource[]).filter((s) => enabled[s]);
+  // Run or pause each source, whichever tab is showing: running engines keep
+  // analysing in the background, paused ones are not asked. By default the
+  // server's engines run and the cloud services wait to be asked. Per device.
+  const [running, setRunningState] = useState<Record<EngineSource, boolean>>(() => {
+    const base = { chessdb: false, lichess: false, stockfish: true, lc0: true };
+    try { return { ...base, ...(JSON.parse(localStorage.getItem("engineRunning") ?? "{}") as Partial<Record<EngineSource, boolean>>) }; }
+    catch { return base; }
+  });
+  function toggleRunning(src: EngineSource) {
+    setRunningState((prev) => {
+      const next = { ...prev, [src]: !prev[src] };
+      try { localStorage.setItem("engineRunning", JSON.stringify(next)); } catch { /* per-device convenience only */ }
+      return next;
+    });
+  }
+  // The chosen source switched off: take the first one left.
+  useEffect(() => {
+    if (sources.length && !sources.includes(engineSource)) setEngineSource(sources[0]);
+  }, [sources.join(","), engineSource]);
   const [engineMoves, setEngineMoves] = useState<CloudMove[]>([]);          // chessdb
   const [engineLines, setEngineLines] = useState<Record<string, string[]>>({}); // uci → continuation SAN (lazy)
   const [lichessEval, setLichessEval] = useState<LichessEval | null>(null); // lichess
   const [lichessStats, setLichessStats] = useState<Record<string, { replies: number; strong: number }>>({}); // uci → power-move stats (lazy)
   // Lichess analysis settings (persisted): chessdb-style Replies/Strong (extra
   // per-move requests) vs plain lines, and how many lines to show/analyse.
-  const [lichessShowStats, setLichessShowStats] = useState(() => localStorage.getItem("lichessShowStats") !== "false");
-  const [lichessLineCount, setLichessLineCount] = useState(() => {
+  // Set under Maintenance → Engines → Engine panel (per device).
+  const [lichessShowStats] = useState(() => localStorage.getItem("lichessShowStats") !== "false");
+  const [lichessLineCount] = useState(() => {
     const n = parseInt(localStorage.getItem("lichessLineCount") ?? "", 10);
     return Number.isFinite(n) && n > 0 ? Math.min(n, 20) : 5;
   });
-  const [lichessSettingsOpen, setLichessSettingsOpen] = useState(false);
-  const lichessSettingsRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => { localStorage.setItem("lichessShowStats", String(lichessShowStats)); }, [lichessShowStats]);
-  useEffect(() => { localStorage.setItem("lichessLineCount", String(lichessLineCount)); }, [lichessLineCount]);
-  useEffect(() => {
-    if (!lichessSettingsOpen) return;
-    function onDown(e: MouseEvent) { if (lichessSettingsRef.current && !lichessSettingsRef.current.contains(e.target as Node)) setLichessSettingsOpen(false); }
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [lichessSettingsOpen]);
-  const [engineStatus, setEngineStatus] = useState<EngineStatus>("ok");
+
+  // Each cloud service's own status: both can run while either tab is shown.
+  const [dbStatus, setDbStatus] = useState<EngineStatus>("ok");
+  const [liStatus, setLiStatus] = useState<EngineStatus>("ok");
   const [engineQueuing, setEngineQueuing] = useState(false);
   // FENs with an active deepen watch — keep Deepen disabled for them so a second
   // click can't restart the watch (which would reset its baseline). Seeded from
@@ -195,41 +222,59 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
   function reloadEngine() { engineRefreshingRef.current = true; setEngineRefreshTick((t) => t + 1); }
 
   // Evaluation for the current position (debounced — hits the free chessdb.cn /
-  // Lichess services through the daemon).
+  // Lichess services through the daemon). Each service is asked while it runs,
+  // whichever tab is showing; paused, it is not asked at all.
+  const dbAbort = useRef<AbortController | null>(null);
+  const liAbort = useRef<AbortController | null>(null);
+  const dbOn = enabled.chessdb && running.chessdb;
+  const liOn = enabled.lichess && running.lichess;
   useEffect(() => {
-    engineAbort.current?.abort();
-    if (engineSource === "local") return; // LocalEngine asks the server itself
+    dbAbort.current?.abort();
+    if (!dbOn) return;
     const ctrl = new AbortController();
+    dbAbort.current = ctrl;
     engineAbort.current = ctrl;
-    setEngineStatus("loading");
-    const rq = engineRefreshingRef.current ? "&refresh=true" : ""; // reload bypasses cache
-    engineRefreshingRef.current = false;
+    setDbStatus("loading");
+    const rq = engineRefreshingRef.current && engineSource === "chessdb" ? "&refresh=true" : ""; // reload bypasses cache
+    if (engineSource === "chessdb") engineRefreshingRef.current = false;
     const t = setTimeout(() => {
-      if (engineSource === "chessdb") {
-        setEngineLines({}); // clear stale continuation lines
-        fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}${rq}`, { signal: ctrl.signal })
-          .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<{ status: EngineStatus; moves: CloudMove[] }>; })
-          .then((d) => {
-            setEngineMoves(d.moves ?? []); setEngineStatus(d.moves?.length ? "ok" : (d.status ?? "unknown"));
-            // Lazy second pass: fetch the continuation lines (several querypv calls)
-            // once the move table is on screen.
-            if (d.moves?.length) {
-              fetch(`/api/cloud-eval/lines?fen=${encodeURIComponent(fen)}${rq}`, { signal: ctrl.signal })
-                .then((r) => (r.ok ? r.json() as Promise<{ uci: string; pvSan: string[] }[]> : []))
-                .then((ls) => { const map: Record<string, string[]> = {}; for (const l of ls) map[l.uci] = l.pvSan; setEngineLines(map); })
-                .catch(() => {});
-            }
-          })
-          .catch((e) => { if (!(e instanceof DOMException && e.name === "AbortError")) { setEngineMoves([]); setEngineStatus("offline"); } });
-      } else {
-        fetch(`/api/lichess-eval?fen=${encodeURIComponent(fen)}${rq}`, { signal: ctrl.signal })
-          .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<LichessEval>; })
-          .then((d) => { setLichessEval(d); setEngineStatus(d.lines?.length ? "ok" : (d.status ?? "unknown")); })
-          .catch((e) => { if (!(e instanceof DOMException && e.name === "AbortError")) { setLichessEval(null); setEngineStatus("offline"); } });
-      }
+      setEngineLines({}); // clear stale continuation lines
+      fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}${rq}`, { signal: ctrl.signal })
+        .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<{ status: EngineStatus; moves: CloudMove[] }>; })
+        .then((d) => {
+          setEngineMoves(d.moves ?? []); setDbStatus(d.moves?.length ? "ok" : (d.status ?? "unknown"));
+          // Lazy second pass: fetch the continuation lines (several querypv calls)
+          // once the move table is on screen.
+          if (d.moves?.length) {
+            fetch(`/api/cloud-eval/lines?fen=${encodeURIComponent(fen)}${rq}`, { signal: ctrl.signal })
+              .then((r) => (r.ok ? r.json() as Promise<{ uci: string; pvSan: string[] }[]> : []))
+              .then((ls) => { const map: Record<string, string[]> = {}; for (const l of ls) map[l.uci] = l.pvSan; setEngineLines(map); })
+              .catch(() => {});
+          }
+        })
+        .catch((e) => { if (!(e instanceof DOMException && e.name === "AbortError")) { setEngineMoves([]); setDbStatus("offline"); } });
     }, 350);
     return () => clearTimeout(t);
-  }, [fen, engineSource, engineRefreshTick]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fen, dbOn, engineRefreshTick]);
+  useEffect(() => {
+    liAbort.current?.abort();
+    if (!liOn) return;
+    const ctrl = new AbortController();
+    liAbort.current = ctrl;
+    setLiStatus("loading");
+    const rq = engineRefreshingRef.current && engineSource === "lichess" ? "&refresh=true" : "";
+    if (engineSource === "lichess") engineRefreshingRef.current = false;
+    const t = setTimeout(() => {
+      fetch(`/api/lichess-eval?fen=${encodeURIComponent(fen)}${rq}`, { signal: ctrl.signal })
+        .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<LichessEval>; })
+        .then((d) => { setLichessEval(d); setLiStatus(d.lines?.length ? "ok" : (d.status ?? "unknown")); })
+        .catch((e) => { if (!(e instanceof DOMException && e.name === "AbortError")) { setLichessEval(null); setLiStatus("offline"); } });
+    }, 350);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fen, liOn, engineRefreshTick]);
+  const engineStatus: EngineStatus = engineSource === "chessdb" ? dbStatus : liStatus;
 
   // Power-move stats for Lichess (async, after the lines are on screen): for each
   // top line, fetch the child position's cloud eval and count the opponent's
@@ -292,7 +337,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
         .then((d) => {
           // Don't let a transient degraded response blank the panel; keep what's shown.
           if (d.status === "offline" || !d.moves?.length) return;
-          setEngineMoves(d.moves); setEngineStatus("ok");
+          setEngineMoves(d.moves); setDbStatus("ok");
         })
         .catch(() => {});
     }
@@ -317,7 +362,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
       .then(() => new Promise((res) => setTimeout(res, 2500)))
       .then(() => fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}`))
       .then((r) => r.json() as Promise<{ status: EngineStatus; moves: CloudMove[] }>)
-      .then((d) => { setEngineMoves(d.moves ?? []); setEngineStatus(d.moves?.length ? "ok" : (d.status ?? "unknown")); })
+      .then((d) => { setEngineMoves(d.moves ?? []); setDbStatus(d.moves?.length ? "ok" : (d.status ?? "unknown")); })
       .catch(() => {})
       .finally(() => setEngineQueuing(false));
   }
@@ -326,27 +371,51 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
     <>
       <div className="px-3 py-2 shrink-0 flex items-center justify-between border-b border-outline/40">
         <div className="flex gap-0.5">
-          {(["chessdb", "lichess", "local"] as EngineSource[]).map((src) => (
-            <button
+          {sources.map((src) => (
+            <span
               key={src}
-              onClick={() => setEngineSource(src)}
-              className={`h-6 px-2 rounded-full text-label-sm transition-colors duration-short3 ease-standard ${engineSource === src ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8"}`}
+              className={`h-6 inline-flex items-center rounded-full text-label-sm transition-colors duration-short3 ease-standard ${engineSource === src ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8"}`}
             >
-              {src === "chessdb" ? "chessdb" : src === "lichess" ? "Lichess" : "Local"}
-            </button>
+              <button onClick={() => setEngineSource(src)} className="h-6 pl-2 pr-1">
+                {src === "chessdb" ? "chessdb" : src === "lichess" ? "Lichess" : src === "stockfish" ? "Stockfish" : "Lc0"}
+              </button>
+              <button
+                onClick={() => toggleRunning(src)}
+                className={`h-6 w-5 mr-0.5 inline-flex items-center justify-center rounded-full hover:bg-on-surface/12 ${running[src] ? "" : "opacity-50"}`}
+                title={running[src] ? "Pause — stop asking it, even in the background" : "Run — it keeps analysing while other tabs are shown"}
+              >
+                {/* Drawn, not the ▶ ⏸ characters: those come out as coloured emoji. */}
+                <svg viewBox="0 0 10 10" className="w-2.5 h-2.5 fill-current" aria-hidden="true">
+                  {running[src]
+                    ? <><rect x="1.5" y="1" width="2.5" height="8" rx="0.5" /><rect x="6" y="1" width="2.5" height="8" rx="0.5" /></>
+                    : <path d="M2 1 L9 5 L2 9 Z" />}
+                </svg>
+                <span className="sr-only">{running[src] ? "Pause" : "Run"}</span>
+              </button>
+            </span>
           ))}
         </div>
         <span
           className="text-label-sm text-on-surface-variant/70 cursor-help"
           title={engineSource === "chessdb" ? "Free cloud analysis from the community database chessdb.cn"
             : engineSource === "lichess" ? "Cloud Stockfish evaluations from lichess.org — only popular positions are cached"
-            : "An engine installed on the LPDO server, analysing live"}
+            : engineSource === "stockfish" ? "Stockfish installed on the LPDO server, analysing live"
+            : "Lc0 (Leela Chess Zero) on the LPDO server: a neural network on its graphics card, giving win/draw/loss"}
         >
           via {engineSource === "chessdb" ? "chessdb.cn" : engineSource === "lichess" ? "lichess.org" : "the server"}
         </span>
       </div>
-      {engineSource === "local" ? (
-        <LocalEngine fen={fen} history={history} lineCount={lichessLineCount} onPlayLine={onPlayLine} />
+      {sources.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center text-center text-on-surface-variant text-body-sm px-3">
+          Every engine is switched off. Switch one on under Maintenance → Engines.
+        </div>
+      ) : engineSource === "stockfish" || engineSource === "lc0" ? (
+        null /* the local engines are drawn below, always mounted */
+      ) : !running[engineSource] ? (
+        <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center text-on-surface-variant text-body-sm px-3">
+          <span>{engineSource === "chessdb" ? "chessdb.cn" : "Lichess"} is paused and not asked about positions.</span>
+          <button onClick={() => toggleRunning(engineSource)} className="h-8 px-3 rounded-full text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard">Run</button>
+        </div>
       ) : engineStatus === "loading" ? (
         <div className="p-3 text-center text-on-surface-variant text-body-sm">Analysing…</div>
       ) : engineStatus === "capped" ? (
@@ -354,7 +423,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
         // Cloud engines): past it, positions stay on this server.
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center text-on-surface-variant text-body-sm px-3">
           <span>The cloud engines are asked only in the opening, up to the move set under Maintenance → Others → Cloud engines. Positions later in a game stay on your server.</span>
-          <button onClick={() => setEngineSource("local")} className="h-8 px-3 rounded-full text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard">Analyse with the Local engine</button>
+          <button onClick={() => setEngineSource("stockfish")} className="h-8 px-3 rounded-full text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard">Analyse with Stockfish on the server</button>
         </div>
       ) : engineStatus === "offline" ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center text-on-surface-variant text-body-sm px-3">
@@ -426,37 +495,6 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
               <div className="px-3 py-1 shrink-0 flex items-center justify-between text-label-sm text-on-surface-variant border-b border-outline/40">
                 <span>Stockfish · depth {lichessEval.depth}</span>
                 <div className="flex items-center gap-1">
-                  <div className="relative" ref={lichessSettingsRef}>
-                    <button
-                      onClick={() => setLichessSettingsOpen((o) => !o)}
-                      className={`w-6 h-6 inline-flex items-center justify-center rounded-full hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard ${lichessSettingsOpen ? "bg-on-surface/12" : ""}`}
-                      title="Lichess analysis settings"
-                    >⚙</button>
-                    {lichessSettingsOpen && (
-                      <div className="absolute right-0 top-7 z-20 w-60 rounded-xl border border-outline-variant bg-surface-container-high shadow-lg p-3 text-body-sm text-on-surface">
-                        <div className="flex items-center justify-between gap-2">
-                          <span>Replies &amp; Strong</span>
-                          <button
-                            onClick={() => setLichessShowStats((v) => !v)}
-                            className={`px-2.5 h-6 rounded-full text-label-sm ${lichessShowStats ? "bg-primary text-on-primary" : "bg-on-surface/8 text-on-surface-variant"}`}
-                          >{lichessShowStats ? "On" : "Off"}</button>
-                        </div>
-                        <div className="text-label-sm text-on-surface-variant mt-1">chessdb-style power-move columns — a few extra requests per move.</div>
-                        <div className="mt-3 flex items-center justify-between gap-2">
-                          <span>Lines</span>
-                          <div className="flex items-center gap-1">
-                            {[3, 5, 8, 12].map((n) => (
-                              <button
-                                key={n}
-                                onClick={() => setLichessLineCount(n)}
-                                className={`w-7 h-6 rounded-md text-label-sm ${lichessLineCount === n ? "bg-primary text-on-primary" : "hover:bg-on-surface/8 text-on-surface-variant"}`}
-                              >{n}</button>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
                   <button
                     onClick={reloadEngine}
                     className="w-6 h-6 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
@@ -492,6 +530,16 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
           );
         })()
       )}
+      {/* The server's engines stay mounted while they run, so a search goes on
+          while another tab is shown — switching to Lc0 shows what it has found. */}
+      {(["stockfish", "lc0"] as const).filter((k) => enabled[k]).map((k) => (
+        <div key={k} className={engineSource === k ? "flex-1 flex flex-col min-h-0" : "hidden"}>
+          <LocalEngine
+            kind={k} fen={fen} history={history} lineCount={lichessLineCount} onPlayLine={onPlayLine}
+            paused={!running[k]} onTogglePause={() => toggleRunning(k)}
+          />
+        </div>
+      ))}
     </>
   );
 }

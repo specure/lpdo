@@ -514,10 +514,13 @@ fn parse_lichess(v: &serde_json::Value) -> LichessEval {
 pub struct CloudSettings {
     /// Ask the cloud engines about positions up to this move number; 0 = always.
     pub max_move: u32,
+    /// Each service switched on or off; off, it is never contacted.
+    pub chessdb: bool,
+    pub lichess: bool,
 }
 
 impl Default for CloudSettings {
-    fn default() -> Self { Self { max_move: 20 } }
+    fn default() -> Self { Self { max_move: 20, chessdb: true, lichess: true } }
 }
 
 static SETTINGS_FILE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
@@ -556,6 +559,14 @@ pub fn beyond_cap(fen: &str) -> bool {
 }
 
 /// What the endpoints answer instead of asking, past the cap.
+/// What the endpoints answer for a service switched off.
+pub fn disabled_chessdb() -> CloudEval {
+    CloudEval { status: "disabled".to_string(), moves: Vec::new() }
+}
+pub fn disabled_lichess() -> LichessEval {
+    LichessEval { status: "disabled".to_string(), depth: 0, knodes: 0, lines: Vec::new() }
+}
+
 pub fn capped_chessdb() -> CloudEval {
     CloudEval { status: "capped".to_string(), moves: Vec::new() }
 }
@@ -569,11 +580,11 @@ mod cap_tests {
 
     #[test]
     fn positions_past_the_move_are_not_asked() {
-        *SETTINGS.write().unwrap() = Some(CloudSettings { max_move: 20 });
+        *SETTINGS.write().unwrap() = Some(CloudSettings { max_move: 20, ..CloudSettings::default() });
         assert!(!beyond_cap("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"));
         assert!(!beyond_cap("8/8/8/8/8/8/8/K6k w - - 0 20"));
         assert!(beyond_cap("8/8/8/8/8/8/8/K6k b - - 3 21"));
-        *SETTINGS.write().unwrap() = Some(CloudSettings { max_move: 0 });
+        *SETTINGS.write().unwrap() = Some(CloudSettings { max_move: 0, ..CloudSettings::default() });
         assert!(!beyond_cap("8/8/8/8/8/8/8/K6k b - - 3 55"));
         *SETTINGS.write().unwrap() = None;
     }
