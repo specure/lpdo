@@ -54,8 +54,8 @@ export default function PrintDialog({
   const list = games ?? (detail ? [detail] : []);
   const many = list.length > 1;
   // Games from the Analysis rail carry their board's orientation; the
-  // question is only asked for a game that carries none.
-  const askOrientation = !games;
+  // question is only asked when some game carries none.
+  const askOrientation = list.some((g) => g.flipped === undefined);
   const [fromBlack, setFromBlack] = useState(flipped);
   const [title, setTitle] = useState("");
   const [diagramAtEnd, setDiagramAtEnd] = useState(false);

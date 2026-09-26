@@ -8,6 +8,8 @@ import PositionMoves from "./PositionMoves";
 import MiniBoard from "./games/MiniBoard";
 import GamePreviewHeader from "./games/GamePreviewHeader";
 import GameMoreMenu from "./games/GameMoreMenu";
+import PrintDialog, { ExportableGame } from "./games/PrintDialog";
+import { fetchPgns, savePgnFile } from "../lib/exportPgn";
 import MoveList from "./games/MoveList";
 import CloudEngine, { pvString } from "./CloudEngine";
 import { useNeighbourResize } from "../lib/panelResize";
@@ -175,6 +177,45 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     }
     setExtras((prev) => (prev.some((g) => g.id === game.id) ? prev.filter((g) => g.id !== game.id) : [...prev, game]));
   }
+  // Several games selected: they can be printed or exported from the
+  // preview's More menu, in the order the list shows them.
+  const [printGames, setPrintGames] = useState<{ games: ExportableGame[]; primary: "print" | "save" } | null>(null);
+  const [exportNote, setExportNote] = useState<string | null>(null);
+  useEffect(() => {
+    if (!exportNote) return;
+    const t = window.setTimeout(() => setExportNote(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [exportNote]);
+  const selectedInOrder = () => {
+    const ids = new Set([selectedGame?.id, ...extras.map((g) => g.id)]);
+    const inList = games.filter((g) => ids.has(g.id));
+    // A selected game scrolled out of a reloaded list still counts.
+    return [...inList, ...[selectedGame, ...extras].filter((g): g is GameSummary => !!g && !inList.some((x) => x.id === g.id))];
+  };
+  async function printSelected(primary: "print" | "save") {
+    const list = selectedInOrder();
+    try {
+      const pgns = await fetchPgns(list.map((g) => g.id));
+      setPrintGames({ games: list.map((g, i) => ({ ...g, pgn: pgns[i] })), primary });
+    } catch (e) {
+      setExportNote(`Could not load the games: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  async function exportSelectedPgn() {
+    const list = selectedInOrder();
+    try {
+      const pgns = await fetchPgns(list.map((g) => g.id));
+      if (await savePgnFile(list, pgns.filter((p): p is string => p !== null))) setExportNote(`${list.length} games saved as PGN`);
+    } catch (e) {
+      setExportNote(`Could not export: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  const n = extras.length + 1;
+  const selectionEntries = extras.length === 0 ? [] : [
+    { label: `Print the ${n} selected…`, onClick: () => void printSelected("print") },
+    { label: `Export the ${n} selected as PDF…`, onClick: () => void printSelected("save") },
+    { label: `Export the ${n} selected as PGN…`, onClick: () => void exportSelectedPgn() },
+  ];
   async function openInAnalysis(list: GameSummary[]) {
     if (!onOpenManyInAnalysis) { if (list[0]) onOpenInAnalysis?.(list[0]); return; }
     const left = await onOpenManyInAnalysis(list);
@@ -717,6 +758,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                                     ply={selectedPly}
                                     startFen={loadedGame.fens[0]}
                                     gameUrl={loadedGame.gameUrl}
+                                    extras={selectionEntries}
                                   />
                                   {onOpenInAnalysis && (
                                     <button
@@ -739,6 +781,9 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                                     </button>
                                   )}
                                 </div>
+                              )}
+                              {exportNote && (
+                                <div className="shrink-0 px-2 py-1 text-label-sm bg-surface-container-high text-on-surface">{exportNote}</div>
                               )}
                               {analysisNote && (
                                 <div className="shrink-0 px-2 py-1 text-label-sm text-on-error-container bg-error-container">{analysisNote}</div>
@@ -773,6 +818,9 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
           </Panel>
         </Group>
       </div>
+      {printGames && (
+        <PrintDialog games={printGames.games} primary={printGames.primary} flipped={false} onClose={() => setPrintGames(null)} />
+      )}
     </div>
   );
 }
