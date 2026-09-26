@@ -143,6 +143,26 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
       setRailNote(`Could not load the games: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
+  // The rail's commands, offered again in the board's More menu: that is
+  // where print and export are looked for, and the rail's own menu is easy
+  // to miss. Only with more than one game open — for one, the game's own
+  // entries above say the same.
+  const railExtras = (() => {
+    if (tabs.length < 2) return [];
+    const n = pickedNow.length;
+    const subset = n > 0 && n < tabs.length;
+    const all = `the ${tabs.length} open games`;
+    return [
+      ...(subset ? [
+        { label: `Print the ${n} picked…`, onClick: () => void printPdf("print", "picked") },
+        { label: `Export the ${n} picked as PDF…`, onClick: () => void printPdf("save", "picked") },
+        { label: `Export the ${n} picked as PGN…`, onClick: () => void exportPgn("picked") },
+      ] : []),
+      { label: `Print ${all}…`, onClick: () => void printPdf("print", "all") },
+      { label: `Export ${all} as PDF…`, onClick: () => void printPdf("save", "all") },
+      { label: `Export ${all} as PGN…`, onClick: () => void exportPgn("all") },
+    ];
+  })();
   async function openRelated(game: GameSummary) {
     const left = await onOpenGame([game]);
     if (left > 0) setRailNote(`The board is full: it holds ${capacity} games. Close one to open another.`);
@@ -390,6 +410,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
                 onGameMutated={onGameMutated}
                 moveListHost={moveHost}
                 playRequest={playRequest}
+                menuExtras={railExtras}
               />
             )}
           </div>

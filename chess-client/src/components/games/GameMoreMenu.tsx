@@ -33,6 +33,15 @@ interface Props {
   onExportPgn?: () => void;
   onExportPdf?: () => void;
   onPrint?: () => void;
+  /** Entries the host adds below the game's own — the Analysis board puts
+   *  its whole-rail commands here, where print and export are looked for. */
+  extras?: MenuEntry[];
+}
+
+export interface MenuEntry {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
 }
 
 /** The site an address belongs to, for naming the link — "lichess.org" for
@@ -55,7 +64,7 @@ export function lichessGameUrl(startFen: string, sans: string[], ply = 0): strin
   return `https://lichess.org/analysis/pgn/${encodeURIComponent(pvString(startFen, sans))}#${at}`;
 }
 
-export default function GameMoreMenu({ pgn, fen, lineSans, ply, startFen, gameUrl, onExportPgn, onExportPdf, onPrint }: Props) {
+export default function GameMoreMenu({ pgn, fen, lineSans, ply, startFen, gameUrl, onExportPgn, onExportPdf, onPrint, extras }: Props) {
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -153,6 +162,16 @@ export default function GameMoreMenu({ pgn, fen, lineSans, ply, startFen, gameUr
           <button className={item} onClick={() => copy(fen, "FEN")}>
             Copy this position's FEN
           </button>
+          {extras && extras.length > 0 && (
+            <>
+              <div className="my-1 h-px bg-outline-variant" />
+              {extras.map((x) => (
+                <button key={x.label} className={item} disabled={x.disabled} onClick={() => { setOpen(false); x.onClick(); }}>
+                  {x.label}
+                </button>
+              ))}
+            </>
+          )}
         </div>
       )}
     </div>
