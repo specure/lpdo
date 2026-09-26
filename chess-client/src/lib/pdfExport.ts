@@ -286,6 +286,7 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
   let y = PAGE.height - MARGIN.top;
   let pageNumber = 1;
   drawRunningHeader(page, fonts, header, pageNumber);
+  drawColumnRule(page);
 
   const columnLeft = () => MARGIN.left + column * (COLUMN_WIDTH + GUTTER);
   const nextColumn = () => {
@@ -295,6 +296,7 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
       page = doc.addPage([PAGE.width, PAGE.height]);
       pageNumber += 1;
       drawRunningHeader(page, fonts, header, pageNumber);
+      drawColumnRule(page);
     }
     y = PAGE.height - MARGIN.top;
   };
@@ -337,6 +339,17 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
       y -= LINE_HEIGHT;
     }
   }
+}
+
+/** A hairline down the gutter, so the eye reads each column to its end before
+ *  crossing — a two-column page without one invites reading straight across. */
+function drawColumnRule(page: PDFPage) {
+  const x = MARGIN.left + COLUMN_WIDTH + GUTTER / 2;
+  page.drawLine({
+    start: { x, y: PAGE.height - MARGIN.top + 4 },
+    end: { x, y: MARGIN.bottom },
+    thickness: 0.4, color: MUTED,
+  });
 }
 
 function drawRunningHeader(page: PDFPage, fonts: Fonts, header: string, pageNumber: number) {
@@ -388,7 +401,7 @@ function wrap(runs: Run[], width: number): Run[][] {
 // ── The diagram ──────────────────────────────────────────────────────────────
 
 function drawDiagram(page: PDFPage, fonts: Fonts, diagram: Diagram, x: number, y: number, size: number) {
-  const board = size - 12;                    // room for the coordinates
+  const board = size - 22;                    // room for the coordinates and the mover's mark
   const square = board / 8;
   const left = x + 10;
   const bottom = y + 12;
@@ -447,6 +460,21 @@ function drawDiagram(page: PDFPage, fonts: Fonts, diagram: Diagram, x: number, y
       size: 6.5, font: fonts.text, color: MUTED,
     });
   }
+
+  // Whose move: a small circle beside the mover's back rank, the way ChessBase
+  // marks it — hollow for White, filled for Black. The back rank is at the
+  // bottom for the side the board is seen from, so it swaps with `flipped`.
+  const whiteToMove = diagram.fen.split(" ")[1] !== "b";
+  const atBottom = whiteToMove !== diagram.flipped;
+  const markY = atBottom ? bottom + square / 2 : bottom + board - square / 2;
+  page.drawCircle({
+    x: left + board + 7,
+    y: markY,
+    size: square * 0.2,
+    color: whiteToMove ? rgb(1, 1, 1) : INK,
+    borderColor: INK,
+    borderWidth: 0.6,
+  });
 }
 
 /** How tall each piece stands, as a fraction of its square.
