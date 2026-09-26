@@ -232,7 +232,51 @@ function headerBlocks(game: PdfGame, fonts: Fonts): Block[] {
 interface Fonts { text: PDFFont; bold: PDFFont; italic: PDFFont }
 
 function run(text: string, font: PDFFont, size: number, color: RGB): Run {
-  return { text, font, size, color };
+  return { text: printable(text), font, size, color };
+}
+
+// The standard PDF fonts cover WinAnsi — Western European letters and a few
+// symbols — and pdf-lib refuses anything else. The evaluation signs chess
+// uses beyond ± (∓, ∞, →, ↑ …) are spelled the way books without the glyphs
+// print them; other letters lose their accents (Svrček → Svrcek) rather
+// than the whole document failing. The PGN inside the file keeps the
+// original text; only the printed page is affected.
+const SPELLED: Record<string, string> = {
+  "\u2213": "-/+",      // ∓ Black is slightly better
+  "\u2a72": "+/=",      // ⩲ White is slightly better
+  "\u2a71": "=/+",      // ⩱ Black is slightly better
+  "\u221e": " (unclear)",  // ∞
+  "\u2a00": " (zugzwang)", // ⨀
+  "\u2192": " ->",       // → with attack
+  "\u2191": " ^",        // ↑ with initiative
+  "\u21c6": " <->",      // ⇆ counterplay
+  "\u25a1": "[]",       // □ only move
+  "\u2206": "D",        // ∆ with the idea
+  "\u2212": "-",        // − minus sign
+  "\u2012": "-", "\u2011": "-", "\u2010": "-",
+  "\u00a0": " ", "\u2009": " ", "\u202f": " ",
+};
+// Unicode points WinAnsi places in 0x80–0x9F, beyond Latin-1.
+const WIN_ANSI_EXTRA = new Set([
+  0x20ac, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030, 0x0160, 0x2039, 0x0152,
+  0x017d, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x02dc, 0x2122, 0x0161, 0x203a,
+  0x0153, 0x017e, 0x0178,
+]);
+function encodable(ch: string): boolean {
+  const c = ch.codePointAt(0)!;
+  return c === 0x0a || (c >= 0x20 && c <= 0x7e) || (c >= 0xa0 && c <= 0xff) || WIN_ANSI_EXTRA.has(c);
+}
+export function printable(text: string): string {
+  let out = "";
+  for (const ch of text) {
+    if (encodable(ch)) { out += ch; continue; }
+    if (SPELLED[ch] !== undefined) { out += SPELLED[ch]; continue; }
+    const bare = ch.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    if (bare && [...bare].every(encodable)) { out += bare; continue; }
+    const mapped = ({ "ł": "l", "Ł": "L", "đ": "d", "Đ": "D", "ı": "i", "ß": "ss" } as Record<string, string>)[ch];
+    out += mapped ?? "?";
+  }
+  return out;
 }
 function para(runs: Run[], indent: number, spaceBefore: number): Para {
   return { kind: "para", runs, indent, spaceBefore };
@@ -435,7 +479,7 @@ function drawColumnRule(page: PDFPage) {
 
 function drawRunningHeader(page: PDFPage, fonts: Fonts, header: string, pageNumber: number) {
   const y = PAGE.height - MARGIN.top + 16;
-  page.drawText(header, { x: MARGIN.left, y, size: SIZE.running, font: fonts.text, color: MUTED });
+  page.drawText(printable(header), { x: MARGIN.left, y, size: SIZE.running, font: fonts.text, color: MUTED });
   const label = String(pageNumber);
   page.drawText(label, {
     x: PAGE.width - MARGIN.right - fonts.text.widthOfTextAtSize(label, SIZE.running),
@@ -663,7 +707,10 @@ function setXmpWithPgn(doc: PDFDocument, games: PdfGame[], manyTitle: string) {
   </rdf:RDF>
 </x:xmpmeta>
 <?xpacket end="w"?>`;
-  const stream = doc.context.stream(xmp, {
+  // XMP is UTF-8 by definition. Handed a string, pdf-lib writes one byte
+  // per character, which mangled every letter beyond Latin-1 (Svrček came
+  // back as Svrek) — so the bytes are encoded here.
+  const stream = doc.context.stream(new TextEncoder().encode(xmp), {
     Type: PDFName.of("Metadata"),
     Subtype: PDFName.of("XML"),
   });
@@ -679,7 +726,9 @@ function xml(value: string): string {
 
 /** Read a PGN back out of a PDF this exporter wrote. */
 export function pgnFromPdfBytes(bytes: Uint8Array): string | null {
-  const text = new TextDecoder("latin1").decode(bytes);
+  // The metadata is UTF-8; the rest of the file is binary, which the lenient
+  // decoder turns into replacement characters outside the packet.
+  const text = new TextDecoder("utf-8").decode(bytes);
   const match = text.match(/<lpdo:pgn>([\s\S]*?)<\/lpdo:pgn>/);
   if (!match) return null;
   return match[1]
