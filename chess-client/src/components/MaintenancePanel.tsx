@@ -220,6 +220,132 @@ function VersionFooter({ status }: { status: StatusInfo | null }) {
   );
 }
 
+// ── Chess engine (#309) ──────────────────────────────────────────────────────
+// The engine on the server, for the Engine panel's "Local" analysis: which one
+// of those installed runs, with how many threads and how much hash. Choosing is
+// limited to engines the server found in the standard locations; another path
+// goes in engine.json on the server (see engine.rs for why).
+interface EngineInfo {
+  available: boolean;
+  path: string | null;
+  name: string | null;
+  error: string | null;
+  settings: { path: string | null; threads: number; hash_mb: number };
+  found: string[];
+  settings_file: string;
+  latest: { version: string; url: string } | null;
+  update_available: boolean;
+}
+
+function EngineSection() {
+  const [info, setInfo] = useState<EngineInfo | null>(null);
+  const [threads, setThreads] = useState("");
+  const [hash, setHash] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+
+  function take(d: EngineInfo) {
+    setInfo(d);
+    setThreads(String(d.settings.threads));
+    setHash(String(d.settings.hash_mb));
+  }
+  useEffect(() => {
+    fetch(apiUrl("/engine"))
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
+      .then(take)
+      .catch((e) => setError(String(e)));
+  }, []);
+
+  async function save(patch: { path?: string; threads?: number; hash_mb?: number }) {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      const r = await fetch(apiUrl("/engine"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
+      take((await r.json()) as EngineInfo);
+      setNote("Saved — the engine restarted with the new settings.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const t = parseInt(threads, 10);
+  const h = parseInt(hash, 10);
+  const changed = !!info && ((Number.isFinite(t) && t !== info.settings.threads) || (Number.isFinite(h) && h !== info.settings.hash_mb));
+  const field = "w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums";
+
+  return (
+    <SectionCard title="Chess engine" status={info ? (info.available ? info.name ?? "running" : "none found") : undefined}>
+      <p className="text-body-sm text-on-surface-variant">
+        The engine behind the Engine panel's <em>Local</em> analysis, running on the server. LPDO uses
+        an engine you install; Stockfish is free and among the strongest.
+      </p>
+      {info && !info.available && (
+        <p className="text-body-sm text-on-surface-variant">
+          No engine was found on the server. The Engine panel's <em>Local</em> tab shows how to install one.
+        </p>
+      )}
+      {info && info.found.length > 0 && (
+        <label className="flex items-center gap-2 text-body-sm text-on-surface">
+          <span className="w-16 shrink-0">Engine</span>
+          <select
+            value={info.path ?? ""}
+            onChange={(e) => void save({ path: e.target.value })}
+            disabled={busy}
+            className="flex-1 min-w-0 h-8 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface font-mono"
+          >
+            {info.found.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </label>
+      )}
+      {info && (
+        <div className="flex items-center gap-4 text-body-sm text-on-surface flex-wrap">
+          <label className="flex items-center gap-2">
+            <span className="w-16 shrink-0">Threads</span>
+            <input type="number" min={1} max={256} value={threads} onChange={(e) => setThreads(e.target.value)} className={field} />
+          </label>
+          <label className="flex items-center gap-2">
+            <span>Hash</span>
+            <input type="number" min={16} max={65536} step={64} value={hash} onChange={(e) => setHash(e.target.value)} className={field} />
+            <span className="text-on-surface-variant">MB</span>
+          </label>
+          <ActionButton
+            onClick={() => void save({ threads: Number.isFinite(t) ? t : undefined, hash_mb: Number.isFinite(h) ? h : undefined })}
+            disabled={busy || !changed}
+          >
+            Save
+          </ActionButton>
+        </div>
+      )}
+      {info && (
+        <p className="text-label-sm text-on-surface-variant">
+          Threads default to half the server's cores, since it also answers everyone's queries. A bigger
+          hash keeps more of an analysis when you move on and come back. To use an engine outside the
+          standard locations, name it in <span className="font-mono">{info.settings_file}</span> on the server.
+        </p>
+      )}
+      {info?.update_available && info.latest && (
+        <p className="text-body-sm text-on-surface">
+          Stockfish {info.latest.version} is available.{" "}
+          <button onClick={() => void openUrl(info.latest!.url)} className="text-primary hover:underline inline-flex items-center">
+            Download<ExternalLinkIcon />
+          </button>
+        </p>
+      )}
+      {note && <p className="text-body-sm text-success">{note}</p>}
+      {error && <p className="text-body-sm text-error">{error}</p>}
+    </SectionCard>
+  );
+}
+
 // Diagnostics — the crash log, readable after the reload that follows a crash.
 // A blank window used to be the whole report; this is where the reason lives.
 function DiagnosticsSection() {
@@ -1257,6 +1383,7 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
 
           <div className={`${grid} ${tab === "others" ? "" : "hidden"}`}>
             <ServerConnectionSection status={status} connection={connection} />
+            <EngineSection />
             <BackupSection />
             <DiagnosticsSection />
           </div>

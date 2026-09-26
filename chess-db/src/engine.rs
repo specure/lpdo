@@ -126,6 +126,10 @@ struct Search {
     key: String,
     white_to_move: bool,
     searching: bool,
+    /// Lines in a complete set: the MultiPV asked for, or fewer when the
+    /// position has fewer legal moves. Stockfish sends a depth's lines one
+    /// by one; a snapshot waits for the last, or it would mix two depths.
+    want: u32,
     depth: u32,
     nodes: u64,
     nps: u64,
@@ -208,7 +212,7 @@ impl Engine {
             running: Mutex::new(None),
             last_error: Mutex::new(None),
             search: Arc::new(std::sync::Mutex::new(Search {
-                gen: 0, key: String::new(), white_to_move: true, searching: false, depth: 0, nodes: 0, nps: 0,
+                gen: 0, key: String::new(), white_to_move: true, searching: false, want: 1, depth: 0, nodes: 0, nps: 0,
                 lines: BTreeMap::new(),
             })),
             idle: Arc::new(Notify::new()),
@@ -424,6 +428,7 @@ impl Engine {
                 key,
                 white_to_move: fen.split_whitespace().nth(1) != Some("b"),
                 searching: true,
+                want: lines.clamp(1, 10).min(legal_moves(fen).max(1)),
                 depth: 0, nodes: 0, nps: 0,
                 lines: BTreeMap::new(),
             };
@@ -560,11 +565,14 @@ async fn read_engine(
                 if let Some(n) = info.nps { s.nps = n; }
                 match info.line {
                     Some(mut l) => {
+                        if l.multipv > s.want { continue; }
                         if !s.white_to_move {
                             l.eval_cp = l.eval_cp.map(|c| -c);
                             l.mate = l.mate.map(|m| -m);
                         }
+                        let last_of_set = l.multipv == s.want;
                         s.lines.insert(l.multipv, l);
+                        if !last_of_set { continue; } // wait for the rest of this depth
                     }
                     None => continue, // speed-only updates are not worth a snapshot
                 }
@@ -633,6 +641,16 @@ fn parse_info(t: &str) -> Option<Info> {
         info.line = Some(Line { multipv, eval_cp: if mate.is_some() { None } else { cp }, mate, pv_uci: pv });
     }
     Some(info)
+}
+
+/// How many legal moves `fen` has (already validated by `clean_fen`).
+fn legal_moves(fen: &str) -> u32 {
+    use shakmaty::{fen::Fen, CastlingMode, Position};
+    fen.parse::<Fen>()
+        .ok()
+        .and_then(|f| f.into_position::<shakmaty::Chess>(CastlingMode::Standard).ok())
+        .map(|p| p.legal_moves().len() as u32)
+        .unwrap_or(1)
 }
 
 /// The release number in a Stockfish name: "Stockfish 16" → "16",

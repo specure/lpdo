@@ -72,23 +72,6 @@ export default function LocalEngine({
   }
   useEffect(() => { void loadStatus(); }, []);
 
-  async function choose(path: string) {
-    setChecking(true);
-    try {
-      const res = await fetch(apiUrl("/engine"), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path }),
-      });
-      if (!res.ok) throw new Error((await res.text()) || `${res.status}`);
-      setStatus((await res.json()) as EngineStatus);
-    } catch (e) {
-      setStatusError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setChecking(false);
-    }
-  }
-
   // Analyse the position on the board: a new stream per position, a moment
   // after the board settles. Closing the stream stops the search on the
   // server, so moving through a game does not leave searches running.
@@ -152,19 +135,6 @@ export default function LocalEngine({
             ? <span title="Remembered from an earlier search; the engine is deepening it"> · remembered</span>
             : speed ? ` · ${speed}` : ""}
         </span>
-        {status.found.length > 1 && (
-          <select
-            value={status.path ?? ""}
-            onChange={(e) => void choose(e.target.value)}
-            disabled={checking}
-            className="h-6 max-w-48 rounded-sm bg-surface-container text-label-sm text-on-surface border border-outline/40"
-            title="Engines installed on the server"
-          >
-            {/* The full path: an apt Stockfish in /usr/games and a newer one in
-                /usr/local/bin share a file name. */}
-            {status.found.map((p) => <option key={p} value={p}>{p}</option>)}
-          </select>
-        )}
         <button
           onClick={() => setRunning((r) => !r)}
           className="h-6 px-2 shrink-0 rounded-full text-label-sm text-primary hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard"
