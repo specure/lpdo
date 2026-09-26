@@ -49,6 +49,7 @@ function silhouette(path) {
 
 const outlines = [];
 const bodies = [];
+const boxes = [];
 for (const [piece, codePoint] of Object.entries(PIECES)) {
   const glyph = font.glyphForCodePoint(codePoint);
   // PDF draws SVG paths with y pointing down; font outlines point up, so the
@@ -57,6 +58,12 @@ for (const [piece, codePoint] of Object.entries(PIECES)) {
   if (!path) throw new Error(`no outline for ${piece} (U+${codePoint.toString(16)})`);
   const key = piece === piece.toLowerCase() ? `"${piece}"` : piece;
   outlines.push(`  ${key}: "${path}",`);
+  // The ink's own box, for placing a piece by what it draws rather than by the
+  // em square it sits in — the king and the queen are much narrower than a
+  // rook, and centring them on the em square leaves them looking adrift.
+  const b = glyph.bbox;
+  boxes.push(`  ${key}: { x0: ${Math.round(b.minX)}, x1: ${Math.round(b.maxX)}, `
+    + `y0: ${Math.round(-b.maxY)}, y1: ${Math.round(-b.minY)} },`);
   // Both colours share one body; take it from the filled (Black) glyph, whose
   // outer contour is the piece's own shape.
   if (piece === piece.toLowerCase()) {
@@ -91,6 +98,12 @@ ${entries.join("\n")}
  *  and turns a black piece's detail lines white. */
 export const PIECE_BODIES: Record<string, string> = {
 ${bodies.sort().join("\n")}
+};
+
+/** What each piece actually draws, in the same coordinates as the outlines
+ *  (y down, baseline 0). Use it to size and centre a piece by its ink. */
+export const PIECE_BOXES: Record<string, { x0: number; x1: number; y0: number; y1: number }> = {
+${boxes.join("\n")}
 };
 `);
 console.log(`${TARGET}: ${entries.length} outlines`);

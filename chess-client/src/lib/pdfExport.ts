@@ -11,7 +11,7 @@
 // the metadata is the game itself.
 
 import { PDFDocument, PDFFont, PDFPage, PDFName, StandardFonts, rgb, RGB } from "pdf-lib";
-import { PIECE_BODIES, PIECE_OUTLINES, PIECE_UNITS_PER_EM } from "./pieceOutlines";
+import { PIECE_BODIES, PIECE_BOXES, PIECE_OUTLINES, PIECE_UNITS_PER_EM } from "./pieceOutlines";
 import { Chess } from "chess.js";
 import { parsePgnTree, AnnotatedGame, MoveNode } from "./parsePgnTree";
 import { getMoveNum } from "./moveTreeNav";
@@ -231,7 +231,10 @@ function movetextBlocks(tree: AnnotatedGame, fonts: Fonts, flipped: boolean, fig
         // runs. The symbols font has no bold, so a main-line move's figurine is
         // a shade lighter than its square; at this size that reads as normal.
         current.push(run(prefix, moveFont, size, INK));
-        current.push({ ...run(" ", fonts.text, size, INK), piece: node.san[0] });
+        // Black's moves take the filled pieces, White's the outlined ones —
+        // the move reads as the side that played it.
+        const piece = node.color === "b" ? node.san[0].toLowerCase() : node.san[0];
+        current.push({ ...run(" ", fonts.text, size, INK), piece });
         current.push(run(tail, moveFont, size, INK));
       } else {
         current.push(run(`${prefix}${tail}`, moveFont, size, INK));
@@ -309,9 +312,13 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
       let x = columnLeft() + block.indent;
       for (const item of line) {
         if (item.piece) {
-          // Sits on the text baseline, like the letter it replaces.
-          drawPiece(page, item.piece, x + item.size * 0.06, y - LINE_HEIGHT + 3, item.size * 0.92);
-          x += item.size * 1.02;
+          // Sits on the text baseline, like the letter it replaces, and takes
+          // only the width it draws so the square follows as closely as it
+          // does after a letter.
+          const scale = figurineScale(item.size);
+          const box = PIECE_BOXES[item.piece];
+          drawPiece(page, item.piece, x - box.x0 * scale, y - LINE_HEIGHT + 3, item.size * FIGURINE_EM);
+          x += figurineWidth(item.piece, item.size);
           continue;
         }
         page.drawText(item.text, { x, y: y - LINE_HEIGHT + 3, size: item.size, font: item.font, color: item.color });
@@ -344,8 +351,8 @@ function wrap(runs: Run[], width: number): Run[][] {
   let used = 0;
   for (const r of runs) {
     if (r.piece) {
-      // A figurine is one indivisible "word" as wide as its em box.
-      const w = r.size * 1.02;
+      // A figurine is one indivisible "word", as wide as the piece draws.
+      const w = figurineWidth(r.piece, r.size);
       if (used + w > width && used > 0) { lines.push(line); line = []; used = 0; }
       line.push(r);
       used += w;
@@ -392,14 +399,19 @@ function drawDiagram(page: PDFPage, fonts: Fonts, diagram: Diagram, x: number, y
         ? grid[rank][7 - file]
         : grid[7 - rank][file];
       if (!cell) continue;
-      // A piece stands on its square: its baseline a shade above the square's
-      // lower edge, its height about three quarters of the em above that.
-      const size = square * 0.92;
+      // Sized and placed by what the piece draws: scaled so its ink is 78% of
+      // the square tall, then centred in the square. Kings and queens are much
+      // narrower than rooks, so centring on the em square left them adrift.
+      const box = PIECE_BOXES[cell];
+      const inkHeight = box.y1 - box.y0;
+      const em = (square * 0.80 * PIECE_UNITS_PER_EM) / inkHeight;
+      const scale = em / PIECE_UNITS_PER_EM;
+      const inkWidth = (box.x1 - box.x0) * scale;
       drawPiece(
         page, cell,
-        left + file * square + (square - size) / 2,
-        bottom + rank * square + square * 0.12,
-        size,
+        left + file * square + (square - inkWidth) / 2 - box.x0 * scale,
+        bottom + rank * square + (square - square * 0.80) / 2 - box.y1 * scale,
+        em,
       );
     }
   }
@@ -422,6 +434,21 @@ function drawDiagram(page: PDFPage, fonts: Fonts, diagram: Diagram, x: number, y
       size: 6.5, font: fonts.text, color: MUTED,
     });
   }
+}
+
+/** A figurine is set a shade larger than the letter it replaces, which is how
+ *  it matches the weight of the text around it. */
+const FIGURINE_EM = 1.06;
+
+function figurineScale(size: number): number {
+  return (size * FIGURINE_EM) / PIECE_UNITS_PER_EM;
+}
+
+/** What a figurine occupies in a line: the piece's own width and a thin space,
+ *  so "♕a3" sits as tightly as "Qa3". */
+function figurineWidth(piece: string, size: number): number {
+  const box = PIECE_BOXES[piece];
+  return (box.x1 - box.x0) * figurineScale(size) + size * 0.06;
 }
 
 /** One piece, `size` points tall, its baseline at (`x`, `y`).
