@@ -37,6 +37,18 @@ Linux and macOS (see the per-platform steps below). `GET /status` (version and
 counters only) stays open, which is how a client can tell "server unreachable"
 from "wrong token".
 
+**Callers on the server's own machine need no token.** The rule applies to the
+network: a request arriving from `127.0.0.1` or `::1` is served as it was before
+the server could listen on the network at all, since anyone with an account on
+that machine can read the database file anyway. Two consequences worth knowing:
+
+- On a machine other people log in to, any of those accounts can reach the
+  destructive endpoints. Treat a shared machine's local accounts as trusted, or
+  don't run the server there.
+- Behind a reverse proxy the upstream request comes *from* the proxy, so every
+  request looks local. Have the proxy check the token itself, or authenticate in
+  front of it.
+
 ## Setting up the server
 
 ### Windows

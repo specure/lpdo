@@ -2369,20 +2369,42 @@ pub async fn run(
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     println!("chess-db server listening on http://{}", bind);
-    axum::serve(listener, app).await?;
+    // `into_make_service_with_connect_info` is what puts the caller's address
+    // in the request extensions, which the token check needs to recognise a
+    // local caller (see `require_token`).
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await?;
     Ok(())
+}
+
+/// Whether the request came from this machine. Reads the peer address of the
+/// connection itself (`ConnectInfo`), so a remote caller cannot claim it with
+/// a header.
+fn is_local_caller(req: &axum::extract::Request) -> bool {
+    req.extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .is_some_and(|info| info.0.ip().is_loopback())
 }
 
 /// Reject requests without the shared token. `/status` stays open so a client
 /// can tell "server unreachable" from "wrong token" (it exposes only version and
 /// counters), and CORS preflights must pass or browsers never send the header.
+///
+/// Callers from this machine (127.0.0.0/8, ::1) are exempt, which is the rule
+/// the API had before it could bind beyond loopback: the OS confines them to
+/// the machine, and anyone with an account on it can read the database file
+/// anyway. The consequence is that on a multi-user machine any local account
+/// can reach the destructive endpoints, and that a reverse proxy in front of
+/// the server makes every request look local — put the token requirement back
+/// in front of it (or bind the proxy's upstream elsewhere) if you run one.
+/// The address comes from the connection, never from a header, so it cannot be
+/// forged by a remote caller.
 async fn require_token(
     axum::extract::State(expected): axum::extract::State<std::sync::Arc<String>>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let open = req.uri().path() == "/status" || req.method() == axum::http::Method::OPTIONS;
-    if open {
+    if open || is_local_caller(&req) {
         return next.run(req).await;
     }
     // Header is the normal channel. The query fallback exists for SSE: the
@@ -2419,6 +2441,37 @@ async fn require_token(
             "missing or invalid access token — set it in the client's server settings",
         )
             .into_response()
+    }
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::is_local_caller;
+    use axum::extract::ConnectInfo;
+    use std::net::SocketAddr;
+
+    fn req(peer: Option<&str>) -> axum::extract::Request {
+        let mut r = axum::extract::Request::new(axum::body::Body::empty());
+        if let Some(p) = peer {
+            r.extensions_mut().insert(ConnectInfo(p.parse::<SocketAddr>().unwrap()));
+        }
+        r
+    }
+
+    #[test]
+    fn callers_from_this_machine_need_no_token() {
+        assert!(is_local_caller(&req(Some("127.0.0.1:53122"))));
+        assert!(is_local_caller(&req(Some("127.0.0.53:9000"))));
+        assert!(is_local_caller(&req(Some("[::1]:53122"))));
+    }
+
+    #[test]
+    fn everyone_else_does() {
+        assert!(!is_local_caller(&req(Some("192.168.1.10:53122"))));
+        assert!(!is_local_caller(&req(Some("10.0.0.2:80"))));
+        assert!(!is_local_caller(&req(Some("[2001:db8::1]:443"))));
+        // No connection info at all (a hand-built request): not local.
+        assert!(!is_local_caller(&req(None)));
     }
 }
 

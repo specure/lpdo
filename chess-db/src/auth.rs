@@ -16,6 +16,11 @@
 //! - Compared in constant time so a wrong token cannot be recovered by timing.
 //! - `/status` stays open: clients probe it to distinguish "server down" from
 //!   "wrong token", and it exposes only version/counters.
+//! - Callers from the machine itself (127.0.0.0/8, ::1) are exempt: the OS
+//!   confines them to the machine, which is the guarantee the API relied on
+//!   before it could bind to a LAN address, and they can read the database file
+//!   regardless. The check is in `serve::is_local_caller`, and it reads the
+//!   connection's peer address, never a header.
 //! - Loopback deployments are entirely unaffected: no token file is created and
 //!   no header is required, so existing installs keep working unchanged.
 //! - NOT a substitute for TLS. Phase 1 is explicitly LAN-scoped; the token
