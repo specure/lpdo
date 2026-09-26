@@ -139,10 +139,12 @@ export default function LocalEngine({
             value={status.path ?? ""}
             onChange={(e) => void choose(e.target.value)}
             disabled={checking}
-            className="h-6 max-w-40 rounded-sm bg-surface-container text-label-sm text-on-surface border border-outline/40"
+            className="h-6 max-w-48 rounded-sm bg-surface-container text-label-sm text-on-surface border border-outline/40"
             title="Engines installed on the server"
           >
-            {status.found.map((p) => <option key={p} value={p}>{p.split("/").pop()}</option>)}
+            {/* The full path: an apt Stockfish in /usr/games and a newer one in
+                /usr/local/bin share a file name. */}
+            {status.found.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         )}
         <button
@@ -198,6 +200,11 @@ function InstallGuide({ status, checking, onCheck }: { status: EngineStatus; che
           <code className={code}>sudo dnf install stockfish</code>
           <div className="text-on-surface-variant mt-2">Arch:</div>
           <code className={code}>sudo pacman -S stockfish</code>
+          <p className="text-on-surface-variant mt-2">
+            A distribution's package can be a few versions old (Ubuntu 24.04 has Stockfish 16). For the
+            newest, download the Linux build from stockfishchess.org and install it as
+            /usr/local/bin/stockfish; the server prefers it to the package.
+          </p>
         </div>
       )}
       {status.os === "macos" && (
