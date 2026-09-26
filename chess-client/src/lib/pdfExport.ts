@@ -22,7 +22,9 @@ const PAGE = { width: 595.28, height: 841.89 };
 const MARGIN = { top: 56, bottom: 48, left: 46, right: 46 };
 const GUTTER = 18;
 const COLUMN_WIDTH = (PAGE.width - MARGIN.left - MARGIN.right - GUTTER) / 2;
-const LINE_HEIGHT = 11.4;
+/** Leading for the move text: 1.35× the move size, which is what lets a dense
+ *  page of moves, comments and figurines be read line by line. */
+const LINE_HEIGHT = 12.4;
 /** How wide a diagram is drawn: about two thirds of the column, the proportion
  *  a printed game uses — a board the full column width swamps the moves. */
 const DIAGRAM_WIDTH = COLUMN_WIDTH * 0.66;
@@ -41,7 +43,11 @@ interface Run {
   font: PDFFont;
   size: number;
   color: RGB;
+  /** A figurine move: `prefix` (the move number) is drawn, then the piece,
+   *  then `text` (the square and any marks) — all as one unbreakable word,
+   *  so a line never ends on the piece and starts on its square. */
   piece?: string;
+  prefix?: string;
 }
 
 /** A paragraph of runs, indented by `indent` points. */
@@ -230,12 +236,10 @@ function movetextBlocks(tree: AnnotatedGame, fonts: Fonts, flipped: boolean, fig
         // The piece as a figurine, the square in the text font — one move, two
         // runs. The symbols font has no bold, so a main-line move's figurine is
         // a shade lighter than its square; at this size that reads as normal.
-        current.push(run(prefix, moveFont, size, INK));
         // Black's moves take the filled pieces, White's the outlined ones —
         // the move reads as the side that played it.
         const piece = node.color === "b" ? node.san[0].toLowerCase() : node.san[0];
-        current.push({ ...run(" ", fonts.text, size, INK), piece });
-        current.push(run(tail, moveFont, size, INK));
+        current.push({ ...run(tail, moveFont, size, INK), piece, prefix });
       } else {
         current.push(run(`${prefix}${tail}`, moveFont, size, INK));
       }
@@ -312,13 +316,19 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
       let x = columnLeft() + block.indent;
       for (const item of line) {
         if (item.piece) {
-          // Sits on the text baseline, like the letter it replaces, and takes
-          // only the width it draws so the square follows as closely as it
-          // does after a letter.
+          // Number, then the piece on the text baseline like the letter it
+          // replaces, then the square — the piece taking only the width it
+          // draws, so the square follows as closely as after a letter.
+          const baseline = y - LINE_HEIGHT + 3;
+          if (item.prefix) {
+            page.drawText(item.prefix, { x, y: baseline, size: item.size, font: item.font, color: item.color });
+            x += item.font.widthOfTextAtSize(item.prefix, item.size);
+          }
           const scale = figurineScale(item.size);
-          const box = PIECE_BOXES[item.piece];
-          drawPiece(page, item.piece, x - box.x0 * scale, y - LINE_HEIGHT + 3, item.size * FIGURINE_EM);
+          drawPiece(page, item.piece, x - PIECE_BOXES[item.piece].x0 * scale, baseline, item.size * FIGURINE_EM);
           x += figurineWidth(item.piece, item.size);
+          page.drawText(item.text, { x, y: baseline, size: item.size, font: item.font, color: item.color });
+          x += item.font.widthOfTextAtSize(item.text, item.size);
           continue;
         }
         page.drawText(item.text, { x, y: y - LINE_HEIGHT + 3, size: item.size, font: item.font, color: item.color });
@@ -351,8 +361,8 @@ function wrap(runs: Run[], width: number): Run[][] {
   let used = 0;
   for (const r of runs) {
     if (r.piece) {
-      // A figurine is one indivisible "word", as wide as the piece draws.
-      const w = figurineWidth(r.piece, r.size);
+      // A figurine move is one indivisible word: number, piece and square.
+      const w = figurineRunWidth(r);
       if (used + w > width && used > 0) { lines.push(line); line = []; used = 0; }
       line.push(r);
       used += w;
@@ -399,9 +409,12 @@ function drawDiagram(page: PDFPage, fonts: Fonts, diagram: Diagram, x: number, y
         ? grid[rank][7 - file]
         : grid[7 - rank][file];
       if (!cell) continue;
-      // Each piece is scaled to its own height (see PIECE_HEIGHT), centred on
-      // the ink it draws — kings and queens are much narrower than rooks — and
-      // stood on the same line as its neighbours.
+      // Each piece is scaled to its own height (see PIECE_HEIGHT) and centred
+      // in its square on the ink it draws, both ways — kings and queens are
+      // much narrower than rooks, and a bishop's ink dips below its baseline.
+      // The path's y runs downward from the origin, so a point py of the
+      // outline lands at origin − py·scale: the origin is set so the ink's
+      // midpoint lands on the square's.
       const box = PIECE_BOXES[cell];
       const wanted = square * PIECE_HEIGHT[cell.toLowerCase()];
       const em = (wanted * PIECE_UNITS_PER_EM) / (box.y1 - box.y0);
@@ -410,7 +423,7 @@ function drawDiagram(page: PDFPage, fonts: Fonts, diagram: Diagram, x: number, y
       drawPiece(
         page, cell,
         left + file * square + (square - inkWidth) / 2 - box.x0 * scale,
-        bottom + rank * square + square * PIECE_FOOT - box.y1 * scale,
+        bottom + rank * square + square / 2 + ((box.y0 + box.y1) / 2) * scale,
         em,
       );
     }
@@ -447,10 +460,6 @@ const PIECE_HEIGHT: Record<string, number> = {
   k: 0.85, q: 0.83, b: 0.79, n: 0.75, r: 0.71, p: 0.61,
 };
 
-/** The lowest ink of any piece sits this far above the square's lower edge, so
- *  they all stand on one line. */
-const PIECE_FOOT = 0.07;
-
 /** A figurine is set a shade larger than the letter it replaces, which is how
  *  it matches the weight of the text around it. */
 const FIGURINE_EM = 1.06;
@@ -464,6 +473,13 @@ function figurineScale(size: number): number {
 function figurineWidth(piece: string, size: number): number {
   const box = PIECE_BOXES[piece];
   return (box.x1 - box.x0) * figurineScale(size) + size * 0.06;
+}
+
+/** A whole figurine move — number, piece, square — as one width. */
+function figurineRunWidth(r: Run): number {
+  return (r.prefix ? r.font.widthOfTextAtSize(r.prefix, r.size) : 0)
+    + figurineWidth(r.piece!, r.size)
+    + r.font.widthOfTextAtSize(r.text, r.size);
 }
 
 /** One piece, `size` points tall, its baseline at (`x`, `y`).
