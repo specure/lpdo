@@ -4,7 +4,8 @@ use pgn_reader::{Nag, RawComment, RawTag, SanPlus, Skip, Visitor};
 use regex::Regex;
 use shakmaty::fen::Fen;
 use shakmaty::zobrist::Zobrist64;
-use shakmaty::{Chess, EnPassantMode, Position};
+use shakmaty::san::{San, SanPlus as ShakmatySanPlus};
+use shakmaty::{Chess, EnPassantMode, Move, Position};
 
 /// Accumulated tag data between begin_tags and begin_movetext.
 #[derive(Default)]
@@ -33,6 +34,18 @@ pub struct Tags {
 /// State accumulated during move parsing.
 pub struct Movetext {
     pub tags: Tags,
+    /// Position used to write every move in canonical SAN — the main line and
+    /// the variations alike. Separate from `board`, which is played only as
+    /// deep as the position index needs (and not at all in bulk mode).
+    pub canon_pos: Chess,
+    /// The position before the last move written: where a variation branches
+    /// from, since a variation replaces the move just played.
+    pub canon_prev: Option<Chess>,
+    /// (position, previous) saved per open variation, so nesting restores.
+    pub canon_stack: Vec<(Chess, Option<Chess>)>,
+    /// False once a move could not be replayed — from then on the game keeps
+    /// the source's own spelling, because the position is no longer known.
+    pub canon_ok: bool,
     pub board: Chess,
     pub moves_buf: String,
     pub move_count: i16,
@@ -182,6 +195,10 @@ impl Visitor for GameVisitor {
         }
 
         ControlFlow::Continue(Movetext {
+            canon_pos: tags.start_pos.clone(),
+            canon_prev: None,
+            canon_stack: Vec::new(),
+            canon_ok: true,
             board,
             moves_buf: String::new(),
             move_count: 0,
@@ -203,7 +220,26 @@ impl Visitor for GameVisitor {
             return ControlFlow::Continue(());
         }
 
-        let san_str = san_plus.to_string();
+        // Written in the one canonical spelling of the move, not as the source
+        // wrote it: two sources give the same move as "Nge7" and "Ne7", both
+        // legal notation, and games that differ only in that could never be
+        // recognised as duplicates of each other (#271). Replaying is also the
+        // only way to know which spelling is the canonical one.
+        let san_str = match (movetext.canon_ok, resolve_san(&movetext.canon_pos, &san_plus.san)) {
+            (true, Some(m)) => {
+                let before = movetext.canon_pos.clone();
+                let canonical = ShakmatySanPlus::from_move_and_play_unchecked(&mut movetext.canon_pos, m);
+                movetext.canon_prev = Some(before);
+                canonical.to_string()
+            }
+            (true, None) => {
+                // An illegal or unreadable move: the position is lost, so the
+                // rest of this game is stored exactly as it arrived.
+                movetext.canon_ok = false;
+                san_plus.to_string()
+            }
+            (false, _) => san_plus.to_string(),
+        };
 
         // The annotated movetext keeps every move, including those nested inside
         // variations.
@@ -298,6 +334,13 @@ impl Visitor for GameVisitor {
         }
         movetext.moves_buf.push('(');
         movetext.variation_depth += 1;
+        // A variation replaces the move just played, so it starts from the
+        // position before it.
+        movetext.canon_stack.push((movetext.canon_pos.clone(), movetext.canon_prev.clone()));
+        if let Some(prev) = movetext.canon_prev.clone() {
+            movetext.canon_pos = prev;
+        }
+        movetext.canon_prev = None;
         ControlFlow::Continue(Skip(false)) // descend so the variation is preserved
     }
 
@@ -307,6 +350,10 @@ impl Visitor for GameVisitor {
         }
         movetext.moves_buf.push(')');
         movetext.variation_depth = movetext.variation_depth.saturating_sub(1);
+        if let Some((pos, prev)) = movetext.canon_stack.pop() {
+            movetext.canon_pos = pos;
+            movetext.canon_prev = prev;
+        }
         ControlFlow::Continue(())
     }
 
@@ -365,6 +412,40 @@ impl Visitor for GameVisitor {
     }
 }
 
+/// The move `san` names in `pos`, accepting spellings shakmaty's own parser
+/// refuses.
+///
+/// `San::to_move` is strict: it rejects a move that says more than it needs
+/// to, so "Nge2" fails where only one knight can reach e2 even though every
+/// reader understands it. Those over-specified spellings are exactly what this
+/// import has to recognise (#271), so the hints are treated as filters over
+/// the legal moves instead: role, destination, promotion, whether it captures,
+/// and the file/rank of the origin when the source gave them. A spelling that
+/// still matches two moves is genuinely ambiguous and is refused.
+fn resolve_san(pos: &Chess, san: &San) -> Option<Move> {
+    if let Ok(m) = san.to_move(pos) {
+        return Some(m);
+    }
+    let San::Normal { role, file, rank, capture, to, promotion } = *san else {
+        return None;   // castling and drops are unambiguous; to_move handles them
+    };
+    let mut found: Option<Move> = None;
+    for m in pos.legal_moves() {
+        if m.role() != role || m.to() != to || m.promotion() != promotion || m.is_capture() != capture {
+            continue;
+        }
+        let Some(from) = m.from() else { continue };
+        if file.is_some_and(|f| from.file() != f) || rank.is_some_and(|r| from.rank() != r) {
+            continue;
+        }
+        if found.is_some() {
+            return None;   // two moves fit: the source really was ambiguous
+        }
+        found = Some(m);
+    }
+    found
+}
+
 /// Remove ChessBase `[%evp ...]` evaluation-profile tags from a comment body.
 /// Case-insensitive; leaves all other `[%...]` directives untouched.
 fn strip_evp(comment: &str) -> std::borrow::Cow<'_, str> {
@@ -387,6 +468,90 @@ mod tests {
             .expect("read")
             .flatten()
             .expect("a game with White & Black tags")
+    }
+
+    /// The point of replaying every move (#271): two sources write the same
+    /// move differently, and only one spelling can be the stored one. After
+    /// 1.e4 only the g1 knight can reach e2, so the file in "Nge2" is noise.
+    #[test]
+    fn moves_are_stored_in_their_canonical_spelling() {
+        let over = parse_one("[White \"A\"]\n[Black \"B\"]\n\n1. e4 e5 2. Nge2 Nf6 *");
+        let plain = parse_one("[White \"A\"]\n[Black \"B\"]\n\n1. e4 e5 2. Ne2 Nf6 *");
+        assert!(over.pgn.contains("Ne2") && !over.pgn.contains("Nge2"), "normalised: {}", over.pgn);
+        assert_eq!(
+            over.pgn.lines().last(), plain.pgn.lines().last(),
+            "both spellings store the same movetext",
+        );
+        assert_eq!(plain.opening_line, over.opening_line, "and the same opening line");
+    }
+
+    /// Where two pieces really can reach the square, the disambiguation stays:
+    /// after 1.Nf3 d5 both the b1 and the f3 knight can go to d2.
+    #[test]
+    fn real_disambiguation_is_kept() {
+        let g = parse_one("[White \"A\"]\n[Black \"B\"]\n\n1. Nf3 d5 2. Nbd2 Nf6 *");
+        assert!(g.pgn.contains("Nbd2"), "kept: {}", g.pgn);
+        let other = parse_one("[White \"A\"]\n[Black \"B\"]\n\n1. Nf3 d5 2. Nfd2 Nf6 *");
+        assert!(other.pgn.contains("Nfd2"), "the other knight is still its own move: {}", other.pgn);
+    }
+
+    /// Check and mate suffixes come from the position, not from the source.
+    #[test]
+    fn check_and_mate_suffixes_are_written_from_the_position() {
+        let g = parse_one("[White \"A\"]\n[Black \"B\"]\n\n1. f3 e5 2. g4 Qh4 1-0");
+        assert!(g.pgn.contains("Qh4#"), "mate marked even though the source didn't: {}", g.pgn);
+    }
+
+    /// A variation replaces the move before it, so it is replayed from the
+    /// position that move was played in — nested ones included.
+    #[test]
+    fn variations_are_canonicalised_from_their_own_branch_point() {
+        let g = parse_one(
+            "[White \"A\"]\n[Black \"B\"]\n\n             1. e4 e5 2. Nge2 (2. Nf3 (2. Bc4 Nf6) 2... Nc6) 2... Nf6 *",
+        );
+        assert!(g.pgn.contains("Ne2"), "main line normalised: {}", g.pgn);
+        assert!(g.pgn.contains("Nf3") && g.pgn.contains("Nc6"), "variation kept: {}", g.pgn);
+        assert!(g.pgn.contains("Bc4"), "nested variation kept: {}", g.pgn);
+        assert_eq!(g.pgn.matches('(').count(), 2, "both variations kept: {}", g.pgn);
+        assert_eq!(g.pgn.matches(')').count(), 2, "and closed: {}", g.pgn);
+        // The move after the variations belongs to the main line again.
+        assert!(g.pgn.ends_with("Nf6"), "main line resumes: {}", g.pgn);
+    }
+
+    /// A game whose moves cannot be replayed keeps the source's own text from
+    /// that point on, rather than being half-rewritten.
+    #[test]
+    fn an_unplayable_move_leaves_the_rest_of_the_game_alone() {
+        let g = parse_one("[White \"A\"]\n[Black \"B\"]\n\n1. e4 e5 2. Qh8 *");
+        assert!(g.pgn.contains("Qh8"), "the impossible move is kept: {}", g.pgn);
+    }
+
+    /// What replaying every move costs, measured over a real TWIC issue
+    /// (~10k games). Ignored by default; point it at a .pgn to run it:
+    ///   LPDO_PGN_BENCH=twic1663.pgn cargo test --release -- --ignored throughput --nocapture
+    #[test]
+    #[ignore]
+    fn canonicalisation_throughput() {
+        let path = std::env::var("LPDO_PGN_BENCH").expect("set LPDO_PGN_BENCH");
+        let bytes = std::fs::read(&path).expect("read the pgn");
+        let start = std::time::Instant::now();
+        let mut reader = Reader::new(Cursor::new(&bytes[..]));
+        let mut visitor = GameVisitor::new(Some(40));
+        let mut games = 0usize;
+        let mut moves = 0usize;
+        while let Ok(Some(game)) = reader.read_game(&mut visitor) {
+            if let Some(g) = game {
+                games += 1;
+                moves += g.move_count as usize;
+            }
+        }
+        let elapsed = start.elapsed();
+        eprintln!(
+            "{games} games / {moves} moves in {elapsed:?} — {:.0} games/s, {:.1} µs/game",
+            games as f64 / elapsed.as_secs_f64(),
+            elapsed.as_micros() as f64 / games as f64,
+        );
+        assert!(games > 0, "the file held no games");
     }
 
     #[test]
