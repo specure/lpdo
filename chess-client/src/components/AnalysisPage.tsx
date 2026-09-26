@@ -446,7 +446,16 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
               <CloudEngine fen={effFen} watchLabel={active ? `${active.game.white} – ${active.game.black}` : "Position"} onPlayLine={playSans} />
             ) : (
               <div className="flex-1 min-h-0 flex flex-col">
-                <div className="flex-1 min-h-0 overflow-y-auto">
+                {/* Enter opens the previewed game, a double-click the game
+                    clicked — as the preview's "Open in Analysis" does. */}
+                <div
+                  className="flex-1 min-h-0 overflow-y-auto"
+                  onKeyDown={(e) => {
+                    if (e.key !== "Enter" || !preview) return;
+                    e.preventDefault();
+                    void openRelated(preview);
+                  }}
+                >
                   {atStart ? (
                     <div className="p-3 text-center text-on-surface-variant text-body-sm">Play a move to see games reaching this position</div>
                   ) : related.length === 0 ? (
@@ -458,10 +467,11 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
                         <button
                           key={g.id}
                           onClick={() => setPreview(g)}
+                          onDoubleClick={() => void openRelated(g)}
                           className={`w-full flex items-baseline gap-2 px-3 py-1.5 text-body-sm text-left whitespace-nowrap transition-colors duration-short3 ease-standard ${
                             on ? "bg-secondary-container text-on-secondary-container" : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
                           }`}
-                          title="Preview this game"
+                          title="Preview this game. Double-click or Enter opens it in Analysis."
                         >
                           {/* Each rating in brackets after its player. Both
                               count towards the order, so neither is singled out. */}
