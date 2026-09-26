@@ -130,7 +130,10 @@ export interface MovesEditor {
 
   /** Begin editing the given game, positioned at (line, index, breadcrumbs).
    *  The game is deep-cloned so the viewer's tree is never mutated. */
-  start(game: AnnotatedGame, line: MoveNode[], index: number, breadcrumbs: Breadcrumb[]): void;
+  /** `startDirty` marks the session as having unsaved work from the outset —
+   *  used when the editor opens on moves the board already carried (a scratch
+   *  line), so leaving the game saves them like any other edit. */
+  start(game: AnnotatedGame, line: MoveNode[], index: number, breadcrumbs: Breadcrumb[], startDirty?: boolean): void;
   cancel(): void;
   /** Jump the cursor to (line, index), entering a variation if needed. */
   navigate(line: MoveNode[], index: number): void;
@@ -485,7 +488,7 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     setSaving(false);
   }
 
-  function start(g: AnnotatedGame, line: MoveNode[], at: number, _bc: Breadcrumb[]) {
+  function start(g: AnnotatedGame, line: MoveNode[], at: number, _bc: Breadcrumb[], startDirty = false) {
     const clone = structuredClone(g);
     const steps = pathSteps(g.mainLine, line) ?? [];
     const { line: clonedLine, breadcrumbs: clonedBc } = resolvePath(clone.mainLine, steps);
@@ -497,7 +500,7 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     setPendingPromotion(null);
     setUndoStack([]);
     setRedoStack([]);
-    setDirty(false);
+    setDirty(startDirty);
     setGameEndMarked(detectGameEnd(clone.mainLine));
     setError(null);
     setActive(true);

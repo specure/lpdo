@@ -107,13 +107,18 @@ export default function AnnotatedMoveList({
           key={`m-${i}`}
           ref={isCurrentMove ? activeRef : null}
           onClick={() => onNavigate(line, moveIdx)}
+          // A scratch move is only on the board, not in the game (see
+          // lib/scratchLine.ts), so it is drawn as a dashed, tentative thing.
           className={`cursor-pointer rounded-sm transition-colors duration-short3 ease-standard ${
+            node.scratch ? "italic underline decoration-dashed underline-offset-2 " : ""
+          }${
             isCurrentMove
               ? "bg-primary-container text-on-primary-container px-0.5"
               : isOnPath
               ? "text-primary"
               : "text-on-surface hover:bg-on-surface/8"
           }`}
+          title={node.scratch ? "Played on the board only — not saved in the game" : undefined}
         >
           {numPrefix}{node.san}{nagsToString(node.annotations.nags)}
         </span>

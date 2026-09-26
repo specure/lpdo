@@ -22,6 +22,7 @@ import {
   saveMovetextViaServer,
 } from "./MovesEditor";
 import { serializeMovetext } from "../lib/serializeMovetext";
+import { appendScratchMove, clearScratchMarks, replayAsScratch, sansToCursor, type ScratchMove } from "../lib/scratchLine";
 import type { CalArrow, CslCircle } from "../lib/parseAnnotations";
 import { nagsToString, nagToSymbol } from "../lib/parseAnnotations";
 import AnnotatedMoveList from "./AnnotatedMoveList";
@@ -384,6 +385,13 @@ interface Props {
    * it can be fed straight back from state the board itself drives. Ignored if
    * it no longer resolves against the tree (the moves were edited since). */
   initialCursor?: CursorPath | null;
+  /** Moves the host asks to play on the board without touching the game — a
+   * move clicked in the Reference list or a line clicked in the Engine panel.
+   * `seq` is bumped per request so the same moves can be sent twice. */
+  playRequest?: { sans: string[]; seq: number } | null;
+  /** Reports whether a scratch line is on the board, so the host can label its
+   * own controls (Analysis shows "Keep"/"Discard" beside the board). */
+  onScratchChange?: (active: boolean) => void;
   /** Render the move list into this element instead of inline beside the board.
    * The Analysis view owns it as a panel of its own, so the board and the move
    * text are siblings under one divider rule rather than a compound panel with a
@@ -817,7 +825,7 @@ function DetailsPanel({
   );
 }
 
-export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost }: Props) {
+export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange }: Props) {
   const [detail, setDetail] = useState<GameDetail | null>(null);
   const [detailReloadKey, setDetailReloadKey] = useState(0);
   const [detailsOpen, setDetailsOpen] = useState<boolean>(
@@ -838,6 +846,14 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   const [activeLine, setActiveLine] = useState<MoveNode[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([]);
+  // Scratch line: the game's own tree, kept aside while a scratch line is on
+  // screen, plus where that line branched off. null = no scratch line.
+  const [scratch, setScratch] = useState<{ saved: AnnotatedGame; anchor: CursorPath } | null>(null);
+  const [scratchFrom, setScratchFrom] = useState<string | null>(null);        // click-to-move source
+  const [scratchPromotion, setScratchPromotion] = useState<{ from: string; to: string } | null>(null);
+  const [keepingScratch, setKeepingScratch] = useState(false);
+  // A cursor to restore after the next reload (set when a scratch line is kept).
+  const pendingCursorRef = useRef<CursorPath | null>(null);
 
   const [currentIndex, setCurrentIndex] = useState(0);
   // Orientation is controlled when the host passes `flipped` (Analysis), local
@@ -1039,6 +1055,9 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     setActiveLine([]);
     setActiveIndex(0);
     setBreadcrumbs([]);
+    setScratch(null);
+    setScratchFrom(null);
+    setScratchPromotion(null);
     setLoadedGameId(null);
 
     function applyDetail(data: GameDetail) {
@@ -1056,6 +1075,17 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
           // they just entered rather than snapping to the starting position.
           const pendingFocus = pendingFocusIndexRef.current;
           pendingFocusIndexRef.current = null;
+          // A kept scratch line asks for its own last move, by path.
+          const pendingCursor = pendingCursorRef.current;
+          pendingCursorRef.current = null;
+          const kept = pendingCursor ? resolvePathSafe(tree.mainLine, pendingCursor.steps) : null;
+          if (kept) {
+            setActiveLine(kept.line);
+            setBreadcrumbs(kept.breadcrumbs);
+            setActiveIndex(Math.max(0, Math.min(pendingCursor!.index, kept.line.length)));
+            setLoading(false);
+            return;
+          }
           // Then a cursor the host wants restored (the Analysis tab we're
           // returning to), which outranks move_number — that only says where
           // the game was *opened* from.
@@ -1179,10 +1209,155 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     return { steps: pathSteps(annotatedGame.mainLine, activeLine) ?? [], index: activeIndex };
   }, [useAnnotated, annotatedGame, activeLine, activeIndex, currentIndex]);
 
+  // What the host remembers for this tab. A scratch line is gone by the time
+  // the tab comes back, so its cursor would not resolve — report where the
+  // line branched off instead. The FEN still follows the scratch position, so
+  // the Reference / Games / Engine panels track what is on the board.
+  const reportedCursor = scratch ? scratch.anchor : cursor;
+
   useEffect(() => {
     if (loadedGameId !== game.id) return;   // still loading — the FEN is the previous game's
-    onPositionChange?.(currentFen, game.id, cursor);
-  }, [currentFen, cursor, loadedGameId, game.id, onPositionChange]);
+    onPositionChange?.(currentFen, game.id, reportedCursor);
+  }, [currentFen, reportedCursor, loadedGameId, game.id, onPositionChange]);
+
+  // ── Scratch line ────────────────────────────────────────────────────────
+  // Moves played on the board (or clicked in the Reference / Engine panels)
+  // outside edit mode. The tree on screen becomes a clone carrying them as
+  // `scratch` nodes, while the game's own tree waits in `scratch.saved` and
+  // comes back the moment the line is left — like pushing the pieces around on
+  // a physical board and then setting the position back up.
+  const scratchActive = scratch !== null;
+  useEffect(() => { onScratchChange?.(scratchActive); }, [scratchActive, onScratchChange]);
+
+  /** Play one move as a scratch move. Returns false when it is illegal (the
+   *  board then snaps the piece back) or when the tree can't take it. */
+  const playScratch = useCallback((move: ScratchMove): boolean => {
+    if (!useAnnotated || !annotatedGame || movesEditor.active) return false;
+    const next = appendScratchMove(annotatedGame, cursor, move);
+    if (!next) return false;
+    const at = resolvePathSafe(next.game.mainLine, next.cursor.steps);
+    if (!at) return false;
+    setScratch((prev) => prev ?? { saved: annotatedGame, anchor: cursor });
+    setAnnotatedGame(next.game);
+    setActiveLine(at.line);
+    setBreadcrumbs(at.breadcrumbs);
+    setActiveIndex(next.cursor.index);
+    setScratchFrom(null);
+    return true;
+  }, [useAnnotated, annotatedGame, movesEditor.active, cursor]);
+
+  /** Forget the scratch line and put the game's own tree back, landing on
+   *  `target` when that still resolves without the scratch moves, or else
+   *  where the line branched off. */
+  const discardScratch = useCallback((target?: CursorPath) => {
+    if (!scratch) return;
+    const { saved, anchor } = scratch;
+    const wanted = target ? resolvePathSafe(saved.mainLine, target.steps) : null;
+    const at = wanted && target!.index <= wanted.line.length
+      ? { ...wanted, index: target!.index }
+      : (() => {
+          const back = resolvePathSafe(saved.mainLine, anchor.steps);
+          return back ? { ...back, index: Math.min(anchor.index, back.line.length) } : null;
+        })();
+    setScratch(null);
+    setScratchFrom(null);
+    setScratchPromotion(null);
+    setAnnotatedGame(saved);
+    if (at) {
+      setActiveLine(at.line);
+      setBreadcrumbs(at.breadcrumbs);
+      setActiveIndex(at.index);
+    }
+  }, [scratch]);
+
+  /** Write the scratch line into the game as an ordinary variation. */
+  const keepScratch = useCallback(async () => {
+    if (!scratch || !annotatedGame) return;
+    setKeepingScratch(true);
+    const result = await saveMovetextViaServer(game.id, serializeMovetext(clearScratchMarks(annotatedGame)));
+    setKeepingScratch(false);
+    if (!result.ok) { setError(`Couldn't keep the line: ${result.error}`); return; }
+    // Reload from the server, landing on the move the line ended on — it is a
+    // move of the game now, so the same path resolves against the fresh tree.
+    pendingCursorRef.current = cursor;
+    setScratch(null);
+    setDetailReloadKey((k) => k + 1);
+    onGameMutated?.();
+  }, [scratch, annotatedGame, game.id, cursor, onGameMutated]);
+
+  /** A piece dropped outside edit mode: play it as a scratch move, asking
+   *  which piece first when it is a promotion. */
+  const tryScratchDrop = useCallback((from: string, to: string): boolean => {
+    if (!useAnnotated || movesEditor.active) return false;
+    if (playScratch({ from, to })) return true;
+    // Illegal as it stands, but legal as a promotion → ask which piece.
+    const asQueen = new Chess(currentFen).moves({ verbose: true })
+      .some((m) => m.from === from && m.to === to && m.promotion);
+    if (asQueen) { setScratchPromotion({ from, to }); return true; }
+    return false;
+  }, [useAnnotated, movesEditor.active, playScratch, currentFen]);
+
+  /** Click-to-move outside edit mode: first click picks a piece of the side to
+   *  move, second click tries the move. Clicking elsewhere clears the pick. */
+  const scratchClickSquare = useCallback((square: string) => {
+    if (!useAnnotated || movesEditor.active) return;
+    const chess = new Chess(currentFen);
+    const piece = chess.get(square as Parameters<typeof chess.get>[0]);
+    if (scratchFrom && scratchFrom !== square) {
+      if (tryScratchDrop(scratchFrom, square)) { setScratchFrom(null); return; }
+    }
+    setScratchFrom(piece && piece.color === chess.turn() ? square : null);
+  }, [useAnnotated, movesEditor.active, currentFen, scratchFrom, tryScratchDrop]);
+
+  /** Leave the editor without saving, but stay on the position being looked
+   *  at: the moves of the current line that the game doesn't hold come back as
+   *  a scratch line. Discarding an edit should not move the board somewhere
+   *  else — only take back what was about to be written. */
+  const cancelEditing = useCallback(() => {
+    const base = scratch ? scratch.saved : annotatedGame;
+    const sans = movesEditor.game
+      ? sansToCursor(movesEditor.breadcrumbs, movesEditor.activeLine, movesEditor.activeIndex)
+      : [];
+    movesEditor.cancel();
+    if (!base) return;
+    const replayed = replayAsScratch(base, sans);
+    const at = replayed ? resolvePathSafe(replayed.game.mainLine, replayed.cursor.steps) : null;
+    if (!replayed || !at) { discardScratch(); return; }
+    setScratch(replayed.scratched ? { saved: base, anchor: replayed.anchor } : null);
+    setScratchFrom(null);
+    setScratchPromotion(null);
+    setAnnotatedGame(replayed.game);
+    setActiveLine(at.line);
+    setBreadcrumbs(at.breadcrumbs);
+    setActiveIndex(Math.min(replayed.cursor.index, at.line.length));
+  }, [scratch, annotatedGame, movesEditor, discardScratch]);
+
+  // Moves pushed down by the host (Reference row, Engine line). Played one by
+  // one from the current position; a move that doesn't fit stops the line.
+  const playRequestSeqRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!playRequest || playRequest.seq === playRequestSeqRef.current) return;
+    playRequestSeqRef.current = playRequest.seq;
+    if (!useAnnotated || !annotatedGame || movesEditor.active) return;
+    let tree = annotatedGame;
+    let at = cursor;
+    let base: AnnotatedGame | null = null;
+    for (const san of playRequest.sans) {
+      const next = appendScratchMove(tree, at, { san });
+      if (!next) break;
+      if (base === null) base = tree;
+      tree = next.game;
+      at = next.cursor;
+    }
+    if (base === null) return;   // nothing playable
+    const landed = resolvePathSafe(tree.mainLine, at.steps);
+    if (!landed) return;
+    setScratch((prev) => prev ?? { saved: base!, anchor: cursor });
+    setAnnotatedGame(tree);
+    setActiveLine(landed.line);
+    setBreadcrumbs(landed.breadcrumbs);
+    setActiveIndex(at.index);
+  }, [playRequest, useAnnotated, annotatedGame, movesEditor.active, cursor]);
 
   // Pre-warm the position-moves cache as the user browses, so entering edit
   // mode and clicking on an empty square shows the right arrow without a
@@ -1201,13 +1376,28 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
 
   const goTo = useCallback((index: number) => {
     const clamped = Math.max(0, Math.min(index, maxIndex));
+    // Stepping anywhere while a scratch line is up abandons it — the moves
+    // were never written down, so going back forgets them.
+    if (scratch) {
+      // Arrow-right at the end of the line clamps to where we already are —
+      // that is not a step, so it must not throw the line away.
+      if (clamped !== (useAnnotated ? activeIndex : currentIndex)) discardScratch({ steps: cursor.steps, index: clamped });
+      return;
+    }
     if (useAnnotated) setActiveIndex(clamped);
     else setCurrentIndex(clamped);
-  }, [maxIndex, useAnnotated]);
+  }, [maxIndex, useAnnotated, scratch, discardScratch, cursor, activeIndex, currentIndex]);
 
   const effectiveIndex = useAnnotated ? activeIndex : currentIndex;
 
   function handleNavigateToVariation(line: MoveNode[], index: number) {
+    if (scratch && annotatedGame) {
+      // The clicked move belongs to the tree currently on screen; address it by
+      // path so it can be found again in the game's own tree.
+      const steps = pathSteps(annotatedGame.mainLine, line);
+      discardScratch(steps ? { steps, index } : undefined);
+      return;
+    }
     if (line !== activeLine) {
       if (annotatedGame) {
         // Build full breadcrumb path from main line to the target line
@@ -1222,6 +1412,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   }
 
   function handleBackToMainLine() {
+    if (scratch) { discardScratch(); return; }
     if (breadcrumbs.length > 0) {
       const bc = breadcrumbs[breadcrumbs.length - 1];
       setBreadcrumbs((prev) => prev.slice(0, -1));
@@ -1403,10 +1594,11 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
         }
         if (e.key === "ArrowUp")    { e.preventDefault(); movesEditor.setCursor(0); return; }
         if (e.key === "ArrowDown")  { e.preventDefault(); movesEditor.setCursor(movesEditor.activeLine.length); return; }
-        if (e.key === "Escape")     { e.preventDefault(); movesEditor.cancel(); return; }
+        if (e.key === "Escape")     { e.preventDefault(); cancelEditing(); return; }
         return;
       }
 
+      if (e.key === "Escape" && scratch) { e.preventDefault(); discardScratch(); return; }
       if (e.key === "ArrowLeft") {
         e.preventDefault();
         if (useAnnotated && effectiveIndex <= 1 && breadcrumbs.length > 0) {
@@ -1430,7 +1622,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [effectiveIndex, goTo, varChoice, useAnnotated, activeLine, movesEditor.active, movesEditor.pendingDivergence, movesEditor.pendingPromotion, movesEditor.activeIndex, movesEditor.activeLine, movesEditor.breadcrumbs, movesEditor.canUndo, movesEditor.canRedo]);
+  }, [effectiveIndex, goTo, scratch, discardScratch, cancelEditing, varChoice, useAnnotated, activeLine, movesEditor.active, movesEditor.pendingDivergence, movesEditor.pendingPromotion, movesEditor.activeIndex, movesEditor.activeLine, movesEditor.breadcrumbs, movesEditor.canUndo, movesEditor.canRedo]);
 
   // ── Board annotations ──────────────────────────────────────────────────
 
@@ -1609,7 +1801,22 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             detail={detail}
             onDetailChanged={() => { setDetailReloadKey((k) => k + 1); onGameMutated?.(); }}
             onStartEditMoves={() => {
-              if (annotatedGame) movesEditor.start(annotatedGame, activeLine, activeIndex, breadcrumbs);
+              if (!annotatedGame) return;
+              // A scratch line comes along into the edit: its moves become
+              // ordinary moves of the session, to be saved with Done or thrown
+              // away with Discard like anything else typed in there.
+              if (scratch) {
+                // The editor works on its own clone, so the viewer keeps the
+                // scratch line as it was: if the edit is discarded, the line
+                // goes with it (see the exit effect below).
+                const carried = clearScratchMarks(annotatedGame);
+                const at = resolvePathSafe(carried.mainLine, cursor.steps);
+                if (at) movesEditor.start(carried, at.line, Math.min(cursor.index, at.line.length), at.breadcrumbs, true);
+                setScratchFrom(null);
+                setScratchPromotion(null);
+                return;
+              }
+              movesEditor.start(annotatedGame, activeLine, activeIndex, breadcrumbs);
             }}
             detailsOpen={detailsOpen}
             onToggleDetails={() => setDetailsOpen((o) => !o)}
@@ -1635,7 +1842,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             </span>
             {/* Text button on the container */}
             <button
-              onClick={movesEditor.cancel}
+              onClick={cancelEditing}
               disabled={movesEditor.saving}
               className="h-7 px-3 inline-flex items-center rounded-full text-on-primary-container text-label-md hover:bg-on-primary-container/10 active:bg-on-primary-container/15 disabled:opacity-50 transition-colors duration-short3 ease-standard"
               title="Exit without saving"
@@ -1738,21 +1945,29 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
                 id: "game-board", // unique id so it never shares square DOM ids with another board
                 position: currentFen,
                 boardOrientation: flipped ? "black" : "white",
-                allowDragging: movesEditor.active && !movesEditor.pendingDivergence && !movesEditor.pendingPromotion,
-                squareStyles: movesEditor.active ? { ...editorLastMoveSquares, ...editorSquareStyles } : lastMoveSquares,
+                // Outside edit mode the pieces still move — into a scratch
+                // line that the game never sees (see the scratch block above).
+                allowDragging: movesEditor.active
+                  ? !movesEditor.pendingDivergence && !movesEditor.pendingPromotion
+                  : useAnnotated && !scratchPromotion,
+                squareStyles: movesEditor.active
+                  ? { ...editorLastMoveSquares, ...editorSquareStyles }
+                  : scratchFrom
+                  ? { ...lastMoveSquares, [scratchFrom]: { boxShadow: "inset 0 0 0 3px var(--color-primary)" } }
+                  : lastMoveSquares,
                 allowDrawingArrows: false,
                 darkSquareStyle: { backgroundColor: "var(--color-board-game-dark)" },
                 lightSquareStyle: { backgroundColor: "var(--color-board-game-light)" },
                 boardStyle: { alignContent: "start" },
-                onPieceDrop: movesEditor.active
-                  ? ({ sourceSquare, targetSquare }) => {
-                      if (!sourceSquare || !targetSquare) return false;
-                      return movesEditor.tryMove(sourceSquare, targetSquare);
-                    }
-                  : undefined,
-                onSquareClick: movesEditor.active
-                  ? ({ square }) => movesEditor.clickSquare(square)
-                  : undefined,
+                onPieceDrop: ({ sourceSquare, targetSquare }) => {
+                  if (!sourceSquare || !targetSquare) return false;
+                  if (movesEditor.active) return movesEditor.tryMove(sourceSquare, targetSquare);
+                  return tryScratchDrop(sourceSquare, targetSquare);
+                },
+                onSquareClick: ({ square }) => {
+                  if (movesEditor.active) { movesEditor.clickSquare(square); return; }
+                  scratchClickSquare(square);
+                },
               }}
             />
             </BoardErrorBoundary>
@@ -1798,6 +2013,19 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
                 circles={[]}
                 flipped={flipped}
                 size={squareSize}
+              />
+            )}
+
+            {/* A scratch pawn reaching the last rank asks the same way */}
+            {!movesEditor.active && scratchPromotion && (
+              <MovesEditorPromotionChooser
+                side={currentFen.split(" ")[1] === "b" ? "b" : "w"}
+                onPick={(piece) => {
+                  const { from, to } = scratchPromotion;
+                  setScratchPromotion(null);
+                  playScratch({ from, to, promotion: piece });
+                }}
+                onCancel={() => setScratchPromotion(null)}
               />
             )}
 
@@ -1849,6 +2077,28 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
         </div>
 
         {/* Controls — swapped for editor toolbar when editing */}
+        {/* A scratch line is on the board: keep it or let it go. It also goes
+            by itself on any step back, so this bar is the only way to keep it. */}
+        {!movesEditor.active && scratch && (
+          <div className="shrink-0 flex items-center justify-center gap-2 px-2 py-1 text-label-md text-on-surface-variant">
+            <span className="truncate">Trying moves — not saved</span>
+            <button
+              onClick={keepScratch}
+              disabled={keepingScratch}
+              className="h-7 px-3 rounded-full text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 disabled:opacity-40 transition-colors duration-short3 ease-standard"
+              title="Add these moves to the game as a variation"
+            >
+              {keepingScratch ? "Keeping…" : "Keep as variation"}
+            </button>
+            <button
+              onClick={() => discardScratch()}
+              className="h-7 px-3 rounded-full text-label-md text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
+              title="Forget these moves and go back to where the line started"
+            >
+              Discard
+            </button>
+          </div>
+        )}
         {movesEditor.active ? (
           <MovesEditorToolbar editor={movesEditor} />
         ) : (

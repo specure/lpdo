@@ -15,6 +15,10 @@ export interface MoveNode {
   fen: string;
   annotations: Annotations;
   variations: MoveNode[][];
+  /** Set on the moves of a scratch line — played on the board but not part of
+   *  the game (see lib/scratchLine.ts). Never parsed from or written to PGN:
+   *  the mark exists only while the line is on screen. */
+  scratch?: boolean;
   /** Comment shown BEFORE this move — used for line intros (a comment at the
    *  start of a variation). The mainline's intro lives on `AnnotatedGame.startComment`
    *  instead, since the mainline can be empty (no first node to attach to). */
