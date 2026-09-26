@@ -683,7 +683,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                                       className="shrink-0 text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 px-2.5 h-7 rounded-full transition-colors duration-short3 ease-standard"
                                       title="Open this game in the editable Analysis board"
                                     >
-                                      Open in Analysis ↗
+                                      Open in Analysis →
                                     </button>
                                   )}
                                 </div>

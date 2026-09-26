@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { pvString } from "../CloudEngine";
+import ExternalLinkIcon from "../ExternalLinkIcon";
 
 // Everything else this game can do: open it on Lichess for a second opinion,
 // or put it on the clipboard. One menu rather than four more buttons in the
@@ -96,15 +97,15 @@ export default function GameMoreMenu({ pgn, fen, lineSans, ply, startFen, gameUr
           {gameUrl && (
             <button className={item} onClick={() => go(gameUrl)} title={gameUrl}>
               {urlHost(gameUrl)
-                ? `Open the original game URL on ${urlHost(gameUrl)} ↗`
-                : "Open the original game URL ↗"}
+                ? `Open the original game URL on ${urlHost(gameUrl)}`
+                : "Open the original game URL"}<ExternalLinkIcon />
             </button>
           )}
           <button className={item} onClick={() => go(lichessGameUrl(startFen, lineSans, ply))} disabled={lineSans.length === 0}>
-            Analyse this line on Lichess ↗
+            Analyse this line on Lichess<ExternalLinkIcon />
           </button>
           <button className={item} onClick={() => go(lichessPositionUrl(fen))}>
-            Analyse this position on Lichess ↗
+            Analyse this position on Lichess<ExternalLinkIcon />
           </button>
           <div className="my-1 h-px bg-outline-variant" />
           <button className={item} onClick={() => copy(pgn ?? "", "PGN")} disabled={!pgn}>
