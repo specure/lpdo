@@ -459,10 +459,15 @@ function EngineBench({ engine, threads, hash, onUse }: {
       )}
       {error && <p className="text-body-sm text-error">{error}</p>}
       {results.length > 0 && (() => {
-        // The fastest run with the engine in use — "fastest", not "best":
-        // the last threads often add little and leave nothing for the server.
+        // The recommended run with the engine in use: the fewest threads that
+        // reach 80% of the fastest speed. The last threads add little — on a
+        // 16-core machine 32 threads were 20% faster than 16 — and leave the
+        // server nothing for its queries. Ties go to the most recent run.
         const own = results.filter((r) => r.engine === engine);
-        const top = own.length ? own.reduce((a, b) => (b.nps > a.nps ? b : a)) : null;
+        const fastest = own.length ? Math.max(...own.map((r) => r.nps)) : 0;
+        const top = own
+          .filter((r) => r.nps >= 0.8 * fastest)
+          .reduce<BenchResult | null>((best, r) => (!best || r.threads < best.threads ? r : best), null);
         return (
         <div className="overflow-x-auto">
           <table className="w-full text-body-sm tabular-nums">
@@ -485,12 +490,19 @@ function EngineBench({ engine, threads, hash, onUse }: {
                   <td>{r.threads}</td>
                   <td>{r.hash_mb} MB</td>
                   <td className="font-semibold">
-                    {r === top && <span className="mr-1 text-label-sm font-normal text-on-secondary-container">fastest</span>}
+                    {r === top && (
+                      <span
+                        className="mr-1 text-label-sm font-normal text-on-secondary-container cursor-help"
+                        title="The fewest threads that reach 80% of the fastest speed measured: more add little, and take processor time the server needs for queries."
+                      >
+                        recommended
+                      </span>
+                    )}
                     {fmtNps(r.nps)}
                   </td>
                   <td>{(r.ms / 1000).toFixed(1)} s</td>
                   <td className="pl-2">
-                    {r.engine === engine && !(r.threads === threads && r.hash_mb === hash) && (
+                    {r === top && !(r.threads === threads && r.hash_mb === hash) && (
                       <button
                         onClick={() => onUse(r.threads, r.hash_mb)}
                         className="h-6 px-2 rounded-full text-label-sm text-primary hover:bg-primary/8 active:bg-primary/12"
