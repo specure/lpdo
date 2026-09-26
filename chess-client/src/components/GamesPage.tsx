@@ -679,7 +679,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                             <button
                               key={game.id}
                               onClick={(e) => pickGame(game, e)}
-                              title="Ctrl-click or Shift-click picks several games to open in Analysis together"
+                              title="Ctrl-click or Shift-click selects several games to open in Analysis together"
                               style={{ display: "grid", gridTemplateColumns: gridCols }}
                               className={`w-full items-baseline text-body-sm text-left transition-colors duration-short3 ease-standard ${
                                 selected ? "bg-secondary-container text-on-secondary-container" : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
@@ -723,7 +723,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                                       onClick={() => void openInAnalysis([selectedGame, ...extras])}
                                       className="shrink-0 text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 px-2.5 h-7 rounded-full transition-colors duration-short3 ease-standard"
                                       title={extras.length
-                                        ? "Open the picked games in the editable Analysis board, this one first"
+                                        ? "Open the selected games in the editable Analysis board, this one first"
                                         : "Open this game in the editable Analysis board. Ctrl-click other games in the list to open several at once."}
                                     >
                                       {extras.length ? `Open ${extras.length + 1} in Analysis →` : "Open in Analysis →"}

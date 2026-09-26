@@ -154,9 +154,9 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
     const all = `the ${tabs.length} open games`;
     return [
       ...(subset ? [
-        { label: `Print the ${n} picked…`, onClick: () => void printPdf("print", "picked") },
-        { label: `Export the ${n} picked as PDF…`, onClick: () => void printPdf("save", "picked") },
-        { label: `Export the ${n} picked as PGN…`, onClick: () => void exportPgn("picked") },
+        { label: `Print the ${n} selected…`, onClick: () => void printPdf("print", "picked") },
+        { label: `Export the ${n} selected as PDF…`, onClick: () => void printPdf("save", "picked") },
+        { label: `Export the ${n} selected as PGN…`, onClick: () => void exportPgn("picked") },
       ] : []),
       { label: `Print ${all}…`, onClick: () => void printPdf("print", "all") },
       { label: `Export ${all} as PDF…`, onClick: () => void printPdf("save", "all") },
@@ -297,9 +297,9 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
             className={`flex-1 min-w-0 truncate text-label-sm ${full ? "text-error" : "text-on-surface-variant"}`}
             title={full
               ? `The board is full: it holds ${capacity} games. Close one to open another.`
-              : `${tabs.length} of ${capacity} games open. Ctrl-click or Shift-click picks games; ▲▼ change the order, which is the order they print in.`}
+              : `${tabs.length} of ${capacity} games open. Ctrl-click or Shift-click selects games; ▲▼ change the order, which is the order they print in.`}
           >
-            {tabs.length} of {capacity}{pickedNow.length ? ` · ${pickedNow.length} picked` : ""}
+            {tabs.length} of {capacity}{pickedNow.length ? ` · ${pickedNow.length} selected` : ""}
           </span>
           <div className="relative">
             <button
@@ -324,9 +324,9 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
                 <div style={{ position: "fixed", left: menuAt!.x, top: menuAt!.y }} className="z-30 py-1 rounded-md bg-surface-container-high shadow-xl min-w-52">
                   {subset && (
                     <>
-                      <button className={item} onClick={() => void exportPgn("picked")}>Export {n} picked as PGN…</button>
-                      <button className={item} onClick={() => void printPdf("save", "picked")}>Export {n} picked as PDF…</button>
-                      <button className={item} onClick={() => void printPdf("print", "picked")}>Print {n} picked…</button>
+                      <button className={item} onClick={() => void exportPgn("picked")}>Export {n} selected as PGN…</button>
+                      <button className={item} onClick={() => void printPdf("save", "picked")}>Export {n} selected as PDF…</button>
+                      <button className={item} onClick={() => void printPdf("print", "picked")}>Print {n} selected…</button>
                       <div className="my-1 h-px bg-outline-variant" />
                     </>
                   )}
@@ -336,7 +336,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
                   <div className="my-1 h-px bg-outline-variant" />
                   {subset && (
                     <button className={item} onClick={() => { setRailMenu(false); onCloseMany(pickedNow); setPicked(new Set()); }}>
-                      Close {pickedNow.length} picked
+                      Close {pickedNow.length} selected
                     </button>
                   )}
                   <button className={item} disabled={!active || tabs.length < 2} onClick={() => { setRailMenu(false); onCloseMany(tabs.filter((t) => t.key !== activeKey).map((t) => t.key)); }}>
@@ -348,7 +348,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
                   {pickedNow.length > 0 && (
                     <>
                       <div className="my-1 h-px bg-outline-variant" />
-                      <button className={item} onClick={() => { setRailMenu(false); setPicked(new Set()); }}>Pick none</button>
+                      <button className={item} onClick={() => { setRailMenu(false); setPicked(new Set()); }}>Select none</button>
                     </>
                   )}
                 </div>
@@ -369,7 +369,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
               <button
                 onClick={(e) => pickTab(t.key, e)}
                 className="w-full aspect-square block"
-                title={`${t.game.white} – ${t.game.black}\nCtrl-click adds it to the picked games, Shift-click picks a run`}
+                title={`${t.game.white} – ${t.game.black}\nCtrl-click adds it to the selection, Shift-click selects a run`}
               >
                 <MiniBoard
                   game={t.loaded}
