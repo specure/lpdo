@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-09-26
+
+### Added
+- **Play moves on the Analysis board without changing the game** — drag a
+  piece, click square to square, click a move in the Reference list or take a
+  line from the Engine panel, and the moves appear as a scratch line: like
+  pushing the pieces around on a physical board without writing anything down.
+  Any step back forgets it; "Keep as variation" writes it into the game, and
+  "Edit game…" carries it into the editor, where Done saves it and Discard
+  drops it — leaving you on the position you were looking at either way. (#297)
+- **A "More" menu on the board and in both previews** — open the game where it
+  was played when its PGN names an address, send the line or the position to
+  Lichess for analysis (landing on the move you are looking at), or copy the
+  PGN or the FEN. (#298)
+- **Merge more than two player records at once** — one player reaches the
+  database under many spellings ("Karpov, Anatoly", "Karpov, A..",
+  "Karpov, A. (wh)"), and merging took exactly two at a time. Ctrl-click as
+  many as you like, choose which record survives, and they merge in one go.
+  The dialog warns before merging records that carry different FIDE IDs, and
+  that warning has to be acknowledged. (#301)
+
+### Fixed
+- **Thousands of duplicate games are now recognised** — dedup required the date
+  and the round to match exactly, but sources disagree about both: a broadcast
+  copy is dated when the file was published, a Megabase export knows only the
+  year, and a round can be "7" or "7.2". On one player's 4,115 games, 163
+  duplicate pairs were being missed for these reasons alone. Matching now asks
+  only that the date and round do not contradict each other; the players, the
+  result and the moves must still agree exactly. A full pass over a 13.9M-game
+  database finds 305,649 duplicates it could not see before. (#271, #300)
+- **Broadcast games arrive with a date** — 99.7% of the games in a Lichess
+  monthly broadcast archive carry no date of their own, so they showed nothing
+  in the game list. They now take the archive's month ("2026-02-??"). (#300)
+- **The scrollbar no longer covers the close ✕** on the Analysis page's column
+  of open games, and external links are drawn consistently everywhere. (#298)
+
+### Changed
+- **A position's games are listed strongest first**, by both players' ratings
+  added together, with the ratings shown after each name. Engine games (TCEC,
+  via the Lichess broadcasts) are left out of the Reference and Games panels
+  unless the "Engine games" toggle asks for them, and the Reference tab shows
+  the strongest players who played each move. (#295, #298)
+- **Previews show the game's details** — players with ratings and the result,
+  then date, event, round and ECO — the same on the Players page and in
+  Analysis. (#298)
+- **Callers on the server's own machine no longer need the access token.** A
+  server bound to the network still requires it from everyone else. On a
+  multi-user machine this means any local account can reach the destructive
+  endpoints, and behind a reverse proxy every request looks local — see
+  docs/remote-server.md. (#299)
+
+### Documentation
+- **[Duplicate games and duplicate players](docs/duplicates.md)** — what LPDO
+  removes by itself, what it refuses on purpose, how to merge player records
+  that arrive under several spellings, and when a rebuild from sources is the
+  only cure. (#271)
+
 ## [0.18.0] - 2026-09-21
 
 ### Changed
@@ -1070,7 +1127,8 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/specure/lpdo/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/specure/lpdo/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/specure/lpdo/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/specure/lpdo/compare/v0.15.5...v0.16.0
