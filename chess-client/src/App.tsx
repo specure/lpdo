@@ -22,6 +22,12 @@ import { CursorPath } from "./lib/moveTreeNav";
 import { setAppVersion as setCrashAppVersion, setCrashContext } from "./lib/crashLog";
 import HomeEmptyState from "./components/HomeEmptyState";
 import UpdateBanner from "./components/UpdateBanner";
+
+/** How many games the Analysis board holds at once. Each open game keeps its
+ *  parsed PGN and draws a mini board in the rail, and the rail is meant to be
+ *  read at a glance — twenty is a stack of games to work through or print,
+ *  not a database. */
+export const ANALYSIS_TAB_CAP = 20;
 import ActivityIndicator from "./components/ActivityIndicator";
 import { loadMyPlayer } from "./components/MyStatsWidget";
 import { useUpdateCheck } from "./hooks/useUpdateCheck";
@@ -375,15 +381,52 @@ export default function App() {
   // Analysis board (#220): several games open at once as mini-board tabs.
   const [analysisTabs, setAnalysisTabs] = useState<AnalysisTab[]>([]);
   const [activeAnalysisKey, setActiveAnalysisKey] = useState<string | null>(null);
+  const analysisTabsRef = useRef(analysisTabs);
+  analysisTabsRef.current = analysisTabs;
   async function openInAnalysis(game: GameSummary) {
-    const key = `g${game.id}`;
-    setActiveAnalysisKey(key);
+    await openManyInAnalysis([game]);
+  }
+  /** Open several games at once, in the order given, then show the Analysis
+   *  page. Games already open are only focused. The board holds
+   *  ANALYSIS_TAB_CAP games — each keeps its parsed PGN and draws a mini
+   *  board, and the rail is a stack to work through, not a database — so when
+   *  the games do not all fit, none is opened and the number that would not
+   *  fit is returned, for the caller to say so. 0 means they are all open. */
+  async function openManyInAnalysis(games: GameSummary[]): Promise<number> {
+    const open = analysisTabsRef.current;
+    const fresh = games.filter((g, i) => !open.some((t) => t.key === `g${g.id}`) && games.findIndex((x) => x.id === g.id) === i);
+    const room = Math.max(0, ANALYSIS_TAB_CAP - open.length);
+    if (fresh.length > room) return fresh.length - room;
     setMode("analysis");
-    if (analysisTabs.some((t) => t.key === key)) return;   // already open → just focus
-    try {
-      const loaded = await loadGamePgn(game.id);
-      setAnalysisTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, game, loaded, fen: null, cursor: null, flipped: false }]));
-    } catch { /* load failure → tab simply doesn't appear */ }
+    if (games.length) setActiveAnalysisKey(`g${games[0].id}`);
+    const loaded = await Promise.all(fresh.map(async (game) => {
+      try { return { key: `g${game.id}`, game, loaded: await loadGamePgn(game.id), fen: null, cursor: null, flipped: false } as AnalysisTab; }
+      catch { return null; }   // load failure → the tab simply doesn't appear
+    }));
+    const tabs = loaded.filter((t): t is AnalysisTab => t !== null);
+    if (tabs.length) {
+      setAnalysisTabs((prev) => [...prev, ...tabs.filter((t) => !prev.some((p) => p.key === t.key))]);
+    }
+    return 0;
+  }
+  /** Move a tab one place up or down the rail — the order games print in. */
+  function moveAnalysisTab(key: string, delta: -1 | 1) {
+    setAnalysisTabs((prev) => {
+      const i = prev.findIndex((t) => t.key === key);
+      const j = i + delta;
+      if (i < 0 || j < 0 || j >= prev.length) return prev;
+      const next = [...prev];
+      [next[i], next[j]] = [next[j], next[i]];
+      return next;
+    });
+  }
+  function closeAnalysisTabs(keys: string[]) {
+    const gone = new Set(keys);
+    setAnalysisTabs((prev) => {
+      const next = prev.filter((t) => !gone.has(t.key));
+      setActiveAnalysisKey((cur) => (cur && gone.has(cur) ? next[next.length - 1]?.key ?? null : cur));
+      return next;
+    });
   }
   // Per-tab view state (analysed position + cursor, board orientation) reported
   // by the Analysis board. Returns `prev` untouched when nothing actually
@@ -1038,6 +1081,8 @@ export default function App() {
                   collections={collectionsList}
                   onCollectionChange={setScopeCollectionId}
                   onOpenInAnalysis={openInAnalysis}
+                  onOpenManyInAnalysis={openManyInAnalysis}
+                  analysisCapacity={ANALYSIS_TAB_CAP}
                   reloadKey={gameMutationKey}
                   leadingPanel={playersRail}
                   leadingPanelSize={13}
@@ -1064,6 +1109,8 @@ export default function App() {
           collections={collectionsList}
           onCollectionChange={setScopeCollectionId}
           onOpenInAnalysis={openInAnalysis}
+          onOpenManyInAnalysis={openManyInAnalysis}
+          analysisCapacity={ANALYSIS_TAB_CAP}
         />
       ) : mode === "analysis" ? (
         <AnalysisPage
@@ -1071,7 +1118,10 @@ export default function App() {
           activeKey={activeAnalysisKey}
           onActivate={setActiveAnalysisKey}
           onClose={closeAnalysisTab}
-          onOpenGame={openInAnalysis}
+          onCloseMany={closeAnalysisTabs}
+          onMove={moveAnalysisTab}
+          capacity={ANALYSIS_TAB_CAP}
+          onOpenGame={openManyInAnalysis}
           onTabState={updateAnalysisTab}
           onGameMutated={onGameMutated}
         />

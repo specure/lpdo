@@ -70,7 +70,13 @@ interface Diagram {
   flipped: boolean;
 }
 
-type Block = Para | Diagram;
+/** Where one game ends and the next begins: a gap and a rule, or a new page. */
+interface GameBreak {
+  kind: "break";
+  newPage: boolean;
+}
+
+type Block = Para | Diagram | GameBreak;
 
 /** What the header block prints. Anything missing here is read from the PGN's
  *  own tags, which is where the round and the site usually are. */
@@ -86,11 +92,17 @@ export interface PdfGame {
   result?: string | null;
   eco?: string | null;
   pgn: string;
+  /** Draw this game's diagrams from Black's side — the way its board stood
+   *  on screen. Overrides the document-wide `flipped`. */
+  flipped?: boolean;
 }
 
 export interface PdfOptions {
-  /** Draw diagrams from Black's side. */
+  /** Draw diagrams from Black's side (unless a game says otherwise). */
   flipped?: boolean;
+  /** A title for a document of several games, used in the running header
+   *  and the metadata instead of "N games". */
+  title?: string;
   /** Add a diagram of the final position even when the movetext asks for none. */
   diagramAtEnd?: boolean;
   /** Print pieces as figurines (♘f3) rather than letters (Nf3), the way a
@@ -99,6 +111,14 @@ export interface PdfOptions {
   figurines?: boolean;
   /** Shown in the running header, e.g. "LPDO 0.19.0". */
   producer?: string;
+  /** With several games: start each on a fresh page rather than flowing on. */
+  newPagePerGame?: boolean;
+  /** Draw each diagram from the side to move — the way a puzzle or a
+   *  critical position is set — rather than from one fixed side. */
+  sideToMove?: boolean;
+  /** Bulletin style: the moves alone, no comments and no diagrams — the most
+   *  games on the least paper. */
+  compact?: boolean;
 }
 
 
@@ -112,38 +132,54 @@ function isPiece(first: string | undefined): first is "K" | "Q" | "R" | "B" | "N
 const DIAGRAM_MARKER = /\s*\[#\]\s*/;
 
 export async function buildGamePdf(input: PdfGame, opts: PdfOptions): Promise<Uint8Array> {
+  return buildGamesPdf([input], opts);
+}
+
+/** Several games in one document, in the order given: each with its own
+ *  heading, flowing on after a rule (or on a new page), the way a printed
+ *  bulletin sets them. All their PGN travels in the metadata. */
+export async function buildGamesPdf(inputs: PdfGame[], opts: PdfOptions): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
   const fonts = {
     text: await doc.embedFont(StandardFonts.TimesRoman),
     bold: await doc.embedFont(StandardFonts.TimesRomanBold),
     italic: await doc.embedFont(StandardFonts.TimesRomanItalic),
   };
+  const compact = !!opts.compact;
+  const games = inputs.map(withPgnTags);
 
-  const game = withPgnTags(input);
-  const tree = parsePgnTree(game.pgn);
-  const blocks = [
-    ...headerBlocks(game, fonts),
-    ...movetextBlocks(tree, fonts, !!opts.flipped, opts.figurines !== false),
-  ];
-  if (opts.diagramAtEnd) {
-    const last = tree.mainLine[tree.mainLine.length - 1];
-    blocks.push({ kind: "diagram", fen: last ? last.fen : tree.startFen, flipped: !!opts.flipped });
+  // The title goes in the running header, where it names every page; it is
+  // not repeated above the first game.
+  const title = opts.title?.trim() || "";
+  const blocks: Block[] = [];
+  games.forEach((game, i) => {
+    if (i > 0) blocks.push({ kind: "break", newPage: !!opts.newPagePerGame });
+    const flipped = game.flipped ?? !!opts.flipped;
+    const tree = parsePgnTree(game.pgn);
+    blocks.push(...headerBlocks(game, fonts));
+    blocks.push(...movetextBlocks(tree, fonts, flipped, opts.figurines !== false, compact));
+    if (opts.diagramAtEnd && !compact) {
+      const last = tree.mainLine[tree.mainLine.length - 1];
+      blocks.push({ kind: "diagram", fen: last ? last.fen : tree.startFen, flipped });
+    }
+    if (game.result) {
+      blocks.push(para([run(prettyResult(game.result), fonts.bold, SIZE.move, INK)], 0, 4));
+    }
+  });
+
+  const many = title || `${games.length} games`;
+  const header = games.length === 1
+    ? runningHeader(games[0], opts.producer)
+    : [opts.producer ?? "LPDO", many].join(" — ");
+  if (opts.sideToMove) {
+    for (const b of blocks) if (b.kind === "diagram") b.flipped = b.fen.split(" ")[1] === "b";
   }
-  if (game.result) {
-    blocks.push({
-      kind: "para",
-      indent: 0,
-      spaceBefore: 4,
-      runs: [{ text: prettyResult(game.result), font: fonts.bold, size: SIZE.move, color: INK }],
-    });
-  }
+  layout(doc, blocks, fonts, header);
 
-  layout(doc, blocks, fonts, runningHeader(game, opts.producer));
-
-  doc.setTitle(`${game.white} – ${game.black}`);
+  doc.setTitle(games.length === 1 ? `${games[0].white} – ${games[0].black}` : many);
   doc.setAuthor(opts.producer ?? "LPDO");
-  doc.setSubject(describe(game));
-  setXmpWithPgn(doc, game);
+  doc.setSubject(games.length === 1 ? describe(games[0]) : games.map(describe).join("; ").slice(0, 500));
+  setXmpWithPgn(doc, games, many);
 
   return doc.save();
 }
@@ -202,7 +238,51 @@ function headerBlocks(game: PdfGame, fonts: Fonts): Block[] {
 interface Fonts { text: PDFFont; bold: PDFFont; italic: PDFFont }
 
 function run(text: string, font: PDFFont, size: number, color: RGB): Run {
-  return { text, font, size, color };
+  return { text: printable(text), font, size, color };
+}
+
+// The standard PDF fonts cover WinAnsi — Western European letters and a few
+// symbols — and pdf-lib refuses anything else. The evaluation signs chess
+// uses beyond ± (∓, ∞, →, ↑ …) are spelled the way books without the glyphs
+// print them; other letters lose their accents (Svrček → Svrcek) rather
+// than the whole document failing. The PGN inside the file keeps the
+// original text; only the printed page is affected.
+const SPELLED: Record<string, string> = {
+  "\u2213": "-/+",      // ∓ Black is slightly better
+  "\u2a72": "+/=",      // ⩲ White is slightly better
+  "\u2a71": "=/+",      // ⩱ Black is slightly better
+  "\u221e": " (unclear)",  // ∞
+  "\u2a00": " (zugzwang)", // ⨀
+  "\u2192": " ->",       // → with attack
+  "\u2191": " ^",        // ↑ with initiative
+  "\u21c6": " <->",      // ⇆ counterplay
+  "\u25a1": "[]",       // □ only move
+  "\u2206": "D",        // ∆ with the idea
+  "\u2212": "-",        // − minus sign
+  "\u2012": "-", "\u2011": "-", "\u2010": "-",
+  "\u00a0": " ", "\u2009": " ", "\u202f": " ",
+};
+// Unicode points WinAnsi places in 0x80–0x9F, beyond Latin-1.
+const WIN_ANSI_EXTRA = new Set([
+  0x20ac, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030, 0x0160, 0x2039, 0x0152,
+  0x017d, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x02dc, 0x2122, 0x0161, 0x203a,
+  0x0153, 0x017e, 0x0178,
+]);
+function encodable(ch: string): boolean {
+  const c = ch.codePointAt(0)!;
+  return c === 0x0a || (c >= 0x20 && c <= 0x7e) || (c >= 0xa0 && c <= 0xff) || WIN_ANSI_EXTRA.has(c);
+}
+export function printable(text: string): string {
+  let out = "";
+  for (const ch of text) {
+    if (encodable(ch)) { out += ch; continue; }
+    if (SPELLED[ch] !== undefined) { out += SPELLED[ch]; continue; }
+    const bare = ch.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    if (bare && [...bare].every(encodable)) { out += bare; continue; }
+    const mapped = ({ "ł": "l", "Ł": "L", "đ": "d", "Đ": "D", "ı": "i", "ß": "ss" } as Record<string, string>)[ch];
+    out += mapped ?? "?";
+  }
+  return out;
 }
 function para(runs: Run[], indent: number, spaceBefore: number): Para {
   return { kind: "para", runs, indent, spaceBefore };
@@ -210,7 +290,7 @@ function para(runs: Run[], indent: number, spaceBefore: number): Para {
 
 /** Walk the tree into paragraphs: the main line as one flowing paragraph, each
  *  variation as its own bracketed, indented one — the shape a printed game has. */
-function movetextBlocks(tree: AnnotatedGame, fonts: Fonts, flipped: boolean, figurines: boolean): Block[] {
+function movetextBlocks(tree: AnnotatedGame, fonts: Fonts, flipped: boolean, figurines: boolean, compact = false): Block[] {
   const blocks: Block[] = [];
   let current: Run[] = [];
   const flush = (indent: number, spaceBefore: number) => {
@@ -220,7 +300,7 @@ function movetextBlocks(tree: AnnotatedGame, fonts: Fonts, flipped: boolean, fig
 
   // A marker in the game's opening comment asks for the starting position —
   // which is how a game that begins from a diagram is annotated.
-  if (tree.startComment) {
+  if (tree.startComment && !compact) {
     const text = tree.startComment.replace(DIAGRAM_MARKER, " ").trim();
     if (text) blocks.push(para([run(text, fonts.italic, SIZE.variation, MUTED)], 0, 0));
     if (DIAGRAM_MARKER.test(tree.startComment)) {
@@ -256,7 +336,7 @@ function movetextBlocks(tree: AnnotatedGame, fonts: Fonts, flipped: boolean, fig
         current.push(run(`${prefix}${tail}`, moveFont, size, INK));
       }
 
-      const comment = node.annotations.comment ?? "";
+      const comment = compact ? "" : node.annotations.comment ?? "";
       const wantsDiagram = DIAGRAM_MARKER.test(comment);
       const text = comment.replace(DIAGRAM_MARKER, " ").trim();
       if (text) current.push(run(`${text} `, fonts.italic, size, MUTED));
@@ -298,7 +378,6 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
   let y = PAGE.height - MARGIN.top;
   let pageNumber = 1;
   drawRunningHeader(page, fonts, header, pageNumber);
-  drawColumnRule(page);
 
   const columnLeft = () => MARGIN.left + column * (COLUMN_WIDTH + GUTTER);
   const nextColumn = () => {
@@ -308,16 +387,43 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
       page = doc.addPage([PAGE.width, PAGE.height]);
       pageNumber += 1;
       drawRunningHeader(page, fonts, header, pageNumber);
+    } else {
+      // The rule down the gutter is drawn once the second column is in use
+      // — a last page with one column of text needs no line beside nothing.
       drawColumnRule(page);
     }
     y = PAGE.height - MARGIN.top;
   };
 
-  for (const block of blocks) {
+  for (const [index, block] of blocks.entries()) {
+    if (block.kind === "break") {
+      if (block.newPage) {
+        // Straight to a fresh page, whatever column we are in.
+        column = 1;
+        nextColumn();
+        continue;
+      }
+      // A gap and a rule across the column, unless the column is fresh anyway.
+      if (y < PAGE.height - MARGIN.top - 1) {
+        if (y - 22 < MARGIN.bottom) { nextColumn(); continue; }
+        y -= 10;
+        page.drawLine({
+          start: { x: columnLeft(), y }, end: { x: columnLeft() + COLUMN_WIDTH, y },
+          thickness: 0.4, color: MUTED,
+        });
+        y -= 12;
+      }
+      continue;
+    }
     if (block.kind === "diagram") {
       const size = DIAGRAM_WIDTH;
       const height = size + 14;               // board plus the file letters below
-      if (y - height < MARGIN.bottom) nextColumn();
+      // A diagram keeps the paragraph after it — the result, when it is the
+      // final position — in the same column: a board on one page and "1-0"
+      // alone on the next reads as a mistake.
+      const next = blocks[index + 1];
+      const keep = next && next.kind === "para" ? next.spaceBefore + LINE_HEIGHT : 0;
+      if (y - height - 6 - keep < MARGIN.bottom) nextColumn();
       drawDiagram(page, fonts, block, columnLeft(), y - height + 6, size);
       y -= height + 6;
       continue;
@@ -379,7 +485,7 @@ function drawColumnRule(page: PDFPage) {
 
 function drawRunningHeader(page: PDFPage, fonts: Fonts, header: string, pageNumber: number) {
   const y = PAGE.height - MARGIN.top + 16;
-  page.drawText(header, { x: MARGIN.left, y, size: SIZE.running, font: fonts.text, color: MUTED });
+  page.drawText(printable(header), { x: MARGIN.left, y, size: SIZE.running, font: fonts.text, color: MUTED });
   const label = String(pageNumber);
   page.drawText(label, {
     x: PAGE.width - MARGIN.right - fonts.text.widthOfTextAtSize(label, SIZE.running),
@@ -590,22 +696,27 @@ function prettyResult(result: string): string {
 
 /** Put the game's PGN in the document's XMP metadata, so the PDF can be read
  *  back as a game. The printed page is a view; this is the game itself. */
-function setXmpWithPgn(doc: PDFDocument, game: PdfGame) {
+function setXmpWithPgn(doc: PDFDocument, games: PdfGame[], manyTitle: string) {
+  const pgn = games.map((g) => g.pgn.trim()).join("\n\n") + "\n";
+  const title = games.length === 1 ? describe(games[0]) : manyTitle;
   const xmp = `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/">
   <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
     <rdf:Description rdf:about=""
         xmlns:dc="http://purl.org/dc/elements/1.1/"
         xmlns:lpdo="https://github.com/specure/lpdo/ns/pgn/1.0/">
-      <dc:title><rdf:Alt><rdf:li xml:lang="x-default">${xml(describe(game))}</rdf:li></rdf:Alt></dc:title>
+      <dc:title><rdf:Alt><rdf:li xml:lang="x-default">${xml(title)}</rdf:li></rdf:Alt></dc:title>
       <dc:format>application/pdf</dc:format>
-      <lpdo:games>1</lpdo:games>
-      <lpdo:pgn>${xml(game.pgn)}</lpdo:pgn>
+      <lpdo:games>${games.length}</lpdo:games>
+      <lpdo:pgn>${xml(pgn)}</lpdo:pgn>
     </rdf:Description>
   </rdf:RDF>
 </x:xmpmeta>
 <?xpacket end="w"?>`;
-  const stream = doc.context.stream(xmp, {
+  // XMP is UTF-8 by definition. Handed a string, pdf-lib writes one byte
+  // per character, which mangled every letter beyond Latin-1 (Svrček came
+  // back as Svrek) — so the bytes are encoded here.
+  const stream = doc.context.stream(new TextEncoder().encode(xmp), {
     Type: PDFName.of("Metadata"),
     Subtype: PDFName.of("XML"),
   });
@@ -621,7 +732,9 @@ function xml(value: string): string {
 
 /** Read a PGN back out of a PDF this exporter wrote. */
 export function pgnFromPdfBytes(bytes: Uint8Array): string | null {
-  const text = new TextDecoder("latin1").decode(bytes);
+  // The metadata is UTF-8; the rest of the file is binary, which the lenient
+  // decoder turns into replacement characters outside the packet.
+  const text = new TextDecoder("utf-8").decode(bytes);
   const match = text.match(/<lpdo:pgn>([\s\S]*?)<\/lpdo:pgn>/);
   if (!match) return null;
   return match[1]

@@ -23,8 +23,8 @@ import {
 } from "./MovesEditor";
 import { serializeMovetext } from "../lib/serializeMovetext";
 import { gameUrlFromPgn } from "../lib/useGamePgn";
-import GameMoreMenu from "./games/GameMoreMenu";
-import ExportPdfDialog from "./games/ExportPdfDialog";
+import GameMoreMenu, { MenuEntry } from "./games/GameMoreMenu";
+import PrintDialog from "./games/PrintDialog";
 import { appendScratchMove, clearScratchMarks, replayAsScratch, sansToCursor, type ScratchMove } from "../lib/scratchLine";
 import type { CalArrow, CslCircle } from "../lib/parseAnnotations";
 import { nagsToString, nagToSymbol } from "../lib/parseAnnotations";
@@ -395,6 +395,9 @@ interface Props {
   /** Reports whether a scratch line is on the board, so the host can label its
    * own controls (Analysis shows "Keep"/"Discard" beside the board). */
   onScratchChange?: (active: boolean) => void;
+  /** Entries added to the More menu — the Analysis board's commands over
+   * every open game. */
+  menuExtras?: MenuEntry[];
   /** Render the move list into this element instead of inline beside the board.
    * The Analysis view owns it as a panel of its own, so the board and the move
    * text are siblings under one divider rule rather than a compound panel with a
@@ -557,17 +560,20 @@ async function exportGameToPgn(detail: GameDetail): Promise<void> {
 // progress used by soft-delete / restore.
 function GameActionsBar({
   detail, onDetailChanged, onStartEditMoves, detailsOpen, onToggleDetails, unsavedEdits = false,
-  fen, lineSans, ply, startFen, onExportPdf,
+  fen, lineSans, ply, startFen, onExportPdf, onPrint, menuExtras,
 }: {
   detail: GameDetail;
+  menuExtras?: MenuEntry[];
   /** Board position, the moves of the line being viewed and the position they
    *  start from — what the Share menu offers to Lichess and the clipboard. */
   fen: string;
   lineSans: string[];
   ply: number;
   startFen: string;
-  /** Opens the PDF export dialog (the board has the whole game in hand). */
+  /** Open the Print dialog with Save as PDF, or with Print, leading — the
+   *  board has the whole game in hand. */
   onExportPdf: () => void;
+  onPrint: () => void;
   onDetailChanged: () => void;
   /** Fires when the user clicks "Edit game…" — host enters inline edit mode. */
   onStartEditMoves: () => void;
@@ -676,6 +682,8 @@ function GameActionsBar({
           gameUrl={gameUrlFromPgn(detail.pgn)}
           onExportPgn={() => void handleExport()}
           onExportPdf={onExportPdf}
+          onPrint={onPrint}
+          extras={menuExtras}
         />
         {/* Restore stays inline with the other actions — it's a recovery action,
             not destructive. Delete is broken out as a separate icon button on
@@ -843,7 +851,7 @@ function DetailsPanel({
   );
 }
 
-export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange }: Props) {
+export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange, menuExtras }: Props) {
   const [detail, setDetail] = useState<GameDetail | null>(null);
   const [detailReloadKey, setDetailReloadKey] = useState(0);
   // The board's DOM id, unique per mounted GameBoard. react-chessboard finds a
@@ -853,7 +861,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   // board came first in the DOM, its squares measured 0 wide, and every move
   // on the Analysis board threw "Square width not found" (#283).
   const boardId = useRef(`game-board-${++boardInstances}`).current;
-  const [pdfOpen, setPdfOpen] = useState(false);
+  const [pdfOpen, setPdfOpen] = useState<"print" | "save" | null>(null);
   const [detailsOpen, setDetailsOpen] = useState<boolean>(
     () => localStorage.getItem("gameDetailsOpen") === "1"
   );
@@ -1825,7 +1833,9 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
         {!movesEditor.active && (
           <GameActionsBar
             detail={detail}
-            onExportPdf={() => setPdfOpen(true)}
+            onExportPdf={() => setPdfOpen("save")}
+            onPrint={() => setPdfOpen("print")}
+            menuExtras={menuExtras}
             fen={currentFen}
             startFen={useAnnotated ? annotatedGame!.startFen : (fens[0] ?? "")}
             lineSans={useAnnotated ? sansToCursor(breadcrumbs, activeLine, activeLine.length) : moves.map((m) => m.san)}
@@ -2081,7 +2091,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
           </div>
 
           {pdfOpen && detail && (
-        <ExportPdfDialog detail={detail} flipped={flipped} onClose={() => setPdfOpen(false)} />
+        <PrintDialog detail={detail} flipped={flipped} primary={pdfOpen} onClose={() => setPdfOpen(null)} />
       )}
       {/* Variation choice menu — M3 menu surface (works in view & edit mode) */}
           {varChoice && (

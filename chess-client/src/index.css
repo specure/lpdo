@@ -326,3 +326,42 @@ html, body {
 .hc .border-outline-variant {
   border-color: var(--color-outline);
 }
+
+/* Printing: the pages a print job draws (lib/printPages.ts) are the only
+   thing on paper. The layer is invisible on screen. */
+#lpdo-print {
+  display: none;
+}
+@media print {
+  @page {
+    size: A4;
+    margin: 0;
+  }
+  /* Paper is white whatever the theme: any margin the dialog adds around a
+     page image would otherwise show the app's (dark) canvas. */
+  html, body {
+    background: #fff !important;
+    color-scheme: light;
+  }
+  body > *:not(#lpdo-print) {
+    display: none !important;
+  }
+  #lpdo-print {
+    display: block !important;
+  }
+  /* Each page image fills the printable width and keeps its A4 shape, so it
+     fits whatever margins the print dialog adds; at margin 0 it is the page. */
+  #lpdo-print img {
+    display: block;
+    width: 100%;
+    height: auto;
+    break-inside: avoid;
+    page-break-inside: avoid;
+    break-after: page;
+    page-break-after: always;
+  }
+  #lpdo-print img:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+}

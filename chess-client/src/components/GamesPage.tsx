@@ -8,6 +8,8 @@ import PositionMoves from "./PositionMoves";
 import MiniBoard from "./games/MiniBoard";
 import GamePreviewHeader from "./games/GamePreviewHeader";
 import GameMoreMenu from "./games/GameMoreMenu";
+import PrintDialog, { ExportableGame } from "./games/PrintDialog";
+import { fetchPgns, savePgnFile } from "../lib/exportPgn";
 import MoveList from "./games/MoveList";
 import CloudEngine, { pvString } from "./CloudEngine";
 import { useNeighbourResize } from "../lib/panelResize";
@@ -61,6 +63,11 @@ interface Props {
   player?: PlayerInfo | null;
   /** Open the selected game in the editable Analysis board (#220). */
   onOpenInAnalysis?: (game: GameSummary) => void;
+  /** Open several games there at once (Ctrl-click picks them). Resolves to
+   *  how many would not fit — then nothing was opened — or 0. */
+  onOpenManyInAnalysis?: (games: GameSummary[]) => Promise<number>;
+  /** How many games the Analysis board holds, for the message when it is full. */
+  analysisCapacity?: number;
   /** Available collections + a setter, to offer a collection filter in the rail. */
   collections?: { id: number; name: string; game_count: number }[];
   onCollectionChange?: (id: number | null) => void;
@@ -86,7 +93,7 @@ function displayRound(round: string | null | undefined): string {
   return round && round !== "?" && round !== "-" ? round : "";
 }
 
-export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, player, onOpenInAnalysis, collections, onCollectionChange, reloadKey, leadingPanel, leadingPanelSize = 14 }: Props) {
+export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, player, onOpenInAnalysis, onOpenManyInAnalysis, analysisCapacity, collections, onCollectionChange, reloadKey, leadingPanel, leadingPanelSize = 14 }: Props) {
   const playerScoped = player !== undefined;
   // Restore the Games page's last analysed line + filters (once, on mount). Never
   // for the player-scoped view — that always locks to the externally-chosen player.
@@ -144,6 +151,82 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
 
   // ── Selected game (E + F), independent of the explorer ──────────────────────
   const [selectedGame, setSelectedGame] = useState<GameSummary | null>(initial?.selectedGame ?? null);
+  // Further games picked with Ctrl-click, to open on the Analysis board in one
+  // go. Not remembered across visits: a stack of games is built and used.
+  const [extras, setExtras] = useState<GameSummary[]>([]);
+  const [analysisNote, setAnalysisNote] = useState<string | null>(null);
+  useEffect(() => { setAnalysisNote(null); }, [selectedGame?.id, extras.length]);
+  /** A click previews that game alone; Ctrl-click adds or removes one;
+   *  Shift-click takes the run from the previewed game to this one. */
+  function pickGame(game: GameSummary, e: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) {
+    if (e.shiftKey && selectedGame) {
+      const from = games.findIndex((g) => g.id === selectedGame.id);
+      const to = games.findIndex((g) => g.id === game.id);
+      if (from >= 0 && to >= 0) {
+        const [a, b] = from <= to ? [from, to] : [to, from];
+        const run = games.slice(a, b + 1).filter((g) => g.id !== selectedGame.id);
+        setExtras((prev) => (e.ctrlKey || e.metaKey ? [...prev, ...run.filter((g) => !prev.some((p) => p.id === g.id))] : run));
+        return;
+      }
+    }
+    const additive = e.ctrlKey || e.metaKey;
+    if (!additive || !selectedGame || selectedGame.id === game.id) {
+      setSelectedGame(game);
+      setExtras([]);
+      return;
+    }
+    setExtras((prev) => (prev.some((g) => g.id === game.id) ? prev.filter((g) => g.id !== game.id) : [...prev, game]));
+  }
+  // The selected games — one or several — can be printed or exported from
+  // the preview's More menu, in the order the list shows them.
+  const [printGames, setPrintGames] = useState<{ games: ExportableGame[]; primary: "print" | "save" } | null>(null);
+  const [exportNote, setExportNote] = useState<string | null>(null);
+  useEffect(() => {
+    if (!exportNote) return;
+    const t = window.setTimeout(() => setExportNote(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [exportNote]);
+  const selectedInOrder = () => {
+    const ids = new Set([selectedGame?.id, ...extras.map((g) => g.id)]);
+    const inList = games.filter((g) => ids.has(g.id));
+    // A selected game scrolled out of a reloaded list still counts.
+    return [...inList, ...[selectedGame, ...extras].filter((g): g is GameSummary => !!g && !inList.some((x) => x.id === g.id))];
+  };
+  async function printSelected(primary: "print" | "save") {
+    const list = selectedInOrder();
+    try {
+      const pgns = await fetchPgns(list.map((g) => g.id));
+      setPrintGames({ games: list.map((g, i) => ({ ...g, pgn: pgns[i] })), primary });
+    } catch (e) {
+      setExportNote(`Could not load the games: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  async function exportSelectedPgn() {
+    const list = selectedInOrder();
+    try {
+      const pgns = await fetchPgns(list.map((g) => g.id));
+      if (await savePgnFile(list, pgns.filter((p): p is string => p !== null))) {
+        setExportNote(list.length === 1 ? "Game saved as PGN" : `${list.length} games saved as PGN`);
+      }
+    } catch (e) {
+      setExportNote(`Could not export: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  const n = extras.length + 1;
+  const selectionEntries = extras.length === 0 ? [] : [
+    { label: `Print the ${n} selected…`, onClick: () => void printSelected("print") },
+    { label: `Export the ${n} selected as PDF…`, onClick: () => void printSelected("save") },
+    { label: `Export the ${n} selected as PGN…`, onClick: () => void exportSelectedPgn() },
+  ];
+  async function openInAnalysis(list: GameSummary[]) {
+    if (!onOpenManyInAnalysis) { if (list[0]) onOpenInAnalysis?.(list[0]); return; }
+    const left = await onOpenManyInAnalysis(list);
+    if (left > 0) {
+      setAnalysisNote(
+        `${left === list.length ? "These games do" : `${left} of these games do`} not fit: the Analysis board holds ${analysisCapacity ?? "only so many"} games at once. Close some there first.`,
+      );
+    }
+  }
   const [selectedPly, setSelectedPly] = useState(initial?.selectedPly ?? 0);
   const { game: loadedGame, loading: gameLoading } = useGamePgn(selectedGame?.id ?? null);
   // A newly selected game starts at its first move — unless it's a restored
@@ -633,12 +716,13 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                           <div className="p-4 text-center text-on-surface-variant text-body-md">No games found</div>
                         )}
                         {games.map((game) => {
-                          const selected = selectedGame?.id === game.id;
+                          const selected = selectedGame?.id === game.id || extras.some((g) => g.id === game.id);
                           const subText = selected ? "text-on-secondary-container/80" : "text-on-surface-variant";
                           return (
                             <button
                               key={game.id}
-                              onClick={() => setSelectedGame(game)}
+                              onClick={(e) => pickGame(game, e)}
+                              title="Ctrl-click or Shift-click selects several games to open in Analysis together"
                               style={{ display: "grid", gridTemplateColumns: gridCols }}
                               className={`w-full items-baseline text-body-sm text-left transition-colors duration-short3 ease-standard ${
                                 selected ? "bg-secondary-container text-on-secondary-container" : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
@@ -676,17 +760,40 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                                     ply={selectedPly}
                                     startFen={loadedGame.fens[0]}
                                     gameUrl={loadedGame.gameUrl}
+                                    extras={selectionEntries}
+                                    // One game: the board's own entries. Several: the
+                                    // "N selected" ones below take over.
+                                    onExportPgn={extras.length === 0 ? () => void exportSelectedPgn() : undefined}
+                                    onExportPdf={extras.length === 0 ? () => void printSelected("save") : undefined}
+                                    onPrint={extras.length === 0 ? () => void printSelected("print") : undefined}
                                   />
                                   {onOpenInAnalysis && (
                                     <button
-                                      onClick={() => onOpenInAnalysis(selectedGame)}
+                                      onClick={() => void openInAnalysis([selectedGame, ...extras])}
                                       className="shrink-0 text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 px-2.5 h-7 rounded-full transition-colors duration-short3 ease-standard"
-                                      title="Open this game in the editable Analysis board"
+                                      title={extras.length
+                                        ? "Open the selected games in the editable Analysis board, this one first"
+                                        : "Open this game in the editable Analysis board. Ctrl-click other games in the list to open several at once."}
                                     >
-                                      Open in Analysis →
+                                      {extras.length ? `Open ${extras.length + 1} in Analysis →` : "Open in Analysis →"}
+                                    </button>
+                                  )}
+                                  {onOpenManyInAnalysis && !extras.length && games.length > 1 && games.length <= (analysisCapacity ?? 0) && !loading && (
+                                    <button
+                                      onClick={() => void openInAnalysis([selectedGame, ...games.filter((g) => g.id !== selectedGame.id)])}
+                                      className="shrink-0 text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 px-2.5 h-7 rounded-full transition-colors duration-short3 ease-standard"
+                                      title="Open every game in the list on the Analysis board, this one first"
+                                    >
+                                      Open all {games.length} →
                                     </button>
                                   )}
                                 </div>
+                              )}
+                              {exportNote && (
+                                <div className="shrink-0 px-2 py-1 text-label-sm bg-surface-container-high text-on-surface">{exportNote}</div>
+                              )}
+                              {analysisNote && (
+                                <div className="shrink-0 px-2 py-1 text-label-sm text-on-error-container bg-error-container">{analysisNote}</div>
                               )}
                               {/* The header above already names the players and
                                   the result, so the board's own line would repeat it. */}
@@ -718,6 +825,9 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
           </Panel>
         </Group>
       </div>
+      {printGames && (
+        <PrintDialog games={printGames.games} primary={printGames.primary} flipped={false} onClose={() => setPrintGames(null)} />
+      )}
     </div>
   );
 }

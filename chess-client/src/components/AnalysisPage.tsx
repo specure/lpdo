@@ -6,11 +6,13 @@ import { CursorPath } from "../lib/moveTreeNav";
 import MiniBoard from "./games/MiniBoard";
 import MoveList from "./games/MoveList";
 import GamePreviewHeader from "./games/GamePreviewHeader";
-import GameMoreMenu from "./games/GameMoreMenu";
+import GameMoreMenu, { MenuEntry } from "./games/GameMoreMenu";
 import GameBoard from "./GameBoard";
 import CloudEngine from "./CloudEngine";
 import { useGamePgn } from "../lib/useGamePgn";
 import { useNeighbourResize } from "../lib/panelResize";
+import { fetchPgns, savePgnFile } from "../lib/exportPgn";
+import PrintDialog, { ExportableGame } from "./games/PrintDialog";
 
 // The Analysis board (#220): the editable, multi-game workbench. Several games
 // open at once as mini-board tabs (A). The active game is edited in a full
@@ -40,7 +42,14 @@ interface Props {
   activeKey: string | null;
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
-  onOpenGame: (game: GameSummary) => void;   // open a related game as a new tab
+  onCloseMany: (keys: string[]) => void;
+  /** Move a tab one place up (-1) or down (+1) the rail. */
+  onMove: (key: string, delta: -1 | 1) => void;
+  /** How many games the rail holds at most. */
+  capacity: number;
+  /** Open a related game as a new tab. Resolves to 0, or to how many did not
+   *  fit (the rail is full) — then it stayed closed. */
+  onOpenGame: (games: GameSummary[]) => Promise<number>;
   /** Persist per-tab view state (position, cursor, orientation) in the owning store. */
   onTabState: (key: string, patch: { fen?: string; cursor?: CursorPath; flipped?: boolean }) => void;
   onGameMutated?: () => void;
@@ -54,8 +63,103 @@ type RightTab = "reference" | "engine" | "related";
 const TAB_KEY = "analysisRightTab";
 const ENGINES_KEY = "analysisShowEngines";
 
-export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onOpenGame, onTabState, onGameMutated }: Props) {
+export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onCloseMany, onMove, capacity, onOpenGame, onTabState, onGameMutated }: Props) {
   const active = tabs.find((t) => t.key === activeKey) ?? null;
+  const full = tabs.length >= capacity;
+
+  // Games picked in the rail with Ctrl-click: what "selected" means in the
+  // rail menu. Without a pick, the menu acts on every open game. Keys of
+  // games since closed drop out.
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
+  const pickedNow = [...picked].filter((k) => tabs.some((t) => t.key === k));
+  const [railNote, setRailNote] = useState<string | null>(null);
+  const [pdfGames, setPdfGames] = useState<{ games: ExportableGame[]; primary: "print" | "save" } | null>(null);
+  useEffect(() => {
+    if (!railNote) return;
+    const t = window.setTimeout(() => setRailNote(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [railNote]);
+
+  /** Selection the way a file list does it: a click picks that game alone
+   *  (and shows it); Ctrl-click adds or removes one, keeping the shown game
+   *  in the set; Shift-click picks the run from the shown game to this one. */
+  function pickTab(key: string, e: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) {
+    const keys = tabs.map((t) => t.key);
+    if (e.shiftKey) {
+      const from = keys.indexOf(activeKey ?? key);
+      const to = keys.indexOf(key);
+      const [a, b] = from <= to ? [from, to] : [to, from];
+      const range = keys.slice(Math.max(a, 0), b + 1);
+      setPicked((prev) => new Set(e.ctrlKey || e.metaKey ? [...prev, ...range] : range));
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      setPicked((prev) => {
+        const next = new Set(prev);
+        if (next.size === 0 && activeKey) next.add(activeKey);
+        if (next.has(key)) next.delete(key); else next.add(key);
+        return next;
+      });
+      return;
+    }
+    onActivate(key);
+    setPicked(new Set([key]));
+  }
+  /** The games a rail-menu command works on, in rail order. */
+  const targets = (scope: "all" | "picked") => (scope === "picked" ? tabs.filter((t) => picked.has(t.key)) : tabs);
+  async function exportPgn(scope: "all" | "picked") {
+    const list = targets(scope);
+    try {
+      const pgns = await fetchPgns(list.map((t) => t.game.id));
+      const ok = await savePgnFile(list.map((t) => t.game), pgns.filter((p): p is string => p !== null));
+      if (ok) setRailNote(`${list.length === 1 ? "1 game" : `${list.length} games`} saved as PGN`);
+    } catch (e) {
+      setRailNote(`Could not export: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  async function printPdf(primary: "print" | "save", scope: "all" | "picked") {
+    const list = targets(scope);
+    try {
+      const pgns = await fetchPgns(list.map((t) => t.game.id));
+      // Each game prints the way its board stands: no orientation question.
+      setPdfGames({ games: list.map((t, i) => ({ ...t.game, pgn: pgns[i], flipped: t.flipped })), primary });
+    } catch (e) {
+      setRailNote(`Could not load the games: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  // Commands over the open games live in the board's More menu, where print
+  // and export are looked for — a menu of the rail's own was easy to miss.
+  // Only with more than one game open: for one, the game's own entries say
+  // the same, and its ✕ closes it.
+  const railExtras: MenuEntry[] = (() => {
+    if (tabs.length < 2) return [];
+    const n = pickedNow.length;
+    const subset = n > 0 && n < tabs.length;
+    return [
+      ...(subset ? [
+        { label: `Print the ${n} selected…`, onClick: () => void printPdf("print", "picked") },
+        { label: `Export the ${n} selected as PDF…`, onClick: () => void printPdf("save", "picked") },
+        { label: `Export the ${n} selected as PGN…`, onClick: () => void exportPgn("picked") },
+      ] : []),
+      { label: "Print all games…", onClick: () => void printPdf("print", "all"), separated: subset },
+      { label: "Export all games as PDF…", onClick: () => void printPdf("save", "all") },
+      { label: "Export all games as PGN…", onClick: () => void exportPgn("all") },
+      ...(subset ? [{
+        label: `Close the ${n} selected`, separated: true,
+        onClick: () => { onCloseMany(pickedNow); setPicked(new Set()); },
+      }] : []),
+      {
+        label: "Close others", separated: !subset, disabled: !active,
+        onClick: () => onCloseMany(tabs.filter((t) => t.key !== activeKey).map((t) => t.key)),
+      },
+      { label: "Close all", onClick: () => onCloseMany(tabs.map((t) => t.key)) },
+      ...(n > 0 ? [{ label: "Select none", separated: true, onClick: () => setPicked(new Set()) }] : []),
+    ];
+  })();
+  async function openRelated(game: GameSummary) {
+    const left = await onOpenGame([game]);
+    if (left > 0) setRailNote(`The board is full: it holds ${capacity} games. Close one to open another.`);
+  }
 
   // Current board position of the active game, kept on the tab (see below).
   const currentFen = active?.fen ?? STARTPOS;
@@ -178,14 +282,35 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
         minSize={rz.floor("rail") ?? "5"}
         maxSize="16"
       >
+      <div className="h-full flex flex-col min-h-0">
+        {/* The rail is also the export list: what is open, in this order, is
+            what "Print all games" writes (from the More menu above the
+            board). The count says how much room is left. */}
+        <div className="shrink-0 flex items-center gap-1 pb-1 pr-2.5">
+          <span
+            className={`flex-1 min-w-0 truncate text-label-sm ${full ? "text-error" : "text-on-surface-variant"}`}
+            title={full
+              ? `The board is full: it holds ${capacity} games. Close one to open another.`
+              : `${tabs.length} of ${capacity} games open. Ctrl-click or Shift-click selects games; ▲▼ change the order, which is the order they print in.`}
+          >
+            {tabs.length} of {capacity}{pickedNow.length ? ` · ${pickedNow.length} selected` : ""}
+          </span>
+        </div>
+        {railNote && <div className="shrink-0 mb-1 mr-2.5 px-1.5 py-1 rounded-sm text-label-sm bg-surface-container-high text-on-surface">{railNote}</div>}
       {/* Right padding keeps the cards clear of the scrollbar, which WebKitGTK
           draws over the content instead of beside it — it hid the close ✕. */}
-      <div className="h-full flex flex-col gap-1.5 overflow-y-auto pr-2.5">
-        {tabs.map((t) => {
+      <div className="flex-1 min-h-0 flex flex-col gap-1.5 overflow-y-auto pr-2.5">
+        {tabs.map((t, i) => {
           const on = t.key === activeKey;
+          const isPicked = picked.has(t.key);
+          const nav = "shrink-0 w-4 h-5 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 disabled:opacity-30 disabled:hover:bg-transparent text-[10px]";
           return (
-            <div key={t.key} className={`shrink-0 rounded-md border ${on ? "border-primary" : "border-outline/40"} bg-surface-container-low overflow-hidden`}>
-              <button onClick={() => onActivate(t.key)} className="w-full aspect-square block" title={`${t.game.white} – ${t.game.black}`}>
+            <div key={t.key} className={`shrink-0 rounded-md border ${on ? "border-primary" : "border-outline/40"} ${isPicked ? "ring-2 ring-tertiary" : ""} bg-surface-container-low overflow-hidden`}>
+              <button
+                onClick={(e) => pickTab(t.key, e)}
+                className="w-full aspect-square block"
+                title={`${t.game.white} – ${t.game.black}\nCtrl-click adds it to the selection, Shift-click selects a run`}
+              >
                 <MiniBoard
                   game={t.loaded}
                   fen={t.fen ?? undefined}
@@ -195,15 +320,18 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                   showNav={false}
                 />
               </button>
-              <div className="flex items-center gap-1 px-1.5 py-1 border-t border-outline/40">
+              <div className="flex items-center gap-0.5 px-1 py-1 border-t border-outline/40">
                 <span className={`flex-1 min-w-0 truncate text-label-sm ${on ? "text-on-surface" : "text-on-surface-variant"}`}>
                   {t.game.white.split(",")[0]} – {t.game.black.split(",")[0]}
                 </span>
+                <button onClick={() => onMove(t.key, -1)} disabled={i === 0} className={nav} title="Move up">▲</button>
+                <button onClick={() => onMove(t.key, 1)} disabled={i === tabs.length - 1} className={nav} title="Move down">▼</button>
                 <button onClick={() => onClose(t.key)} className="shrink-0 w-5 h-5 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-sm" title="Close">✕</button>
               </div>
             </div>
           );
         })}
+      </div>
       </div>
       </Panel>
 
@@ -222,6 +350,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                 onGameMutated={onGameMutated}
                 moveListHost={moveHost}
                 playRequest={playRequest}
+                menuExtras={railExtras}
               />
             )}
           </div>
@@ -368,7 +497,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                         />
                       )}
                       <button
-                        onClick={() => onOpenGame(preview)}
+                        onClick={() => void openRelated(preview)}
                         className="shrink-0 text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 px-2.5 h-7 rounded-full transition-colors duration-short3 ease-standard"
                         title="Open this game in its own Analysis tab"
                       >
@@ -401,6 +530,9 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
           </div>
         </Panel>
       </Group>
+      {pdfGames && (
+        <PrintDialog games={pdfGames.games} primary={pdfGames.primary} flipped={active?.flipped ?? false} onClose={() => setPdfGames(null)} />
+      )}
     </div>
   );
 }
