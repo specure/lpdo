@@ -1476,7 +1476,8 @@ struct ImportUploadQuery {
 /// Streamed PGN upload (#154). The client streams a (possibly compressed,
 /// multi-GB) file straight to the daemon; we spool it to a daemon-owned file in
 /// bounded memory — no body-size cap — and start an import job on it. The
-/// original extension is preserved so `import-pgn` decompresses .zip/.zst/.7z.
+/// original extension is preserved so `import-pgn` decompresses .zip/.zst/.7z
+/// and reads the game out of a .pdf this app exported (#265).
 /// Works when the daemon can't read the client's files (hardened system daemon)
 /// or is on a different machine. Returns the job id; the client follows
 /// `/jobs/{id}/events` as usual. `body` must be the final extractor.
@@ -1570,7 +1571,7 @@ async fn import_upload_handler(
         .and_then(|f| std::path::Path::new(f).extension())
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
-        .filter(|e| matches!(e.as_str(), "pgn" | "zip" | "zst" | "zstd" | "7z"))
+        .filter(|e| matches!(e.as_str(), "pgn" | "zip" | "zst" | "zstd" | "7z" | "pdf"))
         .unwrap_or_else(|| "pgn".to_string());
     let spool = dir.join(format!("upload-{stamp}.{ext}"));
 

@@ -206,7 +206,7 @@ export default function AddGameDialog({
       // path is meaningless there). The daemon decompresses .zip/.zst/.7z.
       const p = path.trim();
       if (!p) {
-        setPasteError("Choose a PGN file (.pgn/.zip/.zst/.7z) to import.");
+        setPasteError("Choose a file to import (.pgn, .zip, .zst, .7z, or a .pdf exported from here).");
         return;
       }
       setUploadPct(0);
@@ -604,7 +604,8 @@ function FileSection({ path, setPath, locked }: {
               directory: false,
               // The daemon decompresses these server-side (#154) — offer them in
               // the picker so a ChessBase/Megabase .zip can be selected directly.
-              filters: [{ name: "Chess database", extensions: ["pgn", "zip", "zst", "zstd", "7z"] }],
+              // A .pdf exported from here carries its game in the file (#265).
+              filters: [{ name: "Chess database", extensions: ["pgn", "zip", "zst", "zstd", "7z", "pdf"] }],
             });
             if (typeof picked === "string") setPath(picked);
           }}
