@@ -151,7 +151,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
     if (tabs.length < 2) return [];
     const n = pickedNow.length;
     const subset = n > 0 && n < tabs.length;
-    const all = `the ${tabs.length} open games`;
+    const all = "all games";
     return [
       ...(subset ? [
         { label: `Print the ${n} selected…`, onClick: () => void printPdf("print", "picked") },
