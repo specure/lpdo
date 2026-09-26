@@ -404,7 +404,9 @@ fn parse_search_results(html: &str) -> Vec<FidePlayer> {
     let row_re    = Regex::new(r"(?s)<tr\b[^>]*>(.*?)</tr>").unwrap();
     let fideid_re = Regex::new(r#"(?s)<td[^>]*data-label="FIDEID"[^>]*>\s*(\d+)\s*</td>"#).unwrap();
     let name_re   = Regex::new(r#"class="found_name"[^>]*>([^<]+)<"#).unwrap();
-    let title_re  = Regex::new(r#"(?s)<td[^>]*data-label="title"[^>]*>\s*([A-Z]{2,4})\s*</td>"#).unwrap();
+    // FIDE lists every title a player holds, highest first: "GM WGM". The
+    // first is the one shown.
+    let title_re  = Regex::new(r#"(?s)<td[^>]*data-label="title"[^>]*>\s*([A-Z]{2,4})(?:\s+[A-Z]{2,4})*\s*</td>"#).unwrap();
     let fed_re    = Regex::new(r#"alt="([A-Z]{3})""#).unwrap();
     let rtg_re    = Regex::new(r#"(?s)<td[^>]*data-label="Rtg"[^>]*>\s*(\d+)\s*</td>"#).unwrap();
     let byear_re  = Regex::new(r#"(?s)<td[^>]*data-label="B-Year"[^>]*>\s*(\d{4})\s*</td>"#).unwrap();
@@ -460,7 +462,10 @@ pub fn player(fide_id: u64) -> Result<Option<FidePlayer>> {
     if let Some(MonthlyValue { ref fetched_month, ref value }) =
         cached.as_ref().and_then(|c| c.player.as_ref())
     {
-        if fetched_month == &current_month() {
+        // A cached lookup without a title may date from before FIDE listed
+        // several titles in one cell, which the parser then missed; ask again.
+        let titled = value.as_ref().is_none_or(|p| p.title.is_some());
+        if fetched_month == &current_month() && titled {
             return Ok(value.clone());
         }
     }
@@ -562,5 +567,20 @@ mod chart_bom_tests {
         assert_eq!(v.len(), 1);
         let v: Vec<serde_json::Value> = super::parse_chart_json("[]").unwrap();
         assert!(v.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    #[test]
+    fn several_titles_in_one_cell_give_the_first() {
+        let row = r#"<tr><td data-label="FIDEID" class="box-div">4641833</td>
+            <td data-label="Name"><a href=/profile/4641833 class="found_name">Paehtz, Elisabeth</a></td>
+            <td data-label="title">GM WGM</td>
+            <td data-label="Rtg">2404</td></tr>"#;
+        let p = super::parse_search_results(row);
+        assert_eq!(p[0].title.as_deref(), Some("GM"));
+        let one = row.replace("GM WGM", "IM");
+        assert_eq!(super::parse_search_results(&one)[0].title.as_deref(), Some("IM"));
     }
 }

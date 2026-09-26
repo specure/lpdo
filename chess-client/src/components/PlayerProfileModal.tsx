@@ -432,18 +432,16 @@ export default function PlayerProfileModal({ player, onClose, onPlayersMerged }:
         <div className="flex items-center justify-between px-5 py-4 shrink-0">
           <div>
             <div className="text-title-md text-on-surface">{player.name}</div>
-            {player.fide_id && (
-              <div className="text-body-sm text-on-surface-variant">FIDE {player.fide_id}</div>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
+            {/* The FIDE ID opens the player's FIDE profile in the browser. */}
             {player.fide_id && (
               <button
                 onClick={() => void openUrl(`https://ratings.fide.com/profile/${player.fide_id}`)}
-                title={`https://ratings.fide.com/profile/${player.fide_id}`}
-                className="h-8 px-3 inline-flex items-center rounded-full text-primary text-label-md hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard"
-              >FIDE profile<ExternalLinkIcon /></button>
+                title={`Open the FIDE profile: https://ratings.fide.com/profile/${player.fide_id}`}
+                className="text-body-sm text-primary hover:underline inline-flex items-center"
+              >FIDE {player.fide_id}<ExternalLinkIcon /></button>
             )}
+          </div>
+          <div className="flex items-center gap-2">
             <button
               onClick={() => setMergeOpen(true)}
               title="Merge a duplicate player record into this one"
