@@ -57,7 +57,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # OS randomness for the LAN access token (#247).
 getrandom = "0.4"
 csv = "1"
-dirs = "6"
+dirs = "7"
 regex = "1"
 
 # Allocator — jemalloc avoids glibc heap corruption with DuckDB on Linux
