@@ -492,6 +492,8 @@ function DetailsToggleButton({ detail, open, onToggle }: {
 // export defaults to the same folder.
 
 const PGN_EXPORT_DIR_KEY = "pgnExportDir";
+/** Counts mounted GameBoards, so each gets a DOM id of its own. */
+let boardInstances = 0;
 
 function abbreviatePlayerName(name: string): string {
   const trimmed = (name || "").trim();
@@ -844,6 +846,13 @@ function DetailsPanel({
 export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange }: Props) {
   const [detail, setDetail] = useState<GameDetail | null>(null);
   const [detailReloadKey, setDetailReloadKey] = useState(0);
+  // The board's DOM id, unique per mounted GameBoard. react-chessboard finds a
+  // square by `#<id>-square-<sq>` with document.querySelector when it animates
+  // a move, so two boards with one id fight over it — and the PGNs view keeps
+  // its GameBoard mounted (hidden) while Analysis shows another. The hidden
+  // board came first in the DOM, its squares measured 0 wide, and every move
+  // on the Analysis board threw "Square width not found" (#283).
+  const boardId = useRef(`game-board-${++boardInstances}`).current;
   const [pdfOpen, setPdfOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState<boolean>(
     () => localStorage.getItem("gameDetailsOpen") === "1"
@@ -1964,7 +1973,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             <BoardErrorBoundary>
             <Chessboard
               options={{
-                id: "game-board", // unique id so it never shares square DOM ids with another board
+                id: boardId, // unique per instance — see `boardId`
                 position: currentFen,
                 boardOrientation: flipped ? "black" : "white",
                 // Outside edit mode the pieces still move — into a scratch
