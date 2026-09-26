@@ -328,7 +328,6 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
   let y = PAGE.height - MARGIN.top;
   let pageNumber = 1;
   drawRunningHeader(page, fonts, header, pageNumber);
-  drawColumnRule(page);
 
   const columnLeft = () => MARGIN.left + column * (COLUMN_WIDTH + GUTTER);
   const nextColumn = () => {
@@ -338,6 +337,9 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
       page = doc.addPage([PAGE.width, PAGE.height]);
       pageNumber += 1;
       drawRunningHeader(page, fonts, header, pageNumber);
+    } else {
+      // The rule down the gutter is drawn once the second column is in use
+      // — a last page with one column of text needs no line beside nothing.
       drawColumnRule(page);
     }
     y = PAGE.height - MARGIN.top;
@@ -351,13 +353,13 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
         nextColumn();
         continue;
       }
-      // A gap and a short rule, unless the column is fresh anyway.
+      // A gap and a rule across the column, unless the column is fresh anyway.
       if (y < PAGE.height - MARGIN.top - 1) {
         if (y - 22 < MARGIN.bottom) { nextColumn(); continue; }
         y -= 10;
         page.drawLine({
-          start: { x: columnLeft(), y }, end: { x: columnLeft() + COLUMN_WIDTH * 0.4, y },
-          thickness: 0.5, color: MUTED,
+          start: { x: columnLeft(), y }, end: { x: columnLeft() + COLUMN_WIDTH, y },
+          thickness: 0.4, color: MUTED,
         });
         y -= 12;
       }
