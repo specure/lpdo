@@ -127,8 +127,10 @@ leaves the database more room for large jobs such as removing duplicates,
 which slow down (they spill to disk) rather than fail when memory is short.
 
 Maintenance → Chess engine → **Benchmark** runs Stockfish's own benchmark
-with the threads and hash set there, and keeps the results in a table: change
-a setting and run again to compare.
+(depth 16) with the threads and hash set there, and keeps the results in a
+table: change a setting and run again to compare. Compare the **speed**: with
+several threads the time varies from run to run (8 and 16 seconds for the same
+settings on one machine), and hash hardly shows in a benchmark.
 
 A search stops when you move to another position or close the panel, and after
 five minutes at the latest.

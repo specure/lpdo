@@ -389,11 +389,8 @@ function EngineSection() {
 // can be compared; the defaults come from rules, not from a benchmark.
 interface BenchResult { engine: string; threads: number; hash_mb: number; depth: number; nodes: number; nps: number; ms: number }
 const BENCH_KEY = "engineBenchResults";
-const DEPTHS = [
-  { depth: 13, label: "Quick" },
-  { depth: 16, label: "Standard" },
-  { depth: 20, label: "Long" },
-] as const;
+/** One length: depth 16 takes some ten seconds on a 16-thread machine. */
+const BENCH_DEPTH = 16;
 
 async function runBench(threads: number, hash_mb: number, depth: number): Promise<BenchResult> {
   const r = await fetch(apiUrl("/engine/bench"), {
@@ -406,11 +403,18 @@ async function runBench(threads: number, hash_mb: number, depth: number): Promis
 }
 
 function EngineBench({ threads, hash }: { threads: number; hash: number }) {
-  const [depth, setDepth] = useState<number>(16);
   const [results, setResults] = useState<BenchResult[]>(() => {
     try { return JSON.parse(localStorage.getItem(BENCH_KEY) ?? "[]") as BenchResult[]; } catch { return []; }
   });
   const [running, setRunning] = useState<string | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    const started = Date.now();
+    setElapsed(0);
+    const t = window.setInterval(() => setElapsed(Math.round((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(t);
+  }, [running]);
   const [error, setError] = useState<string | null>(null);
 
   function keep(r: BenchResult) {
@@ -423,8 +427,8 @@ function EngineBench({ threads, hash }: { threads: number; hash: number }) {
 
   async function once() {
     setError(null);
-    setRunning(`Running: ${threads} threads, ${hash} MB, depth ${depth}…`);
-    try { keep(await runBench(threads, hash, depth)); }
+    setRunning(`Running with ${threads} threads and ${hash} MB hash`);
+    try { keep(await runBench(threads, hash, BENCH_DEPTH)); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setRunning(null); }
   }
@@ -434,28 +438,21 @@ function EngineBench({ threads, hash }: { threads: number; hash: number }) {
     <div className="space-y-2 pt-2 border-t border-outline/40">
       <div className="flex items-center gap-2 flex-wrap text-body-sm text-on-surface">
         <span className="text-title-sm">Benchmark</span>
-        <div className="inline-flex items-center gap-0.5 p-0.5 bg-surface-container rounded-full">
-          {DEPTHS.map((d) => (
-            <button
-              key={d.depth}
-              onClick={() => setDepth(d.depth)}
-              aria-pressed={depth === d.depth}
-              className={`h-6 px-2.5 rounded-full text-label-sm ${depth === d.depth ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:text-on-surface"}`}
-              title={`Search the benchmark positions to depth ${d.depth}`}
-            >
-              {d.label}
-            </button>
-          ))}
-        </div>
         <div className="flex-1" />
         <ActionButton onClick={() => void once()} disabled={running !== null}>Run with these settings</ActionButton>
       </div>
       <p className="text-label-sm text-on-surface-variant">
-        Stockfish's own benchmark with the threads and hash above: a fixed set of positions searched to a
-        fixed depth. Change a setting and run again to compare — speed shows what threads bring, and on a
-        long run the time shows what hash brings. The engine does not analyse while it runs.
+        Stockfish's own benchmark with the threads and hash above: a fixed set of positions searched to
+        depth {BENCH_DEPTH}. Compare the <b>speed</b> — it shows what more threads bring. The time varies
+        from run to run with several threads, and the hash hardly shows in a benchmark; it pays off in
+        long analyses. The engine does not analyse while this runs.
       </p>
-      {running && <p className="text-body-sm text-on-surface">{running}</p>}
+      {running && (
+        <p className="text-body-sm text-on-surface flex items-center gap-2">
+          <span className="inline-block w-3 h-3 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+          {running} — {elapsed} s
+        </p>
+      )}
       {error && <p className="text-body-sm text-error">{error}</p>}
       {results.length > 0 && (
         <div className="overflow-x-auto">
@@ -465,7 +462,6 @@ function EngineBench({ threads, hash }: { threads: number; hash: number }) {
                 <th className="text-left font-normal py-1">Engine</th>
                 <th className="font-normal">Threads</th>
                 <th className="font-normal">Hash</th>
-                <th className="font-normal">Depth</th>
                 <th className="font-normal">Speed</th>
                 <th className="font-normal">Time</th>
               </tr>
@@ -476,8 +472,7 @@ function EngineBench({ threads, hash }: { threads: number; hash: number }) {
                   <td className="text-left py-0.5">{r.engine}</td>
                   <td>{r.threads}</td>
                   <td>{r.hash_mb} MB</td>
-                  <td>{r.depth}</td>
-                  <td>{fmtNps(r.nps)}</td>
+                  <td className="font-semibold">{fmtNps(r.nps)}</td>
                   <td>{(r.ms / 1000).toFixed(1)} s</td>
                 </tr>
               ))}

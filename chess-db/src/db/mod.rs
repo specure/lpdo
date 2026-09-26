@@ -85,7 +85,8 @@ pub fn max_engine_hash_mb() -> u32 {
 /// to 4 GB, and within what the budget allows.
 pub fn default_engine_hash_mb() -> u32 {
     let eighth = total_ram_mb().map(|m| (m / 8) as u32).unwrap_or(256);
-    eighth.clamp(256, 4096).min(max_engine_hash_mb())
+    // A round figure: whole 256 MB steps (3840, not 3983).
+    (eighth.clamp(256, 4096).min(max_engine_hash_mb()) / 256 * 256).max(256.min(max_engine_hash_mb()))
 }
 
 /// The engine's hash as configured in `data_dir/engine.json`, else the default.

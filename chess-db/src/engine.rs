@@ -429,6 +429,11 @@ impl Engine {
         history: Option<(String, Vec<String>)>,
         lines: u32,
     ) -> Result<(u64, Option<Snapshot>, broadcast::Receiver<Snapshot>), String> {
+        // A benchmark needs the processor to itself: an analysis beside it
+        // skews its figures badly (one run took ten times as long).
+        if self.benching.try_lock().is_err() {
+            return Err("the engine is being benchmarked — try again when it is done".to_string());
+        }
         self.ensure_started().await?;
         let rx = self.tx.subscribe();
         let gen = self.gen.fetch_add(1, Ordering::SeqCst) + 1;
