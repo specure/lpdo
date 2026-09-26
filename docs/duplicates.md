@@ -47,8 +47,23 @@ ambiguous is left for you to decide.
 ## Duplicate players: the same person under several names
 
 Automatic dedup pairs games by player record, and it merges two player records
-only when their normalised names match exactly or they share a FIDE ID. Exports
-are full of variants that satisfy neither:
+when their normalised names match exactly, when they share a FIDE ID, or when
+one is the other written with a title the way online platforms do:
+
+```
+GM Magnus Carlsen          → Carlsen, Magnus
+NM EAMON MONTGOMERY 2215   → Montgomery, Eamon
+```
+
+The title (GM, IM, FM, CM, NM, LM and the women's titles) and a trailing
+rating are dropped. What is left must then be the plain record's name exactly
+(`GM Torre, Eugenio` → `Torre, Eugenio`), or, without a comma, "Firstname …
+Lastname" read as "Lastname, Firstname …" (`GM Allan Stig Rasmussen` →
+`Rasmussen, Allan Stig`). No other word order counts. The merge happens only
+when exactly one untitled record matches — `FM Wang Li` stays apart when both
+`Wang, Li` and `Li, Wang` exist — and never across two different FIDE IDs.
+
+Exports are also full of variants that none of these rules catch:
 
 ```
 Karpov, Anatoly      5,427 games   FIDE 4100026

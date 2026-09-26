@@ -84,6 +84,16 @@ struct PlayerRow {
     last_date: Option<String>,
 }
 
+/// A title written into the name, as online platforms do. Matched against
+/// `name_normalized` (lower case, commas gone).
+const TITLE_PREFIX: &str = "^(gm|im|fm|cm|nm|lm|wgm|wim|wfm|wcm) ";
+
+fn is_titled(name_normalized: &str) -> bool {
+    matches!(name_normalized.split(' ').next(),
+        Some("gm" | "im" | "fm" | "cm" | "nm" | "lm" | "wgm" | "wim" | "wfm" | "wcm"))
+        && name_normalized.contains(' ')
+}
+
 pub fn dedup_players(conn: &Connection, dry_run: bool, reporter: &Reporter) -> Result<()> {
     // Fetch every player row that shares a fide_id OR a normalised name with
     // another, plus that player's most recent game date (for the survivor
@@ -101,6 +111,48 @@ pub fn dedup_players(conn: &Connection, dry_run: bool, reporter: &Reporter) -> R
     // they are merged they also hide duplicate GAMES, since `dedup_games` pairs
     // on player ids. `cluster_players` refuses the one case where the rows are
     // known to be different people: distinct FIDE IDs.
+    // Third key: a name carrying a title, the way online platforms and some
+    // broadcasts write them — "GM Magnus Carlsen", "NM EAMON MONTGOMERY 2215"
+    // — against the plain record ("Carlsen, Magnus"). The title and a trailing
+    // rating are dropped from the name as written, and what is left must be
+    // either the plain record's name exactly ("GM Torre, Eugenio" → "Torre,
+    // Eugenio") or, when it has no comma, "Firstname … Lastname" read as
+    // "Lastname, Firstname …" ("GM Allan Stig Rasmussen" → "Rasmussen, Allan
+    // Stig"). No other word order counts. A pair is made only when exactly one
+    // untitled player matches either reading, so "FM Wang Li" stays apart when
+    // both "Wang, Li" and "Li, Wang" exist.
+    let norm = |x: &str| format!("trim(regexp_replace(lower(replace({x}, ',', ' ')), '\\s+', ' ', 'g'))");
+    conn.execute_batch(&format!(
+        "DROP TABLE IF EXISTS title_pairs;
+         CREATE TEMP TABLE title_pairs AS
+         WITH titled AS (
+             SELECT id, trim(regexp_replace(regexp_replace(name,
+                        '^\\s*(GM|IM|FM|CM|NM|LM|WGM|WIM|WFM|WCM)\\s+', '', 'i'),
+                        '\\s+[0-9]{{3,4}}\\s*$', '')) AS bare
+             FROM players WHERE regexp_matches(name_normalized, '{TITLE_PREFIX}')
+         ),
+         readings AS (
+             SELECT id, {as_written} AS k FROM titled
+             UNION
+             SELECT id, {surname_first} AS k FROM titled
+             WHERE bare NOT LIKE '%,%' AND bare LIKE '% %'
+         ),
+         candidates AS (
+             SELECT DISTINCT r.id AS titled_id, u.id AS real_id
+             FROM readings r
+             JOIN players u ON u.name_normalized = r.k
+             WHERE r.k <> '' AND NOT regexp_matches(u.name_normalized, '{TITLE_PREFIX}')
+         )
+         SELECT titled_id, MIN(real_id) AS real_id
+         FROM candidates GROUP BY titled_id HAVING COUNT(*) = 1;",
+        as_written = norm("bare"),
+        surname_first = norm("regexp_extract(bare, '(\\S+)\\s*$', 1) || ' ' || regexp_replace(bare, '\\s*\\S+\\s*$', '')"),
+    ))?;
+    let title_pairs: Vec<(u32, u32)> = {
+        let mut stmt = conn.prepare("SELECT titled_id, real_id FROM title_pairs ORDER BY titled_id")?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.filter_map(|r| r.ok()).collect()
+    };
+
     let rows: Vec<PlayerRow> = {
         let mut stmt = conn.prepare(
             "WITH dup_fide AS (
@@ -118,6 +170,8 @@ pub fn dedup_players(conn: &Connection, dry_run: bool, reporter: &Reporter) -> R
                  FROM players
                  WHERE fide_id IN (SELECT fide_id FROM dup_fide)
                     OR name_normalized IN (SELECT name_normalized FROM dup_name)
+                    OR id IN (SELECT titled_id FROM title_pairs)
+                    OR id IN (SELECT real_id FROM title_pairs)
              ),
              last AS (
                  SELECT pid, MAX(date) AS last_date
@@ -146,12 +200,14 @@ pub fn dedup_players(conn: &Connection, dry_run: bool, reporter: &Reporter) -> R
         .collect()
     };
 
+    conn.execute_batch("DROP TABLE IF EXISTS title_pairs;")?;
+
     if rows.is_empty() {
         reporter.done("No duplicate players found.");
         return Ok(());
     }
 
-    let (mapping, groups) = cluster_players(&rows);
+    let (mapping, groups) = cluster_players(&rows, &title_pairs);
 
     if mapping.is_empty() {
         reporter.done("No duplicate players found.");
@@ -261,7 +317,7 @@ fn report_planned_merges(
 
     // Cap the listing: a first run on a large database can plan thousands of
     // merges, and flooding the log helps nobody. The counts below are complete.
-    const MAX_LINES: usize = 50;
+    const MAX_LINES: usize = 200;
     let mut by_name_only = 0usize;
     for (shown, sid) in survivors.iter().enumerate() {
         let losers = &per_survivor[sid];
@@ -324,7 +380,7 @@ fn report_planned_merges(
 /// distinguishes, and a merge cannot be undone. (FIDE IDs never conflict inside a
 /// cluster otherwise: unioning by FIDE ID cannot mix two of them, and this guard
 /// stops a name from doing so.)
-fn cluster_players(rows: &[PlayerRow]) -> (Vec<(u32, u32)>, usize) {
+fn cluster_players(rows: &[PlayerRow], title_pairs: &[(u32, u32)]) -> (Vec<(u32, u32)>, usize) {
     use std::collections::HashMap;
 
     // Rows with ≥2 distinct FIDE IDs under one normalised name — never merged.
@@ -364,6 +420,19 @@ fn cluster_players(rows: &[PlayerRow]) -> (Vec<(u32, u32)>, usize) {
         match by_name.get(r.name_normalized.as_str()) {
             Some(&first) => union(&mut parent, r.id, first),
             None => { by_name.insert(&r.name_normalized, r.id); }
+        }
+    }
+
+    // A titled name joins its plain record — unless both carry FIDE IDs and
+    // they differ, the one sign they are different people.
+    let fide_of: HashMap<u32, Option<u32>> = rows.iter().map(|r| (r.id, r.fide_id)).collect();
+    for &(titled, real) in title_pairs {
+        match (fide_of.get(&titled).copied().flatten(), fide_of.get(&real).copied().flatten()) {
+            (Some(a), Some(b)) if a != b => continue,
+            _ => {}
+        }
+        if fide_of.contains_key(&titled) && fide_of.contains_key(&real) {
+            union(&mut parent, titled, real);
         }
     }
 
@@ -999,6 +1068,8 @@ fn pick_survivor(rows: &[&PlayerRow]) -> u32 {
     rows.iter()
         .max_by_key(|r| {
             (
+                // "Carlsen, Magnus" over "GM Magnus Carlsen", whatever else.
+                !is_titled(&r.name_normalized),
                 r.fide_id.is_some(),
                 name_score(&r.name, r.name_normalised, r.last_date.as_deref()),
                 std::cmp::Reverse(r.id),
@@ -1394,6 +1465,50 @@ mod dedup_players_tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::init(&conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn merges_titled_names_into_the_plain_record() {
+        let conn = setup();
+        // 1/2: the online spelling of a FIDE-listed player merges into him.
+        // 3/4: a trailing rating is dropped too.
+        // 5/6/7: "FM Wang Li" reads as "Wang, Li" and as "Li, Wang" — both exist, ambiguous, untouched.
+        // 8: a title with no plain record stays as it is.
+        conn.execute_batch(
+            "INSERT INTO players (id,name,name_normalized,fide_id,name_normalised) VALUES
+               (1,'Carlsen, Magnus','carlsen magnus',1503014,TRUE),
+               (2,'GM Magnus Carlsen','gm magnus carlsen',NULL,FALSE),
+               (3,'Montgomery, Eamon','montgomery eamon',NULL,FALSE),
+               (4,'NM EAMON MONTGOMERY 2215','nm eamon montgomery 2215',NULL,FALSE),
+               (5,'Wang, Li','wang li',NULL,FALSE),
+               (6,'Li, Wang','li wang',NULL,FALSE),
+               (7,'FM Wang Li','fm wang li',NULL,FALSE),
+               (8,'GM Nobody Known','gm nobody known',NULL,FALSE),
+               (9,'Rasmussen, Allan Stig','rasmussen allan stig',1406000,TRUE),
+               (10,'GM Allan Stig Rasmussen','gm allan stig rasmussen',NULL,FALSE),
+               (11,'Torre, Eugenio','torre eugenio',5200016,TRUE),
+               (12,'GM Torre, Eugenio','gm torre eugenio',NULL,FALSE),
+               (13,'Stig, Allan Rasmussen','stig allan rasmussen',NULL,FALSE),
+               (14,'GM Rasmussen Stig Allan','gm rasmussen stig allan',NULL,FALSE);
+             INSERT INTO games (id, white_id, black_id, date) VALUES
+               (1, 2, 4, '2020-01-01'),
+               (2, 7, 8, '2021-01-01');",
+        )
+        .unwrap();
+
+        dedup_players(&conn, false, &Reporter::silent()).unwrap();
+
+        let remaining: Vec<u32> = {
+            let mut s = conn.prepare("SELECT id FROM players ORDER BY id").unwrap();
+            s.query_map([], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect()
+        };
+        // 10 and 12 merge; 13 is another name, and 14's order is neither the
+        // name as written nor "Firstname … Lastname" of anyone, so both stay.
+        assert_eq!(remaining, vec![1, 3, 5, 6, 7, 8, 9, 11, 13, 14]);
+        let (w, b): (u32, u32) = conn
+            .query_row("SELECT white_id, black_id FROM games WHERE id = 1", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((w, b), (1, 3));
     }
 
     #[test]
