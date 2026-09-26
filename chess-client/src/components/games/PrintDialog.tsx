@@ -12,6 +12,10 @@ const PDF_EXPORT_DIR_KEY = "pdfExportDir";
 
 /** What the dialog needs of a game — GameDetail satisfies it. */
 export interface ExportableGame {
+  /** This game's own orientation, when it comes from the Analysis board:
+   *  its diagrams are drawn the way the board stood, and the dialog does not
+   *  ask. Absent, the dialog offers the choice. */
+  flipped?: boolean;
   white: string;
   black: string;
   white_elo: number | null;
@@ -39,7 +43,11 @@ export default function PrintDialog({
 }) {
   const list = games ?? (detail ? [detail] : []);
   const many = list.length > 1;
+  // Games from the Analysis rail carry their board's orientation; the
+  // question is only asked for a game that carries none.
+  const askOrientation = !games;
   const [fromBlack, setFromBlack] = useState(flipped);
+  const [title, setTitle] = useState("");
   const [diagramAtEnd, setDiagramAtEnd] = useState(false);
   const [figurines, setFigurines] = useState(true);
   const [newPagePerGame, setNewPagePerGame] = useState(false);
@@ -60,13 +68,14 @@ export default function PrintDialog({
         white: g.white, black: g.black,
         white_elo: g.white_elo, black_elo: g.black_elo,
         event: g.event, date: g.date,
-        result: g.result, eco: g.eco, pgn: g.pgn ?? "",
+        result: g.result, eco: g.eco, pgn: g.pgn ?? "", flipped: g.flipped,
       })),
-      { flipped: fromBlack, diagramAtEnd, figurines, newPagePerGame, compact, producer: "LPDO" },
+      { flipped: fromBlack, diagramAtEnd, figurines, newPagePerGame, compact, title, producer: "LPDO" },
     );
     const first = printable[0];
+    const slug = title.trim().replace(/[^\p{L}\p{N}]+/gu, "_").replace(/^_|_$/g, "");
     const name = many
-      ? `${(first.date ?? "").slice(0, 10) || "games"}-${printable.length}-games.pdf`
+      ? slug ? `${slug}.pdf` : `${(first.date ?? "").slice(0, 10) || "games"}-${printable.length}-games.pdf`
       : `${(first.date ?? "").slice(0, 10) || "game"}-${surname(first.white)}-${surname(first.black)}.pdf`;
     return { bytes, name };
   }
@@ -135,6 +144,17 @@ export default function PrintDialog({
           </p>
           {many && (
             <>
+              <label className="flex items-center gap-2 text-body-sm text-on-surface">
+                <span className="shrink-0">Title</span>
+                <input
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder={`${printable.length} games`}
+                  className="flex-1 min-w-0 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface placeholder:text-on-surface-variant/70"
+                  title="Printed above the first game and in the page header"
+                />
+              </label>
               <label className={row}>
                 <input type="checkbox" checked={newPagePerGame} onChange={(e) => setNewPagePerGame(e.target.checked)} className="accent-primary" />
                 Start each game on a new page
@@ -153,10 +173,12 @@ export default function PrintDialog({
             <input type="checkbox" checked={diagramAtEnd} onChange={(e) => setDiagramAtEnd(e.target.checked)} className="accent-primary" />
             Add a diagram of the final position
           </label>
-          <label className={row}>
-            <input type="checkbox" checked={fromBlack} onChange={(e) => setFromBlack(e.target.checked)} className="accent-primary" />
-            Draw the diagrams from Black's side
-          </label>
+          {askOrientation && (
+            <label className={row}>
+              <input type="checkbox" checked={fromBlack} onChange={(e) => setFromBlack(e.target.checked)} className="accent-primary" />
+              Draw the diagrams from Black's side
+            </label>
+          )}
         </div>
 
         {error && <p className="text-error text-body-sm">{error}</p>}

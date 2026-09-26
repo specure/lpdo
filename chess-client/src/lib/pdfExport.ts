@@ -28,7 +28,7 @@ const LINE_HEIGHT = 12.4;
 /** How wide a diagram is drawn: about two thirds of the column, the proportion
  *  a printed game uses — a board the full column width swamps the moves. */
 const DIAGRAM_WIDTH = COLUMN_WIDTH * 0.66;
-const SIZE = { move: 9.2, variation: 8.4, header: 10.5, small: 8.2, running: 9 };
+const SIZE = { move: 9.2, variation: 8.4, header: 10.5, small: 8.2, running: 9, title: 14 };
 const INK = rgb(0, 0, 0);
 const MUTED = rgb(0.32, 0.32, 0.32);
 /** The board's colours on screen (index.css, light theme), so a printed
@@ -92,11 +92,17 @@ export interface PdfGame {
   result?: string | null;
   eco?: string | null;
   pgn: string;
+  /** Draw this game's diagrams from Black's side — the way its board stood
+   *  on screen. Overrides the document-wide `flipped`. */
+  flipped?: boolean;
 }
 
 export interface PdfOptions {
-  /** Draw diagrams from Black's side. */
+  /** Draw diagrams from Black's side (unless a game says otherwise). */
   flipped?: boolean;
+  /** A title for a document of several games, printed above the first game
+   *  and used in the running header and metadata instead of "N games". */
+  title?: string;
   /** Add a diagram of the final position even when the movetext asks for none. */
   diagramAtEnd?: boolean;
   /** Print pieces as figurines (♘f3) rather than letters (Nf3), the way a
@@ -139,30 +145,38 @@ export async function buildGamesPdf(inputs: PdfGame[], opts: PdfOptions): Promis
   const compact = !!opts.compact;
   const games = inputs.map(withPgnTags);
 
+  const title = opts.title?.trim() || "";
   const blocks: Block[] = [];
+  if (games.length > 1 && title) {
+    blocks.push(para([run(title, fonts.bold, SIZE.title, INK)], 0, 0));
+  }
   games.forEach((game, i) => {
     if (i > 0) blocks.push({ kind: "break", newPage: !!opts.newPagePerGame });
+    const flipped = game.flipped ?? !!opts.flipped;
     const tree = parsePgnTree(game.pgn);
-    blocks.push(...headerBlocks(game, fonts));
-    blocks.push(...movetextBlocks(tree, fonts, !!opts.flipped, opts.figurines !== false, compact));
+    const heading = headerBlocks(game, fonts);
+    if (i === 0 && title) heading[0] = { ...heading[0], spaceBefore: 6 } as Block;
+    blocks.push(...heading);
+    blocks.push(...movetextBlocks(tree, fonts, flipped, opts.figurines !== false, compact));
     if (opts.diagramAtEnd && !compact) {
       const last = tree.mainLine[tree.mainLine.length - 1];
-      blocks.push({ kind: "diagram", fen: last ? last.fen : tree.startFen, flipped: !!opts.flipped });
+      blocks.push({ kind: "diagram", fen: last ? last.fen : tree.startFen, flipped });
     }
     if (game.result) {
       blocks.push(para([run(prettyResult(game.result), fonts.bold, SIZE.move, INK)], 0, 4));
     }
   });
 
+  const many = title || `${games.length} games`;
   const header = games.length === 1
     ? runningHeader(games[0], opts.producer)
-    : [opts.producer ?? "LPDO", `${games.length} games`].join(" — ");
+    : [opts.producer ?? "LPDO", many].join(" — ");
   layout(doc, blocks, fonts, header);
 
-  doc.setTitle(games.length === 1 ? `${games[0].white} – ${games[0].black}` : `${games.length} games`);
+  doc.setTitle(games.length === 1 ? `${games[0].white} – ${games[0].black}` : many);
   doc.setAuthor(opts.producer ?? "LPDO");
   doc.setSubject(games.length === 1 ? describe(games[0]) : games.map(describe).join("; ").slice(0, 500));
-  setXmpWithPgn(doc, games);
+  setXmpWithPgn(doc, games, many);
 
   return doc.save();
 }
@@ -628,9 +642,9 @@ function prettyResult(result: string): string {
 
 /** Put the game's PGN in the document's XMP metadata, so the PDF can be read
  *  back as a game. The printed page is a view; this is the game itself. */
-function setXmpWithPgn(doc: PDFDocument, games: PdfGame[]) {
+function setXmpWithPgn(doc: PDFDocument, games: PdfGame[], manyTitle: string) {
   const pgn = games.map((g) => g.pgn.trim()).join("\n\n") + "\n";
-  const title = games.length === 1 ? describe(games[0]) : `${games.length} games`;
+  const title = games.length === 1 ? describe(games[0]) : manyTitle;
   const xmp = `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/">
   <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">

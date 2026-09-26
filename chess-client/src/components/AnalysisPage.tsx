@@ -121,7 +121,8 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
     const list = targets();
     try {
       const pgns = await fetchPgns(list.map((t) => t.game.id));
-      setPdfGames(list.map((t, i) => ({ ...t.game, pgn: pgns[i] })));
+      // Each game prints the way its board stands: no orientation question.
+      setPdfGames(list.map((t, i) => ({ ...t.game, pgn: pgns[i], flipped: t.flipped })));
     } catch (e) {
       setRailNote(`Could not load the games: ${e instanceof Error ? e.message : String(e)}`);
     }
