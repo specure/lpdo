@@ -59,9 +59,14 @@ pub struct EngineSettings {
 
 impl Default for EngineSettings {
     fn default() -> Self {
-        // Half the cores: the server also answers queries while it analyses.
+        // Half the logical cores — about one per physical core on machines
+        // with two threads per core: the server also answers queries while
+        // it analyses.
         let cores = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(2);
-        Self { path: None, threads: (cores / 2).clamp(1, 16), hash_mb: 256 }
+        // A sixteenth of the memory, 256 MB to 4 GB: the database wants the
+        // memory too (DuckDB's limit is 80% of it).
+        let hash_mb = memory_mb().map(|m| (m / 16) as u32).unwrap_or(256).clamp(256, 4096);
+        Self { path: None, threads: (cores / 2).clamp(1, 16), hash_mb }
     }
 }
 

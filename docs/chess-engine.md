@@ -116,8 +116,12 @@ so keep the engine outside `/home` — `/usr/local/bin` or `/opt` work.
 
 | Setting | Default | |
 |---|---|---|
-| Threads | half the server's cores | The server also answers everyone's queries while it analyses. |
-| Hash | 256 MB | More keeps more of an analysis when you move on and come back; 1–2 GB is reasonable on a machine with memory to spare. |
+| Threads | half the server's logical cores | About one per physical core; the server also answers everyone's queries while it analyses. |
+| Hash | a sixteenth of the memory, 256 MB – 4 GB | More keeps more of an analysis when you move on and come back; the database needs memory too. |
+
+Maintenance → Chess engine → **Benchmark** runs Stockfish's own benchmark
+with the threads and hash set there, and keeps the results in a table: change
+a setting and run again to compare.
 
 A search stops when you move to another position or close the panel, and after
 five minutes at the latest.

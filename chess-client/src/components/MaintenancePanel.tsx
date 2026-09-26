@@ -329,8 +329,9 @@ function EngineSection() {
       )}
       {info && (
         <p className="text-label-sm text-on-surface-variant">
-          Threads default to half the server's cores, since it also answers everyone's queries. A bigger
-          hash keeps more of an analysis when you move on and come back. To use an engine outside the
+          Threads default to half the server's logical cores — about one per physical core — since it
+          also answers everyone's queries. Hash defaults to a sixteenth of its memory, between 256 MB
+          and 4 GB; more keeps more of an analysis when you move on and come back. To use an engine outside the
           standard locations, name it in <span className="font-mono">{info.settings_file}</span> on the server.
         </p>
       )}
@@ -346,10 +347,8 @@ function EngineSection() {
       {error && <p className="text-body-sm text-error">{error}</p>}
       {info?.available && info.name?.startsWith("Stockfish") && (
         <EngineBench
-          info={info}
           threads={Number.isFinite(t) ? t : info.settings.threads}
           hash={Number.isFinite(h) ? h : info.settings.hash_mb}
-          onApply={(threads, hash_mb) => void save({ threads, hash_mb })}
         />
       )}
     </SectionCard>
@@ -358,9 +357,9 @@ function EngineSection() {
 
 // ── Engine benchmark ──────────────────────────────────────────────────────────
 // Stockfish's `bench` on the server: a fixed set of positions searched to a
-// fixed depth, reporting nodes per second and the time taken. One run uses the
-// threads and hash in the fields above; "Find the best settings" runs a series.
-// Results collect in a table so configurations can be compared.
+// fixed depth, reporting nodes per second and the time taken, with the threads
+// and hash in the fields above. Results collect in a table so configurations
+// can be compared; the defaults come from rules, not from a benchmark.
 interface BenchResult { engine: string; threads: number; hash_mb: number; depth: number; nodes: number; nps: number; ms: number }
 const BENCH_KEY = "engineBenchResults";
 const DEPTHS = [
@@ -379,35 +378,13 @@ async function runBench(threads: number, hash_mb: number, depth: number): Promis
   return (await r.json()) as BenchResult;
 }
 
-/** The thread counts worth trying: powers of two up to the core count, and
- *  the core count itself. */
-function threadSteps(cores: number): number[] {
-  const out: number[] = [];
-  for (let n = 1; n < cores; n *= 2) out.push(n);
-  out.push(cores);
-  return out;
-}
-
-/** Hash sizes to try: 64 MB up by fourfold, at most an eighth of the server's
- *  memory (it holds the database too), and never past 8 GB. */
-function hashSteps(memoryMb: number | null): number[] {
-  const cap = Math.min(8192, memoryMb ? Math.floor(memoryMb / 8) : 1024);
-  const out: number[] = [];
-  for (let m = 64; m <= cap; m *= 4) out.push(m);
-  return out.length ? out : [64];
-}
-
-function EngineBench({ info, threads, hash, onApply }: {
-  info: EngineInfo; threads: number; hash: number; onApply: (threads: number, hash_mb: number) => void;
-}) {
+function EngineBench({ threads, hash }: { threads: number; hash: number }) {
   const [depth, setDepth] = useState<number>(16);
   const [results, setResults] = useState<BenchResult[]>(() => {
     try { return JSON.parse(localStorage.getItem(BENCH_KEY) ?? "[]") as BenchResult[]; } catch { return []; }
   });
   const [running, setRunning] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [advice, setAdvice] = useState<{ threads: number; hash_mb: number; why: string } | null>(null);
-  const cancelled = useRef(false);
 
   function keep(r: BenchResult) {
     setResults((prev) => {
@@ -423,53 +400,6 @@ function EngineBench({ info, threads, hash, onApply }: {
     try { keep(await runBench(threads, hash, depth)); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setRunning(null); }
-  }
-
-  /** Threads first — speed in nodes per second at a fixed hash, depth 13 so
-   *  the single-thread run stays short — then hash at the chosen threads,
-   *  measured as the time to the chosen depth. */
-  async function findBest() {
-    setError(null);
-    setAdvice(null);
-    cancelled.current = false;
-    const tSteps = threadSteps(info.cores);
-    const hSteps = hashSteps(info.memory_mb);
-    const total = tSteps.length + hSteps.length;
-    let step = 0;
-    try {
-      const byThreads: BenchResult[] = [];
-      for (const n of tSteps) {
-        if (cancelled.current) return;
-        step += 1;
-        setRunning(`Step ${step} of ${total}: ${n} thread${n === 1 ? "" : "s"}…`);
-        const r = await runBench(n, 256, 13);
-        keep(r);
-        byThreads.push(r);
-      }
-      const fastest = Math.max(...byThreads.map((r) => r.nps));
-      const pick = byThreads.find((r) => r.nps >= 0.9 * fastest) ?? byThreads[byThreads.length - 1];
-
-      const byHash: BenchResult[] = [];
-      for (const m of hSteps) {
-        if (cancelled.current) return;
-        step += 1;
-        setRunning(`Step ${step} of ${total}: ${m} MB hash at ${pick.threads} threads…`);
-        const r = await runBench(pick.threads, m, depth);
-        keep(r);
-        byHash.push(r);
-      }
-      const quickest = Math.min(...byHash.map((r) => r.ms));
-      const hashPick = byHash.find((r) => r.ms <= 1.05 * quickest) ?? byHash[byHash.length - 1];
-      setAdvice({
-        threads: pick.threads,
-        hash_mb: hashPick.hash_mb,
-        why: `${pick.threads} threads reach ${Math.round((pick.nps / fastest) * 100)}% of the top speed (${fmtNps(fastest)}), leaving the other cores to the server's queries; ${hashPick.hash_mb} MB is within 5% of the quickest time to depth ${depth}.`,
-      });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setRunning(null);
-    }
   }
 
   const btn = "h-8 px-3 inline-flex items-center rounded-full text-primary text-label-md hover:bg-primary/8 active:bg-primary/12 disabled:opacity-40 transition-colors duration-short3 ease-standard";
@@ -492,27 +422,13 @@ function EngineBench({ info, threads, hash, onApply }: {
         </div>
         <div className="flex-1" />
         <ActionButton onClick={() => void once()} disabled={running !== null}>Run with these settings</ActionButton>
-        <button onClick={() => void findBest()} disabled={running !== null} className={btn}
-          title={`Measures ${threadSteps(info.cores).join(", ")} threads, then hash sizes of ${hashSteps(info.memory_mb).join(", ")} MB — a few minutes, during which the engine does not analyse.`}>
-          Find the best settings
-        </button>
       </div>
       <p className="text-label-sm text-on-surface-variant">
-        Stockfish's own benchmark: a fixed set of positions searched to a fixed depth. Speed shows what
-        threads bring; the time to depth shows what hash brings. The engine does not analyse while it runs.
+        Stockfish's own benchmark with the threads and hash above: a fixed set of positions searched to a
+        fixed depth. Change a setting and run again to compare — speed shows what threads bring, and on a
+        long run the time shows what hash brings. The engine does not analyse while it runs.
       </p>
-      {running && (
-        <div className="flex items-center gap-2 text-body-sm text-on-surface">
-          <span>{running}</span>
-          <button onClick={() => { cancelled.current = true; }} className={btn}>Stop after this step</button>
-        </div>
-      )}
-      {advice && (
-        <div className="rounded-md bg-secondary-container text-on-secondary-container p-3 text-body-sm space-y-2">
-          <div><b>Suggested: {advice.threads} threads, {advice.hash_mb} MB hash.</b> {advice.why}</div>
-          <ActionButton onClick={() => { onApply(advice.threads, advice.hash_mb); setAdvice(null); }}>Use these settings</ActionButton>
-        </div>
-      )}
+      {running && <p className="text-body-sm text-on-surface">{running}</p>}
       {error && <p className="text-body-sm text-error">{error}</p>}
       {results.length > 0 && (
         <div className="overflow-x-auto">
