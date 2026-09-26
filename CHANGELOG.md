@@ -40,6 +40,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Broadcast games arrive with a date** — 99.7% of the games in a Lichess
   monthly broadcast archive carry no date of their own, so they showed nothing
   in the game list. They now take the archive's month ("2026-02-??"). (#300)
+- **Imported games are stored with one spelling per move** — two programs write
+  the same move differently: in the Nimzo-Indian after 1.d4 Nf6 2.c4 e6 3.Nc3
+  Bb4 4.e3 O-O, ChessBase writes 5.Nge2 where others write 5.Ne2, because the
+  c3 knight is pinned and only one knight can legally reach the square. Copies
+  of one game that differed only in that could never be recognised as
+  duplicates. Every move is now replayed as it is read and written the way the
+  position calls for — disambiguation only where two legal moves compete, check
+  and mate marks from the board, "0-0" as "O-O" — with comments, NAGs and
+  variations untouched. This applies to games imported from now on; games
+  already stored keep their spelling, and the remedy for those is a rebuild
+  from sources. (#271, #302)
 - **The scrollbar no longer covers the close ✕** on the Analysis page's column
   of open games, and external links are drawn consistently everywhere. (#298)
 
