@@ -154,7 +154,20 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const [extras, setExtras] = useState<GameSummary[]>([]);
   const [analysisNote, setAnalysisNote] = useState<string | null>(null);
   useEffect(() => { setAnalysisNote(null); }, [selectedGame?.id, extras.length]);
-  function pickGame(game: GameSummary, additive: boolean) {
+  /** A click previews that game alone; Ctrl-click adds or removes one;
+   *  Shift-click takes the run from the previewed game to this one. */
+  function pickGame(game: GameSummary, e: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) {
+    if (e.shiftKey && selectedGame) {
+      const from = games.findIndex((g) => g.id === selectedGame.id);
+      const to = games.findIndex((g) => g.id === game.id);
+      if (from >= 0 && to >= 0) {
+        const [a, b] = from <= to ? [from, to] : [to, from];
+        const run = games.slice(a, b + 1).filter((g) => g.id !== selectedGame.id);
+        setExtras((prev) => (e.ctrlKey || e.metaKey ? [...prev, ...run.filter((g) => !prev.some((p) => p.id === g.id))] : run));
+        return;
+      }
+    }
+    const additive = e.ctrlKey || e.metaKey;
     if (!additive || !selectedGame || selectedGame.id === game.id) {
       setSelectedGame(game);
       setExtras([]);
@@ -665,8 +678,8 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                           return (
                             <button
                               key={game.id}
-                              onClick={(e) => pickGame(game, e.ctrlKey || e.metaKey)}
-                              title="Ctrl-click to pick several games to open in Analysis together"
+                              onClick={(e) => pickGame(game, e)}
+                              title="Ctrl-click or Shift-click picks several games to open in Analysis together"
                               style={{ display: "grid", gridTemplateColumns: gridCols }}
                               className={`w-full items-baseline text-body-sm text-left transition-colors duration-short3 ease-standard ${
                                 selected ? "bg-secondary-container text-on-secondary-container" : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"

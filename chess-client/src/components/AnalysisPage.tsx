@@ -94,20 +94,36 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
     return () => window.clearTimeout(t);
   }, [railNote]);
 
-  function pickTab(key: string, additive: boolean) {
-    if (!additive) { onActivate(key); return; }
-    setPicked((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
+  /** Selection the way a file list does it: a click picks that game alone
+   *  (and shows it); Ctrl-click adds or removes one, keeping the shown game
+   *  in the set; Shift-click picks the run from the shown game to this one. */
+  function pickTab(key: string, e: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) {
+    const keys = tabs.map((t) => t.key);
+    if (e.shiftKey) {
+      const from = keys.indexOf(activeKey ?? key);
+      const to = keys.indexOf(key);
+      const [a, b] = from <= to ? [from, to] : [to, from];
+      const range = keys.slice(Math.max(a, 0), b + 1);
+      setPicked((prev) => new Set(e.ctrlKey || e.metaKey ? [...prev, ...range] : range));
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      setPicked((prev) => {
+        const next = new Set(prev);
+        if (next.size === 0 && activeKey) next.add(activeKey);
+        if (next.has(key)) next.delete(key); else next.add(key);
+        return next;
+      });
+      return;
+    }
+    onActivate(key);
+    setPicked(new Set([key]));
   }
-  /** The games a rail-menu command works on, in rail order: the picked ones,
-   *  or all of them when nothing is picked. */
-  const targets = () => (pickedNow.length ? tabs.filter((t) => picked.has(t.key)) : tabs);
-  async function exportPgn() {
+  /** The games a rail-menu command works on, in rail order. */
+  const targets = (scope: "all" | "picked") => (scope === "picked" ? tabs.filter((t) => picked.has(t.key)) : tabs);
+  async function exportPgn(scope: "all" | "picked") {
     setRailMenu(false);
-    const list = targets();
+    const list = targets(scope);
     try {
       const pgns = await fetchPgns(list.map((t) => t.game.id));
       const ok = await savePgnFile(list.map((t) => t.game), pgns.filter((p): p is string => p !== null));
@@ -116,9 +132,9 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
       setRailNote(`Could not export: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
-  async function printPdf(primary: "print" | "save") {
+  async function printPdf(primary: "print" | "save", scope: "all" | "picked") {
     setRailMenu(false);
-    const list = targets();
+    const list = targets(scope);
     try {
       const pgns = await fetchPgns(list.map((t) => t.game.id));
       // Each game prints the way its board stands: no orientation question.
@@ -261,9 +277,9 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
             className={`flex-1 min-w-0 truncate text-label-sm ${full ? "text-error" : "text-on-surface-variant"}`}
             title={full
               ? `The board is full: it holds ${capacity} games. Close one to open another.`
-              : `${tabs.length} of ${capacity} games open. Ctrl-click a game to pick it; ▲▼ change the order, which is the order they print in.`}
+              : `${tabs.length} of ${capacity} games open. Ctrl-click or Shift-click picks games; ▲▼ change the order, which is the order they print in.`}
           >
-            {pickedNow.length ? `${pickedNow.length} of ${tabs.length} picked` : `${tabs.length} of ${capacity}`}
+            {tabs.length} of {capacity}{pickedNow.length ? ` · ${pickedNow.length} picked` : ""}
           </span>
           <div className="relative">
             <button
@@ -280,14 +296,25 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
             </button>
             {railMenu && (() => {
               const item = "w-full text-left px-3 py-1.5 text-label-md text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 disabled:opacity-40 disabled:hover:bg-transparent transition-colors duration-short3 ease-standard whitespace-nowrap";
-              const which = pickedNow.length ? `${pickedNow.length} picked` : "all";
+              // A picked subset gets its own entries above the ones for all;
+              // picking every game, or none, is the same as all.
+              const subset = pickedNow.length > 0 && pickedNow.length < tabs.length;
+              const n = pickedNow.length;
               return (
                 <div style={{ position: "fixed", left: menuAt!.x, top: menuAt!.y }} className="z-30 py-1 rounded-md bg-surface-container-high shadow-xl min-w-52">
-                  <button className={item} onClick={() => void exportPgn()}>Export {which} as PGN…</button>
-                  <button className={item} onClick={() => void printPdf("save")}>Export {which} as PDF…</button>
-                  <button className={item} onClick={() => void printPdf("print")}>Print {which}…</button>
+                  {subset && (
+                    <>
+                      <button className={item} onClick={() => void exportPgn("picked")}>Export {n} picked as PGN…</button>
+                      <button className={item} onClick={() => void printPdf("save", "picked")}>Export {n} picked as PDF…</button>
+                      <button className={item} onClick={() => void printPdf("print", "picked")}>Print {n} picked…</button>
+                      <div className="my-1 h-px bg-outline-variant" />
+                    </>
+                  )}
+                  <button className={item} onClick={() => void exportPgn("all")}>Export all as PGN…</button>
+                  <button className={item} onClick={() => void printPdf("save", "all")}>Export all as PDF…</button>
+                  <button className={item} onClick={() => void printPdf("print", "all")}>Print all…</button>
                   <div className="my-1 h-px bg-outline-variant" />
-                  {pickedNow.length > 0 && (
+                  {subset && (
                     <button className={item} onClick={() => { setRailMenu(false); onCloseMany(pickedNow); setPicked(new Set()); }}>
                       Close {pickedNow.length} picked
                     </button>
@@ -320,9 +347,9 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
           return (
             <div key={t.key} className={`shrink-0 rounded-md border ${on ? "border-primary" : "border-outline/40"} ${isPicked ? "ring-2 ring-tertiary" : ""} bg-surface-container-low overflow-hidden`}>
               <button
-                onClick={(e) => pickTab(t.key, e.ctrlKey || e.metaKey)}
+                onClick={(e) => pickTab(t.key, e)}
                 className="w-full aspect-square block"
-                title={`${t.game.white} – ${t.game.black}\nCtrl-click to pick it for export`}
+                title={`${t.game.white} – ${t.game.black}\nCtrl-click adds it to the picked games, Shift-click picks a run`}
               >
                 <MiniBoard
                   game={t.loaded}
