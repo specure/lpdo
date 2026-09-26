@@ -96,12 +96,14 @@ export function fmtLichess(l: LichessLine): string {
 
 // Bringing chessdb's "power move" lens to the other engines (#221). For each
 // of them one threshold decides what is strong: a move within it of the best
-// is marked "!", any other "?", and the Strong column counts the opponent's
+// is marked "!", one within a second (neutral) threshold is left unmarked, any
+// other is "?"; and the Strong column counts the opponent's
 // replies within it of their best — so a move marked "!" is one of the strong
 // replies to the move before. Lichess's threshold is set with the cloud
 // engines, Stockfish's and Lc0's in their cards (Maintenance → Engines);
 // chessdb.cn marks and counts by its own rule.
 export const DEFAULT_LICHESS_STRONG_CP = 5;
+export const DEFAULT_LICHESS_NEUTRAL_CP = 15;
 
 /** Eval from the side-to-move's perspective, in centipawns (mate ⇒ ±huge, nearer
  *  mates ranked higher). Lichess evals are White-relative, so flip for Black. */
@@ -114,10 +116,12 @@ export function moverScore(evalCp: number | null, mate: number | null, whiteToMo
   return whiteToMove ? cp : -cp;
 }
 
-/** "!" for a strong move — within `threshold` of the best, in the scores'
- *  own unit (centipawns, or Lc0's expected score) — "?" for any other. */
-export function moveMark(best: number, score: number, threshold: number): string {
-  return best - score <= threshold ? "!" : "?";
+/** "!" for a strong move — within `strong` of the best, in the scores' own
+ *  unit (centipawns, or Lc0's expected score) — none for a neutral one
+ *  (within `neutral`), "?" for any other. */
+export function moveMark(best: number, score: number, strong: number, neutral: number): string | undefined {
+  const drop = best - score;
+  return drop <= strong ? "!" : drop <= neutral ? undefined : "?";
 }
 
 /** Colour for a side-to-move score: green = good for the player to move, red =
@@ -199,10 +203,14 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
   const [lichessShowStats] = useState(() => localStorage.getItem("lichessShowStats") !== "false");
   // Lichess's threshold for strong moves (Maintenance → Engines, on the server).
   const [lichessStrongCp, setLichessStrongCp] = useState(DEFAULT_LICHESS_STRONG_CP);
+  const [lichessNeutralCp, setLichessNeutralCp] = useState(DEFAULT_LICHESS_NEUTRAL_CP);
   useEffect(() => {
     fetch(apiUrl("/cloud-eval/settings"))
       .then((r) => (r.ok ? r.json() : null))
-      .then((d: { lichess_strong_cp?: number } | null) => { if (d?.lichess_strong_cp != null) setLichessStrongCp(d.lichess_strong_cp); })
+      .then((d: { lichess_strong_cp?: number; lichess_neutral_cp?: number } | null) => {
+        if (d?.lichess_strong_cp != null) setLichessStrongCp(d.lichess_strong_cp);
+        if (d?.lichess_neutral_cp != null) setLichessNeutralCp(d.lichess_neutral_cp);
+      })
       .catch(() => {});
   }, []);
   // The local engines' lines (Maintenance → Engines, per device): each extra
@@ -557,7 +565,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
                   return (
                     <div key={i} className="w-full flex items-baseline gap-2 px-2 py-1 rounded-sm hover:bg-on-surface/8 transition-colors duration-short3 ease-standard">
                       <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface-variant">
-                        <PvLine startFen={fen} sans={sans} onPick={onPlayLine} mark={moveMark(lmBest, lmScores[i], lichessStrongCp)} />
+                        <PvLine startFen={fen} sans={sans} onPick={onPlayLine} mark={moveMark(lmBest, lmScores[i], lichessStrongCp, lichessNeutralCp)} />
                       </div>
                       {lichessShowStats && <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface-variant">{st ? st.replies : "—"}</span>}
                       {lichessShowStats && <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface">{st ? st.strong : "—"}</span>}

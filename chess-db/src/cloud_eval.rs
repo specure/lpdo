@@ -542,10 +542,13 @@ pub struct CloudSettings {
     /// strong — marked "!", and counted among the strong replies. chessdb.cn
     /// marks its own.
     pub lichess_strong_cp: u32,
+    /// Up to this far behind the best a move is neutral, unmarked; further
+    /// behind, "?".
+    pub lichess_neutral_cp: u32,
 }
 
 impl Default for CloudSettings {
-    fn default() -> Self { Self { max_move: 20, chessdb: true, lichess: true, lichess_strong_cp: 5 } }
+    fn default() -> Self { Self { max_move: 20, chessdb: true, lichess: true, lichess_strong_cp: 5, lichess_neutral_cp: 15 } }
 }
 
 static SETTINGS_FILE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();

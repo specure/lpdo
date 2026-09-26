@@ -174,13 +174,21 @@ it has got, and "…" while it waits for a free helper.
   expected score of the best.
 
 **Marks.** The same threshold marks the moves: a move within it of the best
-is **!**, any other **?**. So a move marked **!** is one of the strong replies
-counted for the move before it. Each engine has its own threshold — Stockfish
-0.10 pawns, Lc0 1% of expected score, Lichess 0.05 pawns (with the cloud
-engines) — while chessdb.cn marks its moves and counts its strong replies by
-its own rule, which LPDO cannot change. The marks come from the main search and
-the counts from the helpers' shorter one, so near the threshold the two can
-now and then disagree.
+is **!** — so a move marked **!** is one of the strong replies counted for the
+move before it. A second threshold, **Neutral within**, leaves the moves a
+little further behind unmarked; those further still are **?**. Each engine has
+its own pair: Stockfish 0.10 and 0.30 pawns, Lc0 1% and 3% of expected score,
+Lichess 0.05 and 0.15 pawns (with the cloud engines). chessdb.cn marks its moves
+and counts its strong replies by its own rule, which LPDO cannot change.
+
+**Deeper analyses count.** When you play a move and the engine analyses the
+position after it more deeply than the helpers do (Stockfish beyond their
+depth, Lc0 beyond their nodes), going back shows that analysis for the move:
+its evaluation and line (the tooltip on the evaluation says how deep), the
+order and marks of the moves by it, and its strong replies — those among its
+lines within the threshold, exactly as the marks after the move show them.
+When all its lines are strong there may be more; the count then shows a lower
+bound such as "5+", or the helper's count if that is higher.
 
 All of it is set in the engine's card on Maintenance → Engines.
 

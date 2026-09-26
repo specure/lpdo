@@ -121,6 +121,11 @@ pub struct EngineSettings {
     /// many percent of expected score of the best.
     pub helper_nodes: u64,
     pub strong_pct: f32,
+    /// A move up to this far behind the best is neutral, unmarked; further
+    /// behind, it is marked "?" (within `strong_cp` / `strong_pct`, "!").
+    /// Stockfish in centipawns, Lc0 in percent of expected score.
+    pub neutral_cp: u32,
+    pub neutral_pct: f32,
 }
 
 impl Default for EngineSettings {
@@ -144,7 +149,7 @@ impl EngineSettings {
                 hash_mb: crate::db::default_engine_hash_mb(), weights: None, backend: None,
                 max_depth: 40, max_nodes: 0, smart_pruning: false, enabled: true,
                 replies: true, helper_threads: 5, helper_hash_mb: 320, helper_depth: 20, strong_cp: 10,
-                helper_nodes: 0, strong_pct: 0.0,
+                helper_nodes: 0, strong_pct: 0.0, neutral_cp: 30, neutral_pct: 0.0,
             },
             // Off by default for Lc0: its helper loads a second copy of the
             // network onto the graphics card.
@@ -152,7 +157,7 @@ impl EngineSettings {
                 path: None, threads: 0, hash_mb: 0, weights: None, backend: None,
                 max_depth: 0, max_nodes: 10_000_000, smart_pruning: false, enabled: true,
                 replies: false, helper_threads: 0, helper_hash_mb: 0, helper_depth: 0, strong_cp: 0,
-                helper_nodes: 50_000, strong_pct: 1.0,
+                helper_nodes: 50_000, strong_pct: 1.0, neutral_cp: 0, neutral_pct: 3.0,
             },
         }
     }
@@ -350,6 +355,19 @@ pub struct ReplyState {
     pub pct: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The position analysed deeper than the helper counts (the move was
+    /// played): its best line, White-relative, and how deep — the move's own
+    /// evaluation, where deeper than the panel's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<Line>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_depth: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_nodes: Option<u64>,
+    /// The count is a lower bound: every line of the deeper analysis is
+    /// strong, and there may be more beyond them.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub at_least: bool,
 }
 
 /// The Engine panel's answer: each candidate's count or progress, and how many
@@ -684,6 +702,8 @@ impl Engine {
             if let Some(v) = reply.strong_cp { s.strong_cp = v.min(500); }
             if let Some(v) = reply.helper_nodes { s.helper_nodes = v.clamp(1_000, 10_000_000); }
             if let Some(v) = reply.strong_pct { s.strong_pct = v.clamp(0.0, 50.0); }
+            if let Some(v) = reply.neutral_cp { s.neutral_cp = v.min(1000); }
+            if let Some(v) = reply.neutral_pct { s.neutral_pct = v.clamp(0.0, 50.0); }
             if let Some(b) = backend {
                 if b.is_empty() { s.backend = None; }
                 else if valid_backend(&b) { s.backend = Some(b); }
@@ -863,12 +883,15 @@ impl Engine {
     /// replies it explored.
     pub async fn replies(self: &Arc<Self>, parent: &str, fens: &[String], cached_only: bool) -> Result<ReplyAnswer, String> {
         let settings = self.settings.lock().await.clone();
-        if !settings.enabled || !settings.replies {
-            return Err("Replies & Strong is switched off for this engine".to_string());
+        if !settings.enabled {
+            return Err("this engine is switched off".to_string());
         }
+        // With Replies & Strong off, only what is known already: the deeper
+        // analyses, for the moves' evaluations.
+        let cached_only = cached_only || !settings.replies;
         if !cached_only { self.ensure_started().await?; }
         let name = self.running.lock().await.as_ref().map(|r| r.name.clone());
-        let state = |fen: &str, state, count, pct, error| ReplyState { fen: fen.to_string(), state, count, pct, error };
+        let state = |fen: &str, state, count, pct, error| ReplyState { fen: fen.to_string(), state, count, pct, error, line: None, line_depth: None, line_nodes: None, at_least: false };
         let Some(name) = name else {
             return Ok(ReplyAnswer { lines: fens.iter().map(|f| state(f, "none", None, None, None)).collect(), pending: 0 });
         };
@@ -879,12 +902,51 @@ impl Engine {
             let mut q = self.reply_queue.lock().unwrap();
             q.parents.insert(parent.clone(), now);
             for fen in fens {
-                let key = Self::reply_key(&name, &settings, fen);
-                if let Some(c) = self.reply_cache.lock().unwrap().get(&key).cloned() {
-                    lines.push(state(fen, "done", Some(c), None, None));
+                let legal = legal_moves(fen);
+                // The position after the move analysed deeper than the helper
+                // counts — the move was played and the panel analysed it: its
+                // best line gives the move's evaluation, and its lines the
+                // strong replies, by the threshold the marks there use.
+                let deep = self.remembered.lock().unwrap().get(&format!("{name}|{}", position_key(fen)))
+                    .filter(|d| !d.lines.is_empty() && match self.kind {
+                        Kind::Stockfish => d.depth > settings.helper_depth,
+                        Kind::Lc0 => d.nodes > settings.helper_nodes,
+                    });
+                let deep = deep.map(|d| {
+                    let strong = strong_lines(self.kind, &settings, fen, &d.lines);
+                    // All lines strong: there may be more beyond them.
+                    let exact = strong < d.lines.len() as u32 || d.lines.len() as u32 >= legal;
+                    (d, strong, exact)
+                });
+                let with_deep = |mut st: ReplyState| {
+                    if let Some((d, strong, exact)) = &deep {
+                        st.line = d.lines.first().cloned();
+                        st.line_depth = Some(d.depth);
+                        st.line_nodes = Some(d.nodes);
+                        let deep_count = ReplyCount { replies: legal, strong: (*strong).max(1), depth: d.depth, nodes: d.nodes };
+                        match &st.count {
+                            // The helper's count, unless the deeper lines prove more.
+                            Some(c) if !*exact => {
+                                if c.strong < *strong { st.count = Some(deep_count); st.at_least = true; }
+                            }
+                            _ if *exact => { st.state = "done"; st.count = Some(deep_count); st.pct = None; }
+                            // No count: the deeper lines give a lower bound.
+                            _ if st.state == "none" => { st.state = "done"; st.count = Some(deep_count); st.at_least = true; }
+                            _ => {}
+                        }
+                    }
+                    st
+                };
+                if deep.as_ref().is_some_and(|(_, _, exact)| *exact) {
+                    lines.push(with_deep(state(fen, "done", None, None, None)));
                     continue;
                 }
-                if legal_moves(fen) == 0 {
+                let key = Self::reply_key(&name, &settings, fen);
+                if let Some(c) = self.reply_cache.lock().unwrap().get(&key).cloned() {
+                    lines.push(with_deep(state(fen, "done", Some(c), None, None)));
+                    continue;
+                }
+                if legal == 0 {
                     lines.push(state(fen, "done", Some(ReplyCount { replies: 0, strong: 0, depth: 0, nodes: 0 }), None, None));
                     continue;
                 }
@@ -892,20 +954,20 @@ impl Engine {
                     match &j.state {
                         // A failure is reported for a while, then tried again.
                         ReplyProgress::Failed(_, at) if at.elapsed() > Duration::from_secs(30) => { q.jobs.remove(&key); }
-                        ReplyProgress::Failed(e, _) => { lines.push(state(fen, "failed", None, None, Some(e.clone()))); continue; }
-                        ReplyProgress::Waiting => { j.asked = now; lines.push(state(fen, "waiting", None, None, None)); continue; }
-                        ReplyProgress::Counting(p) => { j.asked = now; lines.push(state(fen, "counting", None, Some(*p), None)); continue; }
+                        ReplyProgress::Failed(e, _) => { lines.push(with_deep(state(fen, "failed", None, None, Some(e.clone())))); continue; }
+                        ReplyProgress::Waiting => { j.asked = now; lines.push(with_deep(state(fen, "waiting", None, None, None))); continue; }
+                        ReplyProgress::Counting(p) => { j.asked = now; lines.push(with_deep(state(fen, "counting", None, Some(*p), None))); continue; }
                     }
                 }
                 if cached_only {
-                    lines.push(state(fen, "none", None, None, None));
+                    lines.push(with_deep(state(fen, "none", None, None, None)));
                     continue;
                 }
                 q.jobs.insert(key, ReplyJob {
                     fen: fen.clone(), parent: parent.clone(), settings: settings.clone(),
                     state: ReplyProgress::Waiting, asked: now, queued: now, cancel: Arc::new(Notify::new()),
                 });
-                lines.push(state(fen, "waiting", None, None, None));
+                lines.push(with_deep(state(fen, "waiting", None, None, None)));
             }
             q.jobs.values().filter(|j| j.parent == parent && matches!(j.state, ReplyProgress::Waiting | ReplyProgress::Counting(_))).count()
         };
@@ -1217,6 +1279,32 @@ async fn send(stdin: &mut ChildStdin, line: &str) -> Result<(), String> {
     stdin.flush().await.map_err(|e| e.to_string())
 }
 
+/// How many of an analysis's lines (White-relative, as the panel gets them)
+/// are strong for the side to move in `fen`: within the engine's threshold of
+/// the best — the rule the Engine panel marks "!" by. Lc0 by expected score
+/// (win and half the draws) where the lines have it.
+fn strong_lines(kind: Kind, s: &EngineSettings, fen: &str, lines: &[Line]) -> u32 {
+    let white = fen.split_whitespace().nth(1) != Some("b");
+    let by_wdl = kind == Kind::Lc0 && lines.iter().all(|l| l.wdl.is_some());
+    let scores: Vec<f64> = lines.iter().map(|l| {
+        if by_wdl {
+            let [w, d, b] = l.wdl.unwrap();
+            ((if white { w } else { b }) as f64 + d as f64 / 2.0) / 1000.0
+        } else {
+            let cp = match (l.mate, l.eval_cp) {
+                (Some(m), _) if m > 0 => 100_000 - m,
+                (Some(m), _) => -100_000 - m,
+                (None, Some(cp)) => cp,
+                _ => 0,
+            } as f64;
+            if white { cp } else { -cp }
+        }
+    }).collect();
+    let thr = if by_wdl { s.strong_pct as f64 / 100.0 } else if kind == Kind::Lc0 { 10.0 } else { s.strong_cp as f64 };
+    let best = scores.iter().cloned().fold(f64::MIN, f64::max);
+    scores.iter().filter(|&&x| x >= best - thr - 1e-9).count() as u32
+}
+
 /// How many helpers count Replies & Strong at once. Stockfish: one
 /// single-threaded helper per helper thread, each counting one candidate —
 /// four candidates take about a third of the time they take one after
@@ -1456,6 +1544,8 @@ pub struct ReplySettings {
     pub strong_cp: Option<u32>,
     pub helper_nodes: Option<u64>,
     pub strong_pct: Option<f32>,
+    pub neutral_cp: Option<u32>,
+    pub neutral_pct: Option<f32>,
 }
 
 /// One line of Lc0's VerboseMoveStats: `e7e5  (322 ) N:   19041 (+238)

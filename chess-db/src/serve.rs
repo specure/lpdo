@@ -1330,7 +1330,7 @@ async fn cloud_settings_put_handler(
 struct CloudSettingsClamp;
 impl CloudSettingsClamp {
     fn clamp(s: crate::cloud_eval::CloudSettings) -> crate::cloud_eval::CloudSettings {
-        crate::cloud_eval::CloudSettings { max_move: s.max_move.min(500), lichess_strong_cp: s.lichess_strong_cp.min(500), ..s }
+        crate::cloud_eval::CloudSettings { max_move: s.max_move.min(500), lichess_strong_cp: s.lichess_strong_cp.min(500), lichess_neutral_cp: s.lichess_neutral_cp.min(1000), ..s }
     }
 }
 
@@ -1864,6 +1864,8 @@ struct EngineConfigBody {
     strong_cp: Option<u32>,
     helper_nodes: Option<u64>,
     strong_pct: Option<f32>,
+    neutral_cp: Option<u32>,
+    neutral_pct: Option<f32>,
 }
 
 async fn engine_configure_handler(
@@ -1877,7 +1879,7 @@ async fn engine_configure_handler(
             crate::engine::ReplySettings {
                 replies: body.replies, helper_threads: body.helper_threads, helper_hash_mb: body.helper_hash_mb,
                 helper_depth: body.helper_depth, strong_cp: body.strong_cp, helper_nodes: body.helper_nodes,
-                strong_pct: body.strong_pct,
+                strong_pct: body.strong_pct, neutral_cp: body.neutral_cp, neutral_pct: body.neutral_pct,
             })
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;

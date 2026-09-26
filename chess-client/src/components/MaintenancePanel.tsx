@@ -255,7 +255,7 @@ function EngineLines({ kind }: { kind: "stockfish" | "lc0" }) {
   );
 }
 
-type ReplyPatch = { replies?: boolean; helper_threads?: number; helper_hash_mb?: number; helper_depth?: number; strong_cp?: number; helper_nodes?: number; strong_pct?: number };
+type ReplyPatch = { replies?: boolean; helper_threads?: number; helper_hash_mb?: number; helper_depth?: number; strong_cp?: number; helper_nodes?: number; strong_pct?: number; neutral_cp?: number; neutral_pct?: number };
 
 /** Replies & Strong for a local engine: a helper process of the same engine
  *  counts, for each candidate, the opponent's replies and how many are close
@@ -263,7 +263,7 @@ type ReplyPatch = { replies?: boolean; helper_threads?: number; helper_hash_mb?:
  *  Lc0's a second copy of the network on the graphics card. */
 function RepliesSettings({ kind, settings, busy, onSave }: {
   kind: "stockfish" | "lc0";
-  settings: { replies?: boolean; helper_threads?: number; helper_hash_mb?: number; helper_depth?: number; strong_cp?: number; helper_nodes?: number; strong_pct?: number };
+  settings: { replies?: boolean; helper_threads?: number; helper_hash_mb?: number; helper_depth?: number; strong_cp?: number; helper_nodes?: number; strong_pct?: number; neutral_cp?: number; neutral_pct?: number };
   busy: boolean;
   onSave: (p: ReplyPatch) => void;
 }) {
@@ -274,14 +274,20 @@ function RepliesSettings({ kind, settings, busy, onSave }: {
   const [pawns, setPawns] = useState(((settings.strong_cp ?? 10) / 100).toFixed(2));
   const [nodes, setNodes] = useState(String(settings.helper_nodes ?? 50000));
   const [pct, setPct] = useState(String(settings.strong_pct ?? 1));
+  const [neutralPawns, setNeutralPawns] = useState(((settings.neutral_cp ?? 30) / 100).toFixed(2));
+  const [neutralPct, setNeutralPct] = useState(String(settings.neutral_pct ?? 3));
   const field = "w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums";
   const num = (v: string) => { const n = Number(v.replace(",", ".")); return Number.isFinite(n) ? n : undefined; };
   function saveAll() {
     if (kind === "stockfish") {
       const cp = num(pawns);
-      onSave({ helper_threads: num(threads), helper_hash_mb: num(hash), helper_depth: num(depth), strong_cp: cp == null ? undefined : Math.round(cp * 100) });
+      const ncp = num(neutralPawns);
+      onSave({
+        helper_threads: num(threads), helper_hash_mb: num(hash), helper_depth: num(depth),
+        strong_cp: cp == null ? undefined : Math.round(cp * 100), neutral_cp: ncp == null ? undefined : Math.round(ncp * 100),
+      });
     } else {
-      onSave({ helper_nodes: num(nodes.replace(/[\s,.]/g, "")), strong_pct: num(pct) });
+      onSave({ helper_nodes: num(nodes.replace(/[\s,.]/g, "")), strong_pct: num(pct), neutral_pct: num(neutralPct) });
     }
   }
   return (
@@ -306,11 +312,13 @@ function RepliesSettings({ kind, settings, busy, onSave }: {
               <label className="flex items-center gap-2" title="Each candidate's replies are searched to this depth"><span>Depth</span><input type="number" min={1} max={60} value={depth} onChange={(e) => setDepth(e.target.value)} className={field} /></label>
               </>}
               <label className="flex items-center gap-2" title="A move within this much of the best is strong: marked ! in the Engine panel, and counted among the strong replies (chessdb uses 0.05)"><span>Strong within</span><input value={pawns} onChange={(e) => setPawns(e.target.value)} inputMode="decimal" className={field} /><span className="text-on-surface-variant">pawns</span></label>
+              <label className="flex items-center gap-2" title="A move further behind the best than strong, up to this far, is neutral and left unmarked; further still, it is marked ?"><span>Neutral within</span><input value={neutralPawns} onChange={(e) => setNeutralPawns(e.target.value)} inputMode="decimal" className={field} /><span className="text-on-surface-variant">pawns</span></label>
             </>
           ) : (
             <>
               {on && <label className="flex items-center gap-2" title="Nodes Lc0 spends on each candidate's replies"><span>Nodes per move</span><input value={nodes} onChange={(e) => setNodes(e.target.value)} inputMode="numeric" className="w-28 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" /></label>}
               <label className="flex items-center gap-2" title="A move within this much expected score of the best is strong: marked ! in the Engine panel, and counted among the strong replies"><span>Strong within</span><input value={pct} onChange={(e) => setPct(e.target.value)} inputMode="decimal" className={field} /><span className="text-on-surface-variant">% score</span></label>
+              <label className="flex items-center gap-2" title="A move further behind the best than strong, up to this far, is neutral and left unmarked; further still, it is marked ?"><span>Neutral within</span><input value={neutralPct} onChange={(e) => setNeutralPct(e.target.value)} inputMode="decimal" className={field} /><span className="text-on-surface-variant">% score</span></label>
             </>
           )}
           <ActionButton onClick={saveAll} disabled={busy}>Save</ActionButton>
@@ -810,14 +818,18 @@ function CloudEnginesSection() {
   // Lichess's threshold for strong moves, in centipawns; shown in pawns.
   const [strongCp, setStrongCp] = useState(5);
   const [pawns, setPawns] = useState("0.05");
+  const [neutralCp, setNeutralCp] = useState(15);
+  const [neutralPawns, setNeutralPawns] = useState("0.15");
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  type Settings = { max_move: number; chessdb?: boolean; lichess?: boolean; lichess_strong_cp?: number };
+  type Settings = { max_move: number; chessdb?: boolean; lichess?: boolean; lichess_strong_cp?: number; lichess_neutral_cp?: number };
   function show(d: Settings) {
     setMaxMove(d.max_move); setValue(String(d.max_move));
     setServices({ chessdb: d.chessdb !== false, lichess: d.lichess !== false });
     const cp = d.lichess_strong_cp ?? 5;
     setStrongCp(cp); setPawns((cp / 100).toFixed(2));
+    const ncp = d.lichess_neutral_cp ?? 15;
+    setNeutralCp(ncp); setNeutralPawns((ncp / 100).toFixed(2));
   }
   useEffect(() => {
     fetch(apiUrl("/cloud-eval/settings"))
@@ -827,6 +839,7 @@ function CloudEnginesSection() {
   }, []);
   const n = parseInt(value, 10);
   const pawnsCp = Math.round(Number(pawns.replace(",", ".")) * 100);
+  const neutralPawnsCp = Math.round(Number(neutralPawns.replace(",", ".")) * 100);
   async function save(patch: Partial<Settings> = {}) {
     setError(null);
     setNote(null);
@@ -836,7 +849,7 @@ function CloudEnginesSection() {
         headers: { "Content-Type": "application/json" },
         // The whole settings each time: the server takes what is left out as
         // its default.
-        body: JSON.stringify({ max_move: maxMove ?? 20, ...services, lichess_strong_cp: strongCp, ...(Number.isFinite(n) ? { max_move: n } : {}), ...patch }),
+        body: JSON.stringify({ max_move: maxMove ?? 20, ...services, lichess_strong_cp: strongCp, lichess_neutral_cp: neutralCp, ...(Number.isFinite(n) ? { max_move: n } : {}), ...patch }),
       });
       if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
       show((await r.json()) as Settings);
@@ -870,7 +883,15 @@ function CloudEnginesSection() {
               <input value={pawns} onChange={(e) => setPawns(e.target.value)} inputMode="decimal"
                 className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
               <span className="text-on-surface-variant">pawns</span>
-              <ActionButton onClick={() => void save({ lichess_strong_cp: pawnsCp })} disabled={!Number.isFinite(pawnsCp) || pawnsCp < 0 || pawnsCp === strongCp}>Save</ActionButton>
+            </div>
+            <div className="flex items-center gap-2 text-body-sm text-on-surface flex-wrap"
+              title="A move further behind the best than strong, up to this far, is neutral and left unmarked; further still, it is marked ?">
+              <span>Neutral within</span>
+              <input value={neutralPawns} onChange={(e) => setNeutralPawns(e.target.value)} inputMode="decimal"
+                className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
+              <span className="text-on-surface-variant">pawns</span>
+              <ActionButton onClick={() => void save({ lichess_strong_cp: pawnsCp, lichess_neutral_cp: neutralPawnsCp })}
+                disabled={!Number.isFinite(pawnsCp) || pawnsCp < 0 || !Number.isFinite(neutralPawnsCp) || neutralPawnsCp < 0 || (pawnsCp === strongCp && neutralPawnsCp === neutralCp)}>Save</ActionButton>
             </div>
             <p className="text-label-sm text-on-surface-variant">Stockfish evaluations cached in Lichess's cloud — popular positions only; every cached line is shown.</p>
           </div>

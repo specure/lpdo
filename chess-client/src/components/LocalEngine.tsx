@@ -15,7 +15,7 @@ interface EngineStatus {
   path: string | null;
   name: string | null;
   error: string | null;
-  settings: { path: string | null; threads: number; hash_mb: number; replies?: boolean; strong_cp?: number; strong_pct?: number };
+  settings: { path: string | null; threads: number; hash_mb: number; replies?: boolean; strong_cp?: number; strong_pct?: number; neutral_cp?: number; neutral_pct?: number };
   found: string[];
   searched: string[];
   settings_file: string;
@@ -27,13 +27,15 @@ interface EngineStatus {
   update_available: boolean;
 }
 
+/** One line: `wdl` is White's win, the draw, Black's win, in permille. */
+interface EngineLine { multipv: number; eval_cp: number | null; mate: number | null; pv_uci: string[]; wdl?: [number, number, number] | null }
+
 interface Snapshot {
   gen: number;
   depth: number;
   nodes: number;
   nps: number;
-  /** `wdl`: White's win, the draw, Black's win, in permille. */
-  lines: { multipv: number; eval_cp: number | null; mate: number | null; pv_uci: string[]; wdl?: [number, number, number] | null }[];
+  lines: EngineLine[];
   done: boolean;
   /** Remembered from an earlier search of this position. */
   cached?: boolean;
@@ -150,7 +152,9 @@ export default function LocalEngine({
   const candidates = (snap?.lines ?? []).slice(0, lineCount).map((l) => l.pv_uci[0]).filter(Boolean);
   const candidateKey = candidates.join(",");
   useEffect(() => {
-    if (!repliesOn || !settled) return;
+    // Asked also with Replies & Strong off: the server then only says what
+    // it knows — the deeper analyses of the positions after the moves.
+    if (!settled) return;
     const children = candidates.map((uci) => childFen(fen, uci)).filter((f): f is string => !!f);
     if (children.length === 0) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -194,7 +198,26 @@ export default function LocalEngine({
   }
 
   const white = fen.split(" ")[1] !== "b";
-  const lines = snap?.lines ?? [];
+  // A move whose position was analysed deeper (it was played, and the panel
+  // analysed it) takes that analysis's evaluation and line; the moves are
+  // then ordered again, and marked, by what is known best.
+  const lines = (snap?.lines ?? []).slice(0, lineCount).map((l) => {
+    const child = childFen(fen, l.pv_uci[0]);
+    const rs = child ? replyStates[child] : undefined;
+    const deeper = !!rs?.line && !!snap && (kind === "lc0" ? (rs.line_nodes ?? 0) >= snap.nodes : (rs.line_depth ?? 0) + 1 > snap.depth);
+    if (!deeper || !rs?.line) return { ...l, child, rs, deepDepth: undefined as number | undefined, deepNodes: undefined as number | undefined };
+    return {
+      ...l, child, rs,
+      eval_cp: rs.line.eval_cp, mate: rs.line.mate, wdl: rs.line.wdl,
+      pv_uci: [l.pv_uci[0], ...rs.line.pv_uci],
+      deepDepth: rs.line_depth, deepNodes: rs.line_nodes,
+    };
+  });
+  const orderScore = (l: (typeof lines)[number]) => {
+    if (kind === "lc0" && l.wdl) { const [w, d, b] = l.wdl; return ((white ? w : b) + d / 2) / 1000; }
+    return moverScore(l.eval_cp, l.mate, white);
+  };
+  lines.sort((a, b) => orderScore(b) - orderScore(a));
   const scores = lines.map((l) => moverScore(l.eval_cp, l.mate, white));
   // Marks by the engine's threshold for strong moves, the one its helpers
   // count the strong replies by: Stockfish in centipawns, Lc0 in expected
@@ -205,6 +228,7 @@ export default function LocalEngine({
     : scores;
   const markBest = markScores.length ? Math.max(...markScores) : 0;
   const markThreshold = byWdl ? (status.settings.strong_pct ?? 1) / 100 : kind === "lc0" ? 10 : (status.settings.strong_cp ?? 10);
+  const neutralThreshold = byWdl ? (status.settings.neutral_pct ?? 3) / 100 : kind === "lc0" ? 30 : (status.settings.neutral_cp ?? 30);
   // Stockfish counts in millions a second, Lc0 in thousands.
   const speed = !snap?.nps ? "" : snap.nps >= 1e6 ? `${(snap.nps / 1e6).toFixed(snap.nps >= 1e7 ? 0 : 1)} Mn/s` : `${Math.round(snap.nps / 1e3)}k n/s`;
 
@@ -256,13 +280,15 @@ export default function LocalEngine({
             <span className={kind === "lc0" ? "w-32" : "w-14"}></span>
           </div>
         )}
-        {lines.slice(0, lineCount).map((l, i) => {
-          const child = childFen(fen, l.pv_uci[0]);
-          const rc = child ? replyStates[child] : undefined;
+        {lines.map((l, i) => {
+          const { child, rs: rc } = l;
+          const deepTitle = l.deepDepth != null
+            ? `From the analysis of the position after this move: ${kind === "lc0" ? `${fmtNodes(l.deepNodes ?? 0)} nodes` : `depth ${l.deepDepth}`}`
+            : undefined;
           return (
           <div key={l.multipv} className="w-full flex items-baseline gap-2 px-2 py-1 rounded-sm hover:bg-on-surface/8 transition-colors duration-short3 ease-standard">
             <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface-variant">
-              <PvLine startFen={fen} sans={pvToSan(fen, l.pv_uci)} onPick={onPlayLine} mark={moveMark(markBest, markScores[i], markThreshold)} />
+              <PvLine startFen={fen} sans={pvToSan(fen, l.pv_uci)} onPick={onPlayLine} mark={moveMark(markBest, markScores[i], markThreshold, neutralThreshold)} />
             </div>
             {repliesOn && (
               <>
@@ -271,9 +297,9 @@ export default function LocalEngine({
               </>
             )}
             {kind === "lc0" && l.wdl
-              ? <WdlCell wdl={l.wdl} />
+              ? <span title={deepTitle}><WdlCell wdl={l.wdl} /></span>
               : (
-                <span className={`shrink-0 w-14 text-right tabular-nums font-mono text-body-sm ${evalColor(scores[i])}`}>
+                <span title={deepTitle} className={`shrink-0 w-14 text-right tabular-nums font-mono text-body-sm ${evalColor(scores[i])}`}>
                   {fmtLichess({ evalCp: l.eval_cp, mate: l.mate, pvUci: l.pv_uci })}
                 </span>
               )}
@@ -304,6 +330,13 @@ interface ReplyState {
   count?: { replies: number; strong: number; depth: number; nodes: number };
   pct?: number;
   error?: string;
+  /** The position analysed deeper than the helpers count: its best line
+   *  (White-relative) and how deep. */
+  line?: EngineLine;
+  line_depth?: number;
+  line_nodes?: number;
+  /** The count is a lower bound: every line of the deeper analysis is strong. */
+  at_least?: boolean;
 }
 
 /** The opponent's legal replies in `fen`. */
@@ -316,7 +349,13 @@ function legalReplies(fen: string): number {
  *  no count — paused before one was made, or it failed. */
 function StrongCell({ rc, waiting }: { rc: ReplyState | undefined; waiting: boolean }) {
   const cls = "shrink-0 w-12 text-right tabular-nums text-body-sm";
-  if (rc?.state === "done" && rc.count) return <span className={`${cls} text-on-surface`}>{rc.count.strong}</span>;
+  if (rc?.state === "done" && rc.count) {
+    return (
+      <span className={`${cls} text-on-surface`} title={rc.at_least ? "At least: every line of the deeper analysis is strong" : undefined}>
+        {rc.count.strong}{rc.at_least ? "+" : ""}
+      </span>
+    );
+  }
   if (rc?.state === "counting") return <span className={`${cls} text-on-surface-variant`} title="Being counted">{rc.pct ?? 0}%</span>;
   if (rc?.state === "waiting" || (waiting && !rc)) {
     return <span className={`${cls} text-on-surface-variant/60`} title={rc ? "Waiting for a free helper" : "Counted once the search has settled"}>…</span>;
