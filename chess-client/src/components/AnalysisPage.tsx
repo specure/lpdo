@@ -6,6 +6,7 @@ import { CursorPath } from "../lib/moveTreeNav";
 import MiniBoard from "./games/MiniBoard";
 import MoveList from "./games/MoveList";
 import GamePreviewHeader from "./games/GamePreviewHeader";
+import OnlineGameLink from "./games/OnlineGameLink";
 import GameBoard from "./GameBoard";
 import CloudEngine from "./CloudEngine";
 import { useGamePgn } from "../lib/useGamePgn";
@@ -356,6 +357,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onO
                   <div className="shrink-0 h-[58%] min-h-0 flex flex-col border-t border-outline/40">
                     <div className="shrink-0 px-2 py-1 flex items-center gap-2 border-b border-outline/40">
                       <GamePreviewHeader game={preview} />
+                      {previewGame?.gameUrl && <OnlineGameLink url={previewGame.gameUrl} />}
                       <button
                         onClick={() => onOpenGame(preview)}
                         className="shrink-0 text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 px-2.5 h-7 rounded-full transition-colors duration-short3 ease-standard"

@@ -22,6 +22,8 @@ import {
   saveMovetextViaServer,
 } from "./MovesEditor";
 import { serializeMovetext } from "../lib/serializeMovetext";
+import { gameUrlFromPgn } from "../lib/useGamePgn";
+import OnlineGameLink from "./games/OnlineGameLink";
 import { appendScratchMove, clearScratchMarks, replayAsScratch, sansToCursor, type ScratchMove } from "../lib/scratchLine";
 import type { CalArrow, CslCircle } from "../lib/parseAnnotations";
 import { nagsToString, nagToSymbol } from "../lib/parseAnnotations";
@@ -659,6 +661,9 @@ function GameActionsBar({
         >
           Export PGN…
         </button>
+        {/* Broadcast games carry their own address; offer it next to the
+            other actions so the game can be watched where it was played. */}
+        {gameUrlFromPgn(detail.pgn) && <OnlineGameLink url={gameUrlFromPgn(detail.pgn)!} />}
         {/* Restore stays inline with the other actions — it's a recovery action,
             not destructive. Delete is broken out as a separate icon button on
             the right, in error colour, so it can't be confused with edit/export. */}
