@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { buildGamePdf } from "../../lib/pdfExport";
 
 // Printing a game: A4, two columns, the main line in bold and variations
 // indented in brackets, the way a chess book sets it. Diagrams come from the
@@ -45,6 +44,10 @@ export default function ExportPdfDialog({
     setError(null);
     setBusy(true);
     try {
+      // The PDF machinery (pdf-lib and the piece outlines) is a good half of
+      // the app's JavaScript and is used only here, so it is fetched when
+      // someone actually exports rather than at startup.
+      const { buildGamePdf } = await import("../../lib/pdfExport");
       const bytes = await buildGamePdf(
         {
           white: detail.white, black: detail.black,
