@@ -10,8 +10,8 @@
 // be imported again with nothing lost — the printed page is a view of the game,
 // the metadata is the game itself.
 
-import { PDFDocument, PDFFont, PDFPage, PDFName, StandardFonts, rgb, RGB } from "pdf-lib";
-import { PIECE_BODIES, PIECE_BOXES, PIECE_OUTLINES, PIECE_UNITS_PER_EM } from "./pieceOutlines";
+import { LineCapStyle, PDFDocument, PDFFont, PDFPage, PDFName, StandardFonts, rgb, RGB } from "pdf-lib";
+import { PIECE_SET, PIECE_SET_BOXES, PIECE_SET_SIZE } from "./pieceSet";
 import { Chess } from "chess.js";
 import { parsePgnTree, AnnotatedGame, MoveNode } from "./parsePgnTree";
 import { getMoveNum } from "./moveTreeNav";
@@ -31,9 +31,10 @@ const DIAGRAM_WIDTH = COLUMN_WIDTH * 0.66;
 const SIZE = { move: 9.2, variation: 8.4, header: 10.5, small: 8.2, running: 9 };
 const INK = rgb(0, 0, 0);
 const MUTED = rgb(0.32, 0.32, 0.32);
-/** The light squares of the diagram; the dark ones follow ChessBase's blue. */
-const SQUARE_LIGHT = rgb(0.93, 0.93, 0.95);
-const SQUARE_DARK = rgb(0.51, 0.58, 0.78);
+/** The board's colours on screen (index.css, light theme), so a printed
+ *  diagram looks like the board the game was studied on. */
+const SQUARE_LIGHT = rgb(0.933, 0.933, 0.824);   // #eeeed2
+const SQUARE_DARK = rgb(0.463, 0.588, 0.337);    // #769656
 
 /** One piece of text with the font it is drawn in. A run with `piece` set is
  *  a figurine — drawn from the piece outlines rather than from a font, so the
@@ -327,7 +328,10 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
             x += item.font.widthOfTextAtSize(item.prefix, item.size);
           }
           const scale = figurineScale(item.size);
-          drawPiece(page, item.piece, x - PIECE_BOXES[item.piece].x0 * scale, baseline, item.size * FIGURINE_EM);
+          const box = PIECE_SET_BOXES[item.piece];
+          // The piece's lowest ink sits just under the baseline, as a letter
+          // with a descender would; `top` is where the 45-unit box begins.
+          drawPiece(page, item.piece, x - box.x0 * scale, baseline - item.size * 0.08 + box.y1 * scale, item.size * FIGURINE_EM);
           x += figurineWidth(item.piece, item.size);
           page.drawText(item.text, { x, y: baseline, size: item.size, font: item.font, color: item.color });
           x += item.font.widthOfTextAtSize(item.text, item.size);
@@ -422,23 +426,9 @@ function drawDiagram(page: PDFPage, fonts: Fonts, diagram: Diagram, x: number, y
         ? grid[rank][7 - file]
         : grid[7 - rank][file];
       if (!cell) continue;
-      // Each piece is scaled to its own height (see PIECE_HEIGHT) and centred
-      // in its square on the ink it draws, both ways — kings and queens are
-      // much narrower than rooks, and a bishop's ink dips below its baseline.
-      // The path's y runs downward from the origin, so a point py of the
-      // outline lands at origin − py·scale: the origin is set so the ink's
-      // midpoint lands on the square's.
-      const box = PIECE_BOXES[cell];
-      const wanted = square * PIECE_HEIGHT[cell.toLowerCase()];
-      const em = (wanted * PIECE_UNITS_PER_EM) / (box.y1 - box.y0);
-      const scale = em / PIECE_UNITS_PER_EM;
-      const inkWidth = (box.x1 - box.x0) * scale;
-      drawPiece(
-        page, cell,
-        left + file * square + (square - inkWidth) / 2 - box.x0 * scale,
-        bottom + rank * square + square / 2 + ((box.y0 + box.y1) / 2) * scale,
-        em,
-      );
+      // The set is designed to fill its square, with its own margins — drawn
+      // exactly as the board on screen draws it.
+      drawPiece(page, cell, left + file * square, bottom + (rank + 1) * square, square);
     }
   }
   page.drawRectangle({
@@ -477,30 +467,20 @@ function drawDiagram(page: PDFPage, fonts: Fonts, diagram: Diagram, x: number, y
   });
 }
 
-/** How tall each piece stands, as a fraction of its square.
- *
- *  The font's own proportions cannot be used: these are text symbols, all
- *  drawn to fill a line of type, so its pawn is 96% as tall as its king. A
- *  diagram wants the proportions of a real set — a pawn a little over half the
- *  height of a king — so each piece is given its own. Measured against the
- *  ChessBase printout in #265. */
-const PIECE_HEIGHT: Record<string, number> = {
-  k: 0.85, q: 0.83, b: 0.79, n: 0.75, r: 0.71, p: 0.61,
-};
-
-/** A figurine is set a shade larger than the letter it replaces, which is how
- *  it matches the weight of the text around it. */
-const FIGURINE_EM = 1.06;
+/** A figurine's 45-unit box, relative to the type size. The set draws its
+ *  pieces with margins inside that box, so at 1.3 em a king's ink stands about
+ *  as tall as a capital letter. */
+const FIGURINE_EM = 1.3;
 
 function figurineScale(size: number): number {
-  return (size * FIGURINE_EM) / PIECE_UNITS_PER_EM;
+  return (size * FIGURINE_EM) / PIECE_SET_SIZE;
 }
 
 /** What a figurine occupies in a line: the piece's own width and a thin space,
  *  so "♕a3" sits as tightly as "Qa3". */
 function figurineWidth(piece: string, size: number): number {
-  const box = PIECE_BOXES[piece];
-  return (box.x1 - box.x0) * figurineScale(size) + size * 0.06;
+  const box = PIECE_SET_BOXES[piece];
+  return (box.x1 - box.x0) * figurineScale(size) + size * 0.05;
 }
 
 /** A whole figurine move — number, piece, square — as one width. */
@@ -510,23 +490,43 @@ function figurineRunWidth(r: Run): number {
     + r.font.widthOfTextAtSize(r.text, r.size);
 }
 
-/** One piece, `size` points tall, its baseline at (`x`, `y`).
- *
- *  Drawn in two passes so a piece is opaque on any colour of square, the way a
- *  printed diagram has it: the filled (Black) outline in white first, then the
- *  piece's own outline in black. A white piece would otherwise be a see-through
- *  drawing with the square showing through it. */
-function drawPiece(page: PDFPage, piece: string, x: number, y: number, size: number) {
-  const scale = size / PIECE_UNITS_PER_EM;
-  const body = PIECE_BODIES[piece];
-  const own = PIECE_OUTLINES[piece];
-  if (!own || !body) return;
-  // The body first, in white: it has no holes, so nothing of the square shows
-  // through the piece. Then the piece itself in black — where it leaves holes
-  // (a white piece's interior, a black piece's detail lines) the white body
-  // shows, which is how a printed diagram draws them.
-  page.drawSvgPath(body, { x, y, scale, color: rgb(1, 1, 1) });
-  page.drawSvgPath(own, { x, y, scale, color: INK });
+const colourCache = new Map<string, RGB>();
+function hex(colour: string): RGB {
+  let c = colourCache.get(colour);
+  if (!c) {
+    const n = parseInt(colour.slice(1), 16);
+    c = rgb(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255);
+    colourCache.set(colour, c);
+  }
+  return c;
+}
+
+const CAP = { butt: LineCapStyle.Butt, round: LineCapStyle.Round, square: LineCapStyle.Projecting };
+
+/** One piece from the set, its 45-unit box `size` points wide with its top-left
+ *  corner at (`x`, `top`) — the same artwork the board on screen draws, filled
+ *  and stroked op by op. */
+function drawPiece(page: PDFPage, piece: string, x: number, top: number, size: number) {
+  const scale = size / PIECE_SET_SIZE;
+  for (const op of PIECE_SET[piece] ?? []) {
+    const color = op.fill ? hex(op.fill) : undefined;
+    const borderColor = op.stroke ? hex(op.stroke) : undefined;
+    if (op.kind === "path") {
+      // pdf-lib scales the stroke with the path, so the width stays in the
+      // set's own units.
+      page.drawSvgPath(op.d, {
+        x, y: top, scale, color, borderColor,
+        borderWidth: borderColor ? op.strokeWidth : undefined,
+        borderLineCap: CAP[op.cap],
+      });
+    } else {
+      page.drawCircle({
+        x: x + op.cx * scale, y: top - op.cy * scale, size: op.r * scale,
+        color, borderColor,
+        borderWidth: borderColor ? op.strokeWidth * scale : undefined,
+      });
+    }
+  }
 }
 
 /** FEN placement → 8 rows of 8 cells, rank 8 first, "" for an empty square. */
