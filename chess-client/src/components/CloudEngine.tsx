@@ -199,21 +199,13 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
   const [lichessStats, setLichessStats] = useState<Record<string, { replies: number; strong: number }>>({}); // uci → power-move stats (lazy)
   // Lichess analysis settings (persisted): chessdb-style Replies/Strong (extra
   // per-move requests) vs plain lines, and how many lines to show/analyse.
-  const [lichessShowStats, setLichessShowStats] = useState(() => localStorage.getItem("lichessShowStats") !== "false");
-  const [lichessLineCount, setLichessLineCount] = useState(() => {
+  // Set under Maintenance → Engines → Engine panel (per device).
+  const [lichessShowStats] = useState(() => localStorage.getItem("lichessShowStats") !== "false");
+  const [lichessLineCount] = useState(() => {
     const n = parseInt(localStorage.getItem("lichessLineCount") ?? "", 10);
     return Number.isFinite(n) && n > 0 ? Math.min(n, 20) : 5;
   });
-  const [lichessSettingsOpen, setLichessSettingsOpen] = useState(false);
-  const lichessSettingsRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => { localStorage.setItem("lichessShowStats", String(lichessShowStats)); }, [lichessShowStats]);
-  useEffect(() => { localStorage.setItem("lichessLineCount", String(lichessLineCount)); }, [lichessLineCount]);
-  useEffect(() => {
-    if (!lichessSettingsOpen) return;
-    function onDown(e: MouseEvent) { if (lichessSettingsRef.current && !lichessSettingsRef.current.contains(e.target as Node)) setLichessSettingsOpen(false); }
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [lichessSettingsOpen]);
+
   // Each cloud service's own status: both can run while either tab is shown.
   const [dbStatus, setDbStatus] = useState<EngineStatus>("ok");
   const [liStatus, setLiStatus] = useState<EngineStatus>("ok");
@@ -503,37 +495,6 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
               <div className="px-3 py-1 shrink-0 flex items-center justify-between text-label-sm text-on-surface-variant border-b border-outline/40">
                 <span>Stockfish · depth {lichessEval.depth}</span>
                 <div className="flex items-center gap-1">
-                  <div className="relative" ref={lichessSettingsRef}>
-                    <button
-                      onClick={() => setLichessSettingsOpen((o) => !o)}
-                      className={`w-6 h-6 inline-flex items-center justify-center rounded-full hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard ${lichessSettingsOpen ? "bg-on-surface/12" : ""}`}
-                      title="Lichess analysis settings"
-                    >⚙</button>
-                    {lichessSettingsOpen && (
-                      <div className="absolute right-0 top-7 z-20 w-60 rounded-xl border border-outline-variant bg-surface-container-high shadow-lg p-3 text-body-sm text-on-surface">
-                        <div className="flex items-center justify-between gap-2">
-                          <span>Replies &amp; Strong</span>
-                          <button
-                            onClick={() => setLichessShowStats((v) => !v)}
-                            className={`px-2.5 h-6 rounded-full text-label-sm ${lichessShowStats ? "bg-primary text-on-primary" : "bg-on-surface/8 text-on-surface-variant"}`}
-                          >{lichessShowStats ? "On" : "Off"}</button>
-                        </div>
-                        <div className="text-label-sm text-on-surface-variant mt-1">chessdb-style power-move columns — a few extra requests per move.</div>
-                        <div className="mt-3 flex items-center justify-between gap-2">
-                          <span>Lines</span>
-                          <div className="flex items-center gap-1">
-                            {[3, 5, 8, 12].map((n) => (
-                              <button
-                                key={n}
-                                onClick={() => setLichessLineCount(n)}
-                                className={`w-7 h-6 rounded-md text-label-sm ${lichessLineCount === n ? "bg-primary text-on-primary" : "hover:bg-on-surface/8 text-on-surface-variant"}`}
-                              >{n}</button>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
                   <button
                     onClick={reloadEngine}
                     className="w-6 h-6 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
