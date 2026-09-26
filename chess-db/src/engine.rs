@@ -107,6 +107,20 @@ pub struct EngineSettings {
     /// Switched off, the engine is not started (Lc0 then holds no GPU
     /// memory), its tab leaves the Engine panel and analysis is refused.
     pub enabled: bool,
+    /// Replies & Strong: a helper process of the same engine counts, for each
+    /// candidate move, the opponent's replies and how many of them are strong.
+    pub replies: bool,
+    /// Stockfish's helper: its threads (taken from the main search's, which
+    /// default to the physical cores less these), hash, and depth.
+    pub helper_threads: u32,
+    pub helper_hash_mb: u32,
+    pub helper_depth: u32,
+    /// A reply is strong within this many centipawns of the best (Stockfish).
+    pub strong_cp: u32,
+    /// Lc0's helper: nodes per candidate, and a reply is strong within this
+    /// many percent of expected score of the best.
+    pub helper_nodes: u64,
+    pub strong_pct: f32,
 }
 
 impl Default for EngineSettings {
@@ -121,14 +135,22 @@ impl EngineSettings {
             // queries while it analyses. An eighth of the memory for hash,
             // 256 MB to 4 GB — out of the budget it shares with the database
             // (see db::memory).
+            // Replies & Strong on by default, the helper taking four threads:
+            // 12 + 4 on a 16-core machine.
             Kind::Stockfish => Self {
-                path: None, threads: physical_cores().clamp(1, 64),
+                path: None, threads: physical_cores().saturating_sub(4).clamp(1, 64),
                 hash_mb: crate::db::default_engine_hash_mb(), weights: None, backend: None,
                 max_depth: 40, max_nodes: 0, smart_pruning: false, enabled: true,
+                replies: true, helper_threads: 4, helper_hash_mb: 256, helper_depth: 20, strong_cp: 10,
+                helper_nodes: 0, strong_pct: 0.0,
             },
+            // Off by default for Lc0: its helper loads a second copy of the
+            // network onto the graphics card.
             Kind::Lc0 => Self {
                 path: None, threads: 0, hash_mb: 0, weights: None, backend: None,
                 max_depth: 0, max_nodes: 10_000_000, smart_pruning: false, enabled: true,
+                replies: false, helper_threads: 0, helper_hash_mb: 0, helper_depth: 0, strong_cp: 0,
+                helper_nodes: 50_000, strong_pct: 1.0,
             },
         }
     }
@@ -260,6 +282,32 @@ pub struct Engine {
     latest: Mutex<Option<(std::time::Instant, Option<LatestRelease>)>>,
     /// Held while a benchmark runs.
     benching: Mutex<()>,
+    /// Replies & Strong: the helper process, and what it has counted.
+    helper: Mutex<Option<Helper>>,
+    reply_cache: std::sync::Mutex<std::collections::HashMap<String, ReplyCount>>,
+}
+
+/// The helper process: the same engine, started with the helper's settings.
+struct Helper {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    /// What it was started with; a change starts another.
+    config: String,
+    /// A search was left running (its request went away); drain it first.
+    unfinished: bool,
+}
+
+/// The opponent's replies after one candidate move.
+#[derive(Clone, Debug, Serialize)]
+pub struct ReplyCount {
+    /// Legal replies.
+    pub replies: u32,
+    /// Replies within the threshold of the best.
+    pub strong: u32,
+    /// How deep (Stockfish) or how many nodes (Lc0) the count rests on.
+    pub depth: u32,
+    pub nodes: u64,
 }
 
 /// The deepest result reached for each position, while the server runs.
@@ -340,6 +388,8 @@ impl Engine {
             remembered: Arc::new(std::sync::Mutex::new(Remembered::default())),
             latest: Mutex::new(None),
             benching: Mutex::new(()),
+            helper: Mutex::new(None),
+            reply_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -496,7 +546,7 @@ impl Engine {
     /// the current choice.
     #[cfg(test)]
     pub async fn configure(&self, path: Option<String>, threads: Option<u32>, hash_mb: Option<u32>) -> Result<EngineStatus, String> {
-        self.configure_all(path, threads, hash_mb, None, None, None, None, None, None).await
+        self.configure_all(path, threads, hash_mb, None, None, None, None, None, None, ReplySettings::default()).await
     }
 
     /// As `configure`, with Lc0's network and backend. The network must be one
@@ -512,6 +562,7 @@ impl Engine {
         max_nodes: Option<u64>,
         smart_pruning: Option<bool>,
         enabled: Option<bool>,
+        reply: ReplySettings,
     ) -> Result<EngineStatus, String> {
         {
             let mut s = self.settings.lock().await;
@@ -546,6 +597,13 @@ impl Engine {
             if let Some(n) = max_nodes { s.max_nodes = n.min(1_000_000_000_000); }
             if let Some(p) = smart_pruning { s.smart_pruning = p; }
             if let Some(e) = enabled { s.enabled = e; }
+            if let Some(v) = reply.replies { s.replies = v; }
+            if let Some(v) = reply.helper_threads { s.helper_threads = v.clamp(1, 64); }
+            if let Some(v) = reply.helper_hash_mb { s.helper_hash_mb = v.clamp(16, 4096); }
+            if let Some(v) = reply.helper_depth { s.helper_depth = v.clamp(1, 60); }
+            if let Some(v) = reply.strong_cp { s.strong_cp = v.min(500); }
+            if let Some(v) = reply.helper_nodes { s.helper_nodes = v.clamp(1_000, 10_000_000); }
+            if let Some(v) = reply.strong_pct { s.strong_pct = v.clamp(0.0, 50.0); }
             if let Some(b) = backend {
                 if b.is_empty() { s.backend = None; }
                 else if valid_backend(&b) { s.backend = Some(b); }
@@ -560,6 +618,11 @@ impl Engine {
     }
 
     async fn shutdown(&self) {
+        if let Some(mut h) = self.helper.lock().await.take() {
+            let _ = h.stdin.write_all(b"quit\n").await;
+            let _ = h.child.start_kill();
+        }
+        self.reply_cache.lock().unwrap().clear();
         if let Some(mut r) = self.running.lock().await.take() {
             let _ = r.stdin.write_all(b"quit\n").await;
             let _ = tokio::time::timeout(Duration::from_secs(2), r.child.wait()).await;
@@ -699,6 +762,128 @@ impl Engine {
                 let _ = send(&mut r.stdin, "stop").await;
             }
         }
+    }
+
+    /// Replies & Strong for the position after one candidate move (`fen`,
+    /// cleaned): the opponent's legal replies, and how many are within the
+    /// threshold of the best. Stockfish searches every reply to the helper's
+    /// depth; Lc0 runs a short search and counts the replies it explored.
+    pub async fn count_replies(&self, fen: &str) -> Result<ReplyCount, String> {
+        let settings = self.settings.lock().await.clone();
+        if !settings.enabled || !settings.replies {
+            return Err("Replies & Strong is switched off for this engine".to_string());
+        }
+        self.ensure_started().await?;
+        let (path, name) = {
+            let r = self.running.lock().await;
+            let r = r.as_ref().ok_or("no engine")?;
+            (r.path.clone(), r.name.clone())
+        };
+        let key = format!("{name}|{}|{}|{}|{}|{}", settings.helper_depth, settings.strong_cp, settings.helper_nodes, settings.strong_pct, position_key(fen));
+        if let Some(c) = self.reply_cache.lock().unwrap().get(&key) { return Ok(c.clone()); }
+
+        let legal = legal_moves(fen);
+        if legal == 0 {
+            return Ok(ReplyCount { replies: 0, strong: 0, depth: 0, nodes: 0 });
+        }
+        let mut guard = self.helper.lock().await;
+        let config = format!("{path}|{}|{}|{:?}|{:?}", settings.helper_threads, settings.helper_hash_mb, settings.weights, settings.backend);
+        if guard.as_ref().is_some_and(|h| h.config != config) {
+            if let Some(mut h) = guard.take() { let _ = h.child.start_kill(); }
+        }
+        if guard.is_none() {
+            let mut hs = settings.clone();
+            hs.threads = settings.helper_threads;
+            hs.hash_mb = settings.helper_hash_mb;
+            if self.kind == Kind::Lc0 && hs.weights.is_none() {
+                hs.weights = self.networks(Some(&path)).into_iter().next();
+            }
+            let (child, mut stdin, stdout, _) = start(&path, &hs, self.kind).await?;
+            if self.kind == Kind::Lc0 {
+                send(&mut stdin, "setoption name VerboseMoveStats value true").await?;
+            }
+            *guard = Some(Helper { child, stdin, stdout, config, unfinished: false });
+        }
+        let h = guard.as_mut().unwrap();
+        if h.unfinished {
+            send(&mut h.stdin, "stop").await?;
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if h.stdout.read_line(&mut line).await.map_err(|e| e.to_string())? == 0 { break; }
+                if line.starts_with("bestmove") { break; }
+            }
+            h.unfinished = false;
+        }
+        send(&mut h.stdin, &format!("position fen {fen}")).await?;
+        match self.kind {
+            Kind::Stockfish => {
+                send(&mut h.stdin, &format!("setoption name MultiPV value {}", legal.min(500))).await?;
+                send(&mut h.stdin, &format!("go depth {}", settings.helper_depth.max(1))).await?;
+            }
+            Kind::Lc0 => {
+                send(&mut h.stdin, "setoption name MultiPV value 1").await?;
+                send(&mut h.stdin, &format!("go nodes {}", settings.helper_nodes.max(1000))).await?;
+            }
+        }
+        h.unfinished = true;
+
+        // Stockfish: each reply's last exact score, by line. Lc0: each
+        // explored reply's visits and expected score, from the move stats.
+        let mut scores: std::collections::HashMap<u32, (u32, i32)> = std::collections::HashMap::new();
+        let mut stats: std::collections::HashMap<String, (u64, f64)> = std::collections::HashMap::new();
+        let (mut depth, mut nodes) = (0u32, 0u64);
+        let mut line = String::new();
+        let read = async {
+            loop {
+                line.clear();
+                if h.stdout.read_line(&mut line).await.map_err(|e| e.to_string())? == 0 {
+                    return Err("the helper ended".to_string());
+                }
+                let t = line.trim();
+                if t.starts_with("bestmove") { return Ok(()); }
+                if let Some(rest) = t.strip_prefix("info string ") {
+                    if let Some((mv, n, q)) = parse_move_stats(rest) { stats.insert(mv, (n, q)); }
+                    continue;
+                }
+                if let Some(info) = parse_info(t) {
+                    if let Some(d) = info.depth { depth = depth.max(d); }
+                    if let Some(n) = info.nodes { nodes = n; }
+                    if let Some(l) = info.line {
+                        let score = match (l.mate, l.eval_cp) {
+                            (Some(m), _) if m > 0 => 100_000 - m,
+                            (Some(m), _) => -100_000 - m,
+                            (None, Some(cp)) => cp,
+                            _ => continue,
+                        };
+                        scores.insert(l.multipv, (info.depth.unwrap_or(0), score));
+                    }
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(180), read).await.map_err(|_| "the helper took too long".to_string())??;
+        h.unfinished = false;
+
+        let count = match self.kind {
+            Kind::Stockfish => {
+                let best = scores.values().map(|&(_, s)| s).max().unwrap_or(0);
+                let thr = settings.strong_cp as i32;
+                let strong = scores.values().filter(|&&(_, s)| s >= best - thr).count() as u32;
+                ReplyCount { replies: legal, strong: strong.max(1), depth, nodes }
+            }
+            Kind::Lc0 => {
+                let total: u64 = stats.values().map(|&(n, _)| n).sum();
+                // Replies it barely looked at have no reliable score — nor
+                // are they strong, or it would have looked.
+                let min_visits = (total / 100).max(20);
+                let best = stats.values().filter(|&&(n, _)| n >= min_visits).map(|&(_, q)| q).fold(f64::MIN, f64::max);
+                let thr = settings.strong_pct as f64 / 100.0 * 2.0; // Q spans -1..1: 1% of expected score is 0.02
+                let strong = stats.values().filter(|&&(n, q)| n >= min_visits && q >= best - thr).count() as u32;
+                ReplyCount { replies: legal, strong: strong.max(1), depth, nodes: total.max(nodes) }
+            }
+        };
+        self.reply_cache.lock().unwrap().insert(key, count.clone());
+        Ok(count)
     }
 
     pub fn current_gen(&self) -> u64 {
@@ -1019,6 +1204,30 @@ pub fn physical_cores() -> u32 {
     counted.unwrap_or((logical / 2).max(1)).clamp(1, logical)
 }
 
+/// The settings of Replies & Strong a configure request may change.
+#[derive(Default)]
+pub struct ReplySettings {
+    pub replies: Option<bool>,
+    pub helper_threads: Option<u32>,
+    pub helper_hash_mb: Option<u32>,
+    pub helper_depth: Option<u32>,
+    pub strong_cp: Option<u32>,
+    pub helper_nodes: Option<u64>,
+    pub strong_pct: Option<f32>,
+}
+
+/// One line of Lc0's VerboseMoveStats: `e7e5  (322 ) N:   19041 (+238)
+/// (P: 58.57%) (WL: -0.02500) (D: 0.637) (M: 194.4) (Q: -0.02500) …` →
+/// the move, its visits and its Q (-1..1, for the side to move). The root's
+/// own line ("node") is left out.
+fn parse_move_stats(rest: &str) -> Option<(String, u64, f64)> {
+    let mv = rest.split_whitespace().next()?;
+    if mv == "node" { return None; }
+    let n: u64 = rest.split("N:").nth(1)?.split_whitespace().next()?.parse().ok()?;
+    let q: f64 = rest.split("(Q:").nth(1)?.trim().split(')').next()?.trim().parse().ok()?;
+    Some((mv.to_string(), n, q))
+}
+
 /// How many legal moves `fen` has (already validated by `clean_fen`).
 fn legal_moves(fen: &str) -> u32 {
     use shakmaty::{fen::Fen, CastlingMode, Position};
@@ -1133,6 +1342,13 @@ mod tests {
         let physical = physical_cores();
         println!("physical {physical} of {logical} logical");
         assert!(physical >= 1 && physical <= logical);
+    }
+
+    #[test]
+    fn lc0_move_stats_parse() {
+        let l = "e7e5  (322 ) N:   19041 (+238) (P: 58.57%) (WL: -0.02500) (D: 0.637) (M: 194.4) (Q: -0.02500) (U: 0.01468) (S: -0.01069) (V: -0.0087) ";
+        assert_eq!(parse_move_stats(l), Some(("e7e5".to_string(), 19041, -0.025)));
+        assert_eq!(parse_move_stats("node  (  20) N:   20295 (+256) (P: 100.0%) (Q: -0.03299)"), None);
     }
 
     #[test]

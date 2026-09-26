@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Chess } from "chess.js";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { apiUrl, engineAnalyseUrl, type EngineHistory, type EngineKind } from "../api";
 import ExternalLinkIcon from "./ExternalLinkIcon";
@@ -14,7 +15,7 @@ interface EngineStatus {
   path: string | null;
   name: string | null;
   error: string | null;
-  settings: { path: string | null; threads: number; hash_mb: number };
+  settings: { path: string | null; threads: number; hash_mb: number; replies?: boolean };
   found: string[];
   searched: string[];
   settings_file: string;
@@ -89,12 +90,19 @@ export default function LocalEngine({
   const historyKey = history ? `${history.startFen}|${history.sans.join(",")}` : "";
   const historyRef = useRef(history);
   historyRef.current = history;
+  // What the lines on screen belong to: a pause keeps them, a new position
+  // (or line count, or engine) clears them.
+  const snapFor = `${kind}|${fen}|${historyKey}|${lineCount}`;
+  const snapForRef = useRef<string | null>(null);
   useEffect(() => {
     esRef.current?.close();
     esRef.current = null;
-    setSnap(null);
     setStreamError(null);
+    if (snapForRef.current !== snapFor) { setSnap(null); snapForRef.current = snapFor; }
     if (!status?.available || !running || paused) return;
+    // Running again on the same position: the lines stay until the new
+    // search is deeper, as a remembered result does.
+    setSnap((prev) => (prev ? { ...prev, cached: true } : prev));
     const t = window.setTimeout(() => {
       const es = new EventSource(engineAnalyseUrl(fen, lineCount, historyRef.current, kind));
       esRef.current = es;
@@ -117,6 +125,44 @@ export default function LocalEngine({
       esRef.current = null;
     };
   }, [fen, historyKey, lineCount, status?.available, running, kind, paused]);
+
+  // Replies & Strong (when switched on for this engine): for each candidate,
+  // the server's helper counts the opponent's replies and the strong ones.
+  // Asked once the search has settled, one candidate after another; each
+  // position is asked once and remembered.
+  const repliesOn = !!status?.settings.replies;
+  const [replyCounts, setReplyCounts] = useState<Record<string, { replies: number; strong: number } | "pending">>({});
+  const askedRef = useRef<Set<string>>(new Set());
+  const settled = !!snap && (kind === "lc0" ? snap.nodes >= 100_000 : snap.depth >= 16);
+  const candidates = (snap?.lines ?? []).slice(0, lineCount).map((l) => l.pv_uci[0]).filter(Boolean);
+  const candidateKey = candidates.join(",");
+  useEffect(() => {
+    if (!repliesOn || !settled) return;
+    const todo = candidates
+      .map((uci) => childFen(fen, uci))
+      .filter((f): f is string => !!f && !askedRef.current.has(f));
+    if (todo.length === 0) return;
+    const ctrl = new AbortController();
+    (async () => {
+      for (const child of todo) {
+        if (ctrl.signal.aborted) return;
+        askedRef.current.add(child);
+        setReplyCounts((prev) => ({ ...prev, [child]: "pending" }));
+        try {
+          const r = await fetch(apiUrl(`/engine/replies?engine=${kind}&fen=${encodeURIComponent(child)}`), { signal: ctrl.signal });
+          if (!r.ok) throw new Error();
+          const c = (await r.json()) as { replies: number; strong: number };
+          setReplyCounts((prev) => ({ ...prev, [child]: c }));
+        } catch {
+          askedRef.current.delete(child);
+          setReplyCounts((prev) => { const next = { ...prev }; delete next[child]; return next; });
+          if (ctrl.signal.aborted) return;
+        }
+      }
+    })();
+    return () => ctrl.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repliesOn, settled, candidateKey, fen, kind]);
 
   // A new position starts a new search, even if the last one was stopped.
   useEffect(() => { setRunning(true); }, [fen]);
@@ -180,11 +226,29 @@ export default function LocalEngine({
           <div className="p-2 text-center text-on-surface-variant text-body-sm">
             {paused ? "Paused." : running ? "Analysing…" : "Stopped."}
           </div>
-        ) : lines.slice(0, lineCount).map((l, i) => (
+        ) : <>
+        {repliesOn && (
+          <div className="flex items-baseline gap-2 text-label-sm text-on-surface-variant px-2 mb-1 select-none">
+            <span className="flex-1 min-w-0"></span>
+            <span className="w-12 text-right cursor-help underline decoration-dotted underline-offset-2" title="The opponent's legal replies after this move.">Replies</span>
+            <span className="w-12 text-right cursor-help underline decoration-dotted underline-offset-2" title="Replies close to the opponent's best (the threshold is set under Maintenance → Engines). Low ⇒ forcing.">Strong</span>
+            <span className={kind === "lc0" ? "w-32" : "w-14"}></span>
+          </div>
+        )}
+        {lines.slice(0, lineCount).map((l, i) => {
+          const child = childFen(fen, l.pv_uci[0]);
+          const rc = child ? replyCounts[child] : undefined;
+          return (
           <div key={l.multipv} className="w-full flex items-baseline gap-2 px-2 py-1 rounded-sm hover:bg-on-surface/8 transition-colors duration-short3 ease-standard">
             <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface-variant">
               <PvLine startFen={fen} sans={pvToSan(fen, l.pv_uci)} onPick={onPlayLine} mark={moveMark(best, scores[i]) || undefined} />
             </div>
+            {repliesOn && (
+              <>
+                <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface-variant">{rc === "pending" ? "…" : rc ? rc.replies : "—"}</span>
+                <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface">{rc === "pending" ? "…" : rc ? rc.strong : "—"}</span>
+              </>
+            )}
             {kind === "lc0" && l.wdl
               ? <WdlCell wdl={l.wdl} />
               : (
@@ -193,10 +257,24 @@ export default function LocalEngine({
                 </span>
               )}
           </div>
-        ))}
+          );
+        })}
+        </>}
       </div>
     </div>
   );
+}
+
+/** The position after `uci` is played from `fen`, or null. */
+function childFen(fen: string, uci: string | undefined): string | null {
+  if (!uci) return null;
+  try {
+    const c = new Chess(fen);
+    c.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.slice(4) || undefined });
+    return c.fen();
+  } catch {
+    return null;
+  }
 }
 
 /** "956k", "10.0M": Lc0 is measured in nodes. */

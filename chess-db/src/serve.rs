@@ -1786,6 +1786,22 @@ async fn engines_enabled_handler(State(state): State<AppState>) -> Json<serde_js
     }))
 }
 
+#[derive(Deserialize)]
+struct EngineRepliesQuery {
+    fen: String,
+    engine: Option<String>,
+}
+
+/// Replies & Strong for the position after a candidate move.
+async fn engine_replies_handler(
+    State(state): State<AppState>,
+    Query(q): Query<EngineRepliesQuery>,
+) -> ApiResult<crate::engine::ReplyCount> {
+    let fen = crate::engine::clean_fen(&q.fen).ok_or((StatusCode::BAD_REQUEST, "not a legal position".to_string()))?;
+    let engine = pick_engine(&state, &WhichEngine { engine: q.engine.clone() })?;
+    engine.count_replies(&fen).await.map(Json).map_err(|e| (StatusCode::CONFLICT, e))
+}
+
 async fn engine_status_handler(State(state): State<AppState>, Query(w): Query<WhichEngine>) -> ApiResult<crate::engine::EngineStatus> {
     Ok(Json(pick_engine(&state, &w)?.status().await))
 }
@@ -1805,6 +1821,14 @@ struct EngineConfigBody {
     smart_pruning: Option<bool>,
     /// Switch the engine on or off.
     enabled: Option<bool>,
+    /// Replies & Strong.
+    replies: Option<bool>,
+    helper_threads: Option<u32>,
+    helper_hash_mb: Option<u32>,
+    helper_depth: Option<u32>,
+    strong_cp: Option<u32>,
+    helper_nodes: Option<u64>,
+    strong_pct: Option<f32>,
 }
 
 async fn engine_configure_handler(
@@ -1814,12 +1838,18 @@ async fn engine_configure_handler(
 ) -> ApiResult<crate::engine::EngineStatus> {
     let engine = pick_engine(&state, &w)?;
     let status = engine
-        .configure_all(body.path, body.threads, body.hash_mb, body.weights, body.backend, body.max_depth, body.max_nodes, body.smart_pruning, body.enabled)
+        .configure_all(body.path, body.threads, body.hash_mb, body.weights, body.backend, body.max_depth, body.max_nodes, body.smart_pruning, body.enabled,
+            crate::engine::ReplySettings {
+                replies: body.replies, helper_threads: body.helper_threads, helper_hash_mb: body.helper_hash_mb,
+                helper_depth: body.helper_depth, strong_cp: body.strong_cp, helper_nodes: body.helper_nodes,
+                strong_pct: body.strong_pct,
+            })
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
-    // The database gets what Stockfish's hash leaves of the memory budget.
+    // The database gets what Stockfish's hash (and its helper's) leaves.
     if status.kind == crate::engine::Kind::Stockfish {
-        let hash = status.settings.hash_mb;
+        let s = &status.settings;
+        let hash = s.hash_mb + if s.replies { s.helper_hash_mb } else { 0 };
         state
             .writer
             .run(move |c| crate::db::apply_memory_limit(c, hash))
@@ -2531,6 +2561,7 @@ pub async fn run(
         .route("/engine/analyse",                      get(engine_analyse_handler))
         .route("/engine/stop",                         post(engine_stop_handler))
         .route("/engines",                             get(engines_enabled_handler))
+        .route("/engine/replies",                      get(engine_replies_handler))
         .route("/engine/bench",                        post(engine_bench_handler))
         .route("/cloud-eval/lines",                    get(cloud_eval_lines_handler))
         .route("/cloud-eval/queue",                    post(cloud_eval_queue_handler))

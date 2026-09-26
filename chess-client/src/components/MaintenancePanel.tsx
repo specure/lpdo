@@ -245,6 +245,70 @@ function StockfishLines() {
   );
 }
 
+type ReplyPatch = { replies?: boolean; helper_threads?: number; helper_hash_mb?: number; helper_depth?: number; strong_cp?: number; helper_nodes?: number; strong_pct?: number };
+
+/** Replies & Strong for a local engine: a helper process of the same engine
+ *  counts, for each candidate, the opponent's replies and how many are close
+ *  to the best. Stockfish's helper takes threads and hash from the server;
+ *  Lc0's a second copy of the network on the graphics card. */
+function RepliesSettings({ kind, settings, busy, onSave }: {
+  kind: "stockfish" | "lc0";
+  settings: { replies?: boolean; helper_threads?: number; helper_hash_mb?: number; helper_depth?: number; strong_cp?: number; helper_nodes?: number; strong_pct?: number };
+  busy: boolean;
+  onSave: (p: ReplyPatch) => void;
+}) {
+  const on = !!settings.replies;
+  const [threads, setThreads] = useState(String(settings.helper_threads ?? 4));
+  const [hash, setHash] = useState(String(settings.helper_hash_mb ?? 256));
+  const [depth, setDepth] = useState(String(settings.helper_depth ?? 20));
+  const [pawns, setPawns] = useState(((settings.strong_cp ?? 10) / 100).toFixed(2));
+  const [nodes, setNodes] = useState(String(settings.helper_nodes ?? 50000));
+  const [pct, setPct] = useState(String(settings.strong_pct ?? 1));
+  const field = "w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums";
+  const num = (v: string) => { const n = Number(v.replace(",", ".")); return Number.isFinite(n) ? n : undefined; };
+  function saveAll() {
+    if (kind === "stockfish") {
+      const cp = num(pawns);
+      onSave({ helper_threads: num(threads), helper_hash_mb: num(hash), helper_depth: num(depth), strong_cp: cp == null ? undefined : Math.round(cp * 100) });
+    } else {
+      onSave({ helper_nodes: num(nodes.replace(/[\s,.]/g, "")), strong_pct: num(pct) });
+    }
+  }
+  return (
+    <div className="space-y-2 pt-2 border-t border-outline/40">
+      <label className="flex items-start gap-2 text-body-sm text-on-surface cursor-pointer">
+        <input type="checkbox" checked={on} disabled={busy} onChange={(e) => onSave({ replies: e.target.checked })} className="accent-primary mt-1" />
+        <span>
+          Replies &amp; Strong
+          <span className="block text-label-sm text-on-surface-variant">
+            {kind === "stockfish"
+              ? "For each candidate move, a second Stockfish counts the opponent's replies and how many are close to the best — low means forcing. It uses the helper threads below; the main search keeps the rest."
+              : "For each candidate move, a second Lc0 runs a short search and counts the replies it finds close to the best. It loads another copy of the network onto the graphics card."}
+          </span>
+        </span>
+      </label>
+      {on && (
+        <div className="flex items-center gap-4 text-body-sm text-on-surface flex-wrap">
+          {kind === "stockfish" ? (
+            <>
+              <label className="flex items-center gap-2"><span>Helper threads</span><input type="number" min={1} max={64} value={threads} onChange={(e) => setThreads(e.target.value)} className={field} /></label>
+              <label className="flex items-center gap-2"><span>Hash</span><input type="number" min={16} max={4096} step={64} value={hash} onChange={(e) => setHash(e.target.value)} className={field} /><span className="text-on-surface-variant">MB</span></label>
+              <label className="flex items-center gap-2" title="Each candidate's replies are searched to this depth"><span>Depth</span><input type="number" min={1} max={60} value={depth} onChange={(e) => setDepth(e.target.value)} className={field} /></label>
+              <label className="flex items-center gap-2" title="A reply is strong within this much of the opponent's best (chessdb uses 0.05)"><span>Strong within</span><input value={pawns} onChange={(e) => setPawns(e.target.value)} inputMode="decimal" className={field} /><span className="text-on-surface-variant">pawns</span></label>
+            </>
+          ) : (
+            <>
+              <label className="flex items-center gap-2" title="Nodes Lc0 spends on each candidate's replies"><span>Nodes per move</span><input value={nodes} onChange={(e) => setNodes(e.target.value)} inputMode="numeric" className="w-28 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" /></label>
+              <label className="flex items-center gap-2" title="A reply is strong within this much expected score of the opponent's best"><span>Strong within</span><input value={pct} onChange={(e) => setPct(e.target.value)} inputMode="decimal" className={field} /><span className="text-on-surface-variant">% score</span></label>
+            </>
+          )}
+          <ActionButton onClick={saveAll} disabled={busy}>Save</ActionButton>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** An engine's on/off switch, at the top of its card: off, its tab leaves the
  *  Engine panel and the server neither runs nor asks it. */
 function EngineSwitch({ label, on, busy, onChange }: { label: string; on: boolean; busy?: boolean; onChange: (on: boolean) => void }) {
@@ -267,7 +331,7 @@ interface EngineInfo {
   path: string | null;
   name: string | null;
   error: string | null;
-  settings: { path: string | null; threads: number; hash_mb: number; max_depth: number };
+  settings: { path: string | null; threads: number; hash_mb: number; max_depth: number; replies?: boolean; helper_threads?: number; helper_hash_mb?: number; helper_depth?: number; strong_cp?: number; helper_nodes?: number; strong_pct?: number };
   found: string[];
   settings_file: string;
   latest: { version: string; url: string } | null;
@@ -306,7 +370,7 @@ function EngineSection() {
       .catch((e) => setError(String(e)));
   }, []);
 
-  async function save(patch: { path?: string; threads?: number; hash_mb?: number; max_depth?: number; enabled?: boolean }) {
+  async function save(patch: { path?: string; threads?: number; hash_mb?: number; max_depth?: number; enabled?: boolean } & ReplyPatch) {
     setBusy(true);
     setError(null);
     setNote(null);
@@ -388,6 +452,7 @@ function EngineSection() {
         </div>
       )}
       {info && <StockfishLines />}
+      {info && <RepliesSettings kind="stockfish" settings={info.settings} busy={busy} onSave={(p) => void save(p)} />}
       {info && (() => {
         // The memory budget, split as typed: the engine's hash, the database the rest.
         const hashNow = Number.isFinite(h) ? Math.min(Math.max(h, 16), info.max_hash_mb) : info.settings.hash_mb;
@@ -463,7 +528,7 @@ interface Lc0Info {
   path: string | null;
   name: string | null;
   error: string | null;
-  settings: { path: string | null; threads: number; weights: string | null; backend: string | null; max_nodes: number; smart_pruning: boolean };
+  settings: { path: string | null; threads: number; weights: string | null; backend: string | null; max_nodes: number; smart_pruning: boolean; replies?: boolean; helper_threads?: number; helper_hash_mb?: number; helper_depth?: number; strong_cp?: number; helper_nodes?: number; strong_pct?: number };
   found: string[];
   networks: string[];
   weights: string | null;
@@ -484,7 +549,7 @@ function Lc0Section() {
       .then(take)
       .catch((e) => setError(String(e)));
   }, []);
-  async function save(patch: { path?: string; weights?: string; backend?: string; threads?: number; max_nodes?: number; smart_pruning?: boolean; enabled?: boolean }) {
+  async function save(patch: { path?: string; weights?: string; backend?: string; threads?: number; max_nodes?: number; smart_pruning?: boolean; enabled?: boolean } & ReplyPatch) {
     setBusy(true);
     setError(null);
     setNote(null);
@@ -586,6 +651,7 @@ function Lc0Section() {
           </ActionButton>
         </div>
       )}
+      {info && <RepliesSettings kind="lc0" settings={info.settings} busy={busy} onSave={(p) => void save(p)} />}
       {info && (
         <label className="flex items-start gap-2 text-body-sm text-on-surface cursor-pointer">
           <input type="checkbox" checked={info.settings.smart_pruning} disabled={busy}

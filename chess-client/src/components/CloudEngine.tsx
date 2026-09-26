@@ -212,6 +212,10 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
   // Each cloud service's own status: both can run while either tab is shown.
   const [dbStatus, setDbStatus] = useState<EngineStatus>("ok");
   const [liStatus, setLiStatus] = useState<EngineStatus>("ok");
+  // The position each service's result is for: a paused tab still shows its
+  // result for the position on the board, and only that one.
+  const [dbFen, setDbFen] = useState<string | null>(null);
+  const [liFen, setLiFen] = useState<string | null>(null);
   const [engineQueuing, setEngineQueuing] = useState(false);
   // FENs with an active deepen watch — keep Deepen disabled for them so a second
   // click can't restart the watch (which would reset its baseline). Seeded from
@@ -245,7 +249,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
       fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}${rq}`, { signal: ctrl.signal })
         .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<{ status: EngineStatus; moves: CloudMove[] }>; })
         .then((d) => {
-          setEngineMoves(d.moves ?? []); setDbStatus(d.moves?.length ? "ok" : (d.status ?? "unknown"));
+          setEngineMoves(d.moves ?? []); setDbStatus(d.moves?.length ? "ok" : (d.status ?? "unknown")); setDbFen(fen);
           // Lazy second pass: fetch the continuation lines (several querypv calls)
           // once the move table is on screen.
           if (d.moves?.length) {
@@ -271,7 +275,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
     const t = setTimeout(() => {
       fetch(`/api/lichess-eval?fen=${encodeURIComponent(fen)}${rq}`, { signal: ctrl.signal })
         .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<LichessEval>; })
-        .then((d) => { setLichessEval(d); setLiStatus(d.lines?.length ? "ok" : (d.status ?? "unknown")); })
+        .then((d) => { setLichessEval(d); setLiStatus(d.lines?.length ? "ok" : (d.status ?? "unknown")); setLiFen(fen); })
         .catch((e) => { if (!(e instanceof DOMException && e.name === "AbortError")) { setLichessEval(null); setLiStatus("offline"); } });
     }, 350);
     return () => clearTimeout(t);
@@ -415,9 +419,9 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
         </div>
       ) : engineSource === "stockfish" || engineSource === "lc0" ? (
         null /* the local engines are drawn below, always mounted */
-      ) : !running[engineSource] ? (
+      ) : !running[engineSource] && (engineSource === "chessdb" ? dbFen : liFen) !== fen ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center text-on-surface-variant text-body-sm px-3">
-          <span>{engineSource === "chessdb" ? "chessdb.cn" : "Lichess"} is paused and not asked about positions.</span>
+          <span>{engineSource === "chessdb" ? "chessdb.cn" : "Lichess"} is paused: it has not been asked about this position.</span>
           <button onClick={() => toggleRunning(engineSource)} className="h-8 px-3 rounded-full text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard">Run</button>
         </div>
       ) : engineStatus === "loading" ? (

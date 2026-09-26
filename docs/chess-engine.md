@@ -148,6 +148,26 @@ set per engine under Maintenance (0 for none): **depth 40** for Stockfish, and
 **10 million nodes** for Lc0 — Lc0's "depth" is only the average length of the
 lines it explores, so nodes are its measure (about five minutes on an RTX 4090).
 
+## Replies & Strong
+
+As chessdb.cn does, the Engine panel can show for each candidate move how many
+replies the opponent has and how many of them are **strong** — close to the
+best. Few strong replies means a forcing move. For Stockfish and Lc0 a helper
+process of the same engine works this out, one candidate at a time, once the
+main search has settled (Stockfish from depth 16, Lc0 from 100,000 nodes):
+
+- **Stockfish** (on by default): the helper searches every reply to a set depth
+  (20) with its own threads (4 — the main search's default is the physical
+  cores less these, so 12 + 4 on a 16-core machine) and hash (256 MB, out of the
+  same memory budget); a reply is strong within 0.10 pawns of the best
+  (chessdb uses 0.05). About 7–9 s a candidate with four threads.
+- **Lc0** (off by default: its helper loads a second copy of the network onto
+  the card): a short search per candidate (50,000 nodes, well under a second on
+  an RTX 4090) counting the replies it explored within 1% of expected score of
+  the best.
+
+All of it is set in the engine's card on Maintenance → Engines.
+
 ## Measuring speed
 
 `stockfish bench` searches a fixed set of positions and prints the nodes
