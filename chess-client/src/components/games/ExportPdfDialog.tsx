@@ -36,6 +36,7 @@ export default function ExportPdfDialog({
 }) {
   const [fromBlack, setFromBlack] = useState(flipped);
   const [diagramAtEnd, setDiagramAtEnd] = useState(false);
+  const [figurines, setFigurines] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -53,7 +54,7 @@ export default function ExportPdfDialog({
           event: detail.event, date: detail.date,
           result: detail.result, eco: detail.eco, pgn: detail.pgn ?? "",
         },
-        { symbolsFont: font, flipped: fromBlack, diagramAtEnd, producer: "LPDO" },
+        { symbolsFont: font, flipped: fromBlack, diagramAtEnd, figurines, producer: "LPDO" },
       );
 
       const name = `${(detail.date ?? "").slice(0, 10) || "game"}-${surname(detail.white)}-${surname(detail.black)}.pdf`;
@@ -96,6 +97,10 @@ export default function ExportPdfDialog({
               ? `${markers} diagram${markers > 1 ? "s" : ""} marked in the game will be drawn.`
               : "This game marks no diagrams. Add one in the move comments with [#]."}
           </p>
+          <label className={row}>
+            <input type="checkbox" checked={figurines} onChange={(e) => setFigurines(e.target.checked)} className="accent-primary" />
+            Print pieces as figurines (♘f3) rather than letters (Nf3)
+          </label>
           <label className={row}>
             <input type="checkbox" checked={diagramAtEnd} onChange={(e) => setDiagramAtEnd(e.target.checked)} className="accent-primary" />
             Add a diagram of the final position

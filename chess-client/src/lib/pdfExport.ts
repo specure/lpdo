@@ -82,6 +82,10 @@ export interface PdfOptions {
   flipped?: boolean;
   /** Add a diagram of the final position even when the movetext asks for none. */
   diagramAtEnd?: boolean;
+  /** Print pieces as figurines (♘f3) rather than letters (Nf3), the way a
+   *  chess book sets moves. Letters stay for anyone who prefers them — and
+   *  they are what a PGN holds either way. */
+  figurines?: boolean;
   /** Shown in the running header, e.g. "LPDO 0.19.0". */
   producer?: string;
 }
@@ -91,6 +95,12 @@ const GLYPH: Record<string, string> = {
   K: "♔", Q: "♕", R: "♖", B: "♗", N: "♘", P: "♙",
   k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟",
 };
+
+/** A SAN move that names a piece — a figurine can stand in for that letter.
+ *  Pawn moves ("e4", "exd5") name none, and castling is written out. */
+function isPiece(first: string | undefined): first is "K" | "Q" | "R" | "B" | "N" {
+  return first === "K" || first === "Q" || first === "R" || first === "B" || first === "N";
+}
 
 /** `[#]` anywhere in a comment asks for a diagram; the rest is still printed. */
 const DIAGRAM_MARKER = /\s*\[#\]\s*/;
@@ -110,7 +120,7 @@ export async function buildGamePdf(input: PdfGame, opts: PdfOptions): Promise<Ui
   const tree = parsePgnTree(game.pgn);
   const blocks = [
     ...headerBlocks(game, fonts),
-    ...movetextBlocks(tree, fonts, !!opts.flipped),
+    ...movetextBlocks(tree, fonts, !!opts.flipped, opts.figurines !== false),
   ];
   if (opts.diagramAtEnd) {
     const last = tree.mainLine[tree.mainLine.length - 1];
@@ -189,7 +199,7 @@ function para(runs: Run[], indent: number, spaceBefore: number): Para {
 
 /** Walk the tree into paragraphs: the main line as one flowing paragraph, each
  *  variation as its own bracketed, indented one — the shape a printed game has. */
-function movetextBlocks(tree: AnnotatedGame, fonts: Fonts, flipped: boolean): Block[] {
+function movetextBlocks(tree: AnnotatedGame, fonts: Fonts, flipped: boolean, figurines: boolean): Block[] {
   const blocks: Block[] = [];
   let current: Run[] = [];
   const flush = (indent: number, spaceBefore: number) => {
@@ -216,7 +226,17 @@ function movetextBlocks(tree: AnnotatedGame, fonts: Fonts, flipped: boolean): Bl
       const prefix = needsNumber
         ? `${getMoveNum(node)}${node.color === "w" ? "." : "..."}`
         : "";
-      current.push(run(`${prefix}${node.san}${nagsToString(node.annotations.nags)} `, moveFont, size, INK));
+      const tail = `${node.san.slice(figurines && isPiece(node.san[0]) ? 1 : 0)}${nagsToString(node.annotations.nags)} `;
+      if (figurines && isPiece(node.san[0])) {
+        // The piece as a figurine, the square in the text font — one move, two
+        // runs. The symbols font has no bold, so a main-line move's figurine is
+        // a shade lighter than its square; at this size that reads as normal.
+        current.push(run(prefix, moveFont, size, INK));
+        current.push(run(GLYPH[node.san[0]], fonts.symbols, size * 1.02, INK));
+        current.push(run(tail, moveFont, size, INK));
+      } else {
+        current.push(run(`${prefix}${tail}`, moveFont, size, INK));
+      }
 
       const comment = node.annotations.comment ?? "";
       const wantsDiagram = DIAGRAM_MARKER.test(comment);
