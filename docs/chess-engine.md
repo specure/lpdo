@@ -124,8 +124,9 @@ and Lc0 and shows a notice when the server runs an older one.
 
 | Setting | Default | |
 |---|---|---|
-| Threads | one per physical core | A core's second hardware thread adds little to Stockfish, and the server also answers everyone's queries while it analyses. |
+| Threads | one per physical core, less the helpers' | A core's second hardware thread adds little to Stockfish, and the server also answers everyone's queries while it analyses. |
 | Hash | an eighth of the memory, 256 MB – 4 GB | More keeps more of an analysis when you move on and come back. |
+| Lines | 5 (Lc0: 10) | 1–20, set per computer. Each extra line makes Stockfish search a little slower; Lc0 reports its lines from one search at no cost. |
 
 **Memory is one budget.** The server may use 80% of the machine's memory. The
 engine's hash comes out of it and the database gets the rest, keeping at least
@@ -152,19 +153,25 @@ lines it explores, so nodes are its measure (about five minutes on an RTX 4090).
 
 As chessdb.cn does, the Engine panel can show for each candidate move how many
 replies the opponent has and how many of them are **strong** — close to the
-best. Few strong replies means a forcing move. For Stockfish and Lc0 a helper
-process of the same engine works this out, one candidate at a time, once the
-main search has settled (Stockfish from depth 16, Lc0 from 100,000 nodes):
+best. Few strong replies means a forcing move. The replies are the legal moves,
+shown at once. The strong ones are counted by helper processes of the same
+engine once the main search has settled (Stockfish from depth 16, Lc0 from
+100,000 nodes); while a candidate is counted, the Strong column shows how far
+it has got, and "…" while it waits for a free helper.
 
-- **Stockfish** (on by default): the helper searches every reply to a set depth
-  (20) with its own threads (4 — the main search's default is the physical
-  cores less these, so 12 + 4 on a 16-core machine) and hash (256 MB, out of the
-  same memory budget); a reply is strong within 0.10 pawns of the best
-  (chessdb uses 0.05). About 7–9 s a candidate with four threads.
+- **Stockfish** (on by default): each helper is a single-threaded Stockfish
+  that searches every reply of one candidate to a set depth (20). By default
+  there are 5 — as many as the lines shown, so all are counted at once — and the
+  main search gets the physical cores less these: 11 + 5 on a 16-core machine.
+  The helpers share 320 MB of hash, out of the same memory budget. A reply is
+  strong within 0.10 pawns of the best (chessdb uses 0.05). One candidate takes
+  about 10–15 s; on one machine, four candidates took 15 s with four
+  single-threaded helpers, against 41 s one after another with one four-thread
+  helper (Stockfish's threads gain little on such short searches).
 - **Lc0** (off by default: its helper loads a second copy of the network onto
-  the card): a short search per candidate (50,000 nodes, well under a second on
-  an RTX 4090) counting the replies it explored within 1% of expected score of
-  the best.
+  the card): one helper runs a short search per candidate (50,000 nodes, well
+  under a second on an RTX 4090) counting the replies it explored within 1% of
+  expected score of the best.
 
 All of it is set in the engine's card on Maintenance → Engines.
 

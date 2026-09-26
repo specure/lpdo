@@ -135,13 +135,15 @@ impl EngineSettings {
             // queries while it analyses. An eighth of the memory for hash,
             // 256 MB to 4 GB — out of the budget it shares with the database
             // (see db::memory).
-            // Replies & Strong on by default, the helper taking four threads:
-            // 12 + 4 on a 16-core machine.
+            // Replies & Strong on by default, with five single-threaded
+            // helpers — one for each of the five lines the Engine panel shows
+            // by default, so all are counted at once: 11 + 5 on a 16-core
+            // machine. 320 MB of hash for them, 64 MB each.
             Kind::Stockfish => Self {
-                path: None, threads: physical_cores().saturating_sub(4).clamp(1, 64),
+                path: None, threads: physical_cores().saturating_sub(5).clamp(1, 64),
                 hash_mb: crate::db::default_engine_hash_mb(), weights: None, backend: None,
                 max_depth: 40, max_nodes: 0, smart_pruning: false, enabled: true,
-                replies: true, helper_threads: 4, helper_hash_mb: 256, helper_depth: 20, strong_cp: 10,
+                replies: true, helper_threads: 5, helper_hash_mb: 320, helper_depth: 20, strong_cp: 10,
                 helper_nodes: 0, strong_pct: 0.0,
             },
             // Off by default for Lc0: its helper loads a second copy of the
@@ -282,21 +284,61 @@ pub struct Engine {
     latest: Mutex<Option<(std::time::Instant, Option<LatestRelease>)>>,
     /// Held while a benchmark runs.
     benching: Mutex<()>,
-    /// Replies & Strong: the helper process, and what it has counted.
-    helper: Mutex<Option<Helper>>,
+    /// Replies & Strong: the idle helper processes, how many may count at
+    /// once, the counts under way and what has been counted.
+    helpers: std::sync::Mutex<Vec<Helper>>,
+    helper_slots: std::sync::Mutex<Arc<tokio::sync::Semaphore>>,
+    reply_jobs: Arc<std::sync::Mutex<std::collections::HashMap<String, ReplyJob>>>,
     reply_cache: std::sync::Mutex<std::collections::HashMap<String, ReplyCount>>,
+    /// Nodes the last Stockfish count took: sibling positions take about as
+    /// many, which makes the progress of the next one an estimate.
+    reply_nodes: AtomicU64,
 }
 
-/// The helper process: the same engine, started with the helper's settings.
+/// A helper process: the same engine, started with the helper's settings.
 struct Helper {
-    child: Child,
+    // Held for kill_on_drop: dropping a helper ends its process.
+    _child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     /// What it was started with; a change starts another.
     config: String,
-    /// A search was left running (its request went away); drain it first.
-    unfinished: bool,
 }
+
+/// A count asked for and not yet cached: waiting for a helper, under way
+/// (percent done), or failed. Asked for again, it is only looked up; a waiting
+/// one nobody has asked about for a few seconds is dropped before it starts.
+struct ReplyJob {
+    state: ReplyProgress,
+    asked: std::time::Instant,
+}
+
+#[derive(Clone, Debug)]
+enum ReplyProgress {
+    Waiting,
+    Counting(u32),
+    Failed(String, std::time::Instant),
+}
+
+/// Where the count for one position stands, for the Engine panel.
+#[derive(Clone, Debug, Serialize)]
+pub struct ReplyState {
+    pub fen: String,
+    /// "done", "counting", "waiting", "failed" or "none" (not counted, and
+    /// not asked for).
+    pub state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<ReplyCount>,
+    /// Percent done while counting: exact for Lc0 (nodes of the limit), an
+    /// estimate for Stockfish.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pct: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// A waiting count nobody has asked about for this long is dropped.
+const REPLY_ASK_TTL: Duration = Duration::from_secs(4);
 
 /// The opponent's replies after one candidate move.
 #[derive(Clone, Debug, Serialize)]
@@ -371,6 +413,7 @@ impl Engine {
             })
             .unwrap_or_else(|| EngineSettings::for_kind(kind));
         let (tx, _) = broadcast::channel(64);
+        let helpers = helper_count(kind, &settings);
         Arc::new(Self {
             kind,
             data_dir: data_dir.to_path_buf(),
@@ -388,8 +431,11 @@ impl Engine {
             remembered: Arc::new(std::sync::Mutex::new(Remembered::default())),
             latest: Mutex::new(None),
             benching: Mutex::new(()),
-            helper: Mutex::new(None),
+            helpers: std::sync::Mutex::new(Vec::new()),
+            helper_slots: std::sync::Mutex::new(Arc::new(tokio::sync::Semaphore::new(helpers))),
+            reply_jobs: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             reply_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            reply_nodes: AtomicU64::new(0),
         })
     }
 
@@ -618,11 +664,14 @@ impl Engine {
     }
 
     async fn shutdown(&self) {
-        if let Some(mut h) = self.helper.lock().await.take() {
-            let _ = h.stdin.write_all(b"quit\n").await;
-            let _ = h.child.start_kill();
-        }
+        // Dropping the helpers ends them; counts under way finish into keys
+        // (they include the settings) nobody asks for again.
+        self.helpers.lock().unwrap().clear();
+        self.reply_jobs.lock().unwrap().clear();
         self.reply_cache.lock().unwrap().clear();
+        self.reply_nodes.store(0, Ordering::Relaxed);
+        let n = helper_count(self.kind, &*self.settings.lock().await);
+        *self.helper_slots.lock().unwrap() = Arc::new(tokio::sync::Semaphore::new(n));
         if let Some(mut r) = self.running.lock().await.take() {
             let _ = r.stdin.write_all(b"quit\n").await;
             let _ = tokio::time::timeout(Duration::from_secs(2), r.child.wait()).await;
@@ -720,12 +769,12 @@ impl Engine {
                 key,
                 white_to_move: fen.split_whitespace().nth(1) != Some("b"),
                 searching: true,
-                want: lines.clamp(1, 10).min(legal_moves(fen).max(1)),
+                want: lines.clamp(1, 20).min(legal_moves(fen).max(1)),
                 depth: 0, nodes: 0, nps: 0,
                 lines: BTreeMap::new(),
             };
         }
-        send(&mut r.stdin, &format!("setoption name MultiPV value {}", lines.clamp(1, 10))).await?;
+        send(&mut r.stdin, &format!("setoption name MultiPV value {}", lines.clamp(1, 20))).await?;
         let position = match &history {
             Some((start, moves)) if !moves.is_empty() => format!("position fen {start} moves {}", moves.join(" ")),
             _ => format!("position fen {fen}"),
@@ -764,61 +813,135 @@ impl Engine {
         }
     }
 
-    /// Replies & Strong for the position after one candidate move (`fen`,
+    fn reply_key(name: &str, s: &EngineSettings, fen: &str) -> String {
+        format!("{name}|{}|{}|{}|{}|{}", s.helper_depth, s.strong_cp, s.helper_nodes, s.strong_pct, position_key(fen))
+    }
+
+    /// Replies & Strong for the positions after the candidate moves (`fens`,
     /// cleaned): the opponent's legal replies, and how many are within the
-    /// threshold of the best. Stockfish searches every reply to the helper's
-    /// depth; Lc0 runs a short search and counts the replies it explored.
-    pub async fn count_replies(&self, fen: &str) -> Result<ReplyCount, String> {
+    /// threshold of the best. A position not counted yet is queued for the
+    /// next free helper, unless `cached_only` (a paused engine), and the
+    /// Engine panel asks again for the progress. Stockfish searches every
+    /// reply to the helper's depth; Lc0 runs a short search and counts the
+    /// replies it explored.
+    pub async fn replies(self: &Arc<Self>, fens: &[String], cached_only: bool) -> Result<Vec<ReplyState>, String> {
         let settings = self.settings.lock().await.clone();
         if !settings.enabled || !settings.replies {
             return Err("Replies & Strong is switched off for this engine".to_string());
         }
-        self.ensure_started().await?;
-        let (path, name) = {
-            let r = self.running.lock().await;
-            let r = r.as_ref().ok_or("no engine")?;
-            (r.path.clone(), r.name.clone())
+        if !cached_only { self.ensure_started().await?; }
+        let name = self.running.lock().await.as_ref().map(|r| r.name.clone());
+        let state = |fen: &str, state, count, pct, error| ReplyState { fen: fen.to_string(), state, count, pct, error };
+        let Some(name) = name else {
+            return Ok(fens.iter().map(|f| state(f, "none", None, None, None)).collect());
         };
-        let key = format!("{name}|{}|{}|{}|{}|{}", settings.helper_depth, settings.strong_cp, settings.helper_nodes, settings.strong_pct, position_key(fen));
-        if let Some(c) = self.reply_cache.lock().unwrap().get(&key) { return Ok(c.clone()); }
+        let now = std::time::Instant::now();
+        let mut out = Vec::with_capacity(fens.len());
+        for fen in fens {
+            let key = Self::reply_key(&name, &settings, fen);
+            if let Some(c) = self.reply_cache.lock().unwrap().get(&key).cloned() {
+                out.push(state(fen, "done", Some(c), None, None));
+                continue;
+            }
+            let legal = legal_moves(fen);
+            if legal == 0 {
+                out.push(state(fen, "done", Some(ReplyCount { replies: 0, strong: 0, depth: 0, nodes: 0 }), None, None));
+                continue;
+            }
+            let mut jobs = self.reply_jobs.lock().unwrap();
+            if let Some(j) = jobs.get_mut(&key) {
+                match &j.state {
+                    // A failure is reported for a while, then tried again.
+                    ReplyProgress::Failed(_, at) if at.elapsed() > Duration::from_secs(30) => { jobs.remove(&key); }
+                    ReplyProgress::Failed(e, _) => { out.push(state(fen, "failed", None, None, Some(e.clone()))); continue; }
+                    ReplyProgress::Waiting => { j.asked = now; out.push(state(fen, "waiting", None, None, None)); continue; }
+                    ReplyProgress::Counting(p) => { j.asked = now; out.push(state(fen, "counting", None, Some(*p), None)); continue; }
+                }
+            }
+            if cached_only {
+                out.push(state(fen, "none", None, None, None));
+                continue;
+            }
+            jobs.insert(key.clone(), ReplyJob { state: ReplyProgress::Waiting, asked: now });
+            drop(jobs);
+            tokio::spawn(self.clone().run_reply_job(key, fen.clone(), settings.clone()));
+            out.push(state(fen, "waiting", None, None, None));
+        }
+        Ok(out)
+    }
 
+    /// One queued count: wait for a free helper, then count — unless nobody
+    /// has asked about it meanwhile (the panel moved on).
+    async fn run_reply_job(self: Arc<Self>, key: String, fen: String, settings: EngineSettings) {
+        let slots = self.helper_slots.lock().unwrap().clone();
+        let Ok(_permit) = slots.acquire_owned().await else { return };
+        {
+            let mut jobs = self.reply_jobs.lock().unwrap();
+            match jobs.get_mut(&key) {
+                Some(j) if j.asked.elapsed() <= REPLY_ASK_TTL => j.state = ReplyProgress::Counting(0),
+                Some(_) => { jobs.remove(&key); return; }
+                None => return,
+            }
+        }
+        let result = self.count_one(&key, &fen, &settings).await;
+        let mut jobs = self.reply_jobs.lock().unwrap();
+        match result {
+            Ok(c) => {
+                self.reply_cache.lock().unwrap().insert(key.clone(), c);
+                jobs.remove(&key);
+            }
+            Err(e) => {
+                if let Some(j) = jobs.get_mut(&key) { j.state = ReplyProgress::Failed(e, std::time::Instant::now()); }
+            }
+        }
+    }
+
+    fn set_reply_pct(&self, key: &str, pct: u32) {
+        if let Some(j) = self.reply_jobs.lock().unwrap().get_mut(key) {
+            j.state = ReplyProgress::Counting(pct.min(99));
+        }
+    }
+
+    /// Count one position on an idle helper (or a new one); the helper goes
+    /// back to the pool after a clean count, and is ended after a failure.
+    async fn count_one(&self, key: &str, fen: &str, settings: &EngineSettings) -> Result<ReplyCount, String> {
+        let path = self.running.lock().await.as_ref().map(|r| r.path.clone()).ok_or("no engine")?;
         let legal = legal_moves(fen);
-        if legal == 0 {
-            return Ok(ReplyCount { replies: 0, strong: 0, depth: 0, nodes: 0 });
-        }
-        let mut guard = self.helper.lock().await;
         let config = format!("{path}|{}|{}|{:?}|{:?}", settings.helper_threads, settings.helper_hash_mb, settings.weights, settings.backend);
-        if guard.as_ref().is_some_and(|h| h.config != config) {
-            if let Some(mut h) = guard.take() { let _ = h.child.start_kill(); }
-        }
-        if guard.is_none() {
-            let mut hs = settings.clone();
-            hs.threads = settings.helper_threads;
-            hs.hash_mb = settings.helper_hash_mb;
-            if self.kind == Kind::Lc0 && hs.weights.is_none() {
-                hs.weights = self.networks(Some(&path)).into_iter().next();
+        let idle = {
+            let mut pool = self.helpers.lock().unwrap();
+            pool.retain(|h| h.config == config);
+            pool.pop()
+        };
+        let mut h = match idle {
+            Some(h) => h,
+            None => {
+                let mut hs = settings.clone();
+                match self.kind {
+                    // The helper threads and hash, shared among the helpers.
+                    Kind::Stockfish => {
+                        hs.threads = 1;
+                        hs.hash_mb = (settings.helper_hash_mb / helper_count(self.kind, settings) as u32).max(16);
+                    }
+                    Kind::Lc0 => {
+                        hs.threads = settings.helper_threads;
+                        hs.hash_mb = settings.helper_hash_mb;
+                        if hs.weights.is_none() { hs.weights = self.networks(Some(&path)).into_iter().next(); }
+                    }
+                }
+                let (child, mut stdin, stdout, _) = start(&path, &hs, self.kind).await?;
+                if self.kind == Kind::Lc0 {
+                    send(&mut stdin, "setoption name VerboseMoveStats value true").await?;
+                }
+                Helper { _child: child, stdin, stdout, config: config.clone() }
             }
-            let (child, mut stdin, stdout, _) = start(&path, &hs, self.kind).await?;
-            if self.kind == Kind::Lc0 {
-                send(&mut stdin, "setoption name VerboseMoveStats value true").await?;
-            }
-            *guard = Some(Helper { child, stdin, stdout, config, unfinished: false });
-        }
-        let h = guard.as_mut().unwrap();
-        if h.unfinished {
-            send(&mut h.stdin, "stop").await?;
-            let mut line = String::new();
-            loop {
-                line.clear();
-                if h.stdout.read_line(&mut line).await.map_err(|e| e.to_string())? == 0 { break; }
-                if line.starts_with("bestmove") { break; }
-            }
-            h.unfinished = false;
-        }
+        };
         send(&mut h.stdin, &format!("position fen {fen}")).await?;
         match self.kind {
             Kind::Stockfish => {
-                send(&mut h.stdin, &format!("setoption name MultiPV value {}", legal.min(500))).await?;
+                // Stockfish takes at most 256 lines; no position has more
+                // than 218 legal moves.
+                send(&mut h.stdin, &format!("setoption name MultiPV value {}", legal.min(256))).await?;
                 send(&mut h.stdin, &format!("go depth {}", settings.helper_depth.max(1))).await?;
             }
             Kind::Lc0 => {
@@ -826,13 +949,15 @@ impl Engine {
                 send(&mut h.stdin, &format!("go nodes {}", settings.helper_nodes.max(1000))).await?;
             }
         }
-        h.unfinished = true;
 
         // Stockfish: each reply's last exact score, by line. Lc0: each
         // explored reply's visits and expected score, from the move stats.
         let mut scores: std::collections::HashMap<u32, (u32, i32)> = std::collections::HashMap::new();
         let mut stats: std::collections::HashMap<String, (u64, f64)> = std::collections::HashMap::new();
         let (mut depth, mut nodes) = (0u32, 0u64);
+        let reference = self.reply_nodes.load(Ordering::Relaxed);
+        let target_depth = settings.helper_depth.max(1);
+        let mut shown = 0u32;
         let mut line = String::new();
         let read = async {
             loop {
@@ -858,14 +983,31 @@ impl Engine {
                         };
                         scores.insert(l.multipv, (info.depth.unwrap_or(0), score));
                     }
+                    // Progress: Lc0's nodes of its limit. Stockfish's nodes of
+                    // what the last count took, or before any count, by depth:
+                    // each depth takes about half as long again as the one
+                    // before, and the depth reported is the one under way —
+                    // depth 20 of 20 is two thirds of the way, 16 an eighth.
+                    let pct = match self.kind {
+                        Kind::Lc0 => (nodes.saturating_mul(100) / settings.helper_nodes.max(1000)) as u32,
+                        Kind::Stockfish if reference > 0 => (nodes.saturating_mul(100) / reference) as u32,
+                        Kind::Stockfish => (100.0 * 1.5f64.powi(depth as i32 - target_depth as i32 - 1)) as u32,
+                    };
+                    if pct != shown {
+                        shown = pct;
+                        self.set_reply_pct(key, pct);
+                    }
                 }
             }
         };
+        // On a failure or a timeout the helper is dropped, which ends it.
         tokio::time::timeout(Duration::from_secs(180), read).await.map_err(|_| "the helper took too long".to_string())??;
-        h.unfinished = false;
+        self.helpers.lock().unwrap().push(h);
 
-        let count = match self.kind {
+        Ok(match self.kind {
             Kind::Stockfish => {
+                let old = self.reply_nodes.load(Ordering::Relaxed);
+                self.reply_nodes.store(if old == 0 { nodes } else { (old * 2 + nodes) / 3 }, Ordering::Relaxed);
                 let best = scores.values().map(|&(_, s)| s).max().unwrap_or(0);
                 let thr = settings.strong_cp as i32;
                 let strong = scores.values().filter(|&&(_, s)| s >= best - thr).count() as u32;
@@ -881,23 +1023,13 @@ impl Engine {
                 let strong = stats.values().filter(|&&(n, q)| n >= min_visits && q >= best - thr).count() as u32;
                 ReplyCount { replies: legal, strong: strong.max(1), depth, nodes: total.max(nodes) }
             }
-        };
-        self.reply_cache.lock().unwrap().insert(key, count.clone());
-        Ok(count)
+        })
     }
 
     /// The deepest remembered result for `fen`, with the engine running now.
     pub async fn remembered(&self, fen: &str) -> Option<Snapshot> {
         let name = self.running.lock().await.as_ref().map(|r| r.name.clone())?;
         self.remembered.lock().unwrap().get(&format!("{name}|{}", position_key(fen)))
-    }
-
-    /// Replies & Strong for `fen` if counted before with the current settings.
-    pub async fn cached_replies(&self, fen: &str) -> Option<ReplyCount> {
-        let settings = self.settings.lock().await.clone();
-        let name = self.running.lock().await.as_ref().map(|r| r.name.clone())?;
-        let key = format!("{name}|{}|{}|{}|{}|{}", settings.helper_depth, settings.strong_cp, settings.helper_nodes, settings.strong_pct, position_key(fen));
-        self.reply_cache.lock().unwrap().get(&key).cloned()
     }
 
     pub fn current_gen(&self) -> u64 {
@@ -999,6 +1131,18 @@ fn is_executable(p: &Path) -> bool {
 async fn send(stdin: &mut ChildStdin, line: &str) -> Result<(), String> {
     stdin.write_all(format!("{line}\n").as_bytes()).await.map_err(|e| e.to_string())?;
     stdin.flush().await.map_err(|e| e.to_string())
+}
+
+/// How many helpers count Replies & Strong at once. Stockfish: one
+/// single-threaded helper per helper thread, each counting one candidate —
+/// four candidates take about a third of the time they take one after
+/// another with four threads (Lazy SMP gains little on such short searches).
+/// Lc0: one, as its work is on the graphics card.
+fn helper_count(kind: Kind, s: &EngineSettings) -> usize {
+    match kind {
+        Kind::Stockfish => s.helper_threads.max(1) as usize,
+        Kind::Lc0 => 1,
+    }
 }
 
 /// Spawn the engine and run the UCI handshake. Returns the process, its

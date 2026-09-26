@@ -139,43 +139,38 @@ export default function LocalEngine({
     };
   }, [fen, historyKey, lineCount, status?.available, running, kind, paused]);
 
-  // Replies & Strong (when switched on for this engine): for each candidate,
-  // the server's helper counts the opponent's replies and the strong ones.
-  // Asked once the search has settled, one candidate after another; each
-  // position is asked once and remembered.
+  // Replies & Strong (when switched on for this engine). The replies are the
+  // legal moves, counted here at once; the strong ones the server's helpers
+  // count once the search has settled, several candidates at a time. The
+  // panel asks for all candidates and asks again, twice a second, for the
+  // progress until every count is done.
   const repliesOn = !!status?.settings.replies;
-  const [replyCounts, setReplyCounts] = useState<Record<string, { replies: number; strong: number } | "pending">>({});
-  const askedRef = useRef<Set<string>>(new Set());
+  const [replyStates, setReplyStates] = useState<Record<string, ReplyState>>({});
   const settled = !!snap && (kind === "lc0" ? snap.nodes >= 100_000 : snap.depth >= 16);
   const candidates = (snap?.lines ?? []).slice(0, lineCount).map((l) => l.pv_uci[0]).filter(Boolean);
   const candidateKey = candidates.join(",");
   useEffect(() => {
     if (!repliesOn || !settled) return;
-    // Paused: only counts made before — the helper is not started.
-    const cachedOnly = paused;
-    const todo = candidates
-      .map((uci) => childFen(fen, uci))
-      .filter((f): f is string => !!f && !askedRef.current.has(f));
-    if (todo.length === 0) return;
+    const children = candidates.map((uci) => childFen(fen, uci)).filter((f): f is string => !!f);
+    if (children.length === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const ctrl = new AbortController();
-    (async () => {
-      for (const child of todo) {
-        if (ctrl.signal.aborted) return;
-        if (!cachedOnly) askedRef.current.add(child);
-        setReplyCounts((prev) => ({ ...prev, [child]: "pending" }));
-        try {
-          const r = await fetch(apiUrl(`/engine/replies?engine=${kind}&fen=${encodeURIComponent(child)}${cachedOnly ? "&cached_only=true" : ""}`), { signal: ctrl.signal });
-          if (!r.ok) throw new Error();
-          const c = (await r.json()) as { replies: number; strong: number };
-          setReplyCounts((prev) => ({ ...prev, [child]: c }));
-        } catch {
-          askedRef.current.delete(child);
-          setReplyCounts((prev) => { const next = { ...prev }; delete next[child]; return next; });
-          if (ctrl.signal.aborted) return;
-        }
-      }
-    })();
-    return () => ctrl.abort();
+    const ask = async () => {
+      try {
+        // Paused: only counts made before — no helper is started.
+        const r = await fetch(apiUrl(`/engine/replies?engine=${kind}&fens=${encodeURIComponent(children.join("|"))}${paused ? "&cached_only=true" : ""}`), { signal: ctrl.signal });
+        if (!r.ok) return;
+        const got = (await r.json()) as ReplyState[];
+        setReplyStates((prev) => {
+          const next = { ...prev };
+          got.forEach((g, i) => { next[children[i]] = g; });
+          return next;
+        });
+        if (got.some((g) => g.state === "waiting" || g.state === "counting")) timer = setTimeout(ask, 500);
+      } catch { /* aborted, or the server went away */ }
+    };
+    void ask();
+    return () => { ctrl.abort(); clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repliesOn, settled, candidateKey, fen, kind, paused]);
 
@@ -252,7 +247,7 @@ export default function LocalEngine({
         )}
         {lines.slice(0, lineCount).map((l, i) => {
           const child = childFen(fen, l.pv_uci[0]);
-          const rc = child ? replyCounts[child] : undefined;
+          const rc = child ? replyStates[child] : undefined;
           return (
           <div key={l.multipv} className="w-full flex items-baseline gap-2 px-2 py-1 rounded-sm hover:bg-on-surface/8 transition-colors duration-short3 ease-standard">
             <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface-variant">
@@ -260,8 +255,8 @@ export default function LocalEngine({
             </div>
             {repliesOn && (
               <>
-                <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface-variant">{rc === "pending" ? "…" : rc ? rc.replies : "—"}</span>
-                <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface">{rc === "pending" ? "…" : rc ? rc.strong : "—"}</span>
+                <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface-variant">{child ? legalReplies(child) : "—"}</span>
+                <StrongCell rc={rc} waiting={!paused} />
               </>
             )}
             {kind === "lc0" && l.wdl
@@ -290,6 +285,32 @@ function childFen(fen: string, uci: string | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+/** Where the server's count of strong replies stands for one candidate. */
+interface ReplyState {
+  state: "done" | "counting" | "waiting" | "failed" | "none";
+  count?: { replies: number; strong: number; depth: number; nodes: number };
+  pct?: number;
+  error?: string;
+}
+
+/** The opponent's legal replies in `fen`. */
+function legalReplies(fen: string): number {
+  try { return new Chess(fen).moves().length; } catch { return 0; }
+}
+
+/** The Strong column: the count; while counting, how far it has got; "…"
+ *  while waiting for a helper (or for the search to settle); "—" when there is
+ *  no count — paused before one was made, or it failed. */
+function StrongCell({ rc, waiting }: { rc: ReplyState | undefined; waiting: boolean }) {
+  const cls = "shrink-0 w-12 text-right tabular-nums text-body-sm";
+  if (rc?.state === "done" && rc.count) return <span className={`${cls} text-on-surface`}>{rc.count.strong}</span>;
+  if (rc?.state === "counting") return <span className={`${cls} text-on-surface-variant`} title="Being counted">{rc.pct ?? 0}%</span>;
+  if (rc?.state === "waiting" || (waiting && !rc)) {
+    return <span className={`${cls} text-on-surface-variant/60`} title={rc ? "Waiting for a free helper" : "Counted once the search has settled"}>…</span>;
+  }
+  return <span className={`${cls} text-on-surface-variant`} title={rc?.state === "failed" ? rc.error : "Not counted"}>—</span>;
 }
 
 /** "956k", "10.0M": Lc0 is measured in nodes. */

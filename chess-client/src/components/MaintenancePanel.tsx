@@ -227,20 +227,30 @@ function VersionFooter({ status }: { status: StatusInfo | null }) {
   );
 }
 
-/** How many lines Stockfish shows in the Engine panel — only for Stockfish
- *  does each extra line cost search time. Per device. */
-function StockfishLines() {
-  const read = () => { try { return localStorage.getItem("stockfishLineCount") ?? localStorage.getItem("lichessLineCount"); } catch { return null; } };
-  const [lines, setLines] = useState(() => { const n = parseInt(read() ?? "", 10); return Number.isFinite(n) && n > 0 ? Math.min(n, 20) : 5; });
-  const pick = (n: number) => { setLines(n); try { localStorage.setItem("stockfishLineCount", String(n)); } catch { /* per-device convenience only */ } };
-  const pill = (on: boolean) => `h-7 min-w-8 px-2 rounded-full text-label-md ${on ? "bg-primary text-on-primary" : "bg-surface-container text-on-surface-variant hover:bg-on-surface/8"}`;
+/** How many lines an engine shows in the Engine panel, per device. Each
+ *  extra line makes Stockfish search a little slower; Lc0 reports them from
+ *  the same search, at no cost. */
+function EngineLines({ kind }: { kind: "stockfish" | "lc0" }) {
+  const key = kind === "stockfish" ? "stockfishLineCount" : "lc0LineCount";
+  const read = () => { try { return localStorage.getItem(key) ?? (kind === "stockfish" ? localStorage.getItem("lichessLineCount") : null); } catch { return null; } };
+  const [lines, setLines] = useState(() => { const n = parseInt(read() ?? "", 10); return String(Number.isFinite(n) && n > 0 ? Math.min(n, 20) : kind === "stockfish" ? 5 : 10); });
+  const change = (v: string) => {
+    setLines(v);
+    const n = parseInt(v, 10);
+    if (Number.isFinite(n) && n >= 1 && n <= 20) { try { localStorage.setItem(key, String(n)); } catch { /* per-device convenience only */ } }
+  };
   return (
-    <div className="flex items-center gap-3 text-body-sm text-on-surface flex-wrap" title="Each extra line makes Stockfish search a little slower; the other engines show all theirs at no cost">
-      <span className="w-16 shrink-0">Lines</span>
-      <div className="flex items-center gap-1">
-        {[3, 5, 8, 12].map((n) => <button key={n} onClick={() => pick(n)} className={pill(lines === n)}>{n}</button>)}
-      </div>
-      <span className="text-label-sm text-on-surface-variant">on this computer; takes effect when the Engine panel next opens</span>
+    <div className="flex items-center gap-3 text-body-sm text-on-surface flex-wrap"
+      title={kind === "stockfish" ? "Each extra line makes Stockfish search a little slower" : "Lc0 reports its lines from the same search: more cost nothing"}>
+      <label className="flex items-center gap-2">
+        <span>Lines</span>
+        <input type="number" min={1} max={20} value={lines} onChange={(e) => change(e.target.value)}
+          className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
+      </label>
+      <span className="text-label-sm text-on-surface-variant">
+        1–20, on this computer; takes effect when the Engine panel next opens
+        {kind === "stockfish" ? " — as many helpers count all lines' replies at once" : ""}
+      </span>
     </div>
   );
 }
@@ -258,8 +268,8 @@ function RepliesSettings({ kind, settings, busy, onSave }: {
   onSave: (p: ReplyPatch) => void;
 }) {
   const on = !!settings.replies;
-  const [threads, setThreads] = useState(String(settings.helper_threads ?? 4));
-  const [hash, setHash] = useState(String(settings.helper_hash_mb ?? 256));
+  const [threads, setThreads] = useState(String(settings.helper_threads ?? 5));
+  const [hash, setHash] = useState(String(settings.helper_hash_mb ?? 320));
   const [depth, setDepth] = useState(String(settings.helper_depth ?? 20));
   const [pawns, setPawns] = useState(((settings.strong_cp ?? 10) / 100).toFixed(2));
   const [nodes, setNodes] = useState(String(settings.helper_nodes ?? 50000));
@@ -282,7 +292,7 @@ function RepliesSettings({ kind, settings, busy, onSave }: {
           Replies &amp; Strong
           <span className="block text-label-sm text-on-surface-variant">
             {kind === "stockfish"
-              ? "For each candidate move, a second Stockfish counts the opponent's replies and how many are close to the best — low means forcing. It uses the helper threads below; the main search keeps the rest."
+              ? "For each candidate move, a helper Stockfish counts the opponent's replies and how many are close to the best — low means forcing. Each helper takes one thread and counts one candidate; the main search keeps the other threads, and the helpers share the hash below."
               : "For each candidate move, a second Lc0 runs a short search and counts the replies it finds close to the best. It loads another copy of the network onto the graphics card."}
           </span>
         </span>
@@ -291,7 +301,7 @@ function RepliesSettings({ kind, settings, busy, onSave }: {
         <div className="flex items-center gap-4 text-body-sm text-on-surface flex-wrap">
           {kind === "stockfish" ? (
             <>
-              <label className="flex items-center gap-2"><span>Helper threads</span><input type="number" min={1} max={64} value={threads} onChange={(e) => setThreads(e.target.value)} className={field} /></label>
+              <label className="flex items-center gap-2" title="Single-threaded helpers, each counting one candidate: as many as the lines counts them all at once"><span>Helpers</span><input type="number" min={1} max={64} value={threads} onChange={(e) => setThreads(e.target.value)} className={field} /></label>
               <label className="flex items-center gap-2"><span>Hash</span><input type="number" min={16} max={4096} step={64} value={hash} onChange={(e) => setHash(e.target.value)} className={field} /><span className="text-on-surface-variant">MB</span></label>
               <label className="flex items-center gap-2" title="Each candidate's replies are searched to this depth"><span>Depth</span><input type="number" min={1} max={60} value={depth} onChange={(e) => setDepth(e.target.value)} className={field} /></label>
               <label className="flex items-center gap-2" title="A reply is strong within this much of the opponent's best (chessdb uses 0.05)"><span>Strong within</span><input value={pawns} onChange={(e) => setPawns(e.target.value)} inputMode="decimal" className={field} /><span className="text-on-surface-variant">pawns</span></label>
@@ -451,7 +461,7 @@ function EngineSection() {
           </ActionButton>
         </div>
       )}
-      {info && <StockfishLines />}
+      {info && <EngineLines kind="stockfish" />}
       {info && <RepliesSettings kind="stockfish" settings={info.settings} busy={busy} onSave={(p) => void save(p)} />}
       {info && (() => {
         // The memory budget, split as typed: the engine's hash, the database the rest.
@@ -473,7 +483,7 @@ function EngineSection() {
       })()}
       {info && (
         <p className="text-label-sm text-on-surface-variant">
-          Threads default to one per physical core ({info.physical_cores} of {info.cores} logical here),
+          Threads default to one per physical core ({info.physical_cores} of {info.cores} logical here) less the five helpers,
           since the server also answers everyone's queries. The hash comes out of the same memory budget as the
           database — it defaults to an eighth of the memory, at most 4 GB, and the database keeps at least
           2 GB. More hash keeps more of an analysis when you move on and come back; less leaves the
@@ -651,6 +661,7 @@ function Lc0Section() {
           </ActionButton>
         </div>
       )}
+      {info && <EngineLines kind="lc0" />}
       {info && <RepliesSettings kind="lc0" settings={info.settings} busy={busy} onSave={(p) => void save(p)} />}
       {info && (
         <label className="flex items-start gap-2 text-body-sm text-on-surface cursor-pointer">

@@ -201,12 +201,16 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
   // per-move requests) vs plain lines, and how many lines to show/analyse.
   // Set under Maintenance → Engines → Engine panel (per device).
   const [lichessShowStats] = useState(() => localStorage.getItem("lichessShowStats") !== "false");
-  // Stockfish's lines (Maintenance → Engines → Stockfish): only there does
-  // each extra line cost search time. Lichess shows every line its cloud has,
-  // Lc0 up to ten (its search is the same however many it reports).
+  // The local engines' lines (Maintenance → Engines, per device): each extra
+  // line costs Stockfish search time, Lc0 nothing. Lichess shows every line
+  // its cloud has.
   const [stockfishLineCount] = useState(() => {
     const n = parseInt(localStorage.getItem("stockfishLineCount") ?? localStorage.getItem("lichessLineCount") ?? "", 10);
     return Number.isFinite(n) && n > 0 ? Math.min(n, 20) : 5;
+  });
+  const [lc0LineCount] = useState(() => {
+    const n = parseInt(localStorage.getItem("lc0LineCount") ?? "", 10);
+    return Number.isFinite(n) && n > 0 ? Math.min(n, 20) : 10;
   });
 
   // Each cloud service's own status: both can run while either tab is shown.
@@ -569,7 +573,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
       {(["stockfish", "lc0"] as const).filter((k) => enabled[k]).map((k) => (
         <div key={k} className={engineSource === k ? "flex-1 flex flex-col min-h-0" : "hidden"}>
           <LocalEngine
-            kind={k} fen={fen} history={history} lineCount={k === "stockfish" ? stockfishLineCount : 10} onPlayLine={onPlayLine}
+            kind={k} fen={fen} history={history} lineCount={k === "stockfish" ? stockfishLineCount : lc0LineCount} onPlayLine={onPlayLine}
             paused={!running[k]} onTogglePause={() => toggleRunning(k)}
           />
         </div>

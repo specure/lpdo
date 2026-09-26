@@ -1795,24 +1795,26 @@ async fn engines_enabled_handler(State(state): State<AppState>) -> Json<serde_js
 
 #[derive(Deserialize)]
 struct EngineRepliesQuery {
-    fen: String,
+    /// The positions after the candidate moves, separated by "|".
+    fens: String,
     engine: Option<String>,
-    /// Only what has been counted before; never starts the helper.
+    /// Only what has been counted before; never starts a helper.
     #[serde(default)]
     cached_only: bool,
 }
 
-/// Replies & Strong for the position after a candidate move.
+/// Replies & Strong for the positions after the candidate moves: each one's
+/// count, or how far its count has got. Asking starts the counts not yet
+/// under way; the Engine panel asks again until all are done.
 async fn engine_replies_handler(
     State(state): State<AppState>,
     Query(q): Query<EngineRepliesQuery>,
-) -> ApiResult<crate::engine::ReplyCount> {
-    let fen = crate::engine::clean_fen(&q.fen).ok_or((StatusCode::BAD_REQUEST, "not a legal position".to_string()))?;
+) -> ApiResult<Vec<crate::engine::ReplyState>> {
+    let fens = q.fens.split('|').take(20)
+        .map(|f| crate::engine::clean_fen(f).ok_or((StatusCode::BAD_REQUEST, format!("not a legal position: {f}"))))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     let engine = pick_engine(&state, &WhichEngine { engine: q.engine.clone() })?;
-    if q.cached_only {
-        return engine.cached_replies(&fen).await.map(Json).ok_or((StatusCode::NOT_FOUND, "not counted yet".to_string()));
-    }
-    engine.count_replies(&fen).await.map(Json).map_err(|e| (StatusCode::CONFLICT, e))
+    engine.replies(&fens, q.cached_only).await.map(Json).map_err(|e| (StatusCode::CONFLICT, e))
 }
 
 #[derive(Deserialize)]
