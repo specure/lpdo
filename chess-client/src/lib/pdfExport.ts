@@ -11,7 +11,7 @@
 // the metadata is the game itself.
 
 import { PDFDocument, PDFFont, PDFPage, PDFName, StandardFonts, rgb, RGB } from "pdf-lib";
-import { PIECE_OUTLINES, PIECE_UNITS_PER_EM } from "./pieceOutlines";
+import { PIECE_BODIES, PIECE_OUTLINES, PIECE_UNITS_PER_EM } from "./pieceOutlines";
 import { Chess } from "chess.js";
 import { parsePgnTree, AnnotatedGame, MoveNode } from "./parsePgnTree";
 import { getMoveNum } from "./moveTreeNav";
@@ -200,8 +200,14 @@ function movetextBlocks(tree: AnnotatedGame, fonts: Fonts, flipped: boolean, fig
     current = [];
   };
 
+  // A marker in the game's opening comment asks for the starting position —
+  // which is how a game that begins from a diagram is annotated.
   if (tree.startComment) {
-    blocks.push(para([run(tree.startComment, fonts.italic, SIZE.variation, MUTED)], 0, 0));
+    const text = tree.startComment.replace(DIAGRAM_MARKER, " ").trim();
+    if (text) blocks.push(para([run(text, fonts.italic, SIZE.variation, MUTED)], 0, 0));
+    if (DIAGRAM_MARKER.test(tree.startComment)) {
+      blocks.push({ kind: "diagram", fen: tree.startFen, flipped });
+    }
   }
 
   const walk = (line: MoveNode[], depth: number) => {
@@ -426,10 +432,14 @@ function drawDiagram(page: PDFPage, fonts: Fonts, diagram: Diagram, x: number, y
  *  drawing with the square showing through it. */
 function drawPiece(page: PDFPage, piece: string, x: number, y: number, size: number) {
   const scale = size / PIECE_UNITS_PER_EM;
-  const solid = PIECE_OUTLINES[piece.toLowerCase()];
+  const body = PIECE_BODIES[piece];
   const own = PIECE_OUTLINES[piece];
-  if (!own || !solid) return;
-  page.drawSvgPath(solid, { x, y, scale, color: rgb(1, 1, 1), borderColor: rgb(1, 1, 1), borderWidth: size * 0.03 });
+  if (!own || !body) return;
+  // The body first, in white: it has no holes, so nothing of the square shows
+  // through the piece. Then the piece itself in black — where it leaves holes
+  // (a white piece's interior, a black piece's detail lines) the white body
+  // shows, which is how a printed diagram draws them.
+  page.drawSvgPath(body, { x, y, scale, color: rgb(1, 1, 1) });
   page.drawSvgPath(own, { x, y, scale, color: INK });
 }
 
