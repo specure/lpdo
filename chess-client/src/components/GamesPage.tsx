@@ -16,6 +16,7 @@ import { useNeighbourResize } from "../lib/panelResize";
 import { useGamePgn } from "../lib/useGamePgn";
 import { EMPTY_PLAYER_VIEW, loadPlayerViewState, savePlayerViewState } from "../lib/playerViewState";
 import { useArrowToggles, type CombinedMove } from "./HintArrows";
+import { useShowEngineGames } from "../lib/engineGames";
 
 // The Games page: a DB-wide analysis layout with every panel visible at once
 // (#219). Six areas — A main position board, B opening-explorer moves, C engine
@@ -95,6 +96,8 @@ function displayRound(round: string | null | undefined): string {
 }
 
 export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, player, onOpenInAnalysis, onOpenManyInAnalysis, analysisCapacity, collections, onCollectionChange, reloadKey, leadingPanel, leadingPanelSize = 14 }: Props) {
+  // Engine games counted or not (#296): one setting shared with Analysis.
+  const [showEngines, setShowEngines] = useShowEngineGames();
   const playerScoped = player !== undefined;
   // Restore the Games page's last analysed line + filters (once, on mount). Never
   // for the player-scoped view — that always locks to the externally-chosen player.
@@ -324,6 +327,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     if (scopePublicOnly) params.set("visibility", "public");
     if (scopeCollectionId !== null) params.set("collection_id", String(scopeCollectionId));
     if (scopeIncludeDeleted) params.set("include_deleted", "true");
+    if (!showEngines) params.set("exclude_engines", "true");
     return params;
   }
 
@@ -358,7 +362,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
         if (token === queryToken.current) { setError(e instanceof Error ? e.message : "Failed to load games"); setLoading(false); }
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p1?.id, p1Color, p2?.id, p2Color, event, dateFrom, dateTo, firstMovesStr, scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, reloadKey]);
+  }, [p1?.id, p1Color, p2?.id, p2Color, event, dateFrom, dateTo, firstMovesStr, scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, reloadKey, showEngines]);
 
   function loadMore() {
     if (loading || loadingMore || total === null || games.length >= total) return;
@@ -393,13 +397,14 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     // game list — DB-wide only when no player is chosen.
     const primary = p1 ?? p2;
     if (primary) { params.set("player_id", String(primary.id)); params.set("color", p1 ? p1Color : p2Color); }
+    if (!showEngines) params.set("exclude_engines", "true");
 
     fetch(`/api/position/moves?${params}`, { signal: movesAbortRef.current.signal })
       .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<MoveStats[]>; })
       .then((data) => { setMoveStats(data); setMovesLoading(false); })
       .catch((e) => { if (e instanceof DOMException && e.name === "AbortError") return; setMoveStats([]); setMovesLoading(false); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listOnly, firstMovesStr, dateFrom, dateTo, scopePublicOnly, scopeCollectionId, p1?.id, p1Color, p2?.id, p2Color]);
+  }, [listOnly, firstMovesStr, dateFrom, dateTo, scopePublicOnly, scopeCollectionId, p1?.id, p1Color, p2?.id, p2Color, showEngines]);
 
   // Explorer move-number prefix: White to move → "N.", Black to move → "N...".
   const moveNo = Math.floor(moveSequence.length / 2) + 1;
@@ -568,6 +573,13 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                 </select>
               </div>
             )}
+            {/* Engine games (#296) — the same switch as on Analysis and the
+                Players list: off, they count nowhere. */}
+            <label className="flex items-center gap-2 text-body-sm text-on-surface cursor-pointer"
+              title="TCEC and the like, games rated above any human, and BOT-titled players. Off, they are left out of the games and the move statistics, here and on Analysis.">
+              <input type="checkbox" checked={showEngines} onChange={(e) => setShowEngines(e.target.checked)} className="accent-primary" />
+              <span>Include engine games</span>
+            </label>
           </div>
         </div>
           </Panel>
