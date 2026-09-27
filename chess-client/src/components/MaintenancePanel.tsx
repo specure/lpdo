@@ -978,6 +978,87 @@ function CloudEnginesSection() {
   );
 }
 
+// ── Kept engine results ──────────────────────────────────────────────────────
+// Stockfish's and Lc0's results, one per position, kept in the database so a
+// restart loses nothing — per engine version, as Stockfish 19 and 20 (or Lc0
+// with another network) differ. Another version's result shows, labelled,
+// until the engine in use has its own; old versions can be deleted here.
+interface StoredEngine { engine: string; kind: string; positions: number; bytes: number; updated: number | null }
+
+function EngineResultsSection() {
+  const [rows, setRows] = useState<StoredEngine[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = () => {
+    fetch(apiUrl("/engine/results"))
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
+      .then((d: StoredEngine[]) => { setRows(d); setError(null); })
+      .catch((e) => setError(String(e)));
+  };
+  useEffect(load, []);
+  async function remove(engine: string) {
+    setBusy(true);
+    try {
+      const r = await fetch(apiUrl(`/engine/results?engine=${encodeURIComponent(engine)}`), { method: "DELETE" });
+      if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
+      setConfirm(null);
+      load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const size = (b: number) => (b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1e3))} kB`);
+  const total = rows?.reduce((n, r) => n + r.positions, 0) ?? 0;
+  return (
+    <SectionCard title="Kept engine results" status={rows ? `${total.toLocaleString()} position${total === 1 ? "" : "s"}` : undefined}>
+      <p className="text-body-sm text-on-surface-variant">
+        Stockfish's and Lc0's furthest result for each position they analysed, kept in the database so a
+        restart loses nothing — per engine version. After an upgrade the older version's result shows,
+        greyed and labelled, until the new one has its own; delete an old version's results here when they
+        are no longer wanted.
+      </p>
+      {rows && rows.length === 0 && <p className="text-body-sm text-on-surface-variant">None yet.</p>}
+      {rows && rows.length > 0 && (
+        <table className="w-full text-body-sm text-on-surface">
+          <thead>
+            <tr className="text-label-sm text-on-surface-variant text-left">
+              <th className="font-normal py-1">Engine</th>
+              <th className="font-normal py-1 text-right">Positions</th>
+              <th className="font-normal py-1 text-right">Size</th>
+              <th className="font-normal py-1 text-right">Last kept</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.engine} className="border-t border-outline/30">
+                <td className="py-1 pr-2 break-all">{r.engine}</td>
+                <td className="py-1 text-right tabular-nums">{r.positions.toLocaleString()}</td>
+                <td className="py-1 text-right tabular-nums">{size(r.bytes)}</td>
+                <td className="py-1 text-right tabular-nums">{r.updated ? new Date(r.updated * 1000).toLocaleDateString() : "—"}</td>
+                <td className="py-1 pl-2 text-right whitespace-nowrap">
+                  {confirm === r.engine ? (
+                    <>
+                      <button onClick={() => void remove(r.engine)} disabled={busy} className="h-7 px-3 rounded-full text-label-md text-error hover:bg-error/8 disabled:opacity-50">Delete {r.positions.toLocaleString()}</button>
+                      <button onClick={() => setConfirm(null)} className="h-7 px-3 rounded-full text-label-md text-on-surface-variant hover:bg-on-surface/8">Cancel</button>
+                    </>
+                  ) : (
+                    <button onClick={() => setConfirm(r.engine)} className="h-7 px-3 rounded-full text-label-md text-primary hover:bg-primary/8">Delete…</button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {error && <p className="text-body-sm text-error">{error}</p>}
+    </SectionCard>
+  );
+}
+
 // ── Engine benchmark ──────────────────────────────────────────────────────────
 // Stockfish's `bench` on the server: a fixed set of positions searched to a
 // fixed depth, reporting nodes per second and the time taken, with the threads
@@ -2180,6 +2261,7 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
               <EngineSection />
               <Lc0Section />
               <CloudEnginesSection />
+              <div className="md:col-span-2"><EngineResultsSection /></div>
             </div>
           </div>
 

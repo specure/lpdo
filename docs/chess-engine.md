@@ -165,6 +165,21 @@ minutes — the computer went to sleep, say — the server stops the search.
 While the panel shows a remembered result, deeper than the new search has got,
 its header also says how far the new search is ("searching: depth 22").
 
+## Kept results
+
+Every position Stockfish or Lc0 analyses keeps its furthest result — in the
+database, so it outlives a restart of the server or the app, and it is there for
+everyone who uses the server. Coming back to a position shows it at once, and
+the engine deepens it from there.
+
+Results are kept per engine version: Stockfish 19 and 20, or Lc0 with another
+network, judge positions differently. After an upgrade, a position the new
+version has not analysed yet shows the older version's result, greyed and
+labelled ("from Stockfish 19"), until the new one has its own; the marks and
+strong-reply counts of the positions before it use only the version in use.
+Maintenance → Engines → **Kept engine results** lists them per version, with the
+room they take, and deletes an old version's. A result takes about 1–2 kB.
+
 ## Replies & Strong
 
 As chessdb.cn does, the Engine panel can show for each candidate move how many

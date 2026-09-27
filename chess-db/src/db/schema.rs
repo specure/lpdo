@@ -300,6 +300,24 @@ pub fn init(conn: &Connection) -> Result<()> {
         [], |r| r.get(0),
     )?;
     conn.execute_batch("CREATE TABLE IF NOT EXISTS engine_games (game_id INTEGER PRIMARY KEY);")?;
+    // The local engines' results (#309, #313), one per engine and position —
+    // the furthest search — so they outlive restarts. `engine` is its
+    // identity ("Stockfish 19", Lc0 with its network); `kind` finds another
+    // version's result while the one in use has none. Lines as JSON, as the
+    // Engine panel gets them (White-relative).
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS engine_evals (
+            engine VARCHAR NOT NULL,
+            kind VARCHAR NOT NULL,
+            position VARCHAR NOT NULL,
+            depth INTEGER NOT NULL,
+            nodes BIGINT NOT NULL,
+            multipv INTEGER NOT NULL,
+            lines VARCHAR NOT NULL,
+            updated_at TIMESTAMP NOT NULL,
+            PRIMARY KEY (engine, position)
+        );",
+    )?;
     if !had_engine_games {
         println!("Finding engine games (one-time migration)…");
         conn.execute_batch(

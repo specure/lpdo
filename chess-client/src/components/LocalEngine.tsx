@@ -39,6 +39,9 @@ interface Snapshot {
   done: boolean;
   /** Remembered from an earlier search of this position. */
   cached?: boolean;
+  /** Computed by another version of the engine (an older Stockfish, Lc0 with
+   *  another network): shown, labelled, until this one has its own. */
+  engine?: string;
 }
 
 export default function LocalEngine({
@@ -276,9 +279,11 @@ export default function LocalEngine({
           {status.name ?? "Engine"}
           {snap ? (kind === "lc0" ? ` · ${fmtNodes(snap.nodes)} nodes` : ` · depth ${snap.depth}`) : ""}
           {snap?.done && !snap.cached ? ` · ${stopReason}` : ""}
-          {snap?.cached
-            ? <span title={paused ? "Remembered from an earlier search" : "Remembered from an earlier search; the engine is deepening it"}> (cached)</span>
-            : speed ? ` · ${speed}` : ""}
+          {snap?.engine
+            ? <span title={`Computed by ${snap.engine}; ${status.name ?? "this engine"} has no result of its own for this position yet`}> (from {snap.engine})</span>
+            : snap?.cached
+              ? <span title={paused ? "Remembered from an earlier search" : "Remembered from an earlier search; the engine is deepening it"}> (cached)</span>
+              : speed ? ` · ${speed}` : ""}
           {snap?.cached && searching && live && (
             <span title="The search under way; its lines replace the remembered ones once it is deeper">
               {" · searching: "}{kind === "lc0" ? `${fmtNodes(live.nodes)} nodes` : `depth ${live.depth}`}
@@ -318,7 +323,7 @@ export default function LocalEngine({
         </div>
       )}
       {streamError && <div className="px-3 py-1 text-error text-body-sm">{streamError}</div>}
-      <div className="flex-1 overflow-y-auto p-2">
+      <div className={`flex-1 overflow-y-auto p-2 ${snap?.engine ? "opacity-60" : ""}`}>
         {lines.length === 0 ? (
           <div className="p-2 text-center text-on-surface-variant text-body-sm">
             {paused ? "Paused." : running ? "Analysing…" : "Stopped."}
