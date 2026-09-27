@@ -390,10 +390,9 @@ interface Props {
    * page switches and restarts (remembered per open game). */
   flipped?: boolean;
   onFlippedChange?: (flipped: boolean) => void;
-  /** Database and engine arrows and forcing rings over the board (the
+  /** Database and engine arrows over the board (the
    *  Analysis page's, see HintArrows), and their checkboxes for the toolbar. */
   hintArrows?: HintArrow[];
-  hintRings?: { from: string; to: string }[];
   arrowControls?: React.ReactNode;
 }
 
@@ -838,7 +837,7 @@ function DetailsPanel({
   );
 }
 
-export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange, menuExtras, hintArrows = [], hintRings = [], arrowControls }: Props) {
+export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange, menuExtras, hintArrows = [], arrowControls }: Props) {
   const [detail, setDetail] = useState<GameDetail | null>(null);
   const [detailReloadKey, setDetailReloadKey] = useState(0);
   // The board's DOM id, unique per mounted GameBoard. react-chessboard finds a
@@ -1973,11 +1972,10 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
               }}
             />
             </BoardErrorBoundary>
-            {/* Database / engine arrows and forcing rings — fainter while the
+            {/* Database / engine arrows — fainter while the
                 game's own arrows are on the board, which keep the stage. */}
             <HintArrowsOverlay
               arrows={hintArrows}
-              rings={hintRings}
               flipped={flipped}
               size={squareSize}
               faint={movesEditor.active ? movesEditor.currentArrows.length > 0 : annotationArrows.length > 0}

@@ -4,7 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { apiUrl, engineAnalyseUrl, type EngineHistory, type EngineKind } from "../api";
 import ExternalLinkIcon from "./ExternalLinkIcon";
 import { PvLine, pvToSan, fmtLichess, moverScore, moveMark, evalColor } from "./CloudEngine";
-import { FORCING_REPLIES, type EngineMove } from "./HintArrows";
+import type { EngineMove } from "./HintArrows";
 
 // The server's own engine (#309): Stockfish or any UCI engine installed on
 // the machine the server runs on. LPDO does not ship one, so when none is
@@ -66,7 +66,7 @@ export default function LocalEngine({
   paused?: boolean;
   onTogglePause?: () => void;
   /** The engine's "!" and unmarked moves, best first, for the board's
-   *  arrows and forcing rings (only the open tab's are wanted). */
+   *  arrows. */
   onEngineMoves?: (moves: EngineMove[]) => void;
 }) {
   const [status, setStatus] = useState<EngineStatus | null>(null);
@@ -278,9 +278,7 @@ export default function LocalEngine({
   movesRef.current = lines.flatMap((l, i) => {
     const uci = l.pv_uci[0];
     if (!uci || moveMark(markBest, markScores[i], markThreshold, neutralThreshold) === "?") return [];
-    const rc = l.rs;
-    const forcing = rc?.state === "done" && !!rc.count && !rc.at_least && rc.count.strong <= FORCING_REPLIES;
-    return [{ from: uci.slice(0, 2), to: uci.slice(2, 4), strong: moveMark(markBest, markScores[i], markThreshold, neutralThreshold) === "!", forcing }];
+    return [{ from: uci.slice(0, 2), to: uci.slice(2, 4), strong: moveMark(markBest, markScores[i], markThreshold, neutralThreshold) === "!" }];
   });
   // Why a search ended by itself: its threshold, or the time cap.
   const limit = kind === "lc0" ? status.settings.max_nodes ?? 0 : status.settings.max_depth ?? 0;

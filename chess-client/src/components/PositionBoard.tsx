@@ -6,7 +6,7 @@ import { Chess } from "chess.js";
 import { GameSummary, MoveStats } from "../types";
 import PositionMoves from "./PositionMoves";
 import { useClickToMove, oneClickPointer } from "./useClickToMove";
-import { ArrowToggles, HintArrowsOverlay, dbArrows, engineArrows, forcingRings, type CombinedMove, type useArrowToggles } from "./HintArrows";
+import { ArrowToggles, HintArrowsOverlay, dbArrows, engineArrows, type CombinedMove, type useArrowToggles } from "./HintArrows";
 
 const IconFlip = () => (
   <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -44,7 +44,7 @@ interface Props {
    *  shows the position. */
   onMove?: (san: string) => void;
   /** The engines' moves for this position (the Engine panel beside it), for
-   *  their arrows and forcing rings. */
+   *  their arrows. */
   engineMoves?: CombinedMove[];
   /** Which arrows show, with their checkboxes on the board. Without it, the
    *  database's arrows only (the Players page). */
@@ -112,13 +112,12 @@ export default function PositionBoard({
   }, [ctm.selectedSquare, ctm.legalDestinations, fen]);
 
   // The database's three most played moves, the engines' strong moves and
-  // the forcing moves (see HintArrows), as the checkboxes have them.
-  const on = arrowToggles?.on ?? { db: true, engine: false, forcing: false };
+  // (see HintArrows), as the checkboxes have them.
+  const on = arrowToggles?.on ?? { db: true, engine: false };
   const hints = useMemo(() => [
     ...(on.db ? dbArrows(fen, moveStats ?? [], selectedMoveSan) : []),
     ...(on.engine ? engineArrows(engineMoves) : []),
   ], [on.db, on.engine, fen, moveStats, selectedMoveSan, engineMoves]);
-  const rings = useMemo(() => (on.forcing ? forcingRings(engineMoves) : []), [on.forcing, engineMoves]);
 
   // The one-click preview.
   const shownArrows: Arrow[] = ctm.previewMove
@@ -158,7 +157,7 @@ export default function PositionBoard({
           onPointerCancel={onMove ? oneClick.onPointerCancel : undefined}
         >
           <BoardErrorBoundary>
-          <HintArrowsOverlay arrows={hints} rings={rings} flipped={flipped} size={squareSize} />
+          <HintArrowsOverlay arrows={hints} flipped={flipped} size={squareSize} />
           <Chessboard
             options={{
               id: "position-board", // unique id — see MiniBoard note (shared default id collides)

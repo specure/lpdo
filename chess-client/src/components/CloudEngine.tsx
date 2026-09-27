@@ -3,7 +3,7 @@ import { Chess } from "chess.js";
 import { addCloudWatch, apiUrl, getCloudWatches, type EngineHistory } from "../api";
 import { CLOUD_WATCH_REMOVED, CLOUD_WATCH_UPDATED } from "./ActivityIndicator";
 import LocalEngine from "./LocalEngine";
-import { FORCING_REPLIES, combineEngineMoves, type CombinedMove, type EngineMove } from "./HintArrows";
+import { combineEngineMoves, type CombinedMove, type EngineMove } from "./HintArrows";
 
 // Cloud engine evaluation of one position (#221), from chessdb.cn or Lichess
 // (Stockfish) through the daemon, which caches by position. Lifted out of the
@@ -150,7 +150,7 @@ interface Props {
   watchLabel?: string;
   /** Play a PV prefix on the host's board. Omitted ⇒ the lines are read-only. */
   onPlayLine?: (sans: string[]) => void;
-  /** All engines' moves together, for the board's arrows and forcing rings. */
+  /** All engines' moves together, for the board's arrows. */
   onEngineMoves?: (moves: CombinedMove[]) => void;
 }
 
@@ -361,10 +361,8 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine, onEn
     return () => ctrl.abort();
   }, [fen, engineSource, lichessEval, lichessShowStats, lichessStrongCp]);
 
-  // The board's arrows and forcing rings: every engine's moves for this
-  // position, combined — the local engines report theirs; the cloud ones'
-  // come from their results. Forcing: at most FORCING_REPLIES strong replies,
-  // of more replies known than that — two lines alone prove nothing.
+  // The board's arrows: every engine's moves for this position, combined —
+  // the local engines report theirs; the cloud ones' come from their results.
   const [movesBySource, setMovesBySource] = useState<Record<string, EngineMove[]>>({});
   const setMovesOf = useCallback((src: EngineSource, moves: EngineMove[]) => {
     setMovesBySource((prev) => (JSON.stringify(prev[src] ?? []) === JSON.stringify(moves) ? prev : { ...prev, [src]: moves }));
@@ -375,8 +373,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine, onEn
     const db: EngineMove[] = enabled.chessdb && dbFen === fen ? engineMoves.flatMap((m) => {
       const nn = parseNote(m.note);
       if (!m.uci || nn?.mark === "?") return [];
-      const opp = nn ? parseInt(nn.opp, 10) : NaN, strong = nn ? parseInt(nn.oppStrong, 10) : NaN;
-      return [{ ...split(m.uci), strong: nn?.mark === "!", forcing: strong >= 1 && strong <= FORCING_REPLIES && strong < opp }];
+      return [{ ...split(m.uci), strong: nn?.mark === "!" }];
     }) : [];
     let li: EngineMove[] = [];
     if (enabled.lichess && liFen === fen && lichessEval) {
@@ -387,13 +384,12 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine, onEn
         const uci = l.pvUci[0];
         const mark = moveMark(best, scores[i], lichessStrongCp, lichessNeutralCp);
         if (!uci || mark === "?") return [];
-        const st = lichessStats[uci];
-        return [{ ...split(uci), strong: mark === "!", forcing: !!st && st.strong >= 1 && st.strong <= FORCING_REPLIES && st.strong < st.replies }];
+        return [{ ...split(uci), strong: mark === "!" }];
       });
     }
     setMovesOf("chessdb", db);
     setMovesOf("lichess", li);
-  }, [onEngineMoves, enabled.chessdb, enabled.lichess, fen, dbFen, liFen, engineMoves, lichessEval, lichessStats, lichessStrongCp, lichessNeutralCp, setMovesOf]);
+  }, [onEngineMoves, enabled.chessdb, enabled.lichess, fen, dbFen, liFen, engineMoves, lichessEval, lichessStrongCp, lichessNeutralCp, setMovesOf]);
   const reportedMovesRef = useRef<string | null>(null);
   useEffect(() => {
     if (!onEngineMoves) return;

@@ -14,7 +14,7 @@ import { useNeighbourResize } from "../lib/panelResize";
 import { fetchPgns, savePgnFile } from "../lib/exportPgn";
 import type { EngineHistory } from "../api";
 import PrintDialog, { ExportableGame } from "./games/PrintDialog";
-import { ArrowToggles, dbArrows, engineArrows, forcingRings, useArrowToggles, type CombinedMove } from "./HintArrows";
+import { ArrowToggles, dbArrows, engineArrows, useArrowToggles, type CombinedMove } from "./HintArrows";
 
 // The Analysis board (#220): the editable, multi-game workbench. Several games
 // open at once as mini-board tabs (A). The active game is edited in a full
@@ -273,14 +273,13 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
 
   // The board's arrows (see HintArrows): the database's three most played
   // moves (the Reference moves), every engine's strong moves (from the Engine
-  // panel), and the forcing moves — as the checkboxes have them.
+  // panel) — as the checkboxes have them.
   const [engineMoves, setEngineMoves] = useState<CombinedMove[]>([]);
   const arrowToggles = useArrowToggles("analysis");
   const hintArrows = useMemo(() => [
     ...(arrowToggles.on.db ? dbArrows(effFen, refMoves) : []),
     ...(arrowToggles.on.engine ? engineArrows(engineMoves) : []),
   ], [arrowToggles.on.db, arrowToggles.on.engine, effFen, refMoves, engineMoves]);
-  const hintRings = useMemo(() => (arrowToggles.on.forcing ? forcingRings(engineMoves) : []), [arrowToggles.on.forcing, engineMoves]);
 
   if (tabs.length === 0) {
     return (
@@ -364,7 +363,6 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
               <GameBoard
                 game={active.game}
                 hintArrows={hintArrows}
-                hintRings={hintRings}
                 arrowControls={<ArrowToggles {...arrowToggles} />}
                 onPositionChange={handlePositionChange}
                 initialCursor={active.cursor}
