@@ -447,9 +447,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
                   ))}
                 </div>
               )
-            ) : tab === "engine" ? (
-              <CloudEngine fen={effFen} history={history} watchLabel={active ? `${active.game.white} – ${active.game.black}` : "Position"} onPlayLine={playSans} />
-            ) : (
+            ) : tab === "engine" ? null : (
               <div className="flex-1 min-h-0 flex flex-col">
                 {/* Enter opens the previewed game, a double-click the game
                     clicked — as the preview's "Open in Analysis" does. */}
@@ -542,6 +540,11 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
                 )}
               </div>
             )}
+            {/* Kept while Reference or Games is shown — hidden, not closed — so
+                a quick look there does not stop the engines' searches. */}
+            <div className={tab === "engine" ? "flex-1 min-h-0 flex flex-col" : "hidden"}>
+              <CloudEngine fen={effFen} history={history} watchLabel={active ? `${active.game.white} – ${active.game.black}` : "Position"} onPlayLine={playSans} />
+            </div>
           </div>
         </Panel>
       </Group>
