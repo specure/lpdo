@@ -858,59 +858,76 @@ function CloudEnginesSection() {
       setError(e instanceof Error ? e.message : String(e));
     }
   }
-  return (
-    <SectionCard title="Cloud engines" status={maxMove == null ? undefined : maxMove === 0 ? "every move" : `up to move ${maxMove}`}>
-      <p className="text-body-sm text-on-surface-variant">
-        The Engine panel's <em>chessdb</em> and <em>Lichess</em> analyses look the position up on those
-        services, which sends it there — and chessdb keeps what it is asked. Past the opening that means
-        the positions of the games you study, often your own. The server asks them only up to a move;
-        Stockfish and Lc0 on the server analyse everything after it.
+  // The move cap is one setting for both services; each card shows it, and
+  // a save's result shows in the card it was made in.
+  const [from, setFrom] = useState<"chessdb" | "lichess">("chessdb");
+  const status = maxMove == null ? undefined : maxMove === 0 ? "every move" : `up to move ${maxMove}`;
+  const cap = (which: "chessdb" | "lichess") => maxMove != null && (
+    <div className="space-y-1">
+      <div className="flex items-center gap-2 text-body-sm text-on-surface">
+        <span>Ask up to move</span>
+        <input
+          type="number" min={0} max={500} value={value} onChange={(e) => setValue(e.target.value)}
+          className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums"
+        />
+        <ActionButton onClick={() => { setFrom(which); void save({ max_move: n }); }} disabled={!Number.isFinite(n) || n < 0 || n === maxMove}>Save</ActionButton>
+      </div>
+      <p className="text-label-sm text-on-surface-variant">
+        For both cloud engines; 0 asks about every move, the default is 20. Stockfish and Lc0 on the server analyse everything after it.
       </p>
-      {maxMove != null && (
-        <div className="grid grid-cols-2 gap-4">
-          <div className="space-y-1">
-            <div className="text-title-sm">chessdb.cn</div>
-            <EngineSwitch label="Use chessdb.cn" on={services.chessdb} onChange={(on) => void save({ chessdb: on })} />
-            <p className="text-label-sm text-on-surface-variant">A community database of engine evaluations; lists every move it knows, with its replies and strong replies. It marks moves and counts strong replies by its own rule.</p>
-          </div>
-          <div className="space-y-1">
-            <div className="text-title-sm">Lichess</div>
-            <EngineSwitch label="Use Lichess" on={services.lichess} onChange={(on) => void save({ lichess: on })} />
-            <LichessStats />
-            <div className="flex items-center gap-2 text-body-sm text-on-surface flex-wrap"
-              title="A move within this much of the best is strong: marked ! in the Engine panel, and counted among the strong replies">
-              <span>Strong within</span>
-              <input value={pawns} onChange={(e) => setPawns(e.target.value)} inputMode="decimal"
-                className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
-              <span className="text-on-surface-variant">pawns</span>
-            </div>
-            <div className="flex items-center gap-2 text-body-sm text-on-surface flex-wrap"
-              title="A move further behind the best than strong, up to this far, is neutral and left unmarked; further still, it is marked ?">
-              <span>Neutral within</span>
-              <input value={neutralPawns} onChange={(e) => setNeutralPawns(e.target.value)} inputMode="decimal"
-                className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
-              <span className="text-on-surface-variant">pawns</span>
-              <ActionButton onClick={() => void save({ lichess_strong_cp: pawnsCp, lichess_neutral_cp: neutralPawnsCp })}
-                disabled={!Number.isFinite(pawnsCp) || pawnsCp < 0 || !Number.isFinite(neutralPawnsCp) || neutralPawnsCp < 0 || (pawnsCp === strongCp && neutralPawnsCp === neutralCp)}>Save</ActionButton>
-            </div>
-            <p className="text-label-sm text-on-surface-variant">Stockfish evaluations cached in Lichess's cloud — popular positions only; every cached line is shown.</p>
-          </div>
-        </div>
-      )}
-      {maxMove != null && (
-        <div className="flex items-center gap-2 text-body-sm text-on-surface">
-          <span>Ask them up to move</span>
-          <input
-            type="number" min={0} max={500} value={value} onChange={(e) => setValue(e.target.value)}
-            className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums"
-          />
-          <ActionButton onClick={() => void save({ max_move: n })} disabled={!Number.isFinite(n) || n < 0 || n === maxMove}>Save</ActionButton>
-        </div>
-      )}
-      <p className="text-label-sm text-on-surface-variant">0 asks them about every move. The default is 20.</p>
+    </div>
+  );
+  const result = (which: "chessdb" | "lichess") => from === which && (
+    <>
       {note && <p className="text-body-sm text-success">{note}</p>}
       {error && <p className="text-body-sm text-error">{error}</p>}
-    </SectionCard>
+    </>
+  );
+  const field = "w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums";
+  return (
+    <>
+      <SectionCard title="chessdb.cn" status={status}>
+        <p className="text-body-sm text-on-surface-variant">
+          A community database of engine evaluations: it lists every move it knows, with its replies and
+          strong replies, and marks the moves by its own rule. Looking a position up sends it there, and
+          chessdb keeps what it is asked — past the opening, the positions of the games you study, often
+          your own.
+        </p>
+        {maxMove != null && (
+          <EngineSwitch label="Use chessdb.cn" on={services.chessdb} onChange={(on) => { setFrom("chessdb"); void save({ chessdb: on }); }} />
+        )}
+        {cap("chessdb")}
+        {result("chessdb")}
+      </SectionCard>
+      <SectionCard title="Lichess" status={status}>
+        <p className="text-body-sm text-on-surface-variant">
+          Stockfish evaluations cached in Lichess's cloud — popular positions only; every cached line is
+          shown. Looking a position up sends it to Lichess.
+        </p>
+        {maxMove != null && (
+          <>
+            <EngineSwitch label="Use Lichess" on={services.lichess} onChange={(on) => { setFrom("lichess"); void save({ lichess: on }); }} />
+            <LichessStats />
+            <div className="flex items-center gap-4 text-body-sm text-on-surface flex-wrap">
+              <label className="flex items-center gap-2" title="A move within this much of the best is strong: marked ! in the Engine panel, and counted among the strong replies">
+                <span>Strong within</span>
+                <input value={pawns} onChange={(e) => setPawns(e.target.value)} inputMode="decimal" className={field} />
+                <span className="text-on-surface-variant">pawns</span>
+              </label>
+              <label className="flex items-center gap-2" title="A move further behind the best than strong, up to this far, is neutral and left unmarked; further still, it is marked ?">
+                <span>Neutral within</span>
+                <input value={neutralPawns} onChange={(e) => setNeutralPawns(e.target.value)} inputMode="decimal" className={field} />
+                <span className="text-on-surface-variant">pawns</span>
+              </label>
+              <ActionButton onClick={() => { setFrom("lichess"); void save({ lichess_strong_cp: pawnsCp, lichess_neutral_cp: neutralPawnsCp }); }}
+                disabled={!Number.isFinite(pawnsCp) || pawnsCp < 0 || !Number.isFinite(neutralPawnsCp) || neutralPawnsCp < 0 || (pawnsCp === strongCp && neutralPawnsCp === neutralCp)}>Save</ActionButton>
+            </div>
+          </>
+        )}
+        {cap("lichess")}
+        {result("lichess")}
+      </SectionCard>
+    </>
   );
 }
 
