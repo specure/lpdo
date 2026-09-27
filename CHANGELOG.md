@@ -7,6 +7,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-09-27
+
+### Added
+- **Stockfish on the server** — the Engine panel's Stockfish tab analyses
+  with an engine you install on the machine running the server (the install
+  guide is in the app and in `docs/chess-engine.md`), with several lines,
+  threads, hash and a depth to stop at set under Maintenance → Engines, where
+  a benchmark compares settings. LPDO checks for a newer Stockfish once a day.
+  The engine's hash shares one memory budget with the database. (#309, #310)
+- **Lc0 beside Stockfish** — a second local engine, optional, judging a
+  position as win · draw · loss from a neural network; fast with a graphics
+  card (CUDA), with its own network, backend and node limit. (#312)
+- **Replies & Strong for the local engines** — for each candidate move, how
+  many replies the opponent has and how many are strong (within a set
+  threshold of the best), the way chessdb.cn shows them: counted by helper
+  engine processes, several candidates at once, with the progress shown per
+  row. Stockfish's helpers search the best five replies — exact counts up to
+  four, "5+" beyond — enough to spot a move that leaves only one or two good
+  answers. (#313, #315)
+- **Engine results kept in the database** — the furthest result for every
+  position Stockfish or Lc0 analysed outlives restarts, per engine version;
+  after an upgrade the older version's result shows, labelled, until the new
+  one has its own. chessdb.cn's and Lichess's answers are kept the same way, so
+  a position once answered is not asked again. Maintenance → Engines lists
+  what is kept and deletes it. (#315, #324)
+- **Every engine marks moves the same way** — "!" within its "Strong within"
+  threshold of the best, unmarked within "Neutral within", "?" beyond; the
+  Strong column counts replies by the same threshold, so a move marked "!" is
+  one of the strong replies to the move before it. Each engine's thresholds
+  are set under Maintenance. (#313)
+- **A move's deeper analysis feeds back** — when a move has been played and
+  the position after it analysed deeper, the move's evaluation, line, mark
+  and strong count in the position before come from that analysis. (#313)
+- **Lines that lead to a repetition** — where the side to move is better,
+  Stockfish's lines that come back to a position already on the board are
+  listed apart, under "Leading to a repetition": the move rates better than a
+  draw, but with best play the moves just shuffle. A setting under
+  Maintenance → Engines → Stockfish. (#314, #320)
+- **Arrows on the board** — on the Games and Analysis boards, orange arrows
+  for the moves played most often (as many as cover three quarters of the
+  games) and violet for every engine's strong moves, stronger the more engines
+  agree; where a move is both, a violet core in the orange. Each with a
+  checkbox above the board. (#318)
+- **One-click moves** — on the editor, the Analysis board and the Games page
+  board alike: click only the destination square and the piece that can go
+  there moves — the most played in the database, else the one Stockfish rates
+  higher, else its first-sight order, asked for as soon as the position is
+  shown. The Games page board now takes moves by drag and by click too. (#317)
+- **The engines keep running** while Reference or Games is shown: the Engine
+  panel has a panel of its own below them on the Analysis page, always in
+  view, and each engine a run/pause button on its tab. Paused engines show
+  what the server has for any position. (#313)
+- **Search further, recalculate, and go on where a search stopped** — ⟳
+  discards what is known of a position and searches it again from scratch;
+  +5 (+2M nodes for Lc0) searches further. On Linux and macOS Stockfish is
+  frozen at its depth and by Pause rather than stopped, so searching further
+  or running again goes on from where it was instead of climbing back from
+  depth 1. A search runs while its panel is open (a heartbeat), with no fixed
+  time cap. (#313, #321, #322)
+- **The cloud engines are asked only in the opening** — up to a move number
+  (20 unless changed): positions later in a game stay on your server, and the
+  local engines analyse them. chessdb.cn and Lichess have cards of their own
+  under Maintenance → Engines, with on/off switches. (#311)
+- **Include engine games** on the Games and Players pages — the same switch
+  as the Analysis page's, leaving TCEC and the like out of the lists and the
+  move statistics. (#296, #326)
+- **The Games page board has the Analysis board's menu** — analyse the line or
+  the position on Lichess, copy the FEN. (#319)
+
+### Changed
+- **Settings on Maintenance → Engines save themselves** when a field is left;
+  the server restarts an engine only for what its process is started with.
+  (#316)
+- **Stockfish and Lc0 are Auto or Off** — on Auto an engine is used when it is
+  installed on the server, picked up without a restart. (#313)
+- **Lichess's rate limit** — after a 429 the server rests as long as Lichess
+  asks (a minute, longer after 429s in a row) and the panel counts down;
+  Lichess's Replies & Strong columns are off unless switched on. (#323, #325)
+
+### Fixed
+- **Stockfish could hang on "Analysing…"** when the position changed just as
+  it reached its depth; and engine processes now end with the server however
+  it ends. (#321)
+- **A newer search replaces the remembered one** for Lc0 by nodes — its depth
+  is only the average length of its lines and could make a further search
+  look shallower. (#313)
+
 ## [0.20.0] - 2026-09-26
 
 ### Added
