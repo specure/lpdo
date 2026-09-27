@@ -6,6 +6,9 @@ import { Chess } from "chess.js";
 import { GameSummary, MoveStats } from "../types";
 import PositionMoves from "./PositionMoves";
 import { useClickToMove, oneClickPointer } from "./useClickToMove";
+import GameMoreMenu from "./games/GameMoreMenu";
+
+const START_FEN = new Chess().fen();
 import { ArrowToggles, HintArrowsOverlay, dbArrows, engineArrows, type CombinedMove, type useArrowToggles } from "./HintArrows";
 
 const IconFlip = () => (
@@ -56,7 +59,6 @@ export default function PositionBoard({
   relatedGame, onSwitchToGame, moveStats, selectedMoveSan, showRelatedGame = true, showMoves = true, onMove, engineMoves = [], arrowToggles,
 }: Props) {
   const [flipped, setFlipped] = useState(false);
-  const [copiedFen, setCopiedFen] = useState(false);
   const boardContainerRef = useRef<HTMLDivElement>(null);
   const [squareSize, setSquareSize] = useState(480);
 
@@ -132,13 +134,9 @@ export default function PositionBoard({
       <div className="shrink-0 pb-1 flex items-center justify-between gap-2">
         <span>{arrowToggles && <ArrowToggles {...arrowToggles} />}</span>
         <span className="inline-flex items-center gap-1">
-          <button
-            onClick={() => { navigator.clipboard?.writeText(fen).then(() => { setCopiedFen(true); window.setTimeout(() => setCopiedFen(false), 1200); }).catch(() => {}); }}
-            className="h-7 px-1.5 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 text-label-sm transition-colors duration-short3 ease-standard"
-            title="Copy FEN of the current position to the clipboard"
-          >
-            {copiedFen ? "Copied" : "FEN"}
-          </button>
+          {/* The Analysis board's menu, for a line rather than a game:
+              Lichess for the line or the position, and the FEN. */}
+          <GameMoreMenu fen={fen} lineSans={moveSequence} ply={moveSequence.length} startFen={START_FEN} />
           <button
             onClick={() => setFlipped((f) => !f)}
             className="w-7 h-7 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"

@@ -14,8 +14,9 @@ import ExternalLinkIcon from "../ExternalLinkIcon";
 // counted in half-moves from the start of the movetext.
 
 interface Props {
-  /** The game's PGN, for copying. null while it is still loading. */
-  pgn: string | null;
+  /** The game's PGN, for copying. null while it is still loading; left out
+   *  where there is no game, only a line of moves (the Games page's board). */
+  pgn?: string | null;
   /** Position on the board right now. */
   fen: string;
   /** Moves of the line being viewed, from the start of the game. */
@@ -27,7 +28,7 @@ interface Props {
    *  standard one in a game set up from a diagram. */
   startFen: string;
   /** The game's own address, when its PGN names one. */
-  gameUrl: string | null;
+  gameUrl?: string | null;
   /** Offered only where a whole game is in hand (the board, not a preview):
    *  saving the game as a PGN file, or printing it (or saving it as PDF). */
   onExportPgn?: () => void;
@@ -118,7 +119,7 @@ export default function GameMoreMenu({ pgn, fen, lineSans, ply, startFen, gameUr
         className={`h-7 px-3 inline-flex items-center rounded-full text-label-md transition-colors duration-short3 ease-standard ${
           open ? "bg-on-surface/12 text-on-surface" : "text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12"
         }`}
-        title="Open this game or position elsewhere, or copy it"
+        title={pgn === undefined ? "Open this line or position on Lichess, or copy it" : "Open this game or position elsewhere, or copy it"}
       >
         More ▾
       </button>
@@ -158,9 +159,11 @@ export default function GameMoreMenu({ pgn, fen, lineSans, ply, startFen, gameUr
             </button>
           )}
           <div className="my-1 h-px bg-outline-variant" />
-          <button className={item} onClick={() => copy(pgn ?? "", "PGN")} disabled={!pgn}>
-            Copy the game's PGN
-          </button>
+          {pgn !== undefined && (
+            <button className={item} onClick={() => copy(pgn ?? "", "PGN")} disabled={!pgn}>
+              Copy the game's PGN
+            </button>
+          )}
           <button className={item} onClick={() => copy(fen, "FEN")}>
             Copy this position's FEN
           </button>
