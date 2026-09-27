@@ -255,6 +255,22 @@ function EngineLines({ kind }: { kind: "stockfish" | "lc0" }) {
   );
 }
 
+/** A field saves itself when it is left or Enter is pressed — no Save
+ *  button. `commit` checks the value and saves it if it changed. */
+function commitOn(commit: () => void) {
+  return {
+    onBlur: commit,
+    onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === "Enter") e.currentTarget.blur(); },
+  };
+}
+
+/** Whether saving `patch` restarts the engine (or its helpers): what the
+ *  processes are started with. Limits and thresholds apply at once. */
+function restarts(patch: object): boolean {
+  return ["path", "threads", "hash_mb", "weights", "backend", "smart_pruning", "enabled", "replies", "helper_threads", "helper_hash_mb"]
+    .some((k) => k in patch && (patch as Record<string, unknown>)[k] !== undefined);
+}
+
 type ReplyPatch = { replies?: boolean; helper_threads?: number; helper_hash_mb?: number; helper_depth?: number; strong_cp?: number; helper_nodes?: number; strong_pct?: number; neutral_cp?: number; neutral_pct?: number };
 
 /** Replies & Strong for a local engine: a helper process of the same engine
@@ -278,18 +294,11 @@ function RepliesSettings({ kind, settings, busy, onSave }: {
   const [neutralPct, setNeutralPct] = useState(String(settings.neutral_pct ?? 3));
   const field = "w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums";
   const num = (v: string) => { const n = Number(v.replace(",", ".")); return Number.isFinite(n) ? n : undefined; };
-  function saveAll() {
-    if (kind === "stockfish") {
-      const cp = num(pawns);
-      const ncp = num(neutralPawns);
-      onSave({
-        helper_threads: num(threads), helper_hash_mb: num(hash), helper_depth: num(depth),
-        strong_cp: cp == null ? undefined : Math.round(cp * 100), neutral_cp: ncp == null ? undefined : Math.round(ncp * 100),
-      });
-    } else {
-      onSave({ helper_nodes: num(nodes.replace(/[\s,.]/g, "")), strong_pct: num(pct), neutral_pct: num(neutralPct) });
-    }
-  }
+  // Each field saves itself when it is left (or on Enter), if it changed.
+  const put = <K extends keyof ReplyPatch>(k: K, v: ReplyPatch[K] | undefined) => {
+    if (v != null && v !== (settings as ReplyPatch)[k]) onSave({ [k]: v } as ReplyPatch);
+  };
+  const cp = (v: string) => { const n = num(v); return n == null ? undefined : Math.round(n * 100); };
   return (
     <div className="space-y-2 pt-2 border-t border-outline/40">
       <label className="flex items-start gap-2 text-body-sm text-on-surface cursor-pointer">
@@ -307,21 +316,20 @@ function RepliesSettings({ kind, settings, busy, onSave }: {
           {kind === "stockfish" ? (
             <>
               {on && <>
-              <label className="flex items-center gap-2" title="Single-threaded helpers, each counting one candidate: as many as the lines counts them all at once"><span>Helpers</span><input type="number" min={1} max={64} value={threads} onChange={(e) => setThreads(e.target.value)} className={field} /></label>
-              <label className="flex items-center gap-2"><span>Hash</span><input type="number" min={16} max={4096} step={64} value={hash} onChange={(e) => setHash(e.target.value)} className={field} /><span className="text-on-surface-variant">MB</span></label>
-              <label className="flex items-center gap-2" title="Each candidate's replies are searched to this depth"><span>Depth</span><input type="number" min={1} max={60} value={depth} onChange={(e) => setDepth(e.target.value)} className={field} /></label>
+              <label className="flex items-center gap-2" title="Single-threaded helpers, each counting one candidate: as many as the lines counts them all at once"><span>Helpers</span><input type="number" min={1} max={64} value={threads} onChange={(e) => setThreads(e.target.value)} className={field} {...commitOn(() => put("helper_threads", num(threads)))} /></label>
+              <label className="flex items-center gap-2"><span>Hash</span><input type="number" min={16} max={4096} step={64} value={hash} onChange={(e) => setHash(e.target.value)} className={field} {...commitOn(() => put("helper_hash_mb", num(hash)))} /><span className="text-on-surface-variant">MB</span></label>
+              <label className="flex items-center gap-2" title="Each candidate's replies are searched to this depth"><span>Depth</span><input type="number" min={1} max={60} value={depth} onChange={(e) => setDepth(e.target.value)} className={field} {...commitOn(() => put("helper_depth", num(depth)))} /></label>
               </>}
-              <label className="flex items-center gap-2" title="A move within this much of the best is strong: marked ! in the Engine panel, and counted among the strong replies (chessdb uses 0.05)"><span>Strong within</span><input value={pawns} onChange={(e) => setPawns(e.target.value)} inputMode="decimal" className={field} /><span className="text-on-surface-variant">pawns</span></label>
-              <label className="flex items-center gap-2" title="A move further behind the best than strong, up to this far, is neutral and left unmarked; further still, it is marked ?"><span>Neutral within</span><input value={neutralPawns} onChange={(e) => setNeutralPawns(e.target.value)} inputMode="decimal" className={field} /><span className="text-on-surface-variant">pawns</span></label>
+              <label className="flex items-center gap-2" title="A move within this much of the best is strong: marked ! in the Engine panel, and counted among the strong replies (chessdb uses 0.05)"><span>Strong within</span><input value={pawns} onChange={(e) => setPawns(e.target.value)} inputMode="decimal" className={field} {...commitOn(() => put("strong_cp", cp(pawns)))} /><span className="text-on-surface-variant">pawns</span></label>
+              <label className="flex items-center gap-2" title="A move further behind the best than strong, up to this far, is neutral and left unmarked; further still, it is marked ?"><span>Neutral within</span><input value={neutralPawns} onChange={(e) => setNeutralPawns(e.target.value)} inputMode="decimal" className={field} {...commitOn(() => put("neutral_cp", cp(neutralPawns)))} /><span className="text-on-surface-variant">pawns</span></label>
             </>
           ) : (
             <>
-              {on && <label className="flex items-center gap-2" title="Nodes Lc0 spends on each candidate's replies"><span>Nodes per move</span><input value={nodes} onChange={(e) => setNodes(e.target.value)} inputMode="numeric" className="w-28 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" /></label>}
-              <label className="flex items-center gap-2" title="A move within this much expected score of the best is strong: marked ! in the Engine panel, and counted among the strong replies"><span>Strong within</span><input value={pct} onChange={(e) => setPct(e.target.value)} inputMode="decimal" className={field} /><span className="text-on-surface-variant">% score</span></label>
-              <label className="flex items-center gap-2" title="A move further behind the best than strong, up to this far, is neutral and left unmarked; further still, it is marked ?"><span>Neutral within</span><input value={neutralPct} onChange={(e) => setNeutralPct(e.target.value)} inputMode="decimal" className={field} /><span className="text-on-surface-variant">% score</span></label>
+              {on && <label className="flex items-center gap-2" title="Nodes Lc0 spends on each candidate's replies"><span>Nodes per move</span><input value={nodes} onChange={(e) => setNodes(e.target.value)} inputMode="numeric" {...commitOn(() => put("helper_nodes", num(nodes.replace(/[\s,.]/g, ""))))} className="w-28 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" /></label>}
+              <label className="flex items-center gap-2" title="A move within this much expected score of the best is strong: marked ! in the Engine panel, and counted among the strong replies"><span>Strong within</span><input value={pct} onChange={(e) => setPct(e.target.value)} inputMode="decimal" className={field} {...commitOn(() => put("strong_pct", num(pct)))} /><span className="text-on-surface-variant">% score</span></label>
+              <label className="flex items-center gap-2" title="A move further behind the best than strong, up to this far, is neutral and left unmarked; further still, it is marked ?"><span>Neutral within</span><input value={neutralPct} onChange={(e) => setNeutralPct(e.target.value)} inputMode="decimal" className={field} {...commitOn(() => put("neutral_pct", num(neutralPct)))} /><span className="text-on-surface-variant">% score</span></label>
             </>
           )}
-          <ActionButton onClick={saveAll} disabled={busy}>Save</ActionButton>
         </div>
     </div>
   );
@@ -448,7 +456,7 @@ function EngineSection() {
       });
       if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
       take((await r.json()) as EngineInfo);
-      setNote("Saved — the engine restarted with the new settings.");
+      setNote(restarts(patch) ? "Saved — the engine restarted with the new settings." : "Saved.");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -459,8 +467,6 @@ function EngineSection() {
   const t = parseInt(threads, 10);
   const h = parseInt(hash, 10);
   const dp = parseInt(depth, 10);
-  const changed = !!info && ((Number.isFinite(t) && t !== info.settings.threads) || (Number.isFinite(h) && h !== info.settings.hash_mb)
-    || (Number.isFinite(dp) && dp !== info.settings.max_depth));
   const field = "w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums";
 
   return (
@@ -494,27 +500,20 @@ function EngineSection() {
         <div className="flex items-center gap-4 text-body-sm text-on-surface flex-wrap">
           <label className="flex items-center gap-2">
             <span className="w-16 shrink-0">Threads</span>
-            <input type="number" min={1} max={256} value={threads} onChange={(e) => setThreads(e.target.value)} className={field} />
+            <input type="number" min={1} max={256} value={threads} onChange={(e) => setThreads(e.target.value)} className={field}
+              {...commitOn(() => { if (Number.isFinite(t) && t !== info.settings.threads) void save({ threads: t }); })} />
           </label>
           <label className="flex items-center gap-2">
             <span>Hash</span>
-            <input type="number" min={16} max={info.max_hash_mb} step={256} value={hash} onChange={(e) => setHash(e.target.value)} className={field} />
+            <input type="number" min={16} max={info.max_hash_mb} step={256} value={hash} onChange={(e) => setHash(e.target.value)} className={field}
+              {...commitOn(() => { if (Number.isFinite(h) && h !== info.settings.hash_mb) void save({ hash_mb: h }); })} />
             <span className="text-on-surface-variant">MB</span>
           </label>
           <label className="flex items-center gap-2" title="The search stops at this depth, or when you move on or close the panel; ⟳ in the Engine panel then searches further">
             <span>Stop at depth</span>
-            <input type="number" min={1} max={245} value={depth} onChange={(e) => setDepth(e.target.value)} className={field} />
+            <input type="number" min={1} max={245} value={depth} onChange={(e) => setDepth(e.target.value)} className={field}
+              {...commitOn(() => { if (Number.isFinite(dp) && dp >= 1 && dp !== info.settings.max_depth) void save({ max_depth: dp }); })} />
           </label>
-          <ActionButton
-            onClick={() => void save({
-              threads: Number.isFinite(t) ? t : undefined,
-              hash_mb: Number.isFinite(h) ? h : undefined,
-              max_depth: Number.isFinite(dp) ? dp : undefined,
-            })}
-            disabled={busy || !changed}
-          >
-            Save
-          </ActionButton>
         </div>
       )}
       {info && <EngineLines kind="stockfish" />}
@@ -629,7 +628,7 @@ function Lc0Section() {
       });
       if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
       take((await r.json()) as Lc0Info);
-      setNote("Saved — Lc0 restarted with the new settings.");
+      setNote(restarts(patch) ? "Saved — Lc0 restarted with the new settings." : "Saved.");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -700,20 +699,16 @@ function Lc0Section() {
           <label className="flex items-center gap-2">
             <span>Threads</span>
             <input type="number" min={0} max={64} value={threads} onChange={(e) => setThreads(e.target.value)}
+              {...commitOn(() => { if (Number.isFinite(t) && t !== info.settings.threads) void save({ threads: t }); })}
               className="w-16 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
           </label>
           <label className="flex items-center gap-2" title="The search stops after this many nodes (at least 1,000), or when you move on or close the panel; ⟳ in the Engine panel then searches further">
             <span>Stop at</span>
             <input value={nodes} onChange={(e) => setNodes(e.target.value)} inputMode="numeric"
+              {...commitOn(() => { if (Number.isFinite(n) && n >= 1000 && n !== info.settings.max_nodes) void save({ max_nodes: n }); })}
               className="w-28 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
             <span className="text-on-surface-variant">nodes</span>
           </label>
-          <ActionButton
-            onClick={() => void save({ threads: Number.isFinite(t) ? t : undefined, max_nodes: Number.isFinite(n) ? n : undefined })}
-            disabled={busy || ((!Number.isFinite(t) || t === info.settings.threads) && (!Number.isFinite(n) || n === info.settings.max_nodes))}
-          >
-            Save
-          </ActionButton>
         </div>
       )}
       {info && <EngineLines kind="lc0" />}
@@ -915,9 +910,9 @@ function CloudEnginesSection() {
         <span>Ask up to move</span>
         <input
           type="number" min={0} max={500} value={value} onChange={(e) => setValue(e.target.value)}
+          {...commitOn(() => { if (Number.isFinite(n) && n >= 0 && n !== maxMove) { setFrom(which); void save({ max_move: n }); } })}
           className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums"
         />
-        <ActionButton onClick={() => { setFrom(which); void save({ max_move: n }); }} disabled={!Number.isFinite(n) || n < 0 || n === maxMove}>Save</ActionButton>
       </div>
       <p className="text-label-sm text-on-surface-variant">
         For both cloud engines; 0 asks about every move, the default is 20. Stockfish and Lc0 on the server analyse everything after it.
@@ -958,16 +953,16 @@ function CloudEnginesSection() {
             <div className="flex items-center gap-4 text-body-sm text-on-surface flex-wrap">
               <label className="flex items-center gap-2" title="A move within this much of the best is strong: marked ! in the Engine panel, and counted among the strong replies">
                 <span>Strong within</span>
-                <input value={pawns} onChange={(e) => setPawns(e.target.value)} inputMode="decimal" className={field} />
+                <input value={pawns} onChange={(e) => setPawns(e.target.value)} inputMode="decimal" className={field}
+                  {...commitOn(() => { if (Number.isFinite(pawnsCp) && pawnsCp >= 0 && pawnsCp !== strongCp) { setFrom("lichess"); void save({ lichess_strong_cp: pawnsCp }); } })} />
                 <span className="text-on-surface-variant">pawns</span>
               </label>
               <label className="flex items-center gap-2" title="A move further behind the best than strong, up to this far, is neutral and left unmarked; further still, it is marked ?">
                 <span>Neutral within</span>
-                <input value={neutralPawns} onChange={(e) => setNeutralPawns(e.target.value)} inputMode="decimal" className={field} />
+                <input value={neutralPawns} onChange={(e) => setNeutralPawns(e.target.value)} inputMode="decimal" className={field}
+                  {...commitOn(() => { if (Number.isFinite(neutralPawnsCp) && neutralPawnsCp >= 0 && neutralPawnsCp !== neutralCp) { setFrom("lichess"); void save({ lichess_neutral_cp: neutralPawnsCp }); } })} />
                 <span className="text-on-surface-variant">pawns</span>
               </label>
-              <ActionButton onClick={() => { setFrom("lichess"); void save({ lichess_strong_cp: pawnsCp, lichess_neutral_cp: neutralPawnsCp }); }}
-                disabled={!Number.isFinite(pawnsCp) || pawnsCp < 0 || !Number.isFinite(neutralPawnsCp) || neutralPawnsCp < 0 || (pawnsCp === strongCp && neutralPawnsCp === neutralCp)}>Save</ActionButton>
             </div>
           </>
         )}

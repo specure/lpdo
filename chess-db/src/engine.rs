@@ -914,8 +914,9 @@ impl Engine {
         enabled: Option<bool>,
         reply: ReplySettings,
     ) -> Result<EngineStatus, String> {
-        {
+        let (restart_engine, restart_helpers) = {
             let mut s = self.settings.lock().await;
+            let before = s.clone();
             if let Some(p) = path {
                 let (found, _) = self.found();
                 if !found.contains(&p) {
@@ -964,21 +965,36 @@ impl Engine {
             let json = serde_json::to_string_pretty(&*s).map_err(|e| e.to_string())?;
             std::fs::write(&self.settings_file, json)
                 .map_err(|e| format!("{}: {e}", self.settings_file.display()))?;
+            // Restart only for what the processes are started with: the
+            // program and its options, or the helpers'. Limits and
+            // thresholds are read at each search and count.
+            let engine = (&s.path, s.threads, s.hash_mb, &s.weights, &s.backend, s.smart_pruning, s.enabled)
+                != (&before.path, before.threads, before.hash_mb, &before.weights, &before.backend, before.smart_pruning, before.enabled);
+            let helpers = (s.replies, s.helper_threads, s.helper_hash_mb) != (before.replies, before.helper_threads, before.helper_hash_mb);
+            (engine, helpers)
+        };
+        if restart_engine {
+            self.shutdown().await;
+        } else if restart_helpers {
+            self.reset_helpers().await;
         }
-        self.shutdown().await;
         Ok(self.status().await)
+    }
+
+    /// End the helpers and their counts (started again as needed, with the
+    /// settings now in force).
+    async fn reset_helpers(&self) {
+        let limit = helper_count(self.kind, &*self.settings.lock().await);
+        self.helpers.lock().unwrap().clear();
+        let mut q = self.reply_queue.lock().unwrap();
+        for (_, j) in q.jobs.drain() { j.cancel.notify_one(); }
+        q.parents.clear();
+        q.limit = limit;
     }
 
     async fn shutdown(&self) {
         // Dropping the idle helpers ends them; counts under way are stopped.
-        let limit = helper_count(self.kind, &*self.settings.lock().await);
-        self.helpers.lock().unwrap().clear();
-        {
-            let mut q = self.reply_queue.lock().unwrap();
-            for (_, j) in q.jobs.drain() { j.cancel.notify_one(); }
-            q.parents.clear();
-            q.limit = limit;
-        }
+        self.reset_helpers().await;
         self.reply_cache.lock().unwrap().clear();
         self.reply_nodes.store(0, Ordering::Relaxed);
         if let Some(mut r) = self.running.lock().await.take() {
