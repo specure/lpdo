@@ -79,6 +79,9 @@ export default function LocalEngine({
   // "Search further" once the search reached its limit: the depth or node
   // count to search to now.
   const [target, setTarget] = useState<number | null>(null);
+  // Recalculate (⟳): the next search forgets what is known of the position.
+  const freshRef = useRef(false);
+  const [freshTick, setFreshTick] = useState(0);
   // The search under way, while a deeper remembered result stays on screen.
   const [live, setLive] = useState<{ depth: number; nodes: number } | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
@@ -149,7 +152,9 @@ export default function LocalEngine({
     // search is deeper, as a remembered result does.
     setSnap((prev) => (prev ? { ...prev, cached: true } : prev));
     const t = window.setTimeout(() => {
-      const es = new EventSource(engineAnalyseUrl(fen, lineCount, historyRef.current, kind, target ?? undefined));
+      const fresh = freshRef.current;
+      freshRef.current = false;
+      const es = new EventSource(engineAnalyseUrl(fen, lineCount, historyRef.current, kind, target ?? undefined, fresh));
       esRef.current = es;
       es.onmessage = (ev) => {
         const s = JSON.parse(ev.data) as Snapshot;
@@ -172,7 +177,7 @@ export default function LocalEngine({
       esRef.current?.close();
       esRef.current = null;
     };
-  }, [fen, historyKey, lineCount, status?.available, running, kind, paused, target]);
+  }, [fen, historyKey, lineCount, status?.available, running, kind, paused, target, freshTick]);
 
   // While the panel is open, tell the server now and then: a search nobody
   // watches any more is stopped a few minutes after the last word — also one
@@ -288,9 +293,12 @@ export default function LocalEngine({
   // Lc0 — beyond the target while the search runs, beyond where it got once
   // it has stopped. Stockfish (frozen at its depth) goes on from there.
   const goal = target ?? limit;
+  const step = kind === "lc0" ? Math.max(limit, 1_000_000) : 5;
   const further = !snap ? null : kind === "lc0"
-    ? (running ? goal : Math.max(snap.nodes, goal)) + Math.max(limit, 1_000_000)
-    : Math.min((running ? goal : Math.max(snap.depth, goal)) + 5, 245);
+    ? (running ? goal : Math.max(snap.nodes, goal)) + step
+    : Math.min((running ? goal : Math.max(snap.depth, goal)) + step, 245);
+  // The button says what it adds: "+5" (plies), "+2M" (nodes).
+  const stepLabel = kind === "lc0" ? `+${step >= 1e6 ? `${+(step / 1e6).toFixed(1)}M` : `${Math.round(step / 1e3)}k`}` : `+${step}`;
   // Stockfish counts in millions a second, Lc0 in thousands.
   const speed = !snap?.nps ? "" : snap.nps >= 1e6 ? `${(snap.nps / 1e6).toFixed(snap.nps >= 1e7 ? 0 : 1)} Mn/s` : `${Math.round(snap.nps / 1e3)}k n/s`;
 
@@ -313,13 +321,28 @@ export default function LocalEngine({
           )}
         </span>
         <span className="shrink-0 flex items-center gap-1">
-          {/* Search this position further — past the limit, by a step — while
-              it runs or once it has stopped, as the cloud tabs ask again. */}
+          {/* Search further — past the limit, by the step it shows — while the
+              search runs or once it has stopped; ⟳ recalculates from scratch,
+              as the cloud tabs' ⟳ asks again. */}
+          {!paused && further && (
+            <button
+              onClick={() => { setTarget(further); setRunning(true); }}
+              className="h-6 px-1.5 inline-flex items-center justify-center rounded-full text-label-sm tabular-nums text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
+              title={`Search further: to ${kind === "lc0" ? `${fmtNodes(further)} nodes` : `depth ${further}`}`}
+            >{stepLabel}</button>
+          )}
           {!paused && (
             <button
-              onClick={() => { if (further) setTarget(further); setRunning(true); }}
+              onClick={() => {
+                freshRef.current = true;
+                setTarget(null);
+                setSnap(null);
+                setLive(null);
+                setRunning(true);
+                setFreshTick((t) => t + 1);
+              }}
               className="w-6 h-6 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
-              title={further ? `Search further: to ${kind === "lc0" ? `${fmtNodes(further)} nodes` : `depth ${further}`}` : "Search again"}
+              title="Recalculate: discard what is known of this position and search it again from scratch"
             >⟳</button>
           )}
           {/* Run and pause are the engine's tab's own button (onTogglePause);

@@ -1967,6 +1967,10 @@ struct EngineAnalyseQuery {
     /// Search to this depth (Stockfish) or node count (Lc0) instead of the
     /// engine's threshold: the panel's "search further".
     target: Option<u64>,
+    /// Recalculate: forget what is known of the position and clear the
+    /// engine's hash first (the panel's ⟳).
+    #[serde(default)]
+    fresh: bool,
 }
 fn default_engine_lines() -> u32 { 3 }
 
@@ -2000,7 +2004,7 @@ async fn engine_analyse_handler(
     };
     let engine = pick_engine(&state, &WhichEngine { engine: q.engine.clone() })?;
     let (gen, remembered, rx) = engine
-        .analyse(&fen, history, q.lines, q.target)
+        .analyse(&fen, history, q.lines, q.target, q.fresh)
         .await
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e))?;
     let guard = Arc::new(StopOnDrop { engine: engine.clone(), gen });
