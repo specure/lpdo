@@ -5,7 +5,7 @@ import { apiUrl, engineAnalyseUrl, type EngineHistory, type EngineKind } from ".
 import ExternalLinkIcon from "./ExternalLinkIcon";
 import { PvLine, pvToSan, fmtLichess, moverScore, moveMark, evalColor } from "./CloudEngine";
 import type { EngineMove } from "./HintArrows";
-import { BETTER_CP, gamePositions, repetitionAt } from "../lib/repetition";
+import { gamePositions, repetitionAt, repetitionSettings } from "../lib/repetition";
 
 // The server's own engine (#309): Stockfish or any UCI engine installed on
 // the machine the server runs on. LPDO does not ship one, so when none is
@@ -190,6 +190,8 @@ export default function LocalEngine({
 
   // The game's positions up to here, for lines that come back to one (#314).
   const beforeHere = useMemo(() => gamePositions(fen, historyRef.current), [fen, historyKey]);
+  // Whether to set them apart, and above what advantage (per computer).
+  const [repetition] = useState(repetitionSettings);
 
   // Replies & Strong (when switched on for this engine). The replies are the
   // legal moves, counted here at once; the strong ones the server's helpers
@@ -282,7 +284,7 @@ export default function LocalEngine({
   // Stockfish's lines that lead to a repetition (#314), where the side to
   // move is better: shown apart, below the principal lines, and given no
   // arrow.
-  const better = kind === "stockfish" && markBest >= BETTER_CP;
+  const better = kind === "stockfish" && repetition.apart && markBest > repetition.aboveCp;
   const repeatsAt = lines.map((l) => (better ? repetitionAt(fen, l.pv_uci, beforeHere) : null));
   movesRef.current = lines.flatMap((l, i) => {
     const uci = l.pv_uci[0];

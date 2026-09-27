@@ -171,10 +171,12 @@ Stockfish can rate a move better than a draw while its line, played out,
 comes back to a position already on the board — from earlier in the line, or
 from the game before it: the moves just shuffle, and at the repetition the
 better side would have to find another, more principled way to make progress.
-Where the side to move is better (by 0.30 pawns or more in the best line),
-the Engine panel shows such lines apart, below the principal ones, under
-**⟲ Leading to a repetition**, greyed; the tooltip says at which move the
-position repeats. They get no arrow on the board.
+Where the side to move is better — by more than 0.00 in the best line, so
+any advantage — the Engine panel shows such lines apart, below the principal
+ones, under **⟲ Leading to a repetition**, greyed; the tooltip says at which
+move the position repeats. They get no arrow on the board. Maintenance →
+Engines → Stockfish switches this off (*Show non-principal lines
+separately*) or sets the advantage it needs, per computer.
 
 ## Kept results
 

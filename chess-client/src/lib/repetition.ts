@@ -3,7 +3,7 @@
 // already on the board — the moves just shuffle, and at the repetition the
 // better side has to find another, more principled way. Stockfish's such
 // lines are shown apart from the principal ones, where the side to move is
-// better.
+// better (see repetitionSettings).
 
 import { Chess } from "chess.js";
 import type { EngineHistory } from "../api";
@@ -50,6 +50,20 @@ export function repetitionAt(fen: string, pvUci: string[], before: string[]): nu
   return null;
 }
 
-/** The side to move is better by this many centipawns in the best line.
- *  Below it, a line that repeats is no surprise and is not set apart. */
-export const BETTER_CP = 30;
+/** Whether Stockfish's lines that repeat are shown apart, and above how many
+ *  centipawns in the best line the side to move counts as better (0: any
+ *  plus). Set per computer (Maintenance → Engines → Stockfish). */
+export const REPETITION_APART_KEY = "stockfishRepetitionApart";
+export const REPETITION_ABOVE_KEY = "stockfishRepetitionAboveCp";
+
+export function repetitionSettings(): { apart: boolean; aboveCp: number } {
+  try {
+    const cp = Number(localStorage.getItem(REPETITION_ABOVE_KEY));
+    return {
+      apart: localStorage.getItem(REPETITION_APART_KEY) !== "false",
+      aboveCp: Number.isFinite(cp) && cp >= 0 ? cp : 0,
+    };
+  } catch {
+    return { apart: true, aboveCp: 0 };
+  }
+}

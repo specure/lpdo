@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
 import ExternalLinkIcon from "./ExternalLinkIcon";
+import { REPETITION_ABOVE_KEY, REPETITION_APART_KEY, repetitionSettings } from "../lib/repetition";
 import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
@@ -271,6 +272,39 @@ function restarts(patch: object): boolean {
     .some((k) => k in patch && (patch as Record<string, unknown>)[k] !== undefined);
 }
 
+/** Stockfish's lines that lead to a repetition (#314): shown apart, below
+ *  the principal lines, where the side to move is better by more than a
+ *  set advantage. Per computer, as the lines are. */
+function RepetitionSetting() {
+  const [{ apart, aboveCp }, setState] = useState(repetitionSettings);
+  const [pawns, setPawns] = useState((aboveCp / 100).toFixed(2));
+  const store = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* per-computer convenience only */ } };
+  return (
+    <div className="space-y-1 text-body-sm text-on-surface">
+      <label className="flex items-center gap-2 cursor-pointer" title="A move can rate better than a draw while its line comes back to a position already on the board — the moves just shuffle. Such lines go below the principal ones, under ⟲ Leading to a repetition.">
+        <input type="checkbox" checked={apart} className="accent-primary"
+          onChange={(e) => { setState((st) => ({ ...st, apart: e.target.checked })); store(REPETITION_APART_KEY, String(e.target.checked)); }} />
+        <span>Show non-principal lines separately — those leading to a repetition</span>
+      </label>
+      {apart && (
+        <label className="flex items-center gap-2 pl-6">
+          <span>When better by more than</span>
+          <input value={pawns} onChange={(e) => setPawns(e.target.value)} inputMode="decimal"
+            {...commitOn(() => {
+              const cp = Math.round(Number(pawns.replace(",", ".")) * 100);
+              if (!Number.isFinite(cp) || cp < 0) return;
+              setState((st) => ({ ...st, aboveCp: cp }));
+              store(REPETITION_ABOVE_KEY, String(cp));
+            })}
+            className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
+          <span className="text-on-surface-variant">pawns (0.00: any advantage)</span>
+        </label>
+      )}
+      <p className="text-label-sm text-on-surface-variant pl-6">On this computer; takes effect when the Engine panel next opens.</p>
+    </div>
+  );
+}
+
 type ReplyPatch = { replies?: boolean; helper_threads?: number; helper_hash_mb?: number; helper_depth?: number; strong_cp?: number; helper_nodes?: number; strong_pct?: number; neutral_cp?: number; neutral_pct?: number };
 
 /** Replies & Strong for a local engine: a helper process of the same engine
@@ -517,6 +551,7 @@ function EngineSection() {
         </div>
       )}
       {info && <EngineLines kind="stockfish" />}
+      {info && <RepetitionSetting />}
       {info && <RepliesSettings kind="stockfish" settings={info.settings} busy={busy} onSave={(p) => void save(p)} />}
       {info && (() => {
         // The memory budget, split as typed: the engine's hash, the database the rest.
