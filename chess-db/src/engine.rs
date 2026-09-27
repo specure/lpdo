@@ -466,6 +466,8 @@ pub struct Engine {
     kind: Kind,
     /// The results kept in the database, once the server has given it one.
     store: Arc<std::sync::OnceLock<EvalStore>>,
+    /// First-sight move orders per position (see `quick_order`).
+    quick_cache: std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>,
     /// The identity each program (and network) had when it last ran —
     /// kept in a file, so the kept results can be found after a restart
     /// before the engine is started (a paused panel does not start it).
@@ -579,6 +581,10 @@ pub struct ReplyAnswer {
 /// What a count stopped because the panel left its position returns.
 const STOPPED: &str = "stopped";
 
+/// How deep the first-sight ranking of all moves searches: some tens of
+/// milliseconds on one thread.
+const QUICK_DEPTH: u32 = 8;
+
 /// The lines a Stockfish helper searches, as many as the Engine panel shows
 /// by default: the strong count is exact up to four, "5+" beyond.
 const HELPER_LINES: u32 = 5;
@@ -688,6 +694,7 @@ impl Engine {
         Arc::new(Self {
             kind,
             store: Arc::new(std::sync::OnceLock::new()),
+            quick_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
             identities: std::sync::Mutex::new(
                 std::fs::read_to_string(data_dir.join(identities_file(kind))).ok()
                     .and_then(|t| serde_json::from_str(&t).ok())
@@ -1421,16 +1428,16 @@ impl Engine {
 
     /// Count one position on an idle helper (or a new one); the helper goes
     /// back to the pool after a clean count, and is ended after a failure.
-    async fn count_one(&self, key: &str, fen: &str, settings: &EngineSettings, cancel: &Notify) -> Result<ReplyCount, String> {
+    /// An idle helper with the settings now in force, or a new one.
+    async fn take_helper(&self, settings: &EngineSettings) -> Result<Helper, String> {
         let path = self.running.lock().await.as_ref().map(|r| r.path.clone()).ok_or("no engine")?;
-        let legal = legal_moves(fen);
         let config = format!("{path}|{}|{}|{:?}|{:?}", settings.helper_threads, settings.helper_hash_mb, settings.weights, settings.backend);
         let idle = {
             let mut pool = self.helpers.lock().unwrap();
             pool.retain(|h| h.config == config);
             pool.pop()
         };
-        let mut h = match idle {
+        Ok(match idle {
             Some(h) => h,
             None => {
                 let mut hs = settings.clone();
@@ -1452,7 +1459,55 @@ impl Engine {
                 }
                 Helper { _child: child, stdin, stdout, config: config.clone() }
             }
+        })
+    }
+
+    /// Stockfish's first-sight order of every legal move in `fen` (UCI, best
+    /// first): a shallow search on a helper, for the one-click move when the
+    /// database has nothing and there is no deeper evaluation — asked for as
+    /// soon as the panel shows the position, so it is there by the click.
+    pub async fn quick_order(&self, fen: &str) -> Result<Vec<String>, String> {
+        if self.kind != Kind::Stockfish { return Err("only Stockfish ranks moves at first sight".to_string()); }
+        let settings = self.settings.lock().await.clone();
+        if !settings.enabled { return Err("Stockfish is switched off".to_string()); }
+        let position = position_key(fen);
+        if let Some(o) = self.quick_cache.lock().unwrap().get(&position) { return Ok(o.clone()); }
+        let legal = legal_moves(fen);
+        if legal == 0 { return Ok(Vec::new()); }
+        self.ensure_started().await?;
+        let mut h = self.take_helper(&settings).await?;
+        send(&mut h.stdin, &format!("position fen {fen}")).await?;
+        send(&mut h.stdin, &format!("setoption name MultiPV value {}", legal.min(256))).await?;
+        send(&mut h.stdin, &format!("go depth {QUICK_DEPTH}")).await?;
+        let mut order: BTreeMap<u32, String> = BTreeMap::new();
+        let mut line = String::new();
+        let read = async {
+            loop {
+                line.clear();
+                if h.stdout.read_line(&mut line).await.map_err(|e| e.to_string())? == 0 {
+                    return Err("the helper ended".to_string());
+                }
+                let t = line.trim();
+                if t.starts_with("bestmove") { return Ok::<(), String>(()); }
+                if let Some(l) = parse_info(t).and_then(|i| i.line) {
+                    if let Some(m) = l.pv_uci.first() { order.insert(l.multipv, m.clone()); }
+                }
+            }
         };
+        tokio::time::timeout(Duration::from_secs(10), read).await.map_err(|_| "the helper took too long".to_string())??;
+        // Restore the helper's usual lines before it goes back to the pool.
+        send(&mut h.stdin, &format!("setoption name MultiPV value {HELPER_LINES}")).await?;
+        self.helpers.lock().unwrap().push(h);
+        let moves: Vec<String> = order.into_values().collect();
+        let mut cache = self.quick_cache.lock().unwrap();
+        if cache.len() > 5_000 { cache.clear(); }
+        cache.insert(position, moves.clone());
+        Ok(moves)
+    }
+
+    async fn count_one(&self, key: &str, fen: &str, settings: &EngineSettings, cancel: &Notify) -> Result<ReplyCount, String> {
+        let legal = legal_moves(fen);
+        let mut h = self.take_helper(settings).await?;
         send(&mut h.stdin, &format!("position fen {fen}")).await?;
         match self.kind {
             Kind::Stockfish => {

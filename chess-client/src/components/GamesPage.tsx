@@ -588,6 +588,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                     selectedMoveSan={moveStats[0]?.mv ?? null}
                     showRelatedGame={false}
                     showMoves={false}
+                    onMove={appendMove}
                   />
                 </div>
               </Panel>
