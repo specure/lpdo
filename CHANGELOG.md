@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Opening repertoire** — books and chapters, loosely the shape of an
+  opening course: a book for a course or a topic, with the colour you play it
+  from; chapters as one tree of lines each, added empty, from pasted PGN or a
+  PGN file (one chapter per game, named from its headers), exported as PGN.
+  A chapter opens in the Analysis page as a tab, the board turned to the
+  book's colour, with the Reference tab and the engines for every position, a
+  Lines tab (click puts the board on a line, → at its end goes on to the
+  next), and the editor to adjust the lines. Chapters are marked active, and
+  any move can be switched off — "not in my repertoire from here" — greyed
+  with everything below it, the switch kept in the PGN. Design in
+  `docs/design/opening-repertoire.md`. (#327, #329)
+
 ## [0.21.0] - 2026-09-27
 
 ### Added
