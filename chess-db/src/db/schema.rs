@@ -542,6 +542,8 @@ fn init_repertoire(conn: &Connection) -> Result<()> {
             mover        VARCHAR NOT NULL,
             active       BOOLEAN NOT NULL
         );
+        ALTER TABLE repertoire_books ADD COLUMN IF NOT EXISTS author VARCHAR;
+        ALTER TABLE repertoire_books ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE;
         ",
     )?;
     Ok(())

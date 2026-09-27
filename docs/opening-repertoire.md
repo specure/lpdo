@@ -3,10 +3,11 @@
 The **Repertoire** page organises the openings you play as **books** and
 **chapters**, loosely the shape of an opening course: a book for a course or a
 topic ("Najdorf for Black", with the colour you play it from and, if you like,
-a link to the course), chapters for its sections, each chapter one tree of
-lines with variations and comments. The books and chapters are in a panel on
-the left (« folds it away, as the Players page's list), and the chapter being
-studied is on the right, with the Analysis page's own layout — board, move
+its author and a link to the course), chapters for its sections, each chapter
+one tree of lines with variations and comments. The books are in a panel on
+the left, the selected book's chapters in a panel beside it (« folds either
+away to a strip, as the Players page's list), and the chapter being studied
+is on the right, with the Analysis page's own layout — board, move
 list, Reference, Games and Lines, the engines — so switching chapters, or
 books, stays on the page. The design is in
 [design/opening-repertoire.md](design/opening-repertoire.md); this is how it
@@ -14,26 +15,34 @@ is used.
 
 ## Books and chapters
 
-**+ New** beside *Books* asks for a name and the colour. A chapter is added
-to the selected book in one of three ways, with the buttons under its
-chapters:
+**+ New** beside *Books* asks for a name, the author (optional) and the
+colour. Under the list, the selected book's details: its author, colour,
+chapter and line counts, the link to the course (a click opens it) and your
+notes; **Edit…** changes them, ▲ ▼ reorder the books, **PGN…** exports all
+its chapters as one file, **Delete…** deletes it with its chapters. The author
+goes into the chapters' PGN as `[Annotator]`.
+
+A chapter is added to the selected book in one of three ways, with the
+buttons under its chapters:
 
 - **+ Empty**, then play the lines in with *Edit lines…*;
 - **Paste PGN…** — a PGN with several games becomes several chapters, named
   from their headers (a Lichess study exports its chapters this way;
   otherwise the players, or the event);
-- **Import…** — the same from a PGN file.
+- **Import…** — the same from PGN files, one or several at once: each file
+  becomes a chapter (or a chapter per game, for a file of several), named
+  from its headers or else after the file.
 
-A chapter's ⋯ renames, reorders (▲ ▼), exports and deletes it; **Book…**
-above the chapters renames the book, sets its colour and link, exports all
-its chapters as one PGN, or deletes it. Every chapter starts from the initial
-position.
+A chapter's ⋯ renames, reorders (▲ ▼), exports and deletes it. Every chapter
+starts from the initial position.
 
-## Active chapters, and switching lines off
+## Active books and chapters, and switching lines off
 
 The checkbox on a chapter marks it **active** — part of the repertoire you are
 playing now. A chapter switched off keeps its lines, ready to be switched on
-again.
+again. The checkbox on a book does the same for the whole book: off, none of
+its chapters count, whatever their own checkboxes say, and they keep them for
+when the book is switched on again.
 
 Within a chapter, any move can be switched **off**: "not in my repertoire from
 here". Open the chapter, put the cursor on the move, and click the small

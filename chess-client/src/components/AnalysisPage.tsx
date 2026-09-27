@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { GameSummary, MoveStats } from "../types";
 import { LoadedGame } from "../lib/useGamePgn";
@@ -56,11 +56,10 @@ interface Props {
   onMove: (key: string, delta: -1 | 1) => void;
   /** How many games the rail holds at most. */
   capacity: number;
-  /** A panel in the rail's place (#327): the Repertoire page puts its books
-   *  and chapters there and shows one chapter — no rail, no rail commands. */
-  leadingPanel?: ReactNode;
-  leadingPanelSize?: string;
-  leadingPanelMax?: string;
+  /** Panels in the rail's place (#327): the Repertoire page puts its books
+   *  and its chapters there and shows one chapter — no rail, no rail
+   *  commands. */
+  leadingPanels?: LeadingPanel[];
   /** Where the panel sizes are remembered; a host with a leading panel keeps
    *  a layout of its own. */
   layoutId?: string;
@@ -82,10 +81,26 @@ const STARTPOS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 type RightTab = "reference" | "related" | "lines";
 const TAB_KEY = "analysisRightTab";
 
+/** A panel of the host's, left of the board, in the rail's place. */
+export interface LeadingPanel {
+  id: string;
+  node: ReactNode;
+  /** Sizes as the group takes them: percentages ("18"). */
+  size: string;
+  min?: string;
+  max?: string;
+  /** Folded to a narrow strip (fixed width with nothing open). */
+  strip?: boolean;
+}
+
 export default function AnalysisPage({
   tabs, activeKey, onActivate, onClose, onCloseMany, onMove, capacity, onOpenGame, onTabState, onGameMutated,
-  leadingPanel, leadingPanelSize = "18", leadingPanelMax = "34", layoutId = "analysis-main", emptyState,
+  leadingPanels, layoutId = "analysis-main", emptyState,
 }: Props) {
+  const lead = leadingPanels && leadingPanels.length > 0 ? leadingPanels : null;
+  const leadIds = lead ? lead.map((p) => p.id) : ["rail"];
+  // Separators after the leading panels count on from the last of them.
+  const off = leadIds.length - 1;
   const active = tabs.find((t) => t.key === activeKey) ?? null;
   const full = tabs.length >= capacity;
 
@@ -156,7 +171,7 @@ export default function AnalysisPage({
   // Only with more than one game open: for one, the game's own entries say
   // the same, and its ✕ closes it.
   const railExtras: MenuEntry[] = (() => {
-    if (tabs.length < 2 || leadingPanel) return [];
+    if (tabs.length < 2 || lead) return [];
     const n = pickedNow.length;
     const subset = n > 0 && n < tabs.length;
     return [
@@ -253,7 +268,7 @@ export default function AnalysisPage({
   // trades between exactly two of them. The move text used to live inside the
   // board panel, which is why dragging the intel divider resized the board and
   // left the move text alone.
-  const rz = useNeighbourResize(["rail", "board", "moves", "side"]);
+  const rz = useNeighbourResize([...leadIds, "board", "moves", "side"]);
   const [moveHost, setMoveHost] = useState<HTMLDivElement | null>(null);
   const saved = useDefaultLayout({ id: layoutId, storage: localStorage });
   const sideCol = useDefaultLayout({ id: "analysis-side", storage: localStorage });
@@ -327,7 +342,7 @@ export default function AnalysisPage({
   if (tabs.length === 0) {
     return (
       <div className="flex flex-1 overflow-hidden p-1.5 gap-1.5">
-        {leadingPanel && <div className="w-80 shrink-0 min-h-0">{leadingPanel}</div>}
+        {lead?.map((p) => <div key={p.id} className={`${p.strip ? "w-10" : "w-64"} shrink-0 min-h-0`}>{p.node}</div>)}
         <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md px-6 text-center">
           {emptyState ?? 'Open a game from the Games or Players page ("Open in Analysis") to start analysing.'}
         </div>
@@ -341,13 +356,15 @@ export default function AnalysisPage({
           same rule: it resizes the two panels it separates and nothing else. */}
       <Group orientation="horizontal" className="flex-1 min-w-0 flex" defaultLayout={saved.defaultLayout} onLayoutChanged={saved.onLayoutChanged} onLayoutChange={rz.onLayout}>
       {/* A — open-game tabs (mini-board previews) */}
-      <Panel
-        id="rail"
-        defaultSize={leadingPanel ? leadingPanelSize : "9"}
-        minSize={rz.floor("rail") ?? "5"}
-        maxSize={leadingPanel ? leadingPanelMax : "16"}
-      >
-      {leadingPanel ?? (
+      {lead ? lead.map((p, i) => (
+        <Fragment key={p.id}>
+          {i > 0 && <Separator className={vHandle} {...rz.separator(i - 1)} />}
+          <Panel id={p.id} defaultSize={p.size} minSize={rz.floor(p.id) ?? p.min ?? p.size} maxSize={p.max ?? p.size}>
+            {p.node}
+          </Panel>
+        </Fragment>
+      )) : (
+      <Panel id="rail" defaultSize="9" minSize={rz.floor("rail") ?? "5"} maxSize="16">
       <div className="h-full flex flex-col min-h-0">
         {/* The rail is also the export list: what is open, in this order, is
             what "Print all games" writes (from the More menu above the
@@ -399,10 +416,10 @@ export default function AnalysisPage({
         })}
       </div>
       </div>
-      )}
       </Panel>
+      )}
 
-      <Separator className={vHandle} {...rz.separator(0)} />
+      <Separator className={vHandle} {...rz.separator(off)} />
 
       {/* Active game (editable board + comments + notation) */}
         <Panel id="board" defaultSize="38" minSize={rz.floor("board") ?? "20"}>
@@ -428,7 +445,7 @@ export default function AnalysisPage({
           </div>
         </Panel>
 
-        <Separator className={vHandle} {...rz.separator(1)} />
+        <Separator className={vHandle} {...rz.separator(off + 1)} />
 
         {/* The game's move text — its own panel, not a sidebar of the board. */}
         <Panel id="moves" defaultSize="19" minSize={rz.floor("moves") ?? "10"}>
@@ -437,7 +454,7 @@ export default function AnalysisPage({
           </div>
         </Panel>
 
-        <Separator className={vHandle} {...rz.separator(2)} />
+        <Separator className={vHandle} {...rz.separator(off + 2)} />
 
         {/* Position intel: Reference or the related games above, one tab at
             a time, and the engines below — always in view, so it is plain

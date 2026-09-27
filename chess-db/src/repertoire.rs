@@ -28,9 +28,13 @@ pub struct Book {
     pub id: i64,
     pub name: String,
     pub color: String,
+    pub author: Option<String>,
     pub description: Option<String>,
     pub url: Option<String>,
     pub ord: i64,
+    /// Off: the whole book is out of the active repertoire, whatever its
+    /// chapters' own switches say.
+    pub active: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -64,9 +68,11 @@ pub struct ChapterDetail {
 pub struct BookPatch {
     pub name: Option<String>,
     pub color: Option<String>,
+    pub author: Option<Option<String>>,
     pub description: Option<Option<String>>,
     pub url: Option<Option<String>>,
     pub ord: Option<i64>,
+    pub active: Option<bool>,
 }
 
 #[derive(Default)]
@@ -278,45 +284,49 @@ pub fn movetext_of(pgn: &str) -> String {
 
 /// A chapter's name from an imported game's headers: a Lichess study's
 /// `[ChapterName]`, the chapter part of its `[Event "Study: Chapter"]`, the
-/// players where they are names, else the event, else "Chapter N".
-pub fn chapter_name_from(pgn: &str, n: usize) -> String {
-    if let Some(c) = tag(pgn, "ChapterName").filter(|s| !s.trim().is_empty()) { return c; }
+/// players where they are names, else the event — or none.
+fn header_name(pgn: &str) -> Option<String> {
+    if let Some(c) = tag(pgn, "ChapterName").filter(|s| !s.trim().is_empty()) { return Some(c); }
     let event = tag(pgn, "Event").unwrap_or_default();
     if let Some((_, chapter)) = event.split_once(": ") {
-        if !chapter.trim().is_empty() { return chapter.trim().to_string(); }
+        if !chapter.trim().is_empty() { return Some(chapter.trim().to_string()); }
     }
     let real = |s: Option<String>| s.filter(|v| !v.trim().is_empty() && v.trim() != "?");
     match (real(tag(pgn, "White")), real(tag(pgn, "Black"))) {
-        (Some(w), Some(b)) => return format!("{w} – {b}"),
-        (Some(w), None) => return w,
+        (Some(w), Some(b)) => return Some(format!("{w} – {b}")),
+        (Some(w), None) => return Some(w),
         _ => {}
     }
-    if !event.trim().is_empty() && event.trim() != "?" { return event.trim().to_string(); }
-    format!("Chapter {n}")
+    (!event.trim().is_empty() && event.trim() != "?").then(|| event.trim().to_string())
 }
 
 /// A chapter's PGN: its headers — what the Analysis page shows in place of
 /// the players — and the movetext.
-fn compose_pgn(book: &str, ord: i64, chapter: &str, color: &str, movetext: &str) -> String {
+fn compose_pgn(book: &str, author: Option<&str>, ord: i64, chapter: &str, color: &str, movetext: &str) -> String {
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
     let mut body = movetext.trim().to_string();
     if !["1-0", "0-1", "1/2-1/2", "*"].iter().any(|r| body.ends_with(r)) {
         if !body.is_empty() { body.push(' '); }
         body.push('*');
     }
+    let annotator = author.map(str::trim).filter(|a| !a.is_empty())
+        .map(|a| format!("[Annotator \"{}\"]\n", esc(a))).unwrap_or_default();
     format!(
-        "[Event \"{}\"]\n[Site \"LPDO repertoire\"]\n[Round \"{}\"]\n[White \"{}\"]\n[Black \"?\"]\n[Result \"*\"]\n[Orientation \"{}\"]\n\n{}\n",
-        esc(book), ord, esc(chapter), color, body
+        "[Event \"{}\"]\n[Site \"LPDO repertoire\"]\n[Round \"{}\"]\n[White \"{}\"]\n[Black \"?\"]\n[Result \"*\"]\n{}[Orientation \"{}\"]\n\n{}\n",
+        esc(book), ord, esc(chapter), annotator, color, body
     )
 }
 
 // ── Database ─────────────────────────────────────────────────────────────────
 
 fn book_row(r: &duckdb::Row<'_>) -> duckdb::Result<Book> {
-    Ok(Book { id: r.get(0)?, name: r.get(1)?, color: r.get(2)?, description: r.get(3)?, url: r.get(4)?, ord: r.get(5)? })
+    Ok(Book {
+        id: r.get(0)?, name: r.get(1)?, color: r.get(2)?, author: r.get(3)?, description: r.get(4)?, url: r.get(5)?,
+        ord: r.get(6)?, active: r.get(7)?,
+    })
 }
 
-const BOOK_COLS: &str = "id, name, color, description, url, ord";
+const BOOK_COLS: &str = "id, name, color, author, description, url, ord, active";
 
 fn chapter_row(r: &duckdb::Row<'_>) -> duckdb::Result<ChapterSummary> {
     Ok(ChapterSummary {
@@ -348,15 +358,15 @@ pub fn list(conn: &Connection) -> Result<Vec<BookWithChapters>> {
     }).collect())
 }
 
-pub fn create_book(conn: &Connection, name: &str, color: &str, description: Option<&str>, url: Option<&str>) -> Result<Book> {
+pub fn create_book(conn: &Connection, name: &str, color: &str, author: Option<&str>, description: Option<&str>, url: Option<&str>) -> Result<Book> {
     let name = name.trim();
     if name.is_empty() { bail!("the book needs a name"); }
     valid_color(color)?;
     let id = crate::db::ids::next_id(conn, "repertoire_books")? as i64;
     let ord: i64 = conn.query_row("SELECT COALESCE(MAX(ord), 0) + 1 FROM repertoire_books", [], |r| r.get(0))?;
     conn.execute(
-        "INSERT INTO repertoire_books (id, name, color, description, url, ord, created_at) VALUES (?, ?, ?, ?, ?, ?, CAST(NOW() AS TIMESTAMP))",
-        duckdb::params![id, name, color, description, url, ord],
+        "INSERT INTO repertoire_books (id, name, color, author, description, url, ord, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, TRUE, CAST(NOW() AS TIMESTAMP))",
+        duckdb::params![id, name, color, author, description, url, ord],
     )?;
     crate::db::ids::raise_high_water(conn, "repertoire_books", id as u32)?;
     get_book(conn, id)
@@ -384,21 +394,32 @@ pub fn update_book(conn: &Connection, id: i64, patch: BookPatch) -> Result<Book>
     if let Some(c) = &patch.color { valid_color(c)?; }
     let name = patch.name.as_deref().map(str::trim).unwrap_or(&before.name).to_string();
     let color = patch.color.clone().unwrap_or(before.color.clone());
+    let author = patch.author.clone().unwrap_or(before.author.clone()).map(|a| a.trim().to_string()).filter(|a| !a.is_empty());
     let description = patch.description.clone().unwrap_or(before.description.clone());
     let url = patch.url.clone().unwrap_or(before.url.clone());
+    let active = patch.active.unwrap_or(before.active);
     conn.execute(
-        "UPDATE repertoire_books SET name = ?, color = ?, description = ?, url = ? WHERE id = ?",
-        duckdb::params![name, color, description, url, id],
+        "UPDATE repertoire_books SET name = ?, color = ?, author = ?, description = ?, url = ?, active = ? WHERE id = ?",
+        duckdb::params![name, color, author, description, url, active, id],
     )?;
     if let Some(to) = patch.ord { place_book(conn, Some((id, to)))?; }
-    // The chapters' headers carry the book's name and colour.
-    if name != before.name || color != before.color {
-        let mut st = conn.prepare("SELECT id, ord, name, pgn FROM repertoire_chapters WHERE book_id = ?")?;
-        let rows: Vec<(i64, i64, String, String)> = st.query_map(duckdb::params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+    // The chapters' headers carry the book's name, author and colour; their
+    // positions, whether the book is on.
+    let headers = name != before.name || color != before.color || author != before.author;
+    if headers || active != before.active {
+        let mut st = conn.prepare("SELECT id, ord, name, pgn, active FROM repertoire_chapters WHERE book_id = ?")?;
+        let rows: Vec<(i64, i64, String, String, bool)> = st
+            .query_map(duckdb::params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
             .collect::<duckdb::Result<_>>()?;
-        for (cid, ord, cname, pgn) in rows {
-            let pgn = compose_pgn(&name, ord, &cname, &color, &movetext_of(&pgn));
-            conn.execute("UPDATE repertoire_chapters SET pgn = ? WHERE id = ?", duckdb::params![pgn, cid])?;
+        for (cid, ord, cname, pgn, chapter_active) in rows {
+            let movetext = movetext_of(&pgn);
+            if headers {
+                let pgn = compose_pgn(&name, author.as_deref(), ord, &cname, &color, &movetext);
+                conn.execute("UPDATE repertoire_chapters SET pgn = ? WHERE id = ?", duckdb::params![pgn, cid])?;
+            }
+            if active != before.active {
+                reindex(conn, cid, active && chapter_active, &walk(&movetext)?)?;
+            }
         }
     }
     get_book(conn, id)
@@ -412,6 +433,8 @@ pub fn delete_book(conn: &Connection, id: i64) -> Result<()> {
     place_book(conn, None)
 }
 
+/// Index a chapter's positions; `active` is whether the chapter counts at
+/// all — it and its book on.
 fn reindex(conn: &Connection, chapter_id: i64, active: bool, walk: &Walk) -> Result<()> {
     conn.execute("DELETE FROM repertoire_positions WHERE chapter_id = ?", duckdb::params![chapter_id])?;
     let mut st = conn.prepare(
@@ -425,8 +448,9 @@ fn reindex(conn: &Connection, chapter_id: i64, active: bool, walk: &Walk) -> Res
 
 /// Add chapters to a book: one empty chapter named `name`, or one chapter
 /// per game of `pgn` (a file's worth), named from their headers — or `name`
-/// when there is one game and a name.
-pub fn add_chapters(conn: &Connection, book_id: i64, name: Option<&str>, pgn: Option<&str>) -> Result<Vec<ChapterSummary>> {
+/// when there is one game and a name. `file` is the file the PGN came from:
+/// its name names the chapters the headers leave unnamed.
+pub fn add_chapters(conn: &Connection, book_id: i64, name: Option<&str>, pgn: Option<&str>, file: Option<&str>) -> Result<Vec<ChapterSummary>> {
     let book = get_book(conn, book_id)?;
     let games: Vec<String> = match pgn.map(str::trim).filter(|p| !p.is_empty()) {
         Some(p) => {
@@ -445,17 +469,22 @@ pub fn add_chapters(conn: &Connection, book_id: i64, name: Option<&str>, pgn: Op
         let cname = match name.map(str::trim).filter(|n| !n.is_empty()) {
             Some(n) if single => n.to_string(),
             _ if game.trim().is_empty() => format!("Chapter {}", count + 1),
-            _ => chapter_name_from(game, count as usize + 1),
+            _ => match (header_name(game), file.map(str::trim).filter(|f| !f.is_empty())) {
+                (Some(h), _) => h,
+                (None, Some(f)) if single => f.to_string(),
+                (None, Some(f)) => format!("{f} {}", i + 1),
+                (None, None) => format!("Chapter {}", count + 1),
+            },
         };
         let ord: i64 = conn.query_row("SELECT COALESCE(MAX(ord), 0) + 1 FROM repertoire_chapters WHERE book_id = ?", duckdb::params![book_id], |r| r.get(0))?;
         let id = crate::db::ids::next_id(conn, "repertoire_chapters")? as i64;
-        let full = compose_pgn(&book.name, ord, &cname, &book.color, &movetext);
+        let full = compose_pgn(&book.name, book.author.as_deref(), ord, &cname, &book.color, &movetext);
         conn.execute(
             "INSERT INTO repertoire_chapters (id, book_id, ord, name, active, pgn, lines, lines_off, updated_at) VALUES (?, ?, ?, ?, TRUE, ?, ?, ?, CAST(NOW() AS TIMESTAMP))",
             duckdb::params![id, book_id, ord, cname, full, walk.lines, walk.lines_off],
         )?;
         crate::db::ids::raise_high_water(conn, "repertoire_chapters", id as u32)?;
-        reindex(conn, id, true, &walk)?;
+        reindex(conn, id, book.active, &walk)?;
         out.push(get_chapter_summary(conn, id)?);
     }
     Ok(out)
@@ -491,6 +520,7 @@ pub fn update_chapter(conn: &Connection, id: i64, patch: ChapterPatch) -> Result
     let active = patch.active.unwrap_or(before.active);
     let book_id = patch.book_id.unwrap_or(before.book_id);
     let book = get_book(conn, book_id)?;
+    let counted_before = before.active && get_book(conn, before.book_id)?.active;
     conn.execute(
         "UPDATE repertoire_chapters SET name = ?, active = ?, book_id = ? WHERE id = ?",
         duckdb::params![name, active, book_id, id],
@@ -507,11 +537,11 @@ pub fn update_chapter(conn: &Connection, id: i64, patch: ChapterPatch) -> Result
     // The headers carry the chapter's name and order and the book's.
     let pgn: String = conn.query_row("SELECT pgn FROM repertoire_chapters WHERE id = ?", duckdb::params![id], |r| r.get(0))?;
     let movetext = movetext_of(&pgn);
-    let full = compose_pgn(&book.name, after.ord, &after.name, &book.color, &movetext);
+    let full = compose_pgn(&book.name, book.author.as_deref(), after.ord, &after.name, &book.color, &movetext);
     conn.execute("UPDATE repertoire_chapters SET pgn = ? WHERE id = ?", duckdb::params![full, id])?;
-    if active != before.active {
+    if (active && book.active) != counted_before {
         let w = walk(&movetext)?;
-        reindex(conn, id, active, &w)?;
+        reindex(conn, id, active && book.active, &w)?;
     }
     get_chapter_summary(conn, id)
 }
@@ -521,12 +551,12 @@ pub fn set_moves(conn: &Connection, id: i64, movetext: &str) -> Result<ChapterSu
     let before = get_chapter_summary(conn, id)?;
     let book = get_book(conn, before.book_id)?;
     let w = walk(movetext)?;
-    let full = compose_pgn(&book.name, before.ord, &before.name, &book.color, movetext);
+    let full = compose_pgn(&book.name, book.author.as_deref(), before.ord, &before.name, &book.color, movetext);
     conn.execute(
         "UPDATE repertoire_chapters SET pgn = ?, lines = ?, lines_off = ?, updated_at = CAST(NOW() AS TIMESTAMP) WHERE id = ?",
         duckdb::params![full, w.lines, w.lines_off, id],
     )?;
-    reindex(conn, id, before.active, &w)?;
+    reindex(conn, id, before.active && book.active, &w)?;
     get_chapter_summary(conn, id)
 }
 
@@ -580,17 +610,19 @@ mod tests {
         let text = "[Event \"Najdorf: 6.Bg5\"]\n[White \"?\"]\n\n1. e4 c5 *\n\n[Event \"Test\"]\n[White \"Doe, John\"]\n[Black \"Roe, Jane\"]\n\n1. d4 *\n";
         let games = split_games(text);
         assert_eq!(games.len(), 2);
-        assert_eq!(chapter_name_from(&games[0], 1), "6.Bg5");
-        assert_eq!(chapter_name_from(&games[1], 2), "Doe, John – Roe, Jane");
+        assert_eq!(header_name(&games[0]).as_deref(), Some("6.Bg5"));
+        assert_eq!(header_name(&games[1]).as_deref(), Some("Doe, John – Roe, Jane"));
+        assert_eq!(header_name("[Event \"?\"]\n\n1. e4 *"), None, "nothing to name it by: the file's name, else Chapter N");
         assert_eq!(movetext_of(&games[1]), "1. d4 *");
         assert_eq!(tag(&games[1], "Black").as_deref(), Some("Roe, Jane"));
     }
 
     #[test]
     fn composes_headers_and_a_result() {
-        let p = compose_pgn("Book \"A\"", 2, "Ch", "black", "1. e4");
+        let p = compose_pgn("Book \"A\"", Some("Doe, J."), 2, "Ch", "black", "1. e4");
         assert!(p.starts_with("[Event \"Book \\\"A\\\"\"]\n"));
-        assert!(p.contains("[Orientation \"black\"]"));
+        assert!(p.contains("[Annotator \"Doe, J.\"]\n[Orientation \"black\"]"));
+        assert!(!compose_pgn("B", Some(" "), 1, "Ch", "white", "").contains("Annotator"));
         assert!(p.ends_with("\n\n1. e4 *\n"));
     }
 }

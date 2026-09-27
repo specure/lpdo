@@ -1264,10 +1264,13 @@ struct BookBody {
     color: Option<String>,
     /// Absent: unchanged; null: cleared.
     #[serde(default, deserialize_with = "deserialize_nullable")]
+    author: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_nullable")]
     description: Option<Option<String>>,
     #[serde(default, deserialize_with = "deserialize_nullable")]
     url: Option<Option<String>>,
     ord: Option<i64>,
+    active: Option<bool>,
 }
 
 /// A field that may be absent (None), null (Some(None)) or set (Some(Some)).
@@ -1279,14 +1282,14 @@ async fn repertoire_book_create_handler(State(state): State<AppState>, Json(b): 
     state.writer.run(move |conn| {
         let name = b.name.unwrap_or_default();
         let color = b.color.unwrap_or_else(|| "white".to_string());
-        crate::repertoire::create_book(conn, &name, &color, b.description.flatten().as_deref(), b.url.flatten().as_deref())
+        crate::repertoire::create_book(conn, &name, &color, b.author.flatten().as_deref(), b.description.flatten().as_deref(), b.url.flatten().as_deref())
             .map(Json).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
     }).await
 }
 
 async fn repertoire_book_update_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Json(b): Json<BookBody>) -> ApiResult<crate::repertoire::Book> {
     state.writer.run(move |conn| {
-        let patch = crate::repertoire::BookPatch { name: b.name, color: b.color, description: b.description, url: b.url, ord: b.ord };
+        let patch = crate::repertoire::BookPatch { name: b.name, color: b.color, author: b.author, description: b.description, url: b.url, ord: b.ord, active: b.active };
         crate::repertoire::update_book(conn, id, patch).map(Json).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
     }).await
 }
@@ -1304,11 +1307,14 @@ struct ChaptersAddBody {
     name: Option<String>,
     /// PGN text: one chapter per game.
     pgn: Option<String>,
+    /// The file the PGN came from (its name without the extension): names
+    /// the chapters its headers do not.
+    file: Option<String>,
 }
 
 async fn repertoire_chapters_add_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Json(b): Json<ChaptersAddBody>) -> ApiResult<Vec<crate::repertoire::ChapterSummary>> {
     state.writer.run(move |conn| {
-        crate::repertoire::add_chapters(conn, id, b.name.as_deref(), b.pgn.as_deref())
+        crate::repertoire::add_chapters(conn, id, b.name.as_deref(), b.pgn.as_deref(), b.file.as_deref())
             .map(Json).map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))
     }).await
 }

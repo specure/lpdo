@@ -10,9 +10,12 @@ export interface Book {
   id: number;
   name: string;
   color: BookColor;
+  author: string | null;
   description: string | null;
   url: string | null;
   ord: number;
+  /** Off: the whole book is out of the active repertoire. */
+  active: boolean;
 }
 
 export interface ChapterSummary {
@@ -46,12 +49,14 @@ export interface ChapterDocument {
 }
 
 export const listRepertoire = () => apiGet<BookWithChapters[]>("/repertoire");
-export const createBook = (b: { name: string; color: BookColor; description?: string | null; url?: string | null }) =>
+export const createBook = (b: { name: string; color: BookColor; author?: string | null; description?: string | null; url?: string | null }) =>
   postJson<Book>("/repertoire/books", b);
-export const updateBook = (id: number, patch: { name?: string; color?: BookColor; description?: string | null; url?: string | null; ord?: number }) =>
+export const updateBook = (id: number, patch: { name?: string; color?: BookColor; author?: string | null; description?: string | null; url?: string | null; ord?: number; active?: boolean }) =>
   putJson<Book>(`/repertoire/books/${id}`, patch);
 export const deleteBook = (id: number) => apiDelete(`/repertoire/books/${id}`);
-export const addChapters = (bookId: number, body: { name?: string; pgn?: string }) =>
+/** `file`: the PGN's file name, without the extension — names the chapters
+ *  its headers do not. */
+export const addChapters = (bookId: number, body: { name?: string; pgn?: string; file?: string }) =>
   postJson<ChapterSummary[]>(`/repertoire/books/${bookId}/chapters`, body);
 export const getChapter = (id: number) => apiGet<ChapterDetail>(`/repertoire/chapters/${id}`);
 export const updateChapter = (id: number, patch: { name?: string; ord?: number; active?: boolean; book_id?: number }) =>
