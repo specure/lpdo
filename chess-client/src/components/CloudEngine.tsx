@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Chess } from "chess.js";
-import { addCloudWatch, getCloudWatches, type EngineHistory } from "../api";
+import { addCloudWatch, apiUrl, getCloudWatches, type EngineHistory } from "../api";
 import { CLOUD_WATCH_REMOVED, CLOUD_WATCH_UPDATED } from "./ActivityIndicator";
 import LocalEngine from "./LocalEngine";
 
@@ -94,15 +94,16 @@ export function fmtLichess(l: LichessLine): string {
   return (p > 0 ? "+" : "") + p.toFixed(2);
 }
 
-// Bringing chessdb's "power move" lens to Stockfish (#221). Reverse-engineered
-// from chessdb: a move within ~0.05 of the best is "strong" (chessdb marks the
-// best "!" and treats anything >0.05 worse as "?"), AND — crucially — once the
-// position itself is lost (best move worse than ~-0.7, i.e. win% under ~45%),
-// chessdb marks *everything* "?": no point flagging the opponent's "good" replies
-// when you're already lost. These constants match that behaviour.
-const STRONG_MARK_CP = 1; // within 0.01 of best ⇒ "!" (chessdb marks equal-best near-ties too)
-const STRONG_CP = 5;      // ≤0.05 behind best = normal; >0.05 = weak (?). Measured boundary.
-const LOST_CP = -70;      // best move worse than -0.70 ⇒ position lost, all moves "?"
+// Bringing chessdb's "power move" lens to the other engines (#221). For each
+// of them one threshold decides what is strong: a move within it of the best
+// is marked "!", one within a second (neutral) threshold is left unmarked, any
+// other is "?"; and the Strong column counts the opponent's
+// replies within it of their best — so a move marked "!" is one of the strong
+// replies to the move before. Lichess's threshold is set with the cloud
+// engines, Stockfish's and Lc0's in their cards (Maintenance → Engines);
+// chessdb.cn marks and counts by its own rule.
+export const DEFAULT_LICHESS_STRONG_CP = 5;
+export const DEFAULT_LICHESS_NEUTRAL_CP = 15;
 
 /** Eval from the side-to-move's perspective, in centipawns (mate ⇒ ±huge, nearer
  *  mates ranked higher). Lichess evals are White-relative, so flip for Black. */
@@ -115,13 +116,12 @@ export function moverScore(evalCp: number | null, mate: number | null, whiteToMo
   return whiteToMove ? cp : -cp;
 }
 
-/** chessdb-style quality mark for a line, given the position's best score:
- *  "!" = best (tied for top), "" = normal (within 0.05 of best), "?" = weak
- *  (>0.05 behind). Everything is "?" in a lost position (best worse than LOST_CP). */
-export function moveMark(best: number, score: number): string {
-  if (best < LOST_CP) return "?";
+/** "!" for a strong move — within `strong` of the best, in the scores' own
+ *  unit (centipawns, or Lc0's expected score) — none for a neutral one
+ *  (within `neutral`), "?" for any other. */
+export function moveMark(best: number, score: number, strong: number, neutral: number): string | undefined {
   const drop = best - score;
-  return drop <= STRONG_MARK_CP ? "!" : drop <= STRONG_CP ? "" : "?";
+  return drop <= strong ? "!" : drop <= neutral ? undefined : "?";
 }
 
 /** Colour for a side-to-move score: green = good for the player to move, red =
@@ -201,14 +201,37 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
   // per-move requests) vs plain lines, and how many lines to show/analyse.
   // Set under Maintenance → Engines → Engine panel (per device).
   const [lichessShowStats] = useState(() => localStorage.getItem("lichessShowStats") !== "false");
-  const [lichessLineCount] = useState(() => {
-    const n = parseInt(localStorage.getItem("lichessLineCount") ?? "", 10);
+  // Lichess's threshold for strong moves (Maintenance → Engines, on the server).
+  const [lichessStrongCp, setLichessStrongCp] = useState(DEFAULT_LICHESS_STRONG_CP);
+  const [lichessNeutralCp, setLichessNeutralCp] = useState(DEFAULT_LICHESS_NEUTRAL_CP);
+  useEffect(() => {
+    fetch(apiUrl("/cloud-eval/settings"))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { lichess_strong_cp?: number; lichess_neutral_cp?: number } | null) => {
+        if (d?.lichess_strong_cp != null) setLichessStrongCp(d.lichess_strong_cp);
+        if (d?.lichess_neutral_cp != null) setLichessNeutralCp(d.lichess_neutral_cp);
+      })
+      .catch(() => {});
+  }, []);
+  // The local engines' lines (Maintenance → Engines, per device): each extra
+  // line costs Stockfish search time, Lc0 nothing. Lichess shows every line
+  // its cloud has.
+  const [stockfishLineCount] = useState(() => {
+    const n = parseInt(localStorage.getItem("stockfishLineCount") ?? localStorage.getItem("lichessLineCount") ?? "", 10);
     return Number.isFinite(n) && n > 0 ? Math.min(n, 20) : 5;
+  });
+  const [lc0LineCount] = useState(() => {
+    const n = parseInt(localStorage.getItem("lc0LineCount") ?? "", 10);
+    return Number.isFinite(n) && n > 0 ? Math.min(n, 20) : 10;
   });
 
   // Each cloud service's own status: both can run while either tab is shown.
   const [dbStatus, setDbStatus] = useState<EngineStatus>("ok");
   const [liStatus, setLiStatus] = useState<EngineStatus>("ok");
+  // The position each service's result is for: a paused tab still shows its
+  // result for the position on the board, and only that one.
+  const [dbFen, setDbFen] = useState<string | null>(null);
+  const [liFen, setLiFen] = useState<string | null>(null);
   const [engineQueuing, setEngineQueuing] = useState(false);
   // FENs with an active deepen watch — keep Deepen disabled for them so a second
   // click can't restart the watch (which would reset its baseline). Seeded from
@@ -230,7 +253,24 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
   const liOn = enabled.lichess && running.lichess;
   useEffect(() => {
     dbAbort.current?.abort();
-    if (!dbOn) return;
+    if (!dbOn) {
+      // Paused: what the server's cache holds for this position, never a request out.
+      if (!enabled.chessdb) return;
+      const ctrl = new AbortController();
+      dbAbort.current = ctrl;
+      fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}&cached_only=true`, { signal: ctrl.signal })
+        .then((r) => (r.ok ? r.json() as Promise<{ status: EngineStatus; moves: CloudMove[] }> : null))
+        .then((d) => {
+          if (!d?.moves?.length) return;
+          setEngineMoves(d.moves); setDbStatus("ok"); setDbFen(fen); setEngineLines({});
+          fetch(`/api/cloud-eval/lines?fen=${encodeURIComponent(fen)}&cached_only=true`, { signal: ctrl.signal })
+            .then((r) => (r.ok ? r.json() as Promise<{ uci: string; pvSan: string[] }[]> : []))
+            .then((ls) => { const map: Record<string, string[]> = {}; for (const l of ls) map[l.uci] = l.pvSan; setEngineLines(map); })
+            .catch(() => {});
+        })
+        .catch(() => {});
+      return () => ctrl.abort();
+    }
     const ctrl = new AbortController();
     dbAbort.current = ctrl;
     engineAbort.current = ctrl;
@@ -242,7 +282,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
       fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}${rq}`, { signal: ctrl.signal })
         .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<{ status: EngineStatus; moves: CloudMove[] }>; })
         .then((d) => {
-          setEngineMoves(d.moves ?? []); setDbStatus(d.moves?.length ? "ok" : (d.status ?? "unknown"));
+          setEngineMoves(d.moves ?? []); setDbStatus(d.moves?.length ? "ok" : (d.status ?? "unknown")); setDbFen(fen);
           // Lazy second pass: fetch the continuation lines (several querypv calls)
           // once the move table is on screen.
           if (d.moves?.length) {
@@ -259,7 +299,16 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
   }, [fen, dbOn, engineRefreshTick]);
   useEffect(() => {
     liAbort.current?.abort();
-    if (!liOn) return;
+    if (!liOn) {
+      if (!enabled.lichess) return;
+      const ctrl = new AbortController();
+      liAbort.current = ctrl;
+      fetch(`/api/lichess-eval?fen=${encodeURIComponent(fen)}&cached_only=true`, { signal: ctrl.signal })
+        .then((r) => (r.ok ? r.json() as Promise<LichessEval> : null))
+        .then((d) => { if (d?.lines?.length) { setLichessEval(d); setLiStatus("ok"); setLiFen(fen); } })
+        .catch(() => {});
+      return () => ctrl.abort();
+    }
     const ctrl = new AbortController();
     liAbort.current = ctrl;
     setLiStatus("loading");
@@ -268,7 +317,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
     const t = setTimeout(() => {
       fetch(`/api/lichess-eval?fen=${encodeURIComponent(fen)}${rq}`, { signal: ctrl.signal })
         .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<LichessEval>; })
-        .then((d) => { setLichessEval(d); setLiStatus(d.lines?.length ? "ok" : (d.status ?? "unknown")); })
+        .then((d) => { setLichessEval(d); setLiStatus(d.lines?.length ? "ok" : (d.status ?? "unknown")); setLiFen(fen); })
         .catch((e) => { if (!(e instanceof DOMException && e.name === "AbortError")) { setLichessEval(null); setLiStatus("offline"); } });
     }, 350);
     return () => clearTimeout(t);
@@ -278,14 +327,15 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
 
   // Power-move stats for Lichess (async, after the lines are on screen): for each
   // top line, fetch the child position's cloud eval and count the opponent's
-  // replies + how many are "strong" (within STRONG_CP of the best). Sparse — only
+  // replies + how many are "strong" (within the threshold of the best). Sparse — only
   // where Lichess has the child position cached.
   useEffect(() => {
     if (engineSource !== "lichess" || !lichessShowStats || !lichessEval?.lines.length) { setLichessStats({}); return; }
     const oppWhite = fen.split(" ")[1] === "b"; // opponent (after our move) is White iff we're Black
     const ctrl = new AbortController();
     setLichessStats({});
-    for (const l of lichessEval.lines.slice(0, lichessLineCount)) {
+    // One request per line: the top five only, with every line on screen.
+    for (const l of lichessEval.lines.slice(0, 5)) {
       const uci = l.pvUci[0];
       if (!uci) continue;
       let childFen: string;
@@ -300,15 +350,13 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
           if (!ce || ce.status !== "ok" || !ce.lines.length) return;
           const scores = ce.lines.map((x) => moverScore(x.evalCp, x.mate, oppWhite));
           const best = Math.max(...scores);
-          // If the opponent is lost after this move, none of their replies are
-          // "strong" — don't imply they have good options.
-          const strong = best < LOST_CP ? 0 : scores.filter((s) => best - s <= STRONG_CP).length;
+          const strong = scores.filter((s) => best - s <= lichessStrongCp).length;
           setLichessStats((prev) => ({ ...prev, [uci]: { replies: ce.lines.length, strong } }));
         })
         .catch(() => {});
     }
     return () => ctrl.abort();
-  }, [fen, engineSource, lichessEval, lichessShowStats, lichessLineCount]);
+  }, [fen, engineSource, lichessEval, lichessShowStats, lichessStrongCp]);
 
   // Seed the set of actively-watched positions on mount (a watch may still be
   // running from before this panel was last shown).
@@ -411,9 +459,9 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
         </div>
       ) : engineSource === "stockfish" || engineSource === "lc0" ? (
         null /* the local engines are drawn below, always mounted */
-      ) : !running[engineSource] ? (
+      ) : !running[engineSource] && (engineSource === "chessdb" ? dbFen : liFen) !== fen ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center text-on-surface-variant text-body-sm px-3">
-          <span>{engineSource === "chessdb" ? "chessdb.cn" : "Lichess"} is paused and not asked about positions.</span>
+          <span>{engineSource === "chessdb" ? "chessdb.cn" : "Lichess"} is paused, and has nothing for this position yet.</span>
           <button onClick={() => toggleRunning(engineSource)} className="h-8 px-3 rounded-full text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard">Run</button>
         </div>
       ) : engineStatus === "loading" ? (
@@ -511,13 +559,13 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
                     <span className="w-14 text-right">Eval</span>
                   </div>
                 )}
-                {lichessEval.lines.slice(0, lichessLineCount).map((l, i) => {
+                {lichessEval.lines.map((l, i) => {
                   const sans = pvToSan(fen, l.pvUci);
                   const st = lichessStats[l.pvUci[0]];
                   return (
                     <div key={i} className="w-full flex items-baseline gap-2 px-2 py-1 rounded-sm hover:bg-on-surface/8 transition-colors duration-short3 ease-standard">
                       <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface-variant">
-                        <PvLine startFen={fen} sans={sans} onPick={onPlayLine} mark={moveMark(lmBest, lmScores[i]) || undefined} />
+                        <PvLine startFen={fen} sans={sans} onPick={onPlayLine} mark={moveMark(lmBest, lmScores[i], lichessStrongCp, lichessNeutralCp)} />
                       </div>
                       {lichessShowStats && <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface-variant">{st ? st.replies : "—"}</span>}
                       {lichessShowStats && <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface">{st ? st.strong : "—"}</span>}
@@ -535,7 +583,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
       {(["stockfish", "lc0"] as const).filter((k) => enabled[k]).map((k) => (
         <div key={k} className={engineSource === k ? "flex-1 flex flex-col min-h-0" : "hidden"}>
           <LocalEngine
-            kind={k} fen={fen} history={history} lineCount={lichessLineCount} onPlayLine={onPlayLine}
+            kind={k} fen={fen} history={history} lineCount={k === "stockfish" ? stockfishLineCount : lc0LineCount} onPlayLine={onPlayLine}
             paused={!running[k]} onTogglePause={() => toggleRunning(k)}
           />
         </div>

@@ -79,8 +79,12 @@ impl Kind {
     }
 }
 
-/// No search runs longer than this unless the client asks again.
-const MAX_SEARCH: Duration = Duration::from_secs(300);
+/// The Engine panel says it is still open this often (the client's timer);
+/// a search whose panel has not said so for `ALIVE_TTL` — closed without
+/// word, or its computer asleep — is stopped. Generous, as a hidden browser
+/// tab runs its timers only once a minute.
+const ALIVE_TTL: Duration = Duration::from_secs(180);
+const ALIVE_CHECK: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -96,9 +100,10 @@ pub struct EngineSettings {
     pub weights: Option<String>,
     /// Lc0's backend ("cuda-fp16", "opencl", …). None: the engine picks.
     pub backend: Option<String>,
-    /// Stop a search here, 0 for no limit: a depth for Stockfish (its depth
-    /// is how far it has searched), a node count for Lc0 (whose "depth" is
-    /// only the average length of its playouts, so nodes are the measure).
+    /// Stop a search here — always set, as a search runs for as long as its
+    /// panel is open: a depth for Stockfish (its depth is how far it has
+    /// searched), a node count for Lc0 (whose "depth" is only the average
+    /// length of its playouts, so nodes are the measure).
     pub max_depth: u32,
     pub max_nodes: u64,
     /// Lc0's smart pruning: end a search once the best move cannot be
@@ -106,7 +111,28 @@ pub struct EngineSettings {
     pub smart_pruning: bool,
     /// Switched off, the engine is not started (Lc0 then holds no GPU
     /// memory), its tab leaves the Engine panel and analysis is refused.
+    /// Maintenance's Auto (true, the default) or Off: on Auto the engine runs
+    /// when it is installed on the server — see `Engine::on`.
     pub enabled: bool,
+    /// Replies & Strong: a helper process of the same engine counts, for each
+    /// candidate move, the opponent's replies and how many of them are strong.
+    pub replies: bool,
+    /// Stockfish's helper: its threads (taken from the main search's, which
+    /// default to the physical cores less these), hash, and depth.
+    pub helper_threads: u32,
+    pub helper_hash_mb: u32,
+    pub helper_depth: u32,
+    /// A reply is strong within this many centipawns of the best (Stockfish).
+    pub strong_cp: u32,
+    /// Lc0's helper: nodes per candidate, and a reply is strong within this
+    /// many percent of expected score of the best.
+    pub helper_nodes: u64,
+    pub strong_pct: f32,
+    /// A move up to this far behind the best is neutral, unmarked; further
+    /// behind, it is marked "?" (within `strong_cp` / `strong_pct`, "!").
+    /// Stockfish in centipawns, Lc0 in percent of expected score.
+    pub neutral_cp: u32,
+    pub neutral_pct: f32,
 }
 
 impl Default for EngineSettings {
@@ -121,14 +147,24 @@ impl EngineSettings {
             // queries while it analyses. An eighth of the memory for hash,
             // 256 MB to 4 GB — out of the budget it shares with the database
             // (see db::memory).
+            // Replies & Strong on by default, with five single-threaded
+            // helpers — one for each of the five lines the Engine panel shows
+            // by default, so all are counted at once: 11 + 5 on a 16-core
+            // machine. 320 MB of hash for them, 64 MB each.
             Kind::Stockfish => Self {
-                path: None, threads: physical_cores().clamp(1, 64),
+                path: None, threads: physical_cores().saturating_sub(5).clamp(1, 64),
                 hash_mb: crate::db::default_engine_hash_mb(), weights: None, backend: None,
-                max_depth: 40, max_nodes: 0, smart_pruning: false, enabled: true,
+                max_depth: 35, max_nodes: 0, smart_pruning: false, enabled: true,
+                replies: true, helper_threads: 5, helper_hash_mb: 320, helper_depth: 20, strong_cp: 10,
+                helper_nodes: 0, strong_pct: 0.0, neutral_cp: 30, neutral_pct: 0.0,
             },
+            // Off by default for Lc0: its helper loads a second copy of the
+            // network onto the graphics card.
             Kind::Lc0 => Self {
                 path: None, threads: 0, hash_mb: 0, weights: None, backend: None,
-                max_depth: 0, max_nodes: 10_000_000, smart_pruning: false, enabled: true,
+                max_depth: 0, max_nodes: 2_000_000, smart_pruning: false, enabled: true,
+                replies: false, helper_threads: 0, helper_hash_mb: 0, helper_depth: 0, strong_cp: 0,
+                helper_nodes: 50_000, strong_pct: 1.0, neutral_cp: 0, neutral_pct: 3.0,
             },
         }
     }
@@ -143,8 +179,12 @@ fn valid_backend(b: &str) -> bool {
 #[derive(Clone, Debug, Serialize)]
 pub struct EngineStatus {
     pub kind: Kind,
-    /// Switched on in the settings (see EngineSettings::enabled).
+    /// In use: on Auto, and installed.
     pub enabled: bool,
+    /// The setting: Auto (true) or Off.
+    pub auto: bool,
+    /// The program (and for Lc0 a network) is on the server.
+    pub installed: bool,
     pub available: bool,
     /// The engine in use (or that would be used).
     pub path: Option<String>,
@@ -235,7 +275,35 @@ struct Search {
     nodes: u64,
     nps: u64,
     lines: BTreeMap<u32, Line>,
+    /// Stockfish on Unix searches without a depth of its own and is frozen
+    /// here (see `freeze`) — so "search further" goes on from where it was.
+    stop_at: Option<u32>,
+    /// Frozen at `stop_at`: the search is kept, but uses no processor.
+    frozen: bool,
+    /// Thawed: the speed is measured from the first report after the thaw
+    /// (its time and nodes — what came before the freeze was not all read),
+    /// not over the time it was frozen.
+    resumed: Option<Option<(std::time::Instant, u64)>>,
 }
+
+/// Stockfish on Unix is frozen at its target depth instead of stopped: a
+/// finished search cannot be continued, a frozen one can. Elsewhere, and for
+/// Lc0 (which keeps its tree between searches anyway), the engine stops by
+/// itself at its threshold.
+fn can_freeze(kind: Kind) -> bool {
+    cfg!(unix) && kind == Kind::Stockfish
+}
+
+/// Freeze or thaw the engine process (SIGSTOP / SIGCONT).
+#[cfg(unix)]
+fn signal_engine(pid: Option<u32>, thaw: bool) {
+    if let Some(pid) = pid {
+        // SAFETY: kill() only sends a signal to the engine's own process.
+        unsafe { libc::kill(pid as libc::pid_t, if thaw { libc::SIGCONT } else { libc::SIGSTOP }); }
+    }
+}
+#[cfg(not(unix))]
+fn signal_engine(_pid: Option<u32>, _thaw: bool) {}
 
 struct Running {
     child: Child,
@@ -246,6 +314,8 @@ struct Running {
 
 pub struct Engine {
     kind: Kind,
+    /// When an Engine panel last said it is open.
+    alive: std::sync::Mutex<std::time::Instant>,
     data_dir: PathBuf,
     settings_file: PathBuf,
     settings: Mutex<EngineSettings>,
@@ -260,6 +330,116 @@ pub struct Engine {
     latest: Mutex<Option<(std::time::Instant, Option<LatestRelease>)>>,
     /// Held while a benchmark runs.
     benching: Mutex<()>,
+    /// Replies & Strong: the idle helper processes, how many may count at
+    /// once, the counts under way and what has been counted.
+    helpers: std::sync::Mutex<Vec<Helper>>,
+    reply_queue: std::sync::Mutex<ReplyQueue>,
+    reply_cache: std::sync::Mutex<std::collections::HashMap<String, ReplyCount>>,
+    /// Nodes the last Stockfish count took: sibling positions take about as
+    /// many, which makes the progress of the next one an estimate.
+    reply_nodes: AtomicU64,
+}
+
+/// A helper process: the same engine, started with the helper's settings.
+struct Helper {
+    // Held for kill_on_drop: dropping a helper ends its process.
+    _child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    /// What it was started with; a change starts another.
+    config: String,
+}
+
+/// A count asked for and not yet cached: waiting for a helper, under way
+/// (percent done), or failed. It is kept while the Engine panel asks about its
+/// position (`parent`), also when its move leaves the panel's list for a
+/// while; once the panel has moved on to another position, a waiting count is
+/// dropped and a running one stopped.
+struct ReplyJob {
+    fen: String,
+    parent: String,
+    settings: EngineSettings,
+    state: ReplyProgress,
+    /// When the panel last asked for this count by name — on its list now.
+    asked: std::time::Instant,
+    queued: std::time::Instant,
+    cancel: Arc<Notify>,
+}
+
+/// The counts asked for, and when the panel last asked about each position.
+struct ReplyQueue {
+    jobs: std::collections::HashMap<String, ReplyJob>,
+    parents: std::collections::HashMap<String, std::time::Instant>,
+    /// How many count at once: the helpers.
+    limit: usize,
+}
+
+#[derive(Clone, Debug)]
+enum ReplyProgress {
+    Waiting,
+    Counting(u32),
+    Failed(String, std::time::Instant),
+}
+
+/// Where the count for one position stands, for the Engine panel.
+#[derive(Clone, Debug, Serialize)]
+pub struct ReplyState {
+    pub fen: String,
+    /// "done", "counting", "waiting", "failed" or "none" (not counted, and
+    /// not asked for).
+    pub state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<ReplyCount>,
+    /// Percent done while counting: exact for Lc0 (nodes of the limit), an
+    /// estimate for Stockfish.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pct: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The position analysed deeper than the helper counts (the move was
+    /// played): its best line, White-relative, and how deep — the move's own
+    /// evaluation, where deeper than the panel's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<Line>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_depth: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_nodes: Option<u64>,
+    /// The count is a lower bound: every line of the deeper analysis is
+    /// strong, and there may be more beyond them.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub at_least: bool,
+}
+
+/// The Engine panel's answer: each candidate's count or progress, and how many
+/// counts for the position are still waiting or running — also those of moves
+/// no longer on its list, which it keeps asking for until they are done.
+#[derive(Clone, Debug, Serialize)]
+pub struct ReplyAnswer {
+    pub lines: Vec<ReplyState>,
+    pub pending: usize,
+}
+
+/// What a count stopped because the panel left its position returns.
+const STOPPED: &str = "stopped";
+
+/// A position the panel has not asked about for this long is left: its
+/// counts are dropped (the panel asks twice a second).
+const REPLY_ASK_TTL: Duration = Duration::from_secs(3);
+/// A candidate asked for this recently is on the panel's list now, and is
+/// counted before those that left it.
+const REPLY_ON_LIST: Duration = Duration::from_millis(1500);
+
+/// The opponent's replies after one candidate move.
+#[derive(Clone, Debug, Serialize)]
+pub struct ReplyCount {
+    /// Legal replies.
+    pub replies: u32,
+    /// Replies within the threshold of the best.
+    pub strong: u32,
+    /// How deep (Stockfish) or how many nodes (Lc0) the count rests on.
+    pub depth: u32,
+    pub nodes: u64,
 }
 
 /// The deepest result reached for each position, while the server runs.
@@ -277,11 +457,12 @@ impl Remembered {
     fn get(&self, key: &str) -> Option<Snapshot> {
         self.by_key.get(key).cloned()
     }
-    /// Keep `s` if it is deeper than what is remembered for `key`.
-    fn offer(&mut self, key: &str, s: &Snapshot) {
+    /// Keep `s` if it is deeper than what is remembered for `key` (see
+    /// `deeper`).
+    fn offer(&mut self, key: &str, s: &Snapshot, kind: Kind) {
         if s.lines.is_empty() { return; }
         match self.by_key.get(key) {
-            Some(old) if old.depth > s.depth || (old.depth == s.depth && old.lines.len() >= s.lines.len()) => return,
+            Some(old) if !deeper(kind, s, old) => return,
             Some(_) => {}
             None => {
                 self.order.push_back(key.to_string());
@@ -294,6 +475,18 @@ impl Remembered {
         keep.cached = true;
         keep.done = true;
         self.by_key.insert(key.to_string(), keep);
+    }
+}
+
+/// Whether `new` goes further than `old`: for Lc0 by nodes (its "depth" is
+/// only the average length of its lines, and can fall as the search grows);
+/// for Stockfish by depth, then — at the same depth — by nodes. Never with
+/// fewer lines.
+fn deeper(kind: Kind, new: &Snapshot, old: &Snapshot) -> bool {
+    if new.lines.len() < old.lines.len() { return false; }
+    match kind {
+        Kind::Lc0 => new.nodes > old.nodes,
+        Kind::Stockfish => new.depth > old.depth || (new.depth == old.depth && new.nodes > old.nodes),
     }
 }
 
@@ -322,9 +515,19 @@ impl Engine {
                 serde_json::from_value(base).ok()
             })
             .unwrap_or_else(|| EngineSettings::for_kind(kind));
+        // The old "0: no limit" is gone — a search runs while its panel is
+        // open — so such a file gets the default threshold.
+        let mut settings = settings;
+        match kind {
+            Kind::Stockfish if settings.max_depth == 0 => settings.max_depth = EngineSettings::for_kind(kind).max_depth,
+            Kind::Lc0 if settings.max_nodes == 0 => settings.max_nodes = EngineSettings::for_kind(kind).max_nodes,
+            _ => {}
+        }
         let (tx, _) = broadcast::channel(64);
+        let helpers = helper_count(kind, &settings);
         Arc::new(Self {
             kind,
+            alive: std::sync::Mutex::new(std::time::Instant::now()),
             data_dir: data_dir.to_path_buf(),
             settings_file,
             settings: Mutex::new(settings),
@@ -332,7 +535,7 @@ impl Engine {
             last_error: Mutex::new(None),
             search: Arc::new(std::sync::Mutex::new(Search {
                 gen: 0, key: String::new(), white_to_move: true, searching: false, want: 1, depth: 0, nodes: 0, nps: 0,
-                lines: BTreeMap::new(),
+                lines: BTreeMap::new(), stop_at: None, frozen: false, resumed: None,
             })),
             idle: Arc::new(Notify::new()),
             tx,
@@ -340,7 +543,34 @@ impl Engine {
             remembered: Arc::new(std::sync::Mutex::new(Remembered::default())),
             latest: Mutex::new(None),
             benching: Mutex::new(()),
+            helpers: std::sync::Mutex::new(Vec::new()),
+            reply_queue: std::sync::Mutex::new(ReplyQueue {
+                jobs: std::collections::HashMap::new(),
+                parents: std::collections::HashMap::new(),
+                limit: helpers,
+            }),
+            reply_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            reply_nodes: AtomicU64::new(0),
         })
+    }
+
+    /// Whether the engine can run: its program (named, or found in the
+    /// standard locations) and, for Lc0, a network.
+    fn installed(&self, s: &EngineSettings) -> bool {
+        let program = s.path.clone().filter(|p| is_executable(Path::new(p)))
+            .or_else(|| self.found().0.into_iter().next());
+        match (self.kind, program) {
+            (_, None) => false,
+            (Kind::Stockfish, Some(_)) => true,
+            (Kind::Lc0, Some(p)) => s.weights.as_deref().is_some_and(|w| Path::new(w).is_file()) || !self.networks(Some(&p)).is_empty(),
+        }
+    }
+
+    /// In use: set to Auto, and installed — looked up each time, so an
+    /// engine installed (or removed) while the server runs is picked up.
+    pub async fn on(&self) -> bool {
+        let s = self.settings.lock().await.clone();
+        s.enabled && self.installed(&s)
     }
 
     /// The newest Stockfish release, from GitHub. Asked at most once a day
@@ -442,7 +672,9 @@ impl Engine {
     }
 
     pub async fn status(&self) -> EngineStatus {
-        let enabled = self.settings.lock().await.enabled;
+        let auto = self.settings.lock().await.enabled;
+        let installed = self.installed(&self.settings.lock().await.clone());
+        let enabled = auto && installed;
         if enabled { let _ = self.ensure_started().await; }
         let settings = self.settings.lock().await.clone();
         let hash_mb = settings.hash_mb;
@@ -468,6 +700,8 @@ impl Engine {
         EngineStatus {
             kind: self.kind,
             enabled,
+            auto,
+            installed,
             available: running.is_some(),
             path: running.as_ref().map(|r| r.path.clone()).or_else(|| settings.path.clone()).or_else(|| found.first().cloned()),
             name: running.as_ref().map(|r| r.name.clone()),
@@ -496,7 +730,7 @@ impl Engine {
     /// the current choice.
     #[cfg(test)]
     pub async fn configure(&self, path: Option<String>, threads: Option<u32>, hash_mb: Option<u32>) -> Result<EngineStatus, String> {
-        self.configure_all(path, threads, hash_mb, None, None, None, None, None, None).await
+        self.configure_all(path, threads, hash_mb, None, None, None, None, None, None, ReplySettings::default()).await
     }
 
     /// As `configure`, with Lc0's network and backend. The network must be one
@@ -512,6 +746,7 @@ impl Engine {
         max_nodes: Option<u64>,
         smart_pruning: Option<bool>,
         enabled: Option<bool>,
+        reply: ReplySettings,
     ) -> Result<EngineStatus, String> {
         {
             let mut s = self.settings.lock().await;
@@ -542,10 +777,19 @@ impl Engine {
                 }
                 s.weights = Some(w);
             }
-            if let Some(d) = max_depth { s.max_depth = d.min(245); }
-            if let Some(n) = max_nodes { s.max_nodes = n.min(1_000_000_000_000); }
+            if let Some(d) = max_depth { s.max_depth = d.clamp(1, 245); }
+            if let Some(n) = max_nodes { s.max_nodes = n.clamp(1_000, 1_000_000_000_000); }
             if let Some(p) = smart_pruning { s.smart_pruning = p; }
             if let Some(e) = enabled { s.enabled = e; }
+            if let Some(v) = reply.replies { s.replies = v; }
+            if let Some(v) = reply.helper_threads { s.helper_threads = v.clamp(1, 64); }
+            if let Some(v) = reply.helper_hash_mb { s.helper_hash_mb = v.clamp(16, 4096); }
+            if let Some(v) = reply.helper_depth { s.helper_depth = v.clamp(1, 60); }
+            if let Some(v) = reply.strong_cp { s.strong_cp = v.min(500); }
+            if let Some(v) = reply.helper_nodes { s.helper_nodes = v.clamp(1_000, 10_000_000); }
+            if let Some(v) = reply.strong_pct { s.strong_pct = v.clamp(0.0, 50.0); }
+            if let Some(v) = reply.neutral_cp { s.neutral_cp = v.min(1000); }
+            if let Some(v) = reply.neutral_pct { s.neutral_pct = v.clamp(0.0, 50.0); }
             if let Some(b) = backend {
                 if b.is_empty() { s.backend = None; }
                 else if valid_backend(&b) { s.backend = Some(b); }
@@ -560,7 +804,19 @@ impl Engine {
     }
 
     async fn shutdown(&self) {
+        // Dropping the idle helpers ends them; counts under way are stopped.
+        let limit = helper_count(self.kind, &*self.settings.lock().await);
+        self.helpers.lock().unwrap().clear();
+        {
+            let mut q = self.reply_queue.lock().unwrap();
+            for (_, j) in q.jobs.drain() { j.cancel.notify_one(); }
+            q.parents.clear();
+            q.limit = limit;
+        }
+        self.reply_cache.lock().unwrap().clear();
+        self.reply_nodes.store(0, Ordering::Relaxed);
         if let Some(mut r) = self.running.lock().await.take() {
+            if self.search.lock().unwrap().frozen { signal_engine(r.child.id(), true); }
             let _ = r.stdin.write_all(b"quit\n").await;
             let _ = tokio::time::timeout(Duration::from_secs(2), r.child.wait()).await;
             let _ = r.child.start_kill();
@@ -600,7 +856,7 @@ impl Engine {
                 let idle = self.idle.clone();
                 let tx = self.tx.clone();
                 let remembered = self.remembered.clone();
-                tokio::spawn(read_engine(stdout, search, idle, tx, remembered));
+                tokio::spawn(read_engine(stdout, search, idle, tx, remembered, self.kind, child.id()));
                 *running = Some(Running { child, stdin, path, name });
                 *self.last_error.lock().await = None;
                 Ok(())
@@ -623,6 +879,7 @@ impl Engine {
         fen: &str,
         history: Option<(String, Vec<String>)>,
         lines: u32,
+        target: Option<u64>,
     ) -> Result<(u64, Option<Snapshot>, broadcast::Receiver<Snapshot>), String> {
         // A benchmark needs the processor to itself: an analysis beside it
         // skews its figures badly (one run took ten times as long).
@@ -634,19 +891,56 @@ impl Engine {
         }
         self.ensure_started().await?;
         let rx = self.tx.subscribe();
-        let gen = self.gen.fetch_add(1, Ordering::SeqCst) + 1;
+        let depth_to = {
+            let s = self.settings.lock().await;
+            target.map_or(s.max_depth, |t| t.min(245) as u32).clamp(1, 245)
+        };
+        let legal = legal_moves(fen);
+        let want = lines.clamp(1, 20).min(legal.max(1));
+        // Frozen at its depth, not stopped — unless there is nothing to
+        // search: "go infinite" then waits for a stop, spinning a core.
+        let freeze = can_freeze(self.kind) && legal > 0;
 
         let mut running = self.running.lock().await;
         let r = running.as_mut().ok_or("the engine stopped")?;
         // Remembered per engine: Stockfish 16 and 19 disagree.
         let key = format!("{}|{}", r.name, position_key(fen));
+        let pid = r.child.id();
+
+        // Stockfish already on this position (searching, or frozen at its
+        // depth) with the same lines: move its target instead of starting
+        // again — and thaw it if frozen, so it goes on from where it was.
+        if freeze {
+            let mut s = self.search.lock().unwrap();
+            if s.searching && s.key == key && s.want == want {
+                let snap = |s: &Search, done: bool| Snapshot {
+                    gen: s.gen, depth: s.depth, nodes: s.nodes, nps: s.nps,
+                    lines: s.lines.values().cloned().collect(), done, cached: false,
+                };
+                if s.frozen && depth_to <= s.depth {
+                    // Already there: say so.
+                    return Ok((s.gen, Some(snap(&s, true)), rx));
+                }
+                s.stop_at = Some(depth_to);
+                if s.frozen {
+                    s.frozen = false;
+                    s.resumed = Some(None);
+                    signal_engine(pid, true);
+                }
+                self.alive();
+                return Ok((s.gen, Some(snap(&s, false)), rx));
+            }
+        }
+        let gen = self.gen.fetch_add(1, Ordering::SeqCst) + 1;
         let remembered = self.remembered.lock().unwrap().get(&key).map(|mut s| { s.gen = gen; s });
 
         // Finish the previous search first, so its closing `bestmove` is not
         // taken for the end of this one.
-        let was_searching = self.search.lock().unwrap().searching;
+        let (was_searching, was_frozen) = { let s = self.search.lock().unwrap(); (s.searching, s.frozen) };
         if was_searching {
             let waiting = self.idle.notified();
+            // A frozen engine reads nothing: thaw it to hear the stop.
+            if was_frozen { signal_engine(pid, true); }
             send(&mut r.stdin, "stop").await?;
             let _ = tokio::time::timeout(Duration::from_secs(3), waiting).await;
         }
@@ -657,48 +951,409 @@ impl Engine {
                 key,
                 white_to_move: fen.split_whitespace().nth(1) != Some("b"),
                 searching: true,
-                want: lines.clamp(1, 10).min(legal_moves(fen).max(1)),
+                want,
                 depth: 0, nodes: 0, nps: 0,
                 lines: BTreeMap::new(),
+                stop_at: freeze.then_some(depth_to),
+                frozen: false,
+                resumed: None,
             };
         }
-        send(&mut r.stdin, &format!("setoption name MultiPV value {}", lines.clamp(1, 10))).await?;
+        send(&mut r.stdin, &format!("setoption name MultiPV value {}", lines.clamp(1, 20))).await?;
         let position = match &history {
             Some((start, moves)) if !moves.is_empty() => format!("position fen {start} moves {}", moves.join(" ")),
             _ => format!("position fen {fen}"),
         };
         send(&mut r.stdin, &position).await?;
-        // Stop at the configured threshold; the time cap below is the net
-        // under it (and under "no limit").
-        let limits = { let s = self.settings.lock().await; (s.max_depth, s.max_nodes) };
-        let go = match (self.kind, limits) {
-            (Kind::Stockfish, (d, _)) if d > 0 => format!("go depth {d}"),
-            (Kind::Lc0, (_, n)) if n > 0 => format!("go nodes {n}"),
-            _ => "go infinite".to_string(),
+        // Stop at the threshold — or at `target`, the panel's "search further"
+        // once the threshold was reached. Never without one: a search runs
+        // as long as its panel is open (see ALIVE_TTL).
+        // Stockfish on Unix: no depth of its own — the reader freezes it at
+        // `stop_at`.
+        let go = match self.kind {
+            Kind::Stockfish if freeze => "go infinite".to_string(),
+            Kind::Stockfish => format!("go depth {depth_to}"),
+            Kind::Lc0 => {
+                let s = self.settings.lock().await;
+                format!("go nodes {}", target.unwrap_or(s.max_nodes).clamp(1_000, 1_000_000_000_000))
+            }
         };
         send(&mut r.stdin, &go).await?;
         drop(running);
 
-        // The cap: an analysis nobody asked about again ends by itself.
+        // Stop the search once its panel has gone quiet.
+        self.alive();
         let me = self.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(MAX_SEARCH).await;
-            me.stop(gen).await;
+            loop {
+                tokio::time::sleep(ALIVE_CHECK).await;
+                let current = { let s = me.search.lock().unwrap(); s.gen == gen && s.searching };
+                if !current { return; }
+                if me.alive.lock().unwrap().elapsed() > ALIVE_TTL {
+                    me.stop(gen).await;
+                    return;
+                }
+            }
         });
         Ok((gen, remembered, rx))
     }
 
-    /// Stop search `gen` if it is still the current one.
+    /// The Engine panel is still open: its search goes on.
+    pub fn alive(&self) {
+        *self.alive.lock().unwrap() = std::time::Instant::now();
+    }
+
+    /// Stop search `gen` if it is still the current one (thawing it first
+    /// if it is frozen).
     pub async fn stop(&self, gen: u64) {
-        let current = {
+        let (current, frozen) = {
             let s = self.search.lock().unwrap();
-            s.gen == gen && s.searching
+            (s.gen == gen && s.searching, s.frozen)
         };
         if current {
             if let Some(r) = self.running.lock().await.as_mut() {
+                if frozen { signal_engine(r.child.id(), true); }
                 let _ = send(&mut r.stdin, "stop").await;
             }
         }
+    }
+
+    /// The panel paused this engine: freeze Stockfish's search where it is
+    /// (Unix), so running it again goes on from there — the next analysis of
+    /// the same position thaws it. Other engines, and elsewhere, the search
+    /// just stops when the panel's stream closes.
+    pub async fn pause(&self) -> bool {
+        if !can_freeze(self.kind) { return false; }
+        let pid = self.running.lock().await.as_ref().and_then(|r| r.child.id());
+        let mut s = self.search.lock().unwrap();
+        if !s.searching || s.frozen || s.stop_at.is_none() { return false; }
+        s.frozen = true;
+        s.resumed = None;
+        signal_engine(pid, false);
+        true
+    }
+
+    /// A stream of search `gen` went away. Stop the search unless another
+    /// stream watches it — the panel reconnects to move the target — or it is
+    /// frozen at its depth, kept for "search further" while the panel is open
+    /// (the heartbeat ends it after that). A moment's grace, as a reconnect
+    /// closes the old stream before the new one opens.
+    pub async fn stream_gone(&self, gen: u64) {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let keep = {
+            let s = self.search.lock().unwrap();
+            s.gen != gen || !s.searching || s.frozen
+        };
+        if keep || self.tx.receiver_count() > 0 { return; }
+        self.stop(gen).await;
+    }
+
+    fn reply_key(name: &str, s: &EngineSettings, fen: &str) -> String {
+        format!("{name}|{}|{}|{}|{}|{}", s.helper_depth, s.strong_cp, s.helper_nodes, s.strong_pct, position_key(fen))
+    }
+
+    /// Replies & Strong for the positions after the candidate moves (`fens`,
+    /// cleaned) of `parent`: the opponent's legal replies, and how many are
+    /// within the threshold of the best. A position not counted yet is queued
+    /// for the next free helper, unless `cached_only` (a paused engine), and
+    /// the Engine panel asks again for the progress. Stockfish searches every
+    /// reply to the helper's depth; Lc0 runs a short search and counts the
+    /// replies it explored.
+    pub async fn replies(self: &Arc<Self>, parent: &str, fens: &[String], cached_only: bool) -> Result<ReplyAnswer, String> {
+        let settings = self.settings.lock().await.clone();
+        if !settings.enabled {
+            return Err("this engine is switched off".to_string());
+        }
+        // With Replies & Strong off, only what is known already: the deeper
+        // analyses, for the moves' evaluations.
+        let cached_only = cached_only || !settings.replies;
+        if !cached_only { self.ensure_started().await?; }
+        let name = self.running.lock().await.as_ref().map(|r| r.name.clone());
+        let state = |fen: &str, state, count, pct, error| ReplyState { fen: fen.to_string(), state, count, pct, error, line: None, line_depth: None, line_nodes: None, at_least: false };
+        let Some(name) = name else {
+            return Ok(ReplyAnswer { lines: fens.iter().map(|f| state(f, "none", None, None, None)).collect(), pending: 0 });
+        };
+        let parent = position_key(parent);
+        let now = std::time::Instant::now();
+        let mut lines = Vec::with_capacity(fens.len());
+        let pending = {
+            let mut q = self.reply_queue.lock().unwrap();
+            q.parents.insert(parent.clone(), now);
+            for fen in fens {
+                let legal = legal_moves(fen);
+                // The position after the move analysed deeper than the helper
+                // counts — the move was played and the panel analysed it: its
+                // best line gives the move's evaluation, and its lines the
+                // strong replies, by the threshold the marks there use.
+                let deep = self.remembered.lock().unwrap().get(&format!("{name}|{}", position_key(fen)))
+                    .filter(|d| !d.lines.is_empty() && match self.kind {
+                        Kind::Stockfish => d.depth > settings.helper_depth,
+                        Kind::Lc0 => d.nodes > settings.helper_nodes,
+                    });
+                let deep = deep.map(|d| {
+                    let strong = strong_lines(self.kind, &settings, fen, &d.lines);
+                    // All lines strong: there may be more beyond them.
+                    let exact = strong < d.lines.len() as u32 || d.lines.len() as u32 >= legal;
+                    (d, strong, exact)
+                });
+                let with_deep = |mut st: ReplyState| {
+                    if let Some((d, strong, exact)) = &deep {
+                        st.line = d.lines.first().cloned();
+                        st.line_depth = Some(d.depth);
+                        st.line_nodes = Some(d.nodes);
+                        let deep_count = ReplyCount { replies: legal, strong: (*strong).max(1), depth: d.depth, nodes: d.nodes };
+                        match &st.count {
+                            // The helper's count, unless the deeper lines prove more.
+                            Some(c) if !*exact => {
+                                if c.strong < *strong { st.count = Some(deep_count); st.at_least = true; }
+                            }
+                            _ if *exact => { st.state = "done"; st.count = Some(deep_count); st.pct = None; }
+                            // No count: the deeper lines give a lower bound.
+                            _ if st.state == "none" => { st.state = "done"; st.count = Some(deep_count); st.at_least = true; }
+                            _ => {}
+                        }
+                    }
+                    st
+                };
+                if deep.as_ref().is_some_and(|(_, _, exact)| *exact) {
+                    lines.push(with_deep(state(fen, "done", None, None, None)));
+                    continue;
+                }
+                let key = Self::reply_key(&name, &settings, fen);
+                if let Some(c) = self.reply_cache.lock().unwrap().get(&key).cloned() {
+                    lines.push(with_deep(state(fen, "done", Some(c), None, None)));
+                    continue;
+                }
+                if legal == 0 {
+                    lines.push(state(fen, "done", Some(ReplyCount { replies: 0, strong: 0, depth: 0, nodes: 0 }), None, None));
+                    continue;
+                }
+                if let Some(j) = q.jobs.get_mut(&key) {
+                    match &j.state {
+                        // A failure is reported for a while, then tried again.
+                        ReplyProgress::Failed(_, at) if at.elapsed() > Duration::from_secs(30) => { q.jobs.remove(&key); }
+                        ReplyProgress::Failed(e, _) => { lines.push(with_deep(state(fen, "failed", None, None, Some(e.clone())))); continue; }
+                        ReplyProgress::Waiting => { j.asked = now; lines.push(with_deep(state(fen, "waiting", None, None, None))); continue; }
+                        ReplyProgress::Counting(p) => { j.asked = now; lines.push(with_deep(state(fen, "counting", None, Some(*p), None))); continue; }
+                    }
+                }
+                if cached_only {
+                    lines.push(with_deep(state(fen, "none", None, None, None)));
+                    continue;
+                }
+                q.jobs.insert(key, ReplyJob {
+                    fen: fen.clone(), parent: parent.clone(), settings: settings.clone(),
+                    state: ReplyProgress::Waiting, asked: now, queued: now, cancel: Arc::new(Notify::new()),
+                });
+                lines.push(with_deep(state(fen, "waiting", None, None, None)));
+            }
+            q.jobs.values().filter(|j| j.parent == parent && matches!(j.state, ReplyProgress::Waiting | ReplyProgress::Counting(_))).count()
+        };
+        self.dispatch();
+        Ok(ReplyAnswer { lines, pending })
+    }
+
+    /// Drop the counts of positions the panel has left (stopping those under
+    /// way), then start waiting counts on free helpers: those on the panel's
+    /// list first, then those whose move left it, oldest first.
+    fn dispatch(self: &Arc<Self>) {
+        let mut q = self.reply_queue.lock().unwrap();
+        let fresh = |t: &std::time::Instant| t.elapsed() <= REPLY_ASK_TTL;
+        let stale: Vec<String> = q.jobs.iter()
+            .filter(|(_, j)| !fresh(&j.asked) && !q.parents.get(&j.parent).is_some_and(fresh))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in stale {
+            if let Some(j) = q.jobs.remove(&k) { j.cancel.notify_one(); }
+        }
+        q.parents.retain(|_, t| fresh(t));
+        loop {
+            let running = q.jobs.values().filter(|j| matches!(j.state, ReplyProgress::Counting(_))).count();
+            if running >= q.limit { break; }
+            let next = q.jobs.iter()
+                .filter(|(_, j)| matches!(j.state, ReplyProgress::Waiting))
+                .max_by_key(|(_, j)| (j.asked.elapsed() <= REPLY_ON_LIST, std::cmp::Reverse(j.queued)))
+                .map(|(k, _)| k.clone());
+            let Some(key) = next else { break };
+            let j = q.jobs.get_mut(&key).unwrap();
+            j.state = ReplyProgress::Counting(0);
+            let (fen, settings, cancel) = (j.fen.clone(), j.settings.clone(), j.cancel.clone());
+            tokio::spawn(self.clone().run_reply_job(key, fen, settings, cancel));
+        }
+    }
+
+    /// One count on a helper; then the next waiting one.
+    async fn run_reply_job(self: Arc<Self>, key: String, fen: String, settings: EngineSettings, cancel: Arc<Notify>) {
+        let result = self.count_one(&key, &fen, &settings, &cancel).await;
+        {
+            let mut q = self.reply_queue.lock().unwrap();
+            match result {
+                Ok(c) => {
+                    self.reply_cache.lock().unwrap().insert(key.clone(), c);
+                    q.jobs.remove(&key);
+                }
+                // Stopped: the job is gone already.
+                Err(e) if e == STOPPED => {}
+                Err(e) => {
+                    if let Some(j) = q.jobs.get_mut(&key) { j.state = ReplyProgress::Failed(e, std::time::Instant::now()); }
+                }
+            }
+        }
+        self.dispatch();
+    }
+
+    fn set_reply_pct(&self, key: &str, pct: u32) {
+        if let Some(j) = self.reply_queue.lock().unwrap().jobs.get_mut(key) {
+            if matches!(j.state, ReplyProgress::Counting(_)) { j.state = ReplyProgress::Counting(pct.min(99)); }
+        }
+    }
+
+    /// Count one position on an idle helper (or a new one); the helper goes
+    /// back to the pool after a clean count, and is ended after a failure.
+    async fn count_one(&self, key: &str, fen: &str, settings: &EngineSettings, cancel: &Notify) -> Result<ReplyCount, String> {
+        let path = self.running.lock().await.as_ref().map(|r| r.path.clone()).ok_or("no engine")?;
+        let legal = legal_moves(fen);
+        let config = format!("{path}|{}|{}|{:?}|{:?}", settings.helper_threads, settings.helper_hash_mb, settings.weights, settings.backend);
+        let idle = {
+            let mut pool = self.helpers.lock().unwrap();
+            pool.retain(|h| h.config == config);
+            pool.pop()
+        };
+        let mut h = match idle {
+            Some(h) => h,
+            None => {
+                let mut hs = settings.clone();
+                match self.kind {
+                    // The helper threads and hash, shared among the helpers.
+                    Kind::Stockfish => {
+                        hs.threads = 1;
+                        hs.hash_mb = (settings.helper_hash_mb / helper_count(self.kind, settings) as u32).max(16);
+                    }
+                    Kind::Lc0 => {
+                        hs.threads = settings.helper_threads;
+                        hs.hash_mb = settings.helper_hash_mb;
+                        if hs.weights.is_none() { hs.weights = self.networks(Some(&path)).into_iter().next(); }
+                    }
+                }
+                let (child, mut stdin, stdout, _) = start(&path, &hs, self.kind).await?;
+                if self.kind == Kind::Lc0 {
+                    send(&mut stdin, "setoption name VerboseMoveStats value true").await?;
+                }
+                Helper { _child: child, stdin, stdout, config: config.clone() }
+            }
+        };
+        send(&mut h.stdin, &format!("position fen {fen}")).await?;
+        match self.kind {
+            Kind::Stockfish => {
+                // Stockfish takes at most 256 lines; no position has more
+                // than 218 legal moves.
+                send(&mut h.stdin, &format!("setoption name MultiPV value {}", legal.min(256))).await?;
+                send(&mut h.stdin, &format!("go depth {}", settings.helper_depth.max(1))).await?;
+            }
+            Kind::Lc0 => {
+                send(&mut h.stdin, "setoption name MultiPV value 1").await?;
+                send(&mut h.stdin, &format!("go nodes {}", settings.helper_nodes.max(1000))).await?;
+            }
+        }
+
+        // Stockfish: each reply's last exact score, by line. Lc0: each
+        // explored reply's visits and expected score, from the move stats.
+        let mut scores: std::collections::HashMap<u32, (u32, i32)> = std::collections::HashMap::new();
+        let mut stats: std::collections::HashMap<String, (u64, f64)> = std::collections::HashMap::new();
+        let (mut depth, mut nodes) = (0u32, 0u64);
+        let reference = self.reply_nodes.load(Ordering::Relaxed);
+        let target_depth = settings.helper_depth.max(1);
+        let mut shown = 0u32;
+        let mut line = String::new();
+        // Ok(false): stopped — the panel left the position.
+        let read = async {
+            let mut stopping = false;
+            loop {
+                // A line half read when the stop comes stays in `line`, and
+                // the next read completes it.
+                let got = if stopping {
+                    h.stdout.read_line(&mut line).await
+                } else {
+                    tokio::select! {
+                        r = h.stdout.read_line(&mut line) => r,
+                        _ = cancel.notified() => {
+                            send(&mut h.stdin, "stop").await?;
+                            stopping = true;
+                            continue;
+                        }
+                    }
+                };
+                if got.map_err(|e| e.to_string())? == 0 {
+                    return Err("the helper ended".to_string());
+                }
+                let t = std::mem::take(&mut line);
+                let t = t.trim();
+                if t.starts_with("bestmove") { return Ok(!stopping); }
+                if stopping { continue; }
+                if let Some(rest) = t.strip_prefix("info string ") {
+                    if let Some((mv, n, q)) = parse_move_stats(rest) { stats.insert(mv, (n, q)); }
+                    continue;
+                }
+                if let Some(info) = parse_info(t) {
+                    if let Some(d) = info.depth { depth = depth.max(d); }
+                    if let Some(n) = info.nodes { nodes = n; }
+                    if let Some(l) = info.line {
+                        let score = match (l.mate, l.eval_cp) {
+                            (Some(m), _) if m > 0 => 100_000 - m,
+                            (Some(m), _) => -100_000 - m,
+                            (None, Some(cp)) => cp,
+                            _ => continue,
+                        };
+                        scores.insert(l.multipv, (info.depth.unwrap_or(0), score));
+                    }
+                    // Progress: Lc0's nodes of its limit. Stockfish's nodes of
+                    // what the last count took, or before any count, by depth:
+                    // each depth takes about half as long again as the one
+                    // before, and the depth reported is the one under way —
+                    // depth 20 of 20 is two thirds of the way, 16 an eighth.
+                    let pct = match self.kind {
+                        Kind::Lc0 => (nodes.saturating_mul(100) / settings.helper_nodes.max(1000)) as u32,
+                        Kind::Stockfish if reference > 0 => (nodes.saturating_mul(100) / reference) as u32,
+                        Kind::Stockfish => (100.0 * 1.5f64.powi(depth as i32 - target_depth as i32 - 1)) as u32,
+                    };
+                    if pct != shown {
+                        shown = pct;
+                        self.set_reply_pct(key, pct);
+                    }
+                }
+            }
+        };
+        // On a failure or a timeout the helper is dropped, which ends it.
+        let finished = tokio::time::timeout(Duration::from_secs(180), read).await.map_err(|_| "the helper took too long".to_string())??;
+        self.helpers.lock().unwrap().push(h);
+        if !finished { return Err(STOPPED.to_string()); }
+
+        Ok(match self.kind {
+            Kind::Stockfish => {
+                let old = self.reply_nodes.load(Ordering::Relaxed);
+                self.reply_nodes.store(if old == 0 { nodes } else { (old * 2 + nodes) / 3 }, Ordering::Relaxed);
+                let best = scores.values().map(|&(_, s)| s).max().unwrap_or(0);
+                let thr = settings.strong_cp as i32;
+                let strong = scores.values().filter(|&&(_, s)| s >= best - thr).count() as u32;
+                ReplyCount { replies: legal, strong: strong.max(1), depth, nodes }
+            }
+            Kind::Lc0 => {
+                let total: u64 = stats.values().map(|&(n, _)| n).sum();
+                // Replies it barely looked at have no reliable score — nor
+                // are they strong, or it would have looked.
+                let min_visits = (total / 100).max(20);
+                let best = stats.values().filter(|&&(n, _)| n >= min_visits).map(|&(_, q)| q).fold(f64::MIN, f64::max);
+                let thr = settings.strong_pct as f64 / 100.0 * 2.0; // Q spans -1..1: 1% of expected score is 0.02
+                let strong = stats.values().filter(|&&(n, q)| n >= min_visits && q >= best - thr).count() as u32;
+                ReplyCount { replies: legal, strong: strong.max(1), depth, nodes: total.max(nodes) }
+            }
+        })
+    }
+
+    /// The deepest remembered result for `fen`, with the engine running now.
+    pub async fn remembered(&self, fen: &str) -> Option<Snapshot> {
+        let name = self.running.lock().await.as_ref().map(|r| r.name.clone())?;
+        self.remembered.lock().unwrap().get(&format!("{name}|{}", position_key(fen)))
     }
 
     pub fn current_gen(&self) -> u64 {
@@ -802,6 +1457,44 @@ async fn send(stdin: &mut ChildStdin, line: &str) -> Result<(), String> {
     stdin.flush().await.map_err(|e| e.to_string())
 }
 
+/// How many of an analysis's lines (White-relative, as the panel gets them)
+/// are strong for the side to move in `fen`: within the engine's threshold of
+/// the best — the rule the Engine panel marks "!" by. Lc0 by expected score
+/// (win and half the draws) where the lines have it.
+fn strong_lines(kind: Kind, s: &EngineSettings, fen: &str, lines: &[Line]) -> u32 {
+    let white = fen.split_whitespace().nth(1) != Some("b");
+    let by_wdl = kind == Kind::Lc0 && lines.iter().all(|l| l.wdl.is_some());
+    let scores: Vec<f64> = lines.iter().map(|l| {
+        if by_wdl {
+            let [w, d, b] = l.wdl.unwrap();
+            ((if white { w } else { b }) as f64 + d as f64 / 2.0) / 1000.0
+        } else {
+            let cp = match (l.mate, l.eval_cp) {
+                (Some(m), _) if m > 0 => 100_000 - m,
+                (Some(m), _) => -100_000 - m,
+                (None, Some(cp)) => cp,
+                _ => 0,
+            } as f64;
+            if white { cp } else { -cp }
+        }
+    }).collect();
+    let thr = if by_wdl { s.strong_pct as f64 / 100.0 } else if kind == Kind::Lc0 { 10.0 } else { s.strong_cp as f64 };
+    let best = scores.iter().cloned().fold(f64::MIN, f64::max);
+    scores.iter().filter(|&&x| x >= best - thr - 1e-9).count() as u32
+}
+
+/// How many helpers count Replies & Strong at once. Stockfish: one
+/// single-threaded helper per helper thread, each counting one candidate —
+/// four candidates take about a third of the time they take one after
+/// another with four threads (Lazy SMP gains little on such short searches).
+/// Lc0: one, as its work is on the graphics card.
+fn helper_count(kind: Kind, s: &EngineSettings) -> usize {
+    match kind {
+        Kind::Stockfish => s.helper_threads.max(1) as usize,
+        Kind::Lc0 => 1,
+    }
+}
+
 /// Spawn the engine and run the UCI handshake. Returns the process, its
 /// pipes and the name it reports.
 async fn start(path: &str, settings: &EngineSettings, kind: Kind) -> Result<(Child, ChildStdin, BufReader<ChildStdout>, String), String> {
@@ -879,6 +1572,8 @@ async fn read_engine(
     idle: Arc<Notify>,
     tx: broadcast::Sender<Snapshot>,
     remembered: Arc<std::sync::Mutex<Remembered>>,
+    kind: Kind,
+    pid: Option<u32>,
 ) {
     let mut line = String::new();
     loop {
@@ -893,12 +1588,23 @@ async fn read_engine(
             if t.starts_with("bestmove") {
                 if !s.searching { continue; }
                 s.searching = false;
+                s.frozen = false;
                 idle.notify_waiters();
             } else if let Some(info) = parse_info(t) {
-                if !s.searching { continue; }
+                // Frozen: what was already in the pipe is past the target.
+                if !s.searching || s.frozen { continue; }
                 if let Some(d) = info.depth { s.depth = s.depth.max(d); }
                 if let Some(n) = info.nodes { s.nodes = n; }
-                if let Some(n) = info.nps { s.nps = n; }
+                if let Some(n) = info.nps {
+                    // Stockfish's own figure counts the time it was frozen.
+                    s.nps = match s.resumed {
+                        None => n,
+                        Some(None) => { s.resumed = Some(Some((std::time::Instant::now(), s.nodes))); s.nps }
+                        Some(Some((at, n0))) if at.elapsed().as_millis() > 0 =>
+                            (s.nodes.saturating_sub(n0) as u128 * 1000 / at.elapsed().as_millis()) as u64,
+                        Some(Some(_)) => s.nps,
+                    };
+                }
                 match info.line {
                     Some(mut l) => {
                         if l.multipv > s.want { continue; }
@@ -917,13 +1623,18 @@ async fn read_engine(
             } else {
                 continue;
             }
+            // At its target depth: freeze (the lines of that depth are complete).
+            if s.searching && s.stop_at.is_some_and(|d| s.depth >= d) {
+                s.frozen = true;
+                signal_engine(pid, false);
+            }
             let snap = Snapshot {
                 gen: s.gen, depth: s.depth, nodes: s.nodes, nps: s.nps,
                 lines: s.lines.values().cloned().collect(),
-                done: !s.searching,
+                done: !s.searching || s.frozen,
                 cached: false,
             };
-            remembered.lock().unwrap().offer(&s.key, &snap);
+            remembered.lock().unwrap().offer(&s.key, &snap, kind);
             snap
         };
         let _ = tx.send(snapshot);
@@ -1019,6 +1730,32 @@ pub fn physical_cores() -> u32 {
     counted.unwrap_or((logical / 2).max(1)).clamp(1, logical)
 }
 
+/// The settings of Replies & Strong a configure request may change.
+#[derive(Default)]
+pub struct ReplySettings {
+    pub replies: Option<bool>,
+    pub helper_threads: Option<u32>,
+    pub helper_hash_mb: Option<u32>,
+    pub helper_depth: Option<u32>,
+    pub strong_cp: Option<u32>,
+    pub helper_nodes: Option<u64>,
+    pub strong_pct: Option<f32>,
+    pub neutral_cp: Option<u32>,
+    pub neutral_pct: Option<f32>,
+}
+
+/// One line of Lc0's VerboseMoveStats: `e7e5  (322 ) N:   19041 (+238)
+/// (P: 58.57%) (WL: -0.02500) (D: 0.637) (M: 194.4) (Q: -0.02500) …` →
+/// the move, its visits and its Q (-1..1, for the side to move). The root's
+/// own line ("node") is left out.
+fn parse_move_stats(rest: &str) -> Option<(String, u64, f64)> {
+    let mv = rest.split_whitespace().next()?;
+    if mv == "node" { return None; }
+    let n: u64 = rest.split("N:").nth(1)?.split_whitespace().next()?.parse().ok()?;
+    let q: f64 = rest.split("(Q:").nth(1)?.trim().split(')').next()?.trim().parse().ok()?;
+    Some((mv.to_string(), n, q))
+}
+
 /// How many legal moves `fen` has (already validated by `clean_fen`).
 fn legal_moves(fen: &str) -> u32 {
     use shakmaty::{fen::Fen, CastlingMode, Position};
@@ -1050,7 +1787,7 @@ pub fn lc0_version(name: &str) -> Option<String> {
 /// Just the switch: whether the engine is on, without starting it.
 impl Engine {
     pub async fn enabled(&self) -> bool {
-        self.settings.lock().await.enabled
+        self.on().await
     }
 }
 
@@ -1136,6 +1873,13 @@ mod tests {
     }
 
     #[test]
+    fn lc0_move_stats_parse() {
+        let l = "e7e5  (322 ) N:   19041 (+238) (P: 58.57%) (WL: -0.02500) (D: 0.637) (M: 194.4) (Q: -0.02500) (U: 0.01468) (S: -0.01069) (V: -0.0087) ";
+        assert_eq!(parse_move_stats(l), Some(("e7e5".to_string(), 19041, -0.025)));
+        assert_eq!(parse_move_stats("node  (  20) N:   20295 (+256) (P: 100.0%) (Q: -0.03299)"), None);
+    }
+
+    #[test]
     fn stockfish_versions_compare() {
         assert_eq!(stockfish_version("Stockfish 16").as_deref(), Some("16"));
         assert_eq!(stockfish_version("Stockfish 17.1").as_deref(), Some("17.1"));
@@ -1175,7 +1919,7 @@ mod tests {
         println!("engine: {:?} at {:?}", status.name, status.path);
         // After 1.e4 e5 2.Qh5 Nc6 3.Bc4 Nf6?? White mates: Qxf7#.
         let fen = clean_fen("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4").unwrap();
-        let (gen, _, mut rx) = engine.analyse(&fen, None, 3).await.unwrap();
+        let (gen, _, mut rx) = engine.analyse(&fen, None, 3, None).await.unwrap();
         let mut last = None;
         while let Ok(Ok(s)) = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
             if s.gen != gen { continue; }
@@ -1217,7 +1961,7 @@ mod tests {
 
         // After 1.e4: Black to move, so the engine's view is flipped to White's.
         let fen = clean_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").unwrap();
-        let (gen, _, mut rx) = engine.analyse(&fen, None, 3).await.unwrap();
+        let (gen, _, mut rx) = engine.analyse(&fen, None, 3, None).await.unwrap();
         let mut last = None;
         let until = std::time::Instant::now() + Duration::from_secs(20);
         while std::time::Instant::now() < until {
@@ -1269,7 +2013,7 @@ done
 
         // Black to move: the engine's +25 for Black is -25 for White.
         let fen = clean_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").unwrap();
-        let (gen, remembered, mut rx) = engine.analyse(&fen, None, 1).await.unwrap();
+        let (gen, remembered, mut rx) = engine.analyse(&fen, None, 1, None).await.unwrap();
         assert!(remembered.is_none());
         let mut last = None;
         while let Ok(Ok(s)) = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
@@ -1291,7 +2035,7 @@ done
         assert!(done, "stopping ends the search");
 
         // The same position again: the deepest result comes back at once.
-        let (_, remembered, _rx) = engine.analyse(&fen, None, 1).await.unwrap();
+        let (_, remembered, _rx) = engine.analyse(&fen, None, 1, None).await.unwrap();
         let r = remembered.expect("remembered");
         assert!(r.cached && r.depth == 2, "{r:?}");
 

@@ -58,9 +58,10 @@ interface Props {
 
 const panel = "bg-surface-container-low border border-outline/40 rounded-md overflow-hidden flex flex-col min-h-0 min-w-0 h-full w-full";
 const vHandle = "w-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-state=drag]:bg-primary/50 transition-colors";
+const hHandle = "h-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-state=drag]:bg-primary/50 transition-colors";
 const STARTPOS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-type RightTab = "reference" | "engine" | "related";
+type RightTab = "reference" | "related";
 const TAB_KEY = "analysisRightTab";
 const ENGINES_KEY = "analysisShowEngines";
 
@@ -188,11 +189,12 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
     if (activeKey) onTabState(activeKey, { flipped });
   }, [activeKey, onTabState]);
 
-  // Right column: one panel at a time. Persisted so the view comes back the way
-  // it was left, like the rest of the Analysis state.
+  // Right column, top: Reference or Games. Persisted so the view comes back
+  // the way it was left, like the rest of the Analysis state. (The Engine
+  // was a third tab; it now has the panel below, always shown.)
   const [tab, setTab] = useState<RightTab>(() => {
     const saved = localStorage.getItem(TAB_KEY);
-    return saved === "engine" || saved === "related" ? saved : "reference";
+    return saved === "related" ? saved : "reference";
   });
   useEffect(() => { localStorage.setItem(TAB_KEY, tab); }, [tab]);
 
@@ -210,6 +212,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
   const rz = useNeighbourResize(["rail", "board", "moves", "side"]);
   const [moveHost, setMoveHost] = useState<HTMLDivElement | null>(null);
   const saved = useDefaultLayout({ id: "analysis-main", storage: localStorage });
+  const sideCol = useDefaultLayout({ id: "analysis-side", storage: localStorage });
 
   // A related game being previewed in place — picking a row no longer opens a
   // whole tab, which was a heavy commitment for "how did that game go?".
@@ -372,177 +375,183 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
 
         <Separator className={vHandle} {...rz.separator(2)} />
 
-        {/* Position intel + related games, one tab at a time. Tabs rather than
-            more stacked panels: this column would otherwise hold four ~180px
-            strips, and the engine (and a related-game preview) need height.
-            The inactive tabs unmount, so the engine asks for no evaluations
-            while you are reading something else. */}
+        {/* Position intel: Reference or the related games above, one tab at
+            a time, and the engines below — always in view, so it is plain
+            whether they run, and they keep running while the tabs change. */}
         <Panel
           id="side"
           defaultSize="30"
           minSize={rz.floor("side") ?? "18"}
         >
-          <div className={panel}>
-            <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b border-outline/40">
-              {([
-                // Reference and Games are two views of the same games, so they
-                // sit together; the cloud engine is a different question.
-                { key: "reference", label: "Reference" },
-                { key: "related", label: `Games${relatedTotal != null ? ` · ${relatedTotal.toLocaleString()}` : ""}` },
-                { key: "engine", label: "Engine" },
-              ] as { key: RightTab; label: string }[]).map((t) => (
-                <button
-                  key={t.key}
-                  onClick={() => setTab(t.key)}
-                  className={`h-7 px-3 rounded-full text-label-md transition-colors duration-short3 ease-standard ${
-                    tab === t.key ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12"
-                  }`}
-                >
-                  {t.label}
-                </button>
-              ))}
-              <button
-                onClick={() => setShowEngines((v) => !v)}
-                className={`ml-auto h-7 px-3 rounded-full text-label-md transition-colors duration-short3 ease-standard ${
-                  showEngines ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12"
-                }`}
-                title={showEngines
-                  ? "Engine games (TCEC and the like) count in Reference and Games. Click to leave them out."
-                  : "Engine games are left out of Reference and Games. Click to count them."}
-              >
-                Engine games
-              </button>
-            </div>
-
-            {tab === "reference" ? (
-              refLoading ? (
-                <div className="p-3 text-center text-on-surface-variant text-body-sm">Loading…</div>
-              ) : refMoves.length === 0 ? (
-                <div className="p-3 text-center text-on-surface-variant text-body-sm">No games from this position</div>
-              ) : (
-                <div className="flex-1 overflow-y-auto p-2">
-                  <div className="flex items-center text-label-sm text-on-surface-variant px-2 mb-1 select-none">
-                    <span className="w-24">Move</span>
-                    <span className="w-20 text-right">Games</span>
-                    <span className="w-10 text-right">W%</span>
-                    <span className="w-10 text-right">D%</span>
-                    <span className="w-10 text-right">L%</span>
-                    <span className="w-16 text-right">Last</span>
-                    <span className="flex-1 min-w-0 pl-2" title="The highest-rated players (2500-3400) who played this move. The cap keeps engines out.">Played by</span>
-                  </div>
-                  {refMoves.map((s) => (
+          <Group orientation="vertical" className="h-full w-full flex" defaultLayout={sideCol.defaultLayout} onLayoutChanged={sideCol.onLayoutChanged}>
+            <Panel id="side-games" defaultSize="50" minSize="15">
+              <div className={panel}>
+                <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b border-outline/40">
+                  {([
+                    // Reference and Games are two views of the same games, so they
+                    // sit together; the cloud engine is a different question.
+                    { key: "reference", label: "Reference" },
+                    { key: "related", label: `Games${relatedTotal != null ? ` · ${relatedTotal.toLocaleString()}` : ""}` },
+                  ] as { key: RightTab; label: string }[]).map((t) => (
                     <button
-                      key={s.mv}
-                      onClick={() => playSans([s.mv])}
-                      title="Play this move on the board (not saved in the game)"
-                      className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface text-left hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard">
-                      <span className="w-24 font-mono truncate text-left">{movePrefix}{s.mv}</span>
-                      <span className="w-20 text-right">{s.games.toLocaleString()}</span>
-                      <span className="w-10 text-right text-success">{Math.round(s.w_pct)}</span>
-                      <span className="w-10 text-right text-on-surface-variant">{Math.round(s.d_pct)}</span>
-                      <span className="w-10 text-right text-error">{Math.round(s.l_pct)}</span>
-                      <span className="w-16 text-right text-on-surface-variant">{s.last_played?.slice(0, 4) ?? "—"}</span>
-                      <span className="flex-1 min-w-0 truncate text-left pl-2 text-on-surface-variant" title={s.elite ?? undefined}>{s.elite ?? ""}</span>
+                      key={t.key}
+                      onClick={() => setTab(t.key)}
+                      className={`h-7 px-3 rounded-full text-label-md transition-colors duration-short3 ease-standard ${
+                        tab === t.key ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12"
+                      }`}
+                    >
+                      {t.label}
                     </button>
                   ))}
-                </div>
-              )
-            ) : tab === "engine" ? (
-              <CloudEngine fen={effFen} history={history} watchLabel={active ? `${active.game.white} – ${active.game.black}` : "Position"} onPlayLine={playSans} />
-            ) : (
-              <div className="flex-1 min-h-0 flex flex-col">
-                {/* Enter opens the previewed game, a double-click the game
-                    clicked — as the preview's "Open in Analysis" does. */}
-                <div
-                  className="flex-1 min-h-0 overflow-y-auto"
-                  onKeyDown={(e) => {
-                    if (e.key !== "Enter" || !preview) return;
-                    e.preventDefault();
-                    void openRelated(preview);
-                  }}
-                >
-                  {atStart ? (
-                    <div className="p-3 text-center text-on-surface-variant text-body-sm">Play a move to see games reaching this position</div>
-                  ) : related.length === 0 ? (
-                    <div className="p-3 text-center text-on-surface-variant text-body-sm">No related games</div>
-                  ) : (
-                    related.map((g) => {
-                      const on = preview?.id === g.id;
-                      return (
-                        <button
-                          key={g.id}
-                          onClick={() => setPreview(g)}
-                          onDoubleClick={() => void openRelated(g)}
-                          className={`w-full flex items-baseline gap-2 px-3 py-1.5 text-body-sm text-left whitespace-nowrap transition-colors duration-short3 ease-standard ${
-                            on ? "bg-secondary-container text-on-secondary-container" : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
-                          }`}
-                          title="Preview this game. Double-click or Enter opens it in Analysis."
-                        >
-                          {/* Each rating in brackets after its player. Both
-                              count towards the order, so neither is singled out. */}
-                          <span className="min-w-0 flex-1 truncate">
-                            {g.white}
-                            {g.white_elo != null && <span className="tabular-nums opacity-70"> ({g.white_elo})</span>}
-                            {" – "}
-                            {g.black}
-                            {g.black_elo != null && <span className="tabular-nums opacity-70"> ({g.black_elo})</span>}
-                          </span>
-                          <span className="shrink-0 tabular-nums">{g.result ? (g.result === "1/2-1/2" ? "½-½" : g.result) : ""}</span>
-                          <span className={`shrink-0 ${on ? "text-on-secondary-container/80" : "text-on-surface-variant"}`}>{g.date?.slice(0, 4) ?? ""}</span>
-                        </button>
-                      );
-                    })
-                  )}
+                  <button
+                    onClick={() => setShowEngines((v) => !v)}
+                    className={`ml-auto h-7 px-3 rounded-full text-label-md transition-colors duration-short3 ease-standard ${
+                      showEngines ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12"
+                    }`}
+                    title={showEngines
+                      ? "Engine games (TCEC and the like) count in Reference and Games. Click to leave them out."
+                      : "Engine games are left out of Reference and Games. Click to count them."}
+                  >
+                    Engine games
+                  </button>
                 </div>
 
-                {/* Preview of the highlighted game — the list stays above it, so
-                    you can walk down the list without losing your place. */}
-                {preview && (
-                  <div className="shrink-0 h-[58%] min-h-0 flex flex-col border-t border-outline/40">
-                    <div className="shrink-0 px-2 py-1 flex items-center gap-2 border-b border-outline/40">
-                      <GamePreviewHeader game={preview} />
-                      {previewGame && (
-                        <GameMoreMenu
-                          pgn={previewGame.pgn}
-                          fen={previewGame.fens[previewPly] ?? previewGame.fens[0]}
-                          lineSans={previewGame.moves.map((m) => m.san)}
-                          ply={previewPly}
-                          startFen={previewGame.fens[0]}
-                          gameUrl={previewGame.gameUrl}
-                        />
-                      )}
-                      <button
-                        onClick={() => void openRelated(preview)}
-                        className="shrink-0 text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 px-2.5 h-7 rounded-full transition-colors duration-short3 ease-standard"
-                        title="Open this game in its own Analysis tab"
-                      >
-                        Open in Analysis →
-                      </button>
-                      <button
-                        onClick={() => setPreview(null)}
-                        className="shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-sm"
-                        title="Close the preview"
-                      >✕</button>
-                    </div>
-                    {previewGame ? (
-                      <div className="flex-1 min-h-0 flex flex-col">
-                        <div className="flex-[3] min-h-0">
-                          <MiniBoard game={previewGame} ply={previewPly} setPly={setPreviewPly} id="analysis-related-preview" showHeader={false} />
-                        </div>
-                        <div className="flex-[2] min-h-0 border-t border-outline/40">
-                          <MoveList game={previewGame} ply={previewPly} setPly={setPreviewPly} />
-                        </div>
+                {tab === "reference" ? (
+                  refLoading ? (
+                    <div className="p-3 text-center text-on-surface-variant text-body-sm">Loading…</div>
+                  ) : refMoves.length === 0 ? (
+                    <div className="p-3 text-center text-on-surface-variant text-body-sm">No games from this position</div>
+                  ) : (
+                    <div className="flex-1 overflow-y-auto p-2">
+                      <div className="flex items-center text-label-sm text-on-surface-variant px-2 mb-1 select-none">
+                        <span className="w-24">Move</span>
+                        <span className="w-20 text-right">Games</span>
+                        <span className="w-10 text-right">W%</span>
+                        <span className="w-10 text-right">D%</span>
+                        <span className="w-10 text-right">L%</span>
+                        <span className="w-16 text-right">Last</span>
+                        <span className="flex-1 min-w-0 pl-2" title="The highest-rated players (2500-3400) who played this move. The cap keeps engines out.">Played by</span>
                       </div>
-                    ) : (
-                      <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-sm">
-                        {previewLoading ? "Loading…" : "—"}
+                      {refMoves.map((s) => (
+                        <button
+                          key={s.mv}
+                          onClick={() => playSans([s.mv])}
+                          title="Play this move on the board (not saved in the game)"
+                          className="w-full flex items-center text-body-sm px-2 py-1 rounded-sm text-on-surface text-left hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard">
+                          <span className="w-24 font-mono truncate text-left">{movePrefix}{s.mv}</span>
+                          <span className="w-20 text-right">{s.games.toLocaleString()}</span>
+                          <span className="w-10 text-right text-success">{Math.round(s.w_pct)}</span>
+                          <span className="w-10 text-right text-on-surface-variant">{Math.round(s.d_pct)}</span>
+                          <span className="w-10 text-right text-error">{Math.round(s.l_pct)}</span>
+                          <span className="w-16 text-right text-on-surface-variant">{s.last_played?.slice(0, 4) ?? "—"}</span>
+                          <span className="flex-1 min-w-0 truncate text-left pl-2 text-on-surface-variant" title={s.elite ?? undefined}>{s.elite ?? ""}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )
+                ) : (
+                  <div className="flex-1 min-h-0 flex flex-col">
+                    {/* Enter opens the previewed game, a double-click the game
+                        clicked — as the preview's "Open in Analysis" does. */}
+                    <div
+                      className="flex-1 min-h-0 overflow-y-auto"
+                      onKeyDown={(e) => {
+                        if (e.key !== "Enter" || !preview) return;
+                        e.preventDefault();
+                        void openRelated(preview);
+                      }}
+                    >
+                      {atStart ? (
+                        <div className="p-3 text-center text-on-surface-variant text-body-sm">Play a move to see games reaching this position</div>
+                      ) : related.length === 0 ? (
+                        <div className="p-3 text-center text-on-surface-variant text-body-sm">No related games</div>
+                      ) : (
+                        related.map((g) => {
+                          const on = preview?.id === g.id;
+                          return (
+                            <button
+                              key={g.id}
+                              onClick={() => setPreview(g)}
+                              onDoubleClick={() => void openRelated(g)}
+                              className={`w-full flex items-baseline gap-2 px-3 py-1.5 text-body-sm text-left whitespace-nowrap transition-colors duration-short3 ease-standard ${
+                                on ? "bg-secondary-container text-on-secondary-container" : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
+                              }`}
+                              title="Preview this game. Double-click or Enter opens it in Analysis."
+                            >
+                              {/* Each rating in brackets after its player. Both
+                                  count towards the order, so neither is singled out. */}
+                              <span className="min-w-0 flex-1 truncate">
+                                {g.white}
+                                {g.white_elo != null && <span className="tabular-nums opacity-70"> ({g.white_elo})</span>}
+                                {" – "}
+                                {g.black}
+                                {g.black_elo != null && <span className="tabular-nums opacity-70"> ({g.black_elo})</span>}
+                              </span>
+                              <span className="shrink-0 tabular-nums">{g.result ? (g.result === "1/2-1/2" ? "½-½" : g.result) : ""}</span>
+                              <span className={`shrink-0 ${on ? "text-on-secondary-container/80" : "text-on-surface-variant"}`}>{g.date?.slice(0, 4) ?? ""}</span>
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    {/* Preview of the highlighted game — the list stays above it, so
+                        you can walk down the list without losing your place. */}
+                    {preview && (
+                      <div className="shrink-0 h-[58%] min-h-0 flex flex-col border-t border-outline/40">
+                        <div className="shrink-0 px-2 py-1 flex items-center gap-2 border-b border-outline/40">
+                          <GamePreviewHeader game={preview} />
+                          {previewGame && (
+                            <GameMoreMenu
+                              pgn={previewGame.pgn}
+                              fen={previewGame.fens[previewPly] ?? previewGame.fens[0]}
+                              lineSans={previewGame.moves.map((m) => m.san)}
+                              ply={previewPly}
+                              startFen={previewGame.fens[0]}
+                              gameUrl={previewGame.gameUrl}
+                            />
+                          )}
+                          <button
+                            onClick={() => void openRelated(preview)}
+                            className="shrink-0 text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 px-2.5 h-7 rounded-full transition-colors duration-short3 ease-standard"
+                            title="Open this game in its own Analysis tab"
+                          >
+                            Open in Analysis →
+                          </button>
+                          <button
+                            onClick={() => setPreview(null)}
+                            className="shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-sm"
+                            title="Close the preview"
+                          >✕</button>
+                        </div>
+                        {previewGame ? (
+                          <div className="flex-1 min-h-0 flex flex-col">
+                            <div className="flex-[3] min-h-0">
+                              <MiniBoard game={previewGame} ply={previewPly} setPly={setPreviewPly} id="analysis-related-preview" showHeader={false} />
+                            </div>
+                            <div className="flex-[2] min-h-0 border-t border-outline/40">
+                              <MoveList game={previewGame} ply={previewPly} setPly={setPreviewPly} />
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-sm">
+                            {previewLoading ? "Loading…" : "—"}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
                 )}
               </div>
-            )}
-          </div>
+            </Panel>
+            <Separator className={hHandle} />
+            {/* The engines: always in view, so it shows whether they run. */}
+            <Panel id="side-engine" defaultSize="50" minSize="8">
+              <div className={panel}>
+                <CloudEngine fen={effFen} history={history} watchLabel={active ? `${active.game.white} – ${active.game.black}` : "Position"} onPlayLine={playSans} />
+              </div>
+            </Panel>
+          </Group>
         </Panel>
       </Group>
       {pdfGames && (

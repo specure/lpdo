@@ -91,12 +91,18 @@ pub fn default_engine_hash_mb() -> u32 {
 
 /// The engine's hash as configured in `data_dir/engine.json`, else the default.
 pub fn engine_hash_mb(data_dir: &Path) -> u32 {
-    std::fs::read_to_string(data_dir.join("engine.json"))
+    let v = std::fs::read_to_string(data_dir.join("engine.json"))
         .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| v.get("hash_mb").and_then(|h| h.as_u64()))
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    let hash = v.as_ref().and_then(|v| v.get("hash_mb").and_then(|h| h.as_u64()))
         .map(|h| (h as u32).min(max_engine_hash_mb()))
-        .unwrap_or_else(default_engine_hash_mb)
+        .unwrap_or_else(default_engine_hash_mb);
+    // Replies & Strong's helper has a hash of its own (on unless switched off).
+    let helper_on = v.as_ref().and_then(|v| v.get("replies").and_then(|r| r.as_bool())).unwrap_or(true);
+    let helper = if helper_on {
+        v.as_ref().and_then(|v| v.get("helper_hash_mb").and_then(|h| h.as_u64())).unwrap_or(256) as u32
+    } else { 0 };
+    (hash + helper).min(max_engine_hash_mb())
 }
 
 /// The database's share: the budget less the engine's hash.

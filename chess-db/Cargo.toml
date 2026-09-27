@@ -64,6 +64,11 @@ regex = "1"
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.7"
 
+# Unix: freeze and thaw the Stockfish process at its target depth (SIGSTOP /
+# SIGCONT), so "search further" continues the search instead of restarting it.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Windows: read physical RAM via GlobalMemoryStatusEx so DuckDB's memory_limit
 # is tuned to the machine instead of the conservative 8GiB fallback (which can
 # exceed usable RAM on small boxes and make heavy ops like index-positions

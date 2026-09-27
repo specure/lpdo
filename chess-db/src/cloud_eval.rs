@@ -218,6 +218,27 @@ pub async fn query_lines(fen: &str, zobrist: i64, refresh: bool) -> Vec<MoveLine
 }
 
 /// Query chessdb.cn's `queryall` for a position (cached by Zobrist hash).
+/// What the cache holds for a position, without asking anyone (a paused tab
+/// shows it). "uncached" when it holds nothing fresh.
+pub fn peek(zobrist: i64) -> CloudEval {
+    match shared().cache.lock().unwrap().get(&zobrist) {
+        Some((t, e)) if t.elapsed() < CACHE_TTL => e.clone(),
+        _ => CloudEval { status: "uncached".to_string(), moves: Vec::new() },
+    }
+}
+pub fn peek_lines(zobrist: i64) -> Vec<MoveLine> {
+    match shared().lines_cache.lock().unwrap().get(&zobrist) {
+        Some((t, l)) if t.elapsed() < CACHE_TTL => l.clone(),
+        _ => Vec::new(),
+    }
+}
+pub fn peek_lichess(zobrist: i64) -> LichessEval {
+    match shared().lichess_cache.lock().unwrap().get(&zobrist) {
+        Some((t, e)) if t.elapsed() < CACHE_TTL => e.clone(),
+        _ => LichessEval { status: "uncached".to_string(), depth: 0, knodes: 0, lines: Vec::new() },
+    }
+}
+
 pub async fn query(fen: &str, zobrist: i64, refresh: bool) -> CloudEval {
     let s = shared();
     if !refresh {
@@ -517,10 +538,17 @@ pub struct CloudSettings {
     /// Each service switched on or off; off, it is never contacted.
     pub chessdb: bool,
     pub lichess: bool,
+    /// For Lichess's lines: a move within this many centipawns of the best is
+    /// strong — marked "!", and counted among the strong replies. chessdb.cn
+    /// marks its own.
+    pub lichess_strong_cp: u32,
+    /// Up to this far behind the best a move is neutral, unmarked; further
+    /// behind, "?".
+    pub lichess_neutral_cp: u32,
 }
 
 impl Default for CloudSettings {
-    fn default() -> Self { Self { max_move: 20, chessdb: true, lichess: true } }
+    fn default() -> Self { Self { max_move: 20, chessdb: true, lichess: true, lichess_strong_cp: 5, lichess_neutral_cp: 15 } }
 }
 
 static SETTINGS_FILE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();

@@ -227,6 +227,152 @@ function VersionFooter({ status }: { status: StatusInfo | null }) {
   );
 }
 
+/** How many lines an engine shows in the Engine panel, per device. Each
+ *  extra line makes Stockfish search a little slower; Lc0 reports them from
+ *  the same search, at no cost. */
+function EngineLines({ kind }: { kind: "stockfish" | "lc0" }) {
+  const key = kind === "stockfish" ? "stockfishLineCount" : "lc0LineCount";
+  const read = () => { try { return localStorage.getItem(key) ?? (kind === "stockfish" ? localStorage.getItem("lichessLineCount") : null); } catch { return null; } };
+  const [lines, setLines] = useState(() => { const n = parseInt(read() ?? "", 10); return String(Number.isFinite(n) && n > 0 ? Math.min(n, 20) : kind === "stockfish" ? 5 : 10); });
+  const change = (v: string) => {
+    setLines(v);
+    const n = parseInt(v, 10);
+    if (Number.isFinite(n) && n >= 1 && n <= 20) { try { localStorage.setItem(key, String(n)); } catch { /* per-device convenience only */ } }
+  };
+  return (
+    <div className="flex items-center gap-3 text-body-sm text-on-surface flex-wrap"
+      title={kind === "stockfish" ? "Each extra line makes Stockfish search a little slower" : "Lc0 reports its lines from the same search: more cost nothing"}>
+      <label className="flex items-center gap-2">
+        <span>Lines</span>
+        <input type="number" min={1} max={20} value={lines} onChange={(e) => change(e.target.value)}
+          className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
+      </label>
+      <span className="text-label-sm text-on-surface-variant">
+        1–20, on this computer; takes effect when the Engine panel next opens
+        {kind === "stockfish" ? " — as many helpers count all lines' replies at once" : ""}
+      </span>
+    </div>
+  );
+}
+
+type ReplyPatch = { replies?: boolean; helper_threads?: number; helper_hash_mb?: number; helper_depth?: number; strong_cp?: number; helper_nodes?: number; strong_pct?: number; neutral_cp?: number; neutral_pct?: number };
+
+/** Replies & Strong for a local engine: a helper process of the same engine
+ *  counts, for each candidate, the opponent's replies and how many are close
+ *  to the best. Stockfish's helper takes threads and hash from the server;
+ *  Lc0's a second copy of the network on the graphics card. */
+function RepliesSettings({ kind, settings, busy, onSave }: {
+  kind: "stockfish" | "lc0";
+  settings: { replies?: boolean; helper_threads?: number; helper_hash_mb?: number; helper_depth?: number; strong_cp?: number; helper_nodes?: number; strong_pct?: number; neutral_cp?: number; neutral_pct?: number };
+  busy: boolean;
+  onSave: (p: ReplyPatch) => void;
+}) {
+  const on = !!settings.replies;
+  const [threads, setThreads] = useState(String(settings.helper_threads ?? 5));
+  const [hash, setHash] = useState(String(settings.helper_hash_mb ?? 320));
+  const [depth, setDepth] = useState(String(settings.helper_depth ?? 20));
+  const [pawns, setPawns] = useState(((settings.strong_cp ?? 10) / 100).toFixed(2));
+  const [nodes, setNodes] = useState(String(settings.helper_nodes ?? 50000));
+  const [pct, setPct] = useState(String(settings.strong_pct ?? 1));
+  const [neutralPawns, setNeutralPawns] = useState(((settings.neutral_cp ?? 30) / 100).toFixed(2));
+  const [neutralPct, setNeutralPct] = useState(String(settings.neutral_pct ?? 3));
+  const field = "w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums";
+  const num = (v: string) => { const n = Number(v.replace(",", ".")); return Number.isFinite(n) ? n : undefined; };
+  function saveAll() {
+    if (kind === "stockfish") {
+      const cp = num(pawns);
+      const ncp = num(neutralPawns);
+      onSave({
+        helper_threads: num(threads), helper_hash_mb: num(hash), helper_depth: num(depth),
+        strong_cp: cp == null ? undefined : Math.round(cp * 100), neutral_cp: ncp == null ? undefined : Math.round(ncp * 100),
+      });
+    } else {
+      onSave({ helper_nodes: num(nodes.replace(/[\s,.]/g, "")), strong_pct: num(pct), neutral_pct: num(neutralPct) });
+    }
+  }
+  return (
+    <div className="space-y-2 pt-2 border-t border-outline/40">
+      <label className="flex items-start gap-2 text-body-sm text-on-surface cursor-pointer">
+        <input type="checkbox" checked={on} disabled={busy} onChange={(e) => onSave({ replies: e.target.checked })} className="accent-primary mt-1" />
+        <span>
+          Replies &amp; Strong
+          <span className="block text-label-sm text-on-surface-variant">
+            {kind === "stockfish"
+              ? "For each candidate move, a helper Stockfish counts the opponent's replies and how many are close to the best — low means forcing. Each helper takes one thread and counts one candidate; the main search keeps the other threads, and the helpers share the hash below."
+              : "For each candidate move, a second Lc0 runs a short search and counts the replies it finds close to the best. It loads another copy of the network onto the graphics card."}
+          </span>
+        </span>
+      </label>
+      <div className="flex items-center gap-4 text-body-sm text-on-surface flex-wrap">
+          {kind === "stockfish" ? (
+            <>
+              {on && <>
+              <label className="flex items-center gap-2" title="Single-threaded helpers, each counting one candidate: as many as the lines counts them all at once"><span>Helpers</span><input type="number" min={1} max={64} value={threads} onChange={(e) => setThreads(e.target.value)} className={field} /></label>
+              <label className="flex items-center gap-2"><span>Hash</span><input type="number" min={16} max={4096} step={64} value={hash} onChange={(e) => setHash(e.target.value)} className={field} /><span className="text-on-surface-variant">MB</span></label>
+              <label className="flex items-center gap-2" title="Each candidate's replies are searched to this depth"><span>Depth</span><input type="number" min={1} max={60} value={depth} onChange={(e) => setDepth(e.target.value)} className={field} /></label>
+              </>}
+              <label className="flex items-center gap-2" title="A move within this much of the best is strong: marked ! in the Engine panel, and counted among the strong replies (chessdb uses 0.05)"><span>Strong within</span><input value={pawns} onChange={(e) => setPawns(e.target.value)} inputMode="decimal" className={field} /><span className="text-on-surface-variant">pawns</span></label>
+              <label className="flex items-center gap-2" title="A move further behind the best than strong, up to this far, is neutral and left unmarked; further still, it is marked ?"><span>Neutral within</span><input value={neutralPawns} onChange={(e) => setNeutralPawns(e.target.value)} inputMode="decimal" className={field} /><span className="text-on-surface-variant">pawns</span></label>
+            </>
+          ) : (
+            <>
+              {on && <label className="flex items-center gap-2" title="Nodes Lc0 spends on each candidate's replies"><span>Nodes per move</span><input value={nodes} onChange={(e) => setNodes(e.target.value)} inputMode="numeric" className="w-28 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" /></label>}
+              <label className="flex items-center gap-2" title="A move within this much expected score of the best is strong: marked ! in the Engine panel, and counted among the strong replies"><span>Strong within</span><input value={pct} onChange={(e) => setPct(e.target.value)} inputMode="decimal" className={field} /><span className="text-on-surface-variant">% score</span></label>
+              <label className="flex items-center gap-2" title="A move further behind the best than strong, up to this far, is neutral and left unmarked; further still, it is marked ?"><span>Neutral within</span><input value={neutralPct} onChange={(e) => setNeutralPct(e.target.value)} inputMode="decimal" className={field} /><span className="text-on-surface-variant">% score</span></label>
+            </>
+          )}
+          <ActionButton onClick={saveAll} disabled={busy}>Save</ActionButton>
+        </div>
+    </div>
+  );
+}
+
+/** Stockfish's or Lc0's setting: Auto — in use when installed on the server
+ *  (the default) — or Off, and what that means now. */
+function EngineMode({ kind, info, busy, onChange }: {
+  kind: "stockfish" | "lc0";
+  info: { enabled?: boolean; auto?: boolean; installed?: boolean };
+  busy: boolean;
+  onChange: (auto: boolean) => void;
+}) {
+  // An older server has only the switch.
+  const auto = info.auto ?? info.enabled !== false;
+  const installed = info.installed ?? true;
+  const name = kind === "stockfish" ? "Stockfish" : "Lc0";
+  const guide = `https://github.com/specure/lpdo/blob/main/docs/chess-engine.md${kind === "lc0" ? "#leela-chess-zero" : ""}`;
+  return (
+    <div className="space-y-1">
+      <UseToggle label={`Use ${name}`} on={auto} onLabel="Auto" busy={busy} onChange={onChange} />
+      <p className="text-label-sm text-on-surface-variant">
+        {!auto
+          ? `Off: the server does not use ${name}${kind === "lc0" ? " — it is not started and holds no graphics memory" : ""}.`
+          : installed
+            ? `On: ${name} is installed on the server${kind === "lc0" ? " with a network" : ""}.`
+            : <>Off until {name} is installed on the server{kind === "lc0" ? " (the program and a network)" : ""}; it is used from then on.{" "}
+                <button onClick={() => void openUrl(guide)} className="text-primary hover:underline inline-flex items-center">How to install<ExternalLinkIcon /></button>
+              </>}
+      </p>
+    </div>
+  );
+}
+
+/** "Use …" with a two-part choice — Auto / Off for the local engines, On / Off
+ *  for the cloud ones. */
+function UseToggle({ label, on, onLabel, busy, onChange }: {
+  label: string; on: boolean; onLabel: string; busy?: boolean; onChange: (on: boolean) => void;
+}) {
+  const pill = (sel: boolean) => `h-8 px-4 text-label-lg ${sel ? "bg-primary text-on-primary" : "bg-surface-container text-on-surface-variant hover:bg-on-surface/8"} disabled:opacity-60`;
+  return (
+    <div className="flex items-center gap-3 text-body-sm text-on-surface">
+      <span>{label}</span>
+      <div className="inline-flex rounded-full overflow-hidden border border-outline/40">
+        <button className={pill(on)} disabled={busy} onClick={() => { if (!on) onChange(true); }}>{onLabel}</button>
+        <button className={pill(!on)} disabled={busy} onClick={() => { if (on) onChange(false); }}>Off</button>
+      </div>
+    </div>
+  );
+}
+
 /** An engine's on/off switch, at the top of its card: off, its tab leaves the
  *  Engine panel and the server neither runs nor asks it. */
 function EngineSwitch({ label, on, busy, onChange }: { label: string; on: boolean; busy?: boolean; onChange: (on: boolean) => void }) {
@@ -245,11 +391,13 @@ function EngineSwitch({ label, on, busy, onChange }: { label: string; on: boolea
 // goes in engine.json on the server (see engine.rs for why).
 interface EngineInfo {
   enabled?: boolean;
+  auto?: boolean;
+  installed?: boolean;
   available: boolean;
   path: string | null;
   name: string | null;
   error: string | null;
-  settings: { path: string | null; threads: number; hash_mb: number; max_depth: number };
+  settings: { path: string | null; threads: number; hash_mb: number; max_depth: number; replies?: boolean; helper_threads?: number; helper_hash_mb?: number; helper_depth?: number; strong_cp?: number; helper_nodes?: number; strong_pct?: number };
   found: string[];
   settings_file: string;
   latest: { version: string; url: string } | null;
@@ -288,7 +436,7 @@ function EngineSection() {
       .catch((e) => setError(String(e)));
   }, []);
 
-  async function save(patch: { path?: string; threads?: number; hash_mb?: number; max_depth?: number; enabled?: boolean }) {
+  async function save(patch: { path?: string; threads?: number; hash_mb?: number; max_depth?: number; enabled?: boolean } & ReplyPatch) {
     setBusy(true);
     setError(null);
     setNote(null);
@@ -316,17 +464,17 @@ function EngineSection() {
   const field = "w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums";
 
   return (
-    <SectionCard title="Stockfish" status={info ? (info.enabled === false ? "switched off" : info.available ? info.name ?? "running" : "none found") : undefined}>
+    <SectionCard title="Stockfish" status={info ? (info.auto === false ? "off" : info.installed === false ? "not installed" : info.enabled === false ? "switched off" : info.available ? info.name ?? "running" : "not started") : undefined}>
       <p className="text-body-sm text-on-surface-variant">
         The engine behind the Engine panel's <em>Stockfish</em> tab, running on the server — the
         strongest free engine, measured in centipawns. LPDO uses one you install; any UCI engine works.
       </p>
       {info && (
-        <EngineSwitch label="Use Stockfish" on={info.enabled !== false} busy={busy} onChange={(on) => void save({ enabled: on })} />
+        <EngineMode kind="stockfish" info={info} busy={busy} onChange={(auto) => void save({ enabled: auto })} />
       )}
-      {info && !info.available && (
+      {info && info.enabled !== false && !info.available && (
         <p className="text-body-sm text-on-surface-variant">
-          No engine was found on the server. The Engine panel's <em>Stockfish</em> tab shows how to install one.
+          The engine is installed but did not start{info.error ? `: ${info.error}` : "."}
         </p>
       )}
       {info && info.found.length > 0 && (
@@ -353,9 +501,9 @@ function EngineSection() {
             <input type="number" min={16} max={info.max_hash_mb} step={256} value={hash} onChange={(e) => setHash(e.target.value)} className={field} />
             <span className="text-on-surface-variant">MB</span>
           </label>
-          <label className="flex items-center gap-2" title="The search stops at this depth; 0 searches until you move on (five minutes at most)">
+          <label className="flex items-center gap-2" title="The search stops at this depth, or when you move on or close the panel; ⟳ in the Engine panel then searches further">
             <span>Stop at depth</span>
-            <input type="number" min={0} max={245} value={depth} onChange={(e) => setDepth(e.target.value)} className={field} />
+            <input type="number" min={1} max={245} value={depth} onChange={(e) => setDepth(e.target.value)} className={field} />
           </label>
           <ActionButton
             onClick={() => void save({
@@ -369,6 +517,8 @@ function EngineSection() {
           </ActionButton>
         </div>
       )}
+      {info && <EngineLines kind="stockfish" />}
+      {info && <RepliesSettings kind="stockfish" settings={info.settings} busy={busy} onSave={(p) => void save(p)} />}
       {info && (() => {
         // The memory budget, split as typed: the engine's hash, the database the rest.
         const hashNow = Number.isFinite(h) ? Math.min(Math.max(h, 16), info.max_hash_mb) : info.settings.hash_mb;
@@ -389,7 +539,7 @@ function EngineSection() {
       })()}
       {info && (
         <p className="text-label-sm text-on-surface-variant">
-          Threads default to one per physical core ({info.physical_cores} of {info.cores} logical here),
+          Threads default to one per physical core ({info.physical_cores} of {info.cores} logical here) less the five helpers,
           since the server also answers everyone's queries. The hash comes out of the same memory budget as the
           database — it defaults to an eighth of the memory, at most 4 GB, and the database keeps at least
           2 GB. More hash keeps more of an analysis when you move on and come back; less leaves the
@@ -436,6 +586,8 @@ const LC0_BACKENDS = [
 
 interface Lc0Info {
   enabled?: boolean;
+  auto?: boolean;
+  installed?: boolean;
   version?: string | null;
   latest?: { version: string; url: string } | null;
   update_available?: boolean;
@@ -444,7 +596,7 @@ interface Lc0Info {
   path: string | null;
   name: string | null;
   error: string | null;
-  settings: { path: string | null; threads: number; weights: string | null; backend: string | null; max_nodes: number; smart_pruning: boolean };
+  settings: { path: string | null; threads: number; weights: string | null; backend: string | null; max_nodes: number; smart_pruning: boolean; replies?: boolean; helper_threads?: number; helper_hash_mb?: number; helper_depth?: number; strong_cp?: number; helper_nodes?: number; strong_pct?: number };
   found: string[];
   networks: string[];
   weights: string | null;
@@ -465,7 +617,7 @@ function Lc0Section() {
       .then(take)
       .catch((e) => setError(String(e)));
   }, []);
-  async function save(patch: { path?: string; weights?: string; backend?: string; threads?: number; max_nodes?: number; smart_pruning?: boolean; enabled?: boolean }) {
+  async function save(patch: { path?: string; weights?: string; backend?: string; threads?: number; max_nodes?: number; smart_pruning?: boolean; enabled?: boolean } & ReplyPatch) {
     setBusy(true);
     setError(null);
     setNote(null);
@@ -489,16 +641,13 @@ function Lc0Section() {
   const select = "flex-1 min-w-0 h-8 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface";
   const name = (p: string) => p.split(/[\\/]/).pop();
   return (
-    <SectionCard title="Lc0" status={info ? (info.enabled === false ? "switched off" : info.available ? info.name ?? "running" : "not installed") : undefined}>
+    <SectionCard title="Lc0" status={info ? (info.auto === false ? "off" : info.installed === false ? "not installed" : info.enabled === false ? "switched off" : info.available ? info.name ?? "running" : "not started") : undefined}>
       <p className="text-body-sm text-on-surface-variant">
         Leela Chess Zero, the second engine on the server: a neural network that gives its chances as win,
         draw and loss. Optional — it needs a graphics card to be fast.
       </p>
       {info && (
-        <EngineSwitch
-          label="Use Lc0 — switched off, it is not started and holds no graphics memory"
-          on={info.enabled !== false} busy={busy} onChange={(on) => void save({ enabled: on })}
-        />
+        <EngineMode kind="lc0" info={info} busy={busy} onChange={(auto) => void save({ enabled: auto })} />
       )}
       {info?.update_available && info.latest && (
         <p className="text-body-sm text-on-surface">
@@ -515,9 +664,9 @@ function Lc0Section() {
           )}
         </p>
       )}
-      {info && !info.available && (
+      {info && info.enabled !== false && !info.available && (
         <p className="text-body-sm text-on-surface-variant">
-          Lc0 was not found on the server. The Engine panel's <em>Lc0</em> tab says how to install it.
+          Lc0 is installed but did not start{info.error ? `: ${info.error}` : "."}
         </p>
       )}
       {info && info.found.length > 0 && (
@@ -553,7 +702,7 @@ function Lc0Section() {
             <input type="number" min={0} max={64} value={threads} onChange={(e) => setThreads(e.target.value)}
               className="w-16 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
           </label>
-          <label className="flex items-center gap-2" title="The search stops after this many nodes; 0 searches until you move on (five minutes at most)">
+          <label className="flex items-center gap-2" title="The search stops after this many nodes (at least 1,000), or when you move on or close the panel; ⟳ in the Engine panel then searches further">
             <span>Stop at</span>
             <input value={nodes} onChange={(e) => setNodes(e.target.value)} inputMode="numeric"
               className="w-28 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
@@ -567,6 +716,8 @@ function Lc0Section() {
           </ActionButton>
         </div>
       )}
+      {info && <EngineLines kind="lc0" />}
+      {info && <RepliesSettings kind="lc0" settings={info.settings} busy={busy} onSave={(p) => void save(p)} />}
       {info && (
         <label className="flex items-start gap-2 text-body-sm text-on-surface cursor-pointer">
           <input type="checkbox" checked={info.settings.smart_pruning} disabled={busy}
@@ -584,7 +735,7 @@ function Lc0Section() {
       <p className="text-label-sm text-on-surface-variant">
         Threads 0 lets Lc0 choose: its work is on the graphics card, so a few search threads suffice.
         Lc0 is limited by nodes, not depth — its "depth" is only the average length of the lines it
-        explores; 10 million nodes take about five minutes on a fast card.
+        explores; 2 million nodes (the default) take about a minute on a fast card.
         
         Networks are found in the data directory's networks folder and beside the program; another file
         can be named in {info ? <span className="font-mono">{info.settings_file}</span> : "lc0.json"} on the server.
@@ -689,47 +840,16 @@ function Lc0Bench({ network, backend }: { network: string; backend: string }) {
   );
 }
 
-// ── Engine panel ──────────────────────────────────────────────────────────────
-// How the Engine panel shows its analysis — per device, like the panel's
-// layout, since two people looking at one server may want different amounts.
-function EnginePanelSection() {
-  const read = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
-  const write = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* per-device convenience only */ } };
-  const [lines, setLines] = useState(() => {
-    const n = parseInt(read("lichessLineCount") ?? "", 10);
-    return Number.isFinite(n) && n > 0 ? Math.min(n, 20) : 5;
-  });
-  const [stats, setStats] = useState(() => read("lichessShowStats") !== "false");
-  const pill = (on: boolean) => `h-7 min-w-8 px-2 rounded-full text-label-md ${on ? "bg-primary text-on-primary" : "bg-surface-container text-on-surface-variant hover:bg-on-surface/8"}`;
+/** Lichess's Replies & Strong columns: chessdb-style counts from the
+ *  positions after each move, a few extra requests per move. Per device. */
+function LichessStats() {
+  const [on, setOn] = useState(() => { try { return localStorage.getItem("lichessShowStats") !== "false"; } catch { return true; } });
   return (
-    <SectionCard title="Engine panel">
-      <p className="text-body-sm text-on-surface-variant">
-        How the Engine panel shows its analysis, on this computer.
-      </p>
-      <div className="flex items-center gap-3 text-body-sm text-on-surface">
-        <span className="w-20 shrink-0">Lines</span>
-        <div className="flex items-center gap-1">
-          {[3, 5, 8, 12].map((n) => (
-            <button key={n} onClick={() => { setLines(n); write("lichessLineCount", String(n)); }} className={pill(lines === n)}>{n}</button>
-          ))}
-        </div>
-      </div>
-      <p className="text-label-sm text-on-surface-variant">
-        Candidate moves shown by Lichess, Stockfish and Lc0 — more lines take the local engines a little
-        longer to reach the same depth. chessdb always lists every move it knows.
-      </p>
-      <label className="flex items-start gap-2 text-body-sm text-on-surface cursor-pointer">
-        <input type="checkbox" checked={stats} onChange={(e) => { setStats(e.target.checked); write("lichessShowStats", String(e.target.checked)); }} className="accent-primary mt-1" />
-        <span>
-          Replies &amp; Strong for Lichess
-          <span className="block text-label-sm text-on-surface-variant">
-            chessdb-style columns — how many replies Lichess knows after each move, and how many of them
-            are strong. A few extra requests per move.
-          </span>
-        </span>
-      </label>
-      <p className="text-label-sm text-on-surface-variant">Takes effect the next time the Engine panel opens.</p>
-    </SectionCard>
+    <EngineSwitch
+      label="Replies & Strong columns (a few extra requests per move)"
+      on={on}
+      onChange={(v) => { setOn(v); try { localStorage.setItem("lichessShowStats", String(v)); } catch { /* per-device convenience only */ } }}
+    />
   );
 }
 
@@ -742,65 +862,119 @@ function CloudEnginesSection() {
   // Each service on or off; an older server has no switches and asks both.
   const [services, setServices] = useState<{ chessdb: boolean; lichess: boolean }>({ chessdb: true, lichess: true });
   const [value, setValue] = useState("");
+  // Lichess's threshold for strong moves, in centipawns; shown in pawns.
+  const [strongCp, setStrongCp] = useState(5);
+  const [pawns, setPawns] = useState("0.05");
+  const [neutralCp, setNeutralCp] = useState(15);
+  const [neutralPawns, setNeutralPawns] = useState("0.15");
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  type Settings = { max_move: number; chessdb?: boolean; lichess?: boolean; lichess_strong_cp?: number; lichess_neutral_cp?: number };
+  function show(d: Settings) {
+    setMaxMove(d.max_move); setValue(String(d.max_move));
+    setServices({ chessdb: d.chessdb !== false, lichess: d.lichess !== false });
+    const cp = d.lichess_strong_cp ?? 5;
+    setStrongCp(cp); setPawns((cp / 100).toFixed(2));
+    const ncp = d.lichess_neutral_cp ?? 15;
+    setNeutralCp(ncp); setNeutralPawns((ncp / 100).toFixed(2));
+  }
   useEffect(() => {
     fetch(apiUrl("/cloud-eval/settings"))
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
-      .then((d: { max_move: number; chessdb?: boolean; lichess?: boolean }) => {
-        setMaxMove(d.max_move); setValue(String(d.max_move));
-        setServices({ chessdb: d.chessdb !== false, lichess: d.lichess !== false });
-      })
+      .then(show)
       .catch((e) => setError(String(e)));
   }, []);
   const n = parseInt(value, 10);
-  async function save(patch: { max_move?: number; chessdb?: boolean; lichess?: boolean } = {}) {
+  const pawnsCp = Math.round(Number(pawns.replace(",", ".")) * 100);
+  const neutralPawnsCp = Math.round(Number(neutralPawns.replace(",", ".")) * 100);
+  async function save(patch: Partial<Settings> = {}) {
     setError(null);
     setNote(null);
     try {
       const r = await fetch(apiUrl("/cloud-eval/settings"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ max_move: maxMove ?? 20, ...services, ...(Number.isFinite(n) ? { max_move: n } : {}), ...patch }),
+        // The whole settings each time: the server takes what is left out as
+        // its default.
+        body: JSON.stringify({ max_move: maxMove ?? 20, ...services, lichess_strong_cp: strongCp, lichess_neutral_cp: neutralCp, ...(Number.isFinite(n) ? { max_move: n } : {}), ...patch }),
       });
       if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
-      const d = (await r.json()) as { max_move: number; chessdb?: boolean; lichess?: boolean };
-      setMaxMove(d.max_move);
-      setValue(String(d.max_move));
-      setServices({ chessdb: d.chessdb !== false, lichess: d.lichess !== false });
+      show((await r.json()) as Settings);
       setNote("Saved.");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }
-  return (
-    <SectionCard title="Cloud engines" status={maxMove == null ? undefined : maxMove === 0 ? "every move" : `up to move ${maxMove}`}>
-      <p className="text-body-sm text-on-surface-variant">
-        The Engine panel's <em>chessdb</em> and <em>Lichess</em> analyses look the position up on those
-        services, which sends it there — and chessdb keeps what it is asked. Past the opening that means
-        the positions of the games you study, often your own. The server asks them only up to a move;
-        Stockfish and Lc0 on the server analyse everything after it.
+  // The move cap is one setting for both services; each card shows it, and
+  // a save's result shows in the card it was made in.
+  const [from, setFrom] = useState<"chessdb" | "lichess">("chessdb");
+  const status = maxMove == null ? undefined : maxMove === 0 ? "every move" : `up to move ${maxMove}`;
+  const cap = (which: "chessdb" | "lichess") => maxMove != null && (
+    <div className="space-y-1">
+      <div className="flex items-center gap-2 text-body-sm text-on-surface">
+        <span>Ask up to move</span>
+        <input
+          type="number" min={0} max={500} value={value} onChange={(e) => setValue(e.target.value)}
+          className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums"
+        />
+        <ActionButton onClick={() => { setFrom(which); void save({ max_move: n }); }} disabled={!Number.isFinite(n) || n < 0 || n === maxMove}>Save</ActionButton>
+      </div>
+      <p className="text-label-sm text-on-surface-variant">
+        For both cloud engines; 0 asks about every move, the default is 20. Stockfish and Lc0 on the server analyse everything after it.
       </p>
-      {maxMove != null && (
-        <div className="flex items-center gap-6">
-          <EngineSwitch label="Use chessdb.cn" on={services.chessdb} onChange={(on) => void save({ chessdb: on })} />
-          <EngineSwitch label="Use Lichess" on={services.lichess} onChange={(on) => void save({ lichess: on })} />
-        </div>
-      )}
-      {maxMove != null && (
-        <div className="flex items-center gap-2 text-body-sm text-on-surface">
-          <span>Ask them up to move</span>
-          <input
-            type="number" min={0} max={500} value={value} onChange={(e) => setValue(e.target.value)}
-            className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums"
-          />
-          <ActionButton onClick={() => void save({ max_move: n })} disabled={!Number.isFinite(n) || n < 0 || n === maxMove}>Save</ActionButton>
-        </div>
-      )}
-      <p className="text-label-sm text-on-surface-variant">0 asks them about every move. The default is 20.</p>
+    </div>
+  );
+  const result = (which: "chessdb" | "lichess") => from === which && (
+    <>
       {note && <p className="text-body-sm text-success">{note}</p>}
       {error && <p className="text-body-sm text-error">{error}</p>}
-    </SectionCard>
+    </>
+  );
+  const field = "w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums";
+  return (
+    <>
+      <SectionCard title="chessdb.cn" status={status}>
+        <p className="text-body-sm text-on-surface-variant">
+          A community database of engine evaluations: it lists every move it knows, with its replies and
+          strong replies, and marks the moves by its own rule. Looking a position up sends it there, and
+          chessdb keeps what it is asked — past the opening, the positions of the games you study, often
+          your own.
+        </p>
+        {maxMove != null && (
+          <UseToggle label="Use chessdb.cn" onLabel="On" on={services.chessdb} onChange={(on) => { setFrom("chessdb"); void save({ chessdb: on }); }} />
+        )}
+        {cap("chessdb")}
+        {result("chessdb")}
+      </SectionCard>
+      <SectionCard title="Lichess" status={status}>
+        <p className="text-body-sm text-on-surface-variant">
+          Stockfish evaluations cached in Lichess's cloud — popular positions only; every cached line is
+          shown. Looking a position up sends it to Lichess.
+        </p>
+        {maxMove != null && (
+          <>
+            <UseToggle label="Use Lichess" onLabel="On" on={services.lichess} onChange={(on) => { setFrom("lichess"); void save({ lichess: on }); }} />
+            <LichessStats />
+            <div className="flex items-center gap-4 text-body-sm text-on-surface flex-wrap">
+              <label className="flex items-center gap-2" title="A move within this much of the best is strong: marked ! in the Engine panel, and counted among the strong replies">
+                <span>Strong within</span>
+                <input value={pawns} onChange={(e) => setPawns(e.target.value)} inputMode="decimal" className={field} />
+                <span className="text-on-surface-variant">pawns</span>
+              </label>
+              <label className="flex items-center gap-2" title="A move further behind the best than strong, up to this far, is neutral and left unmarked; further still, it is marked ?">
+                <span>Neutral within</span>
+                <input value={neutralPawns} onChange={(e) => setNeutralPawns(e.target.value)} inputMode="decimal" className={field} />
+                <span className="text-on-surface-variant">pawns</span>
+              </label>
+              <ActionButton onClick={() => { setFrom("lichess"); void save({ lichess_strong_cp: pawnsCp, lichess_neutral_cp: neutralPawnsCp }); }}
+                disabled={!Number.isFinite(pawnsCp) || pawnsCp < 0 || !Number.isFinite(neutralPawnsCp) || neutralPawnsCp < 0 || (pawnsCp === strongCp && neutralPawnsCp === neutralCp)}>Save</ActionButton>
+            </div>
+          </>
+        )}
+        {cap("lichess")}
+        {result("lichess")}
+      </SectionCard>
+    </>
   );
 }
 
@@ -2006,7 +2180,6 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
               <EngineSection />
               <Lc0Section />
               <CloudEnginesSection />
-              <EnginePanelSection />
             </div>
           </div>
 

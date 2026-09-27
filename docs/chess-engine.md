@@ -114,18 +114,22 @@ so keep the engine outside `/home` — `/usr/local/bin` or `/opt` work.
 
 ## Switching engines on and off
 
-Maintenance → **Engines** has a switch for each of the four: chessdb.cn and
-Lichess (the cloud engines), Stockfish and Lc0. Switched off, an engine's tab
-leaves the Engine panel and the server neither runs nor asks it — Lc0 then
-holds no graphics memory. LPDO checks once a day for new releases of Stockfish
-and Lc0 and shows a notice when the server runs an older one.
+Maintenance → **Engines** sets each engine. Stockfish and Lc0 are **Auto** or
+**Off**: on Auto, the default, the server uses an engine when it is installed —
+Lc0 with a network — and picks it up when you install it later, without a
+restart; Off, it is never used. chessdb.cn and Lichess, the cloud engines, have
+an on/off switch. An engine not in use leaves the Engine panel, and the server
+neither runs nor asks it — Lc0 then holds no graphics memory. LPDO checks once a
+day for new releases of the Stockfish and Lc0 in use, and shows a notice when
+the server runs an older one.
 
 ## Settings
 
 | Setting | Default | |
 |---|---|---|
-| Threads | one per physical core | A core's second hardware thread adds little to Stockfish, and the server also answers everyone's queries while it analyses. |
+| Threads | one per physical core, less the helpers' | A core's second hardware thread adds little to Stockfish, and the server also answers everyone's queries while it analyses. |
 | Hash | an eighth of the memory, 256 MB – 4 GB | More keeps more of an analysis when you move on and come back. |
+| Lines | 5 (Lc0: 10) | 1–20, set per computer. Each extra line makes Stockfish search a little slower; Lc0 reports its lines from one search at no cost. |
 
 **Memory is one budget.** The server may use 80% of the machine's memory. The
 engine's hash comes out of it and the database gets the rest, keeping at least
@@ -142,11 +146,67 @@ settings on one machine), and hash hardly shows in a benchmark. One run is
 marked *recommended*: at most one thread per physical core, and of those the
 fewest threads that reach 80% of the fastest; **Use** sets it.
 
-A search stops when you move to another position or close the panel, when it
-reaches its threshold, and after five minutes at the latest. The thresholds are
-set per engine under Maintenance (0 for none): **depth 40** for Stockfish, and
-**10 million nodes** for Lc0 — Lc0's "depth" is only the average length of the
-lines it explores, so nodes are its measure (about five minutes on an RTX 4090).
+A search stops when you move to another position or close the panel, or when it
+reaches its threshold, set per engine under Maintenance: **depth 35** for
+Stockfish, and **2 million nodes** for Lc0 — Lc0's "depth" is only the average
+length of the lines it explores, so nodes are its measure. There is always a
+threshold; **⟳** in the Engine panel then searches further (Stockfish five
+plies deeper, Lc0 as many nodes again), also while the search still runs. It
+goes on from where the search got: Lc0 keeps its search tree, and on Linux and
+macOS the server freezes Stockfish at its depth rather than ending the search
+(a frozen process uses no processor), so the search continues — until you move
+to another position, which the engine is needed for. **Pause** on the engine's
+tab freezes Stockfish's search the same way, and **Run** on the same position
+goes on from there. On Windows Stockfish
+starts again, its hash making the first depths quick. While a search runs the panel tells
+the server every 15 seconds that it is still open; when it has not for three
+minutes — the computer went to sleep, say — the server stops the search.
+
+While the panel shows a remembered result, deeper than the new search has got,
+its header also says how far the new search is ("searching: depth 22").
+
+## Replies & Strong
+
+As chessdb.cn does, the Engine panel can show for each candidate move how many
+replies the opponent has and how many of them are **strong** — close to the
+best. Few strong replies means a forcing move. The replies are the legal moves,
+shown at once. The strong ones are counted by helper processes of the same
+engine once the main search has settled (Stockfish from depth 16, Lc0 from
+100,000 nodes); while a candidate is counted, the Strong column shows how far
+it has got, and "…" while it waits for a free helper.
+
+- **Stockfish** (on by default): each helper is a single-threaded Stockfish
+  that searches every reply of one candidate to a set depth (20). By default
+  there are 5 — as many as the lines shown, so all are counted at once — and the
+  main search gets the physical cores less these: 11 + 5 on a 16-core machine.
+  The helpers share 320 MB of hash, out of the same memory budget. A reply is
+  strong within 0.10 pawns of the best (chessdb uses 0.05). One candidate takes
+  about 10–15 s; on one machine, four candidates took 15 s with four
+  single-threaded helpers, against 41 s one after another with one four-thread
+  helper (Stockfish's threads gain little on such short searches).
+- **Lc0** (off by default: its helper loads a second copy of the network onto
+  the card): one helper runs a short search per candidate (50,000 nodes, well
+  under a second on an RTX 4090) counting the replies it explored within 1% of
+  expected score of the best.
+
+**Marks.** The same threshold marks the moves: a move within it of the best
+is **!** — so a move marked **!** is one of the strong replies counted for the
+move before it. A second threshold, **Neutral within**, leaves the moves a
+little further behind unmarked; those further still are **?**. Each engine has
+its own pair: Stockfish 0.10 and 0.30 pawns, Lc0 1% and 3% of expected score,
+Lichess 0.05 and 0.15 pawns (with the cloud engines). chessdb.cn marks its moves
+and counts its strong replies by its own rule, which LPDO cannot change.
+
+**Deeper analyses count.** When you play a move and the engine analyses the
+position after it more deeply than the helpers do (Stockfish beyond their
+depth, Lc0 beyond their nodes), going back shows that analysis for the move:
+its evaluation and line (the tooltip on the evaluation says how deep), the
+order and marks of the moves by it, and its strong replies — those among its
+lines within the threshold, exactly as the marks after the move show them.
+When all its lines are strong there may be more; the count then shows a lower
+bound such as "5+", or the helper's count if that is higher.
+
+All of it is set in the engine's card on Maintenance → Engines.
 
 ## Measuring speed
 

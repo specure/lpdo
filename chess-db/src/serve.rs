@@ -1237,6 +1237,10 @@ struct CloudEvalQuery {
     /// `refresh=true` bypasses the cache and re-fetches (the panel's reload button).
     #[serde(default)]
     refresh: bool,
+    /// `cached_only=true`: what the cache holds, and never a request out —
+    /// for a paused tab.
+    #[serde(default)]
+    cached_only: bool,
 }
 
 /// FEN → Zobrist hash (same scheme as the positions index), the cloud-eval cache key.
@@ -1254,6 +1258,7 @@ async fn cloud_eval_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<crate::cloud_eval::CloudEval> {
     let zobrist = fen_zobrist(&q.fen)?;
+    if q.cached_only { return Ok(Json(crate::cloud_eval::peek(zobrist))); }
     if !crate::cloud_eval::settings().chessdb { return Ok(Json(crate::cloud_eval::disabled_chessdb())); }
     if crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(crate::cloud_eval::capped_chessdb())); }
     Ok(Json(crate::cloud_eval::query(&q.fen, zobrist, q.refresh).await))
@@ -1265,6 +1270,7 @@ async fn cloud_eval_lines_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<Vec<crate::cloud_eval::MoveLine>> {
     let zobrist = fen_zobrist(&q.fen)?;
+    if q.cached_only { return Ok(Json(crate::cloud_eval::peek_lines(zobrist))); }
     if !crate::cloud_eval::settings().chessdb || crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(Vec::new())); }
     Ok(Json(crate::cloud_eval::query_lines(&q.fen, zobrist, q.refresh).await))
 }
@@ -1282,6 +1288,7 @@ async fn lichess_eval_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<crate::cloud_eval::LichessEval> {
     let zobrist = fen_zobrist(&q.fen)?;
+    if q.cached_only { return Ok(Json(crate::cloud_eval::peek_lichess(zobrist))); }
     if !crate::cloud_eval::settings().lichess { return Ok(Json(crate::cloud_eval::disabled_lichess())); }
     if crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(crate::cloud_eval::capped_lichess())); }
     Ok(Json(crate::cloud_eval::query_lichess(&q.fen, zobrist, q.refresh).await))
@@ -1323,7 +1330,7 @@ async fn cloud_settings_put_handler(
 struct CloudSettingsClamp;
 impl CloudSettingsClamp {
     fn clamp(s: crate::cloud_eval::CloudSettings) -> crate::cloud_eval::CloudSettings {
-        crate::cloud_eval::CloudSettings { max_move: s.max_move.min(500), ..s }
+        crate::cloud_eval::CloudSettings { max_move: s.max_move.min(500), lichess_strong_cp: s.lichess_strong_cp.min(500), lichess_neutral_cp: s.lichess_neutral_cp.min(1000), ..s }
     }
 }
 
@@ -1786,6 +1793,70 @@ async fn engines_enabled_handler(State(state): State<AppState>) -> Json<serde_js
     }))
 }
 
+/// The Engine panel is still open: the engine's search goes on (it is
+/// stopped a few minutes after the last word).
+async fn engine_alive_handler(
+    State(state): State<AppState>,
+    Query(q): Query<WhichEngine>,
+) -> ApiResult<serde_json::Value> {
+    pick_engine(&state, &q)?.alive();
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// The panel paused the engine: Stockfish's search is frozen where it is, to
+/// go on when run again on the same position.
+async fn engine_pause_handler(
+    State(state): State<AppState>,
+    Query(q): Query<WhichEngine>,
+) -> ApiResult<serde_json::Value> {
+    let frozen = pick_engine(&state, &q)?.pause().await;
+    Ok(Json(serde_json::json!({ "frozen": frozen })))
+}
+
+#[derive(Deserialize)]
+struct EngineRepliesQuery {
+    /// The position analysed, and those after its candidate moves, separated
+    /// by "|".
+    fen: String,
+    fens: String,
+    engine: Option<String>,
+    /// Only what has been counted before; never starts a helper.
+    #[serde(default)]
+    cached_only: bool,
+}
+
+/// Replies & Strong for the positions after the candidate moves: each one's
+/// count, or how far its count has got. Asking starts the counts not yet
+/// under way; the Engine panel asks again until all are done.
+async fn engine_replies_handler(
+    State(state): State<AppState>,
+    Query(q): Query<EngineRepliesQuery>,
+) -> ApiResult<crate::engine::ReplyAnswer> {
+    let parent = crate::engine::clean_fen(&q.fen).ok_or((StatusCode::BAD_REQUEST, "not a legal position".to_string()))?;
+    let fens = q.fens.split('|').take(20)
+        .map(|f| crate::engine::clean_fen(f).ok_or((StatusCode::BAD_REQUEST, format!("not a legal position: {f}"))))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let engine = pick_engine(&state, &WhichEngine { engine: q.engine.clone() })?;
+    engine.replies(&parent, &fens, q.cached_only).await.map(Json).map_err(|e| (StatusCode::CONFLICT, e))
+}
+
+#[derive(Deserialize)]
+struct EngineRememberedQuery {
+    fen: String,
+    engine: Option<String>,
+}
+
+/// The deepest result remembered for a position, without searching — what
+/// a paused or finished engine shows when stepping through a game.
+async fn engine_remembered_handler(
+    State(state): State<AppState>,
+    Query(q): Query<EngineRememberedQuery>,
+) -> ApiResult<crate::engine::Snapshot> {
+    let fen = crate::engine::clean_fen(&q.fen).ok_or((StatusCode::BAD_REQUEST, "not a legal position".to_string()))?;
+    let engine = pick_engine(&state, &WhichEngine { engine: q.engine.clone() })?;
+    engine.remembered(&fen).await.map(Json).ok_or((StatusCode::NOT_FOUND, "nothing remembered".to_string()))
+}
+
 async fn engine_status_handler(State(state): State<AppState>, Query(w): Query<WhichEngine>) -> ApiResult<crate::engine::EngineStatus> {
     Ok(Json(pick_engine(&state, &w)?.status().await))
 }
@@ -1805,6 +1876,16 @@ struct EngineConfigBody {
     smart_pruning: Option<bool>,
     /// Switch the engine on or off.
     enabled: Option<bool>,
+    /// Replies & Strong.
+    replies: Option<bool>,
+    helper_threads: Option<u32>,
+    helper_hash_mb: Option<u32>,
+    helper_depth: Option<u32>,
+    strong_cp: Option<u32>,
+    helper_nodes: Option<u64>,
+    strong_pct: Option<f32>,
+    neutral_cp: Option<u32>,
+    neutral_pct: Option<f32>,
 }
 
 async fn engine_configure_handler(
@@ -1814,12 +1895,18 @@ async fn engine_configure_handler(
 ) -> ApiResult<crate::engine::EngineStatus> {
     let engine = pick_engine(&state, &w)?;
     let status = engine
-        .configure_all(body.path, body.threads, body.hash_mb, body.weights, body.backend, body.max_depth, body.max_nodes, body.smart_pruning, body.enabled)
+        .configure_all(body.path, body.threads, body.hash_mb, body.weights, body.backend, body.max_depth, body.max_nodes, body.smart_pruning, body.enabled,
+            crate::engine::ReplySettings {
+                replies: body.replies, helper_threads: body.helper_threads, helper_hash_mb: body.helper_hash_mb,
+                helper_depth: body.helper_depth, strong_cp: body.strong_cp, helper_nodes: body.helper_nodes,
+                strong_pct: body.strong_pct, neutral_cp: body.neutral_cp, neutral_pct: body.neutral_pct,
+            })
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
-    // The database gets what Stockfish's hash leaves of the memory budget.
+    // The database gets what Stockfish's hash (and its helper's) leaves.
     if status.kind == crate::engine::Kind::Stockfish {
-        let hash = status.settings.hash_mb;
+        let s = &status.settings;
+        let hash = s.hash_mb + if s.replies { s.helper_hash_mb } else { 0 };
         state
             .writer
             .run(move |c| crate::db::apply_memory_limit(c, hash))
@@ -1839,11 +1926,14 @@ struct EngineAnalyseQuery {
     #[serde(default = "default_engine_lines")]
     lines: u32,
     engine: Option<String>,
+    /// Search to this depth (Stockfish) or node count (Lc0) instead of the
+    /// engine's threshold: the panel's "search further".
+    target: Option<u64>,
 }
 fn default_engine_lines() -> u32 { 3 }
 
 /// Stops its search when the client's stream goes away — the reader closed
-/// the panel, moved on, or lost the connection.
+/// the panel, moved on, or lost the connection (see Engine::stream_gone).
 struct StopOnDrop {
     engine: Arc<crate::engine::Engine>,
     gen: u64,
@@ -1851,7 +1941,7 @@ struct StopOnDrop {
 impl Drop for StopOnDrop {
     fn drop(&mut self) {
         let (engine, gen) = (self.engine.clone(), self.gen);
-        tokio::spawn(async move { engine.stop(gen).await });
+        tokio::spawn(async move { engine.stream_gone(gen).await });
     }
 }
 
@@ -1872,7 +1962,7 @@ async fn engine_analyse_handler(
     };
     let engine = pick_engine(&state, &WhichEngine { engine: q.engine.clone() })?;
     let (gen, remembered, rx) = engine
-        .analyse(&fen, history, q.lines)
+        .analyse(&fen, history, q.lines, q.target)
         .await
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e))?;
     let guard = Arc::new(StopOnDrop { engine: engine.clone(), gen });
@@ -2531,6 +2621,10 @@ pub async fn run(
         .route("/engine/analyse",                      get(engine_analyse_handler))
         .route("/engine/stop",                         post(engine_stop_handler))
         .route("/engines",                             get(engines_enabled_handler))
+        .route("/engine/replies",                      get(engine_replies_handler))
+        .route("/engine/alive",                        post(engine_alive_handler))
+        .route("/engine/pause",                        post(engine_pause_handler))
+        .route("/engine/remembered",                   get(engine_remembered_handler))
         .route("/engine/bench",                        post(engine_bench_handler))
         .route("/cloud-eval/lines",                    get(cloud_eval_lines_handler))
         .route("/cloud-eval/queue",                    post(cloud_eval_queue_handler))
