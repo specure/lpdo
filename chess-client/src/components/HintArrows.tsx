@@ -54,9 +54,9 @@ export function combineEngineMoves(perEngine: EngineMove[][]): CombinedMove[] {
 
 
 /** The database's arrows cover this share of the games from the position —
- *  one move where it dominates, more where play is spread — up to DB_MAX. */
+ *  one move where it dominates, many where play is spread: no cap, as a
+ *  board full of thin arrows shows at a glance there is no favourite. */
 const DB_COVERAGE = 0.75;
-const DB_MAX = 6;
 
 /** The database's most played moves (SAN with game counts) in `fen` as
  *  arrows: the fewest that together cover DB_COVERAGE of the games. */
@@ -68,7 +68,7 @@ export function dbArrows(fen: string, moves: { mv: string; games: number }[], se
   const top: typeof sorted = [];
   let covered = 0;
   for (const m of sorted) {
-    if (covered >= DB_COVERAGE * total || top.length >= DB_MAX) break;
+    if (covered >= DB_COVERAGE * total) break;
     top.push(m);
     covered += m.games;
   }
@@ -172,7 +172,7 @@ export function ArrowToggles({ on, set }: ReturnType<typeof useArrowToggles>) {
   );
   return (
     <span className="inline-flex items-center gap-3 text-label-sm text-on-surface-variant">
-      {box("db", "Database", COLOR.db, "Arrows for the moves played most often from here — as many as cover three quarters of the games (at most six)")}
+      {box("db", "Database", COLOR.db, "Arrows for the moves played most often from here — as many as cover three quarters of the games")}
       {box("engine", "Engine", COLOR.engine, "Arrows for the strong moves (marked !) of every engine with a result for the position — stronger the more engines agree")}
     </span>
   );
