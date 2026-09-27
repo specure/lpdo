@@ -275,7 +275,34 @@ struct Search {
     nodes: u64,
     nps: u64,
     lines: BTreeMap<u32, Line>,
+    /// Stockfish on Unix searches without a depth of its own and is frozen
+    /// here (see `freeze`) — so "search further" goes on from where it was.
+    stop_at: Option<u32>,
+    /// Frozen at `stop_at`: the search is kept, but uses no processor.
+    frozen: bool,
+    /// Thawed at this node count: the speed is measured from then, not over
+    /// the time it was frozen.
+    resumed: Option<(std::time::Instant, u64)>,
 }
+
+/// Stockfish on Unix is frozen at its target depth instead of stopped: a
+/// finished search cannot be continued, a frozen one can. Elsewhere, and for
+/// Lc0 (which keeps its tree between searches anyway), the engine stops by
+/// itself at its threshold.
+fn can_freeze(kind: Kind) -> bool {
+    cfg!(unix) && kind == Kind::Stockfish
+}
+
+/// Freeze or thaw the engine process (SIGSTOP / SIGCONT).
+#[cfg(unix)]
+fn signal_engine(pid: Option<u32>, thaw: bool) {
+    if let Some(pid) = pid {
+        // SAFETY: kill() only sends a signal to the engine's own process.
+        unsafe { libc::kill(pid as libc::pid_t, if thaw { libc::SIGCONT } else { libc::SIGSTOP }); }
+    }
+}
+#[cfg(not(unix))]
+fn signal_engine(_pid: Option<u32>, _thaw: bool) {}
 
 struct Running {
     child: Child,
@@ -507,7 +534,7 @@ impl Engine {
             last_error: Mutex::new(None),
             search: Arc::new(std::sync::Mutex::new(Search {
                 gen: 0, key: String::new(), white_to_move: true, searching: false, want: 1, depth: 0, nodes: 0, nps: 0,
-                lines: BTreeMap::new(),
+                lines: BTreeMap::new(), stop_at: None, frozen: false, resumed: None,
             })),
             idle: Arc::new(Notify::new()),
             tx,
@@ -788,6 +815,7 @@ impl Engine {
         self.reply_cache.lock().unwrap().clear();
         self.reply_nodes.store(0, Ordering::Relaxed);
         if let Some(mut r) = self.running.lock().await.take() {
+            if self.search.lock().unwrap().frozen { signal_engine(r.child.id(), true); }
             let _ = r.stdin.write_all(b"quit\n").await;
             let _ = tokio::time::timeout(Duration::from_secs(2), r.child.wait()).await;
             let _ = r.child.start_kill();
@@ -827,7 +855,7 @@ impl Engine {
                 let idle = self.idle.clone();
                 let tx = self.tx.clone();
                 let remembered = self.remembered.clone();
-                tokio::spawn(read_engine(stdout, search, idle, tx, remembered, self.kind));
+                tokio::spawn(read_engine(stdout, search, idle, tx, remembered, self.kind, child.id()));
                 *running = Some(Running { child, stdin, path, name });
                 *self.last_error.lock().await = None;
                 Ok(())
@@ -862,19 +890,56 @@ impl Engine {
         }
         self.ensure_started().await?;
         let rx = self.tx.subscribe();
-        let gen = self.gen.fetch_add(1, Ordering::SeqCst) + 1;
+        let depth_to = {
+            let s = self.settings.lock().await;
+            target.map_or(s.max_depth, |t| t.min(245) as u32).clamp(1, 245)
+        };
+        let legal = legal_moves(fen);
+        let want = lines.clamp(1, 20).min(legal.max(1));
+        // Frozen at its depth, not stopped — unless there is nothing to
+        // search: "go infinite" then waits for a stop, spinning a core.
+        let freeze = can_freeze(self.kind) && legal > 0;
 
         let mut running = self.running.lock().await;
         let r = running.as_mut().ok_or("the engine stopped")?;
         // Remembered per engine: Stockfish 16 and 19 disagree.
         let key = format!("{}|{}", r.name, position_key(fen));
+        let pid = r.child.id();
+
+        // Stockfish already on this position (searching, or frozen at its
+        // depth) with the same lines: move its target instead of starting
+        // again — and thaw it if frozen, so it goes on from where it was.
+        if freeze {
+            let mut s = self.search.lock().unwrap();
+            if s.searching && s.key == key && s.want == want {
+                let snap = |s: &Search, done: bool| Snapshot {
+                    gen: s.gen, depth: s.depth, nodes: s.nodes, nps: s.nps,
+                    lines: s.lines.values().cloned().collect(), done, cached: false,
+                };
+                if s.frozen && depth_to <= s.depth {
+                    // Already there: say so.
+                    return Ok((s.gen, Some(snap(&s, true)), rx));
+                }
+                s.stop_at = Some(depth_to);
+                if s.frozen {
+                    s.frozen = false;
+                    s.resumed = Some((std::time::Instant::now(), s.nodes));
+                    signal_engine(pid, true);
+                }
+                self.alive();
+                return Ok((s.gen, Some(snap(&s, false)), rx));
+            }
+        }
+        let gen = self.gen.fetch_add(1, Ordering::SeqCst) + 1;
         let remembered = self.remembered.lock().unwrap().get(&key).map(|mut s| { s.gen = gen; s });
 
         // Finish the previous search first, so its closing `bestmove` is not
         // taken for the end of this one.
-        let was_searching = self.search.lock().unwrap().searching;
+        let (was_searching, was_frozen) = { let s = self.search.lock().unwrap(); (s.searching, s.frozen) };
         if was_searching {
             let waiting = self.idle.notified();
+            // A frozen engine reads nothing: thaw it to hear the stop.
+            if was_frozen { signal_engine(pid, true); }
             send(&mut r.stdin, "stop").await?;
             let _ = tokio::time::timeout(Duration::from_secs(3), waiting).await;
         }
@@ -885,9 +950,12 @@ impl Engine {
                 key,
                 white_to_move: fen.split_whitespace().nth(1) != Some("b"),
                 searching: true,
-                want: lines.clamp(1, 20).min(legal_moves(fen).max(1)),
+                want,
                 depth: 0, nodes: 0, nps: 0,
                 lines: BTreeMap::new(),
+                stop_at: freeze.then_some(depth_to),
+                frozen: false,
+                resumed: None,
             };
         }
         send(&mut r.stdin, &format!("setoption name MultiPV value {}", lines.clamp(1, 20))).await?;
@@ -899,11 +967,14 @@ impl Engine {
         // Stop at the threshold — or at `target`, the panel's "search further"
         // once the threshold was reached. Never without one: a search runs
         // as long as its panel is open (see ALIVE_TTL).
-        let go = {
-            let s = self.settings.lock().await;
-            match self.kind {
-                Kind::Stockfish => format!("go depth {}", target.map_or(s.max_depth, |t| t.min(245) as u32).clamp(1, 245)),
-                Kind::Lc0 => format!("go nodes {}", target.unwrap_or(s.max_nodes).clamp(1_000, 1_000_000_000_000)),
+        // Stockfish on Unix: no depth of its own — the reader freezes it at
+        // `stop_at`.
+        let go = match self.kind {
+            Kind::Stockfish if freeze => "go infinite".to_string(),
+            Kind::Stockfish => format!("go depth {depth_to}"),
+            Kind::Lc0 => {
+                let s = self.settings.lock().await;
+                format!("go nodes {}", target.unwrap_or(s.max_nodes).clamp(1_000, 1_000_000_000_000))
             }
         };
         send(&mut r.stdin, &go).await?;
@@ -931,17 +1002,34 @@ impl Engine {
         *self.alive.lock().unwrap() = std::time::Instant::now();
     }
 
-    /// Stop search `gen` if it is still the current one.
+    /// Stop search `gen` if it is still the current one (thawing it first
+    /// if it is frozen).
     pub async fn stop(&self, gen: u64) {
-        let current = {
+        let (current, frozen) = {
             let s = self.search.lock().unwrap();
-            s.gen == gen && s.searching
+            (s.gen == gen && s.searching, s.frozen)
         };
         if current {
             if let Some(r) = self.running.lock().await.as_mut() {
+                if frozen { signal_engine(r.child.id(), true); }
                 let _ = send(&mut r.stdin, "stop").await;
             }
         }
+    }
+
+    /// A stream of search `gen` went away. Stop the search unless another
+    /// stream watches it — the panel reconnects to move the target — or it is
+    /// frozen at its depth, kept for "search further" while the panel is open
+    /// (the heartbeat ends it after that). A moment's grace, as a reconnect
+    /// closes the old stream before the new one opens.
+    pub async fn stream_gone(&self, gen: u64) {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let keep = {
+            let s = self.search.lock().unwrap();
+            s.gen != gen || !s.searching || s.frozen
+        };
+        if keep || self.tx.receiver_count() > 0 { return; }
+        self.stop(gen).await;
     }
 
     fn reply_key(name: &str, s: &EngineSettings, fen: &str) -> String {
@@ -1469,6 +1557,7 @@ async fn read_engine(
     tx: broadcast::Sender<Snapshot>,
     remembered: Arc<std::sync::Mutex<Remembered>>,
     kind: Kind,
+    pid: Option<u32>,
 ) {
     let mut line = String::new();
     loop {
@@ -1483,12 +1572,21 @@ async fn read_engine(
             if t.starts_with("bestmove") {
                 if !s.searching { continue; }
                 s.searching = false;
+                s.frozen = false;
                 idle.notify_waiters();
             } else if let Some(info) = parse_info(t) {
-                if !s.searching { continue; }
+                // Frozen: what was already in the pipe is past the target.
+                if !s.searching || s.frozen { continue; }
                 if let Some(d) = info.depth { s.depth = s.depth.max(d); }
                 if let Some(n) = info.nodes { s.nodes = n; }
-                if let Some(n) = info.nps { s.nps = n; }
+                if let Some(n) = info.nps {
+                    // Stockfish's own figure counts the time it was frozen.
+                    s.nps = match s.resumed {
+                        Some((at, n0)) if at.elapsed().as_millis() > 0 =>
+                            (s.nodes.saturating_sub(n0) as u128 * 1000 / at.elapsed().as_millis()) as u64,
+                        _ => n,
+                    };
+                }
                 match info.line {
                     Some(mut l) => {
                         if l.multipv > s.want { continue; }
@@ -1507,10 +1605,15 @@ async fn read_engine(
             } else {
                 continue;
             }
+            // At its target depth: freeze (the lines of that depth are complete).
+            if s.searching && s.stop_at.is_some_and(|d| s.depth >= d) {
+                s.frozen = true;
+                signal_engine(pid, false);
+            }
             let snap = Snapshot {
                 gen: s.gen, depth: s.depth, nodes: s.nodes, nps: s.nps,
                 lines: s.lines.values().cloned().collect(),
-                done: !s.searching,
+                done: !s.searching || s.frozen,
                 cached: false,
             };
             remembered.lock().unwrap().offer(&s.key, &snap, kind);

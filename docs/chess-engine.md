@@ -151,7 +151,12 @@ reaches its threshold, set per engine under Maintenance: **depth 35** for
 Stockfish, and **2 million nodes** for Lc0 — Lc0's "depth" is only the average
 length of the lines it explores, so nodes are its measure. There is always a
 threshold; **⟳** in the Engine panel then searches further (Stockfish five
-plies deeper, Lc0 as many nodes again). While a search runs the panel tells
+plies deeper, Lc0 as many nodes again), also while the search still runs. It
+goes on from where the search got: Lc0 keeps its search tree, and on Linux and
+macOS the server freezes Stockfish at its depth rather than ending the search
+(a frozen process uses no processor), so the search continues — until you move
+to another position, which the engine is needed for. On Windows Stockfish
+starts again, its hash making the first depths quick. While a search runs the panel tells
 the server every 15 seconds that it is still open; when it has not for three
 minutes — the computer went to sleep, say — the server stops the search.
 

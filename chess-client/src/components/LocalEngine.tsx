@@ -129,8 +129,9 @@ export default function LocalEngine({
       es.onmessage = (ev) => {
         const s = JSON.parse(ev.data) as Snapshot;
         if (!s.cached) setLive({ depth: s.depth, nodes: s.nodes });
-        // A remembered result stays until the new search goes further.
-        setSnap((prev) => (prev?.cached && !s.cached && !deeper(kind, s, prev) ? prev : s));
+        // A remembered result stays until the new search goes further (or
+        // it is the same search, continued).
+        setSnap((prev) => (prev?.cached && !s.cached && !deeper(kind, s, prev) && !(s.depth === prev.depth && s.nodes === prev.nodes) ? prev : s));
         if (s.done && !s.cached) { es.close(); setRunning(false); }
       };
       es.onerror = () => {
@@ -148,17 +149,18 @@ export default function LocalEngine({
     };
   }, [fen, historyKey, lineCount, status?.available, running, kind, paused, target]);
 
-  // While a search runs, tell the server now and then that this panel is
-  // still open; a search nobody watches any more is stopped a few minutes
-  // after the last word.
+  // While the panel is open, tell the server now and then: a search nobody
+  // watches any more is stopped a few minutes after the last word — also one
+  // frozen at its depth, which is kept for "search further" until then.
   const searching = running && !paused && !!status?.available;
+  const open = !paused && !!status?.available;
   useEffect(() => {
-    if (!searching) return;
+    if (!open) return;
     const t = window.setInterval(() => {
       fetch(apiUrl(`/engine/alive?engine=${kind}`), { method: "POST" }).catch(() => {});
     }, 15_000);
     return () => window.clearInterval(t);
-  }, [searching, kind]);
+  }, [open, kind]);
 
   // Replies & Strong (when switched on for this engine). The replies are the
   // legal moves, counted here at once; the strong ones the server's helpers
@@ -252,8 +254,13 @@ export default function LocalEngine({
   const limit = kind === "lc0" ? status.settings.max_nodes ?? 0 : status.settings.max_depth ?? 0;
   const reached = !!snap && (kind === "lc0" ? snap.nodes >= (target ?? limit) : snap.depth >= (target ?? limit));
   const stopReason = reached ? "limit reached" : "done";
-  // "Search further": five more plies for Stockfish, as many nodes again for Lc0.
-  const further = !snap ? null : kind === "lc0" ? snap.nodes + Math.max(limit, 1_000_000) : Math.min(snap.depth + 5, 245);
+  // "Search further": five more plies for Stockfish, as many nodes again for
+  // Lc0 — beyond the target while the search runs, beyond where it got once
+  // it has stopped. Stockfish (frozen at its depth) goes on from there.
+  const goal = target ?? limit;
+  const further = !snap ? null : kind === "lc0"
+    ? (running ? goal : Math.max(snap.nodes, goal)) + Math.max(limit, 1_000_000)
+    : Math.min((running ? goal : Math.max(snap.depth, goal)) + 5, 245);
   // Stockfish counts in millions a second, Lc0 in thousands.
   const speed = !snap?.nps ? "" : snap.nps >= 1e6 ? `${(snap.nps / 1e6).toFixed(snap.nps >= 1e7 ? 0 : 1)} Mn/s` : `${Math.round(snap.nps / 1e3)}k n/s`;
 
@@ -274,9 +281,9 @@ export default function LocalEngine({
           )}
         </span>
         <span className="shrink-0 flex items-center gap-1">
-          {/* The search ended by itself: search this position further — past
-              the limit, by a step — as the cloud tabs ask again. */}
-          {!paused && !running && (
+          {/* Search this position further — past the limit, by a step — while
+              it runs or once it has stopped, as the cloud tabs ask again. */}
+          {!paused && (
             <button
               onClick={() => { if (further) setTarget(further); setRunning(true); }}
               className="w-6 h-6 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"

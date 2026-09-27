@@ -874,6 +874,7 @@ dependencies = [
  "duckdb",
  "getrandom 0.4.3",
  "indicatif",
+ "libc",
  "pgn-reader",
  "rayon",
  "regex",

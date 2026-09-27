@@ -1923,7 +1923,7 @@ struct EngineAnalyseQuery {
 fn default_engine_lines() -> u32 { 3 }
 
 /// Stops its search when the client's stream goes away — the reader closed
-/// the panel, moved on, or lost the connection.
+/// the panel, moved on, or lost the connection (see Engine::stream_gone).
 struct StopOnDrop {
     engine: Arc<crate::engine::Engine>,
     gen: u64,
@@ -1931,7 +1931,7 @@ struct StopOnDrop {
 impl Drop for StopOnDrop {
     fn drop(&mut self) {
         let (engine, gen) = (self.engine.clone(), self.gen);
-        tokio::spawn(async move { engine.stop(gen).await });
+        tokio::spawn(async move { engine.stream_gone(gen).await });
     }
 }
 
