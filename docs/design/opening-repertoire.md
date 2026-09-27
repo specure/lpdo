@@ -28,8 +28,8 @@ Nothing repertoire-specific exists.
 - **Book** — one course or one topic: "Najdorf for Black", "Catalan (Chessable,
   Sielecki)". Has the colour you play it from, a name, an optional description
   and link to the course, and an order among the books.
-- **Chapter** — an ordered section of a book, one move tree from a start
-  position (the standard one, or a set-up position). Its content is a PGN game:
+- **Chapter** — an ordered section of a book, one move tree from the starting
+  position (set-up positions are out of scope). Its content is a PGN game:
   moves, variations, comments, NAGs, arrows and circles — what the editor
   handles today.
 - **Line** — a path from the chapter's start to a leaf of its tree. Named, as
@@ -86,8 +86,8 @@ CREATE TABLE repertoire_positions (
 
 Ids from `id_high_water` as elsewhere. A chapter's headers carry what the
 Analysis page shows in place of the players: `[Event "<book>"]`,
-`[Round "<chapter order>"]`, `[White "<chapter name>"]`, `[FEN]`/`[SetUp]` for
-a set-up start, and the book's colour as `[Orientation "black"]`.
+`[Round "<chapter order>"]`, `[White "<chapter name>"]`, and the book's colour
+as `[Orientation "black"]`.
 
 ### API
 
@@ -157,5 +157,7 @@ books with their active chapter counts and opens the page.
 
 ## Out of scope
 
-Importing from Chessable (it has no export); ChessBase repertoire files;
-sharing books between servers other than as PGN.
+Chapters starting from a set-up position (a PGN `[FEN]` header) — every
+chapter starts from the initial position; importing from Chessable (it has
+no export); ChessBase repertoire files; sharing books between servers other
+than as PGN.
