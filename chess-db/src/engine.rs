@@ -314,6 +314,11 @@ fn signal_engine(pid: Option<u32>, thaw: bool) {
 #[cfg(not(unix))]
 fn signal_engine(_pid: Option<u32>, _thaw: bool) {}
 
+/// Let the engine run, frozen or not (a running one is unaffected).
+fn thaw(pid: Option<u32>, kind: Kind) {
+    if can_freeze(kind) { signal_engine(pid, true); }
+}
+
 struct Running {
     child: Child,
     stdin: ChildStdin,
@@ -1142,14 +1147,23 @@ impl Engine {
 
         // Finish the previous search first, so its closing `bestmove` is not
         // taken for the end of this one.
-        let (was_searching, was_frozen) = { let s = self.search.lock().unwrap(); (s.searching, s.frozen) };
+        // A search being stopped is not frozen any more: its last report,
+        // read before the "bestmove", may reach its depth — frozen then, the
+        // engine would hear neither the stop nor the next search.
+        let was_searching = {
+            let mut s = self.search.lock().unwrap();
+            s.stop_at = None;
+            s.searching
+        };
         if was_searching {
             let waiting = self.idle.notified();
             // A frozen engine reads nothing: thaw it to hear the stop.
-            if was_frozen { signal_engine(pid, true); }
+            thaw(pid, self.kind);
             send(&mut r.stdin, "stop").await?;
             let _ = tokio::time::timeout(Duration::from_secs(3), waiting).await;
         }
+        // Whatever happened meanwhile, the new search goes to a running engine.
+        thaw(pid, self.kind);
         {
             let mut s = self.search.lock().unwrap();
             *s = Search {
@@ -1214,13 +1228,16 @@ impl Engine {
     /// Stop search `gen` if it is still the current one (thawing it first
     /// if it is frozen).
     pub async fn stop(&self, gen: u64) {
-        let (current, frozen) = {
-            let s = self.search.lock().unwrap();
-            (s.gen == gen && s.searching, s.frozen)
+        let current = {
+            let mut s = self.search.lock().unwrap();
+            let current = s.gen == gen && s.searching;
+            // Being stopped, it is not frozen again (see analyse).
+            if current { s.stop_at = None; }
+            current
         };
         if current {
             if let Some(r) = self.running.lock().await.as_mut() {
-                if frozen { signal_engine(r.child.id(), true); }
+                thaw(r.child.id(), self.kind);
                 let _ = send(&mut r.stdin, "stop").await;
             }
         }
@@ -1849,13 +1866,24 @@ fn helper_count(kind: Kind, s: &EngineSettings) -> usize {
 /// Spawn the engine and run the UCI handshake. Returns the process, its
 /// pipes and the name it reports.
 async fn start(path: &str, settings: &EngineSettings, kind: Kind) -> Result<(Child, ChildStdin, BufReader<ChildStdout>, String), String> {
-    let mut child = Command::new(path)
+    let mut command = Command::new(path);
+    command
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| e.to_string())?;
+        .kill_on_drop(true);
+    // On Linux the engine ends with the server, however the server ends: a
+    // frozen engine (see freeze) never reads the end of its input, and would
+    // otherwise stay, holding its hash, after a crash or a kill.
+    #[cfg(target_os = "linux")]
+    // SAFETY: prctl only sets a flag on the child between fork and exec.
+    unsafe {
+        command.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().map_err(|e| e.to_string())?;
     let mut stdin = child.stdin.take().ok_or("no stdin")?;
     let mut stdout = BufReader::new(child.stdout.take().ok_or("no stdout")?);
 
