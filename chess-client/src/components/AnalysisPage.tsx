@@ -14,6 +14,7 @@ import { useNeighbourResize } from "../lib/panelResize";
 import { fetchPgns, savePgnFile } from "../lib/exportPgn";
 import type { EngineHistory } from "../api";
 import PrintDialog, { ExportableGame } from "./games/PrintDialog";
+import { useShowEngineGames, engineParam as engineParamFor } from "../lib/engineGames";
 import { ArrowToggles, dbArrows, engineArrows, useArrowToggles, type CombinedMove } from "./HintArrows";
 
 // The Analysis board (#220): the editable, multi-game workbench. Several games
@@ -64,7 +65,6 @@ const STARTPOS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 type RightTab = "reference" | "related";
 const TAB_KEY = "analysisRightTab";
-const ENGINES_KEY = "analysisShowEngines";
 
 export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onCloseMany, onMove, capacity, onOpenGame, onTabState, onGameMutated }: Props) {
   const active = tabs.find((t) => t.key === activeKey) ?? null;
@@ -201,9 +201,8 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
 
   // Engine games (TCEC, via the Lichess broadcasts) drown out the human ones
   // in both panels, so they are hidden unless asked for. Persisted like the tab.
-  const [showEngines, setShowEngines] = useState(() => localStorage.getItem(ENGINES_KEY) === "1");
-  useEffect(() => { localStorage.setItem(ENGINES_KEY, showEngines ? "1" : "0"); }, [showEngines]);
-  const engineParam = showEngines ? "" : "&exclude_engines=true";
+  const [showEngines, setShowEngines] = useShowEngineGames();
+  const engineParam = engineParamFor(showEngines);
 
   // rail | board | intel — three panels, so dividers need the neighbour-only rule.
   // rail | board | move text | intel — four sibling panels, so every divider

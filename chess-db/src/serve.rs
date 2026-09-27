@@ -287,6 +287,34 @@ struct PlayersQuery {
     /// report each player's game count *within* it — mirrors the Games page's
     /// Collection filter (#—).
     collection_id: Option<i32>,
+    /// Leave out engines: players whose every game is an engine game (#296).
+    #[serde(default)]
+    exclude_engines: bool,
+}
+
+/// Players whose every game is an engine game (#296) — TCEC entrants, engines
+/// rated above any human, BOT-titled players: the engines themselves, never a
+/// person who played one. Worked out from all games (a second or two), so
+/// kept for a while.
+fn engine_player_ids(conn: &duckdb::Connection) -> std::result::Result<std::sync::Arc<Vec<i64>>, duckdb::Error> {
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, std::sync::Arc<Vec<i64>>)>> = std::sync::Mutex::new(None);
+    if let Some((at, ids)) = CACHE.lock().unwrap().as_ref() {
+        if at.elapsed() < std::time::Duration::from_secs(600) { return Ok(ids.clone()); }
+    }
+    let ceiling = crate::db::queries::HUMAN_ELO_CEILING;
+    let sql = format!("
+        WITH g AS (
+            SELECT white_id, black_id,
+                   (id IN (SELECT game_id FROM engine_games)
+                    OR COALESCE(white_elo, 0) > {ceiling} OR COALESCE(black_elo, 0) > {ceiling}) AS engine
+            FROM games WHERE deleted_at IS NULL),
+        sides AS (SELECT white_id AS pid, engine FROM g UNION ALL SELECT black_id, engine FROM g)
+        SELECT pid FROM sides WHERE pid IS NOT NULL GROUP BY pid HAVING bool_and(engine)");
+    let mut stmt = conn.prepare(&sql)?;
+    let ids: Vec<i64> = stmt.query_map([], |r| r.get(0))?.flatten().collect();
+    let ids = std::sync::Arc::new(ids);
+    *CACHE.lock().unwrap() = Some((std::time::Instant::now(), ids.clone()));
+    Ok(ids)
 }
 
 #[derive(Deserialize, Default)]
@@ -957,6 +985,13 @@ async fn players_handler(
 ) -> ApiResult<Vec<PlayerInfo>> {
     state.reads.run(move |conn| {
         let mut params: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
+        // Engines left out (their ids are few: inlined).
+        let engines = if q.exclude_engines { engine_player_ids(conn).map_err(db_err)? } else { std::sync::Arc::new(Vec::new()) };
+        let not_engine = if engines.is_empty() {
+            String::new()
+        } else {
+            format!("AND p.id NOT IN ({})", engines.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","))
+        };
 
         // Identity predicate on alias `p` (exact FIDE id, name prefix, or none).
         // Its bound param is pushed below AFTER any collection_id, matching the
@@ -985,7 +1020,7 @@ async fn players_handler(
                 FROM players p
                 JOIN games g ON (g.white_id = p.id OR g.black_id = p.id)
                 JOIN game_collections gc ON gc.game_id = g.id AND gc.collection_id = ?
-                WHERE 1=1 {where_extra}
+                WHERE 1=1 {where_extra} {not_engine}
                 GROUP BY p.id, p.name, p.fide_id
                 ORDER BY game_count DESC LIMIT 50")
         } else {
@@ -995,7 +1030,7 @@ async fn players_handler(
             } else if let Some(ref name) = q.name {
                 params.push(Box::new(format!("{}%", normalize_name(name))));
             }
-            let where_clause = if id_pred.is_empty() { String::new() } else { format!("WHERE {id_pred}") };
+            let where_clause = if id_pred.is_empty() { format!("WHERE 1=1 {not_engine}") } else { format!("WHERE {id_pred} {not_engine}") };
             format!("SELECT p.id, p.name, p.fide_id, p.game_count FROM players p {where_clause} ORDER BY p.game_count DESC LIMIT 50")
         };
 
