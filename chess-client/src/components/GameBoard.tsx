@@ -31,6 +31,7 @@ import type { CalArrow, CslCircle } from "../lib/parseAnnotations";
 import { nagsToString, nagToSymbol } from "../lib/parseAnnotations";
 import AnnotatedMoveList from "./AnnotatedMoveList";
 import { useClickToMove, resolveSquareFromPointer, oneClickPointer } from "./useClickToMove";
+import { HintArrowsOverlay, type HintArrow } from "./HintArrows";
 import {
   Breadcrumb,
   CursorPath,
@@ -389,6 +390,10 @@ interface Props {
    * page switches and restarts (remembered per open game). */
   flipped?: boolean;
   onFlippedChange?: (flipped: boolean) => void;
+  /** Database and engine arrows over the board (the
+   *  Analysis page's, see HintArrows), and their checkboxes, shown above it. */
+  hintArrows?: HintArrow[];
+  arrowControls?: React.ReactNode;
 }
 
 // Tags shown in the compact view always; rest only appear when expanded.
@@ -832,7 +837,7 @@ function DetailsPanel({
   );
 }
 
-export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange, menuExtras }: Props) {
+export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange, menuExtras, hintArrows = [], arrowControls }: Props) {
   const [detail, setDetail] = useState<GameDetail | null>(null);
   const [detailReloadKey, setDetailReloadKey] = useState(0);
   // The board's DOM id, unique per mounted GameBoard. react-chessboard finds a
@@ -1890,6 +1895,10 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
           </div>
         )}
 
+        {/* The arrows' checkboxes in a row above the board, as on the Games
+            page; the board scales to fit what is left. */}
+        {arrowControls && <div className="shrink-0 px-2 pb-1">{arrowControls}</div>}
+
         {/* Board */}
         <div ref={boardContainerRef} className="flex-1 min-h-0 min-w-0 overflow-hidden flex items-center justify-center relative">
           <div
@@ -1967,6 +1976,14 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
               }}
             />
             </BoardErrorBoundary>
+            {/* Database / engine arrows — fainter while the
+                game's own arrows are on the board, which keep the stage. */}
+            <HintArrowsOverlay
+              arrows={hintArrows}
+              flipped={flipped}
+              size={squareSize}
+              faint={movesEditor.active ? movesEditor.currentArrows.length > 0 : annotationArrows.length > 0}
+            />
             {/* Custom annotation overlay (arrows + circles) in view mode */}
             {!movesEditor.active && (annotationArrows.length > 0 || annotationCircles.length > 0) && (
               <AnnotationOverlay

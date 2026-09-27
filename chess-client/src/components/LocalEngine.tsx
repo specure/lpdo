@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { apiUrl, engineAnalyseUrl, type EngineHistory, type EngineKind } from "../api";
 import ExternalLinkIcon from "./ExternalLinkIcon";
 import { PvLine, pvToSan, fmtLichess, moverScore, moveMark, evalColor } from "./CloudEngine";
+import type { EngineMove } from "./HintArrows";
 
 // The server's own engine (#309): Stockfish or any UCI engine installed on
 // the machine the server runs on. LPDO does not ship one, so when none is
@@ -52,6 +53,7 @@ export default function LocalEngine({
   onPlayLine,
   paused = false,
   onTogglePause,
+  onEngineMoves,
 }: {
   /** Which of the server's engines: Stockfish, or Lc0 (shown as win/draw/loss). */
   kind?: EngineKind;
@@ -63,6 +65,9 @@ export default function LocalEngine({
   /** Paused from the Engine panel's tab: no search runs. */
   paused?: boolean;
   onTogglePause?: () => void;
+  /** The engine's "!" and unmarked moves, best first, for the board's
+   *  arrows. */
+  onEngineMoves?: (moves: EngineMove[]) => void;
 }) {
   const [status, setStatus] = useState<EngineStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
@@ -78,6 +83,18 @@ export default function LocalEngine({
   const [live, setLive] = useState<{ depth: number; nodes: number } | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
+  // The moves for the board, gathered while rendering (the lines are worked
+  // out below the early returns) and reported when they change.
+  const movesRef = useRef<EngineMove[]>([]);
+  const reportedRef = useRef<string | null>(null);
+  movesRef.current = [];
+  useEffect(() => {
+    if (!onEngineMoves) { reportedRef.current = null; return; }
+    const key = JSON.stringify(movesRef.current);
+    if (key === reportedRef.current) return;
+    reportedRef.current = key;
+    onEngineMoves(movesRef.current);
+  });
 
   async function loadStatus() {
     setChecking(true);
@@ -258,6 +275,11 @@ export default function LocalEngine({
   const markBest = markScores.length ? Math.max(...markScores) : 0;
   const markThreshold = byWdl ? (status.settings.strong_pct ?? 1) / 100 : kind === "lc0" ? 10 : (status.settings.strong_cp ?? 10);
   const neutralThreshold = byWdl ? (status.settings.neutral_pct ?? 3) / 100 : kind === "lc0" ? 30 : (status.settings.neutral_cp ?? 30);
+  movesRef.current = lines.flatMap((l, i) => {
+    const uci = l.pv_uci[0];
+    if (!uci || moveMark(markBest, markScores[i], markThreshold, neutralThreshold) === "?") return [];
+    return [{ from: uci.slice(0, 2), to: uci.slice(2, 4), strong: moveMark(markBest, markScores[i], markThreshold, neutralThreshold) === "!" }];
+  });
   // Why a search ended by itself: its threshold, or the time cap.
   const limit = kind === "lc0" ? status.settings.max_nodes ?? 0 : status.settings.max_depth ?? 0;
   const reached = !!snap && (kind === "lc0" ? snap.nodes >= (target ?? limit) : snap.depth >= (target ?? limit));

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { GameSummary, MoveStats } from "../types";
 import { LoadedGame } from "../lib/useGamePgn";
@@ -14,6 +14,7 @@ import { useNeighbourResize } from "../lib/panelResize";
 import { fetchPgns, savePgnFile } from "../lib/exportPgn";
 import type { EngineHistory } from "../api";
 import PrintDialog, { ExportableGame } from "./games/PrintDialog";
+import { ArrowToggles, dbArrows, engineArrows, useArrowToggles, type CombinedMove } from "./HintArrows";
 
 // The Analysis board (#220): the editable, multi-game workbench. Several games
 // open at once as mini-board tabs (A). The active game is edited in a full
@@ -270,6 +271,16 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
       .catch(() => {});
   }, [active?.key, effFen, atStart, engineParam]);
 
+  // The board's arrows (see HintArrows): the database's most played moves
+  // (the Reference moves covering three quarters of the games) and every
+  // engine's strong moves (from the Engine panel) — as the checkboxes have them.
+  const [engineMoves, setEngineMoves] = useState<CombinedMove[]>([]);
+  const arrowToggles = useArrowToggles("analysis");
+  const hintArrows = useMemo(() => [
+    ...(arrowToggles.on.db ? dbArrows(effFen, refMoves) : []),
+    ...(arrowToggles.on.engine ? engineArrows(engineMoves) : []),
+  ], [arrowToggles.on.db, arrowToggles.on.engine, effFen, refMoves, engineMoves]);
+
   if (tabs.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md px-6 text-center">
@@ -351,6 +362,8 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
             {active && (
               <GameBoard
                 game={active.game}
+                hintArrows={hintArrows}
+                arrowControls={<ArrowToggles {...arrowToggles} />}
                 onPositionChange={handlePositionChange}
                 initialCursor={active.cursor}
                 flipped={active.flipped}
@@ -548,7 +561,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
             {/* The engines: always in view, so it shows whether they run. */}
             <Panel id="side-engine" defaultSize="50" minSize="8">
               <div className={panel}>
-                <CloudEngine fen={effFen} history={history} watchLabel={active ? `${active.game.white} – ${active.game.black}` : "Position"} onPlayLine={playSans} />
+                <CloudEngine fen={effFen} history={history} watchLabel={active ? `${active.game.white} – ${active.game.black}` : "Position"} onPlayLine={playSans} onEngineMoves={setEngineMoves} />
               </div>
             </Panel>
           </Group>

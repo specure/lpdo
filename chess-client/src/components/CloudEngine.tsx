@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Chess } from "chess.js";
 import { addCloudWatch, apiUrl, getCloudWatches, type EngineHistory } from "../api";
 import { CLOUD_WATCH_REMOVED, CLOUD_WATCH_UPDATED } from "./ActivityIndicator";
 import LocalEngine from "./LocalEngine";
+import { combineEngineMoves, type CombinedMove, type EngineMove } from "./HintArrows";
 
 // Cloud engine evaluation of one position (#221), from chessdb.cn or Lichess
 // (Stockfish) through the daemon, which caches by position. Lifted out of the
@@ -149,11 +150,13 @@ interface Props {
   watchLabel?: string;
   /** Play a PV prefix on the host's board. Omitted ⇒ the lines are read-only. */
   onPlayLine?: (sans: string[]) => void;
+  /** All engines' moves together, for the board's arrows. */
+  onEngineMoves?: (moves: CombinedMove[]) => void;
 }
 
 /** Renders as the contents of a panel (header row + body) — the host supplies the
  *  panel chrome, so it fits both the Games mosaic and the Analysis tab column. */
-export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Props) {
+export default function CloudEngine({ fen, history, watchLabel, onPlayLine, onEngineMoves }: Props) {
   // Default to Lichess (Stockfish) — deep, real evals for popular positions. A
   // versioned key so flipping the default from chessdb actually takes effect on
   // existing installs (the old key was auto-written on every load). An explicit
@@ -357,6 +360,46 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
     }
     return () => ctrl.abort();
   }, [fen, engineSource, lichessEval, lichessShowStats, lichessStrongCp]);
+
+  // The board's arrows: every engine's moves for this position, combined —
+  // the local engines report theirs; the cloud ones' come from their results.
+  const [movesBySource, setMovesBySource] = useState<Record<string, EngineMove[]>>({});
+  const setMovesOf = useCallback((src: EngineSource, moves: EngineMove[]) => {
+    setMovesBySource((prev) => (JSON.stringify(prev[src] ?? []) === JSON.stringify(moves) ? prev : { ...prev, [src]: moves }));
+  }, []);
+  useEffect(() => {
+    if (!onEngineMoves) return;
+    const split = (uci: string) => ({ from: uci.slice(0, 2), to: uci.slice(2, 4) });
+    const db: EngineMove[] = enabled.chessdb && dbFen === fen ? engineMoves.flatMap((m) => {
+      const nn = parseNote(m.note);
+      if (!m.uci || nn?.mark === "?") return [];
+      return [{ ...split(m.uci), strong: nn?.mark === "!" }];
+    }) : [];
+    let li: EngineMove[] = [];
+    if (enabled.lichess && liFen === fen && lichessEval) {
+      const white = fen.split(" ")[1] !== "b";
+      const scores = lichessEval.lines.map((l) => moverScore(l.evalCp, l.mate, white));
+      const best = scores.length ? Math.max(...scores) : 0;
+      li = lichessEval.lines.flatMap((l, i) => {
+        const uci = l.pvUci[0];
+        const mark = moveMark(best, scores[i], lichessStrongCp, lichessNeutralCp);
+        if (!uci || mark === "?") return [];
+        return [{ ...split(uci), strong: mark === "!" }];
+      });
+    }
+    setMovesOf("chessdb", db);
+    setMovesOf("lichess", li);
+  }, [onEngineMoves, enabled.chessdb, enabled.lichess, fen, dbFen, liFen, engineMoves, lichessEval, lichessStrongCp, lichessNeutralCp, setMovesOf]);
+  const reportedMovesRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!onEngineMoves) return;
+    const sources: EngineSource[] = ["chessdb", "lichess", "stockfish", "lc0"];
+    const combined = combineEngineMoves(sources.filter((k) => enabled[k]).map((k) => movesBySource[k] ?? []));
+    const key = JSON.stringify(combined);
+    if (key === reportedMovesRef.current) return;
+    reportedMovesRef.current = key;
+    onEngineMoves(combined);
+  }, [onEngineMoves, movesBySource, enabled]);
 
   // Seed the set of actively-watched positions on mount (a watch may still be
   // running from before this panel was last shown).
@@ -585,6 +628,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine }: Pr
           <LocalEngine
             kind={k} fen={fen} history={history} lineCount={k === "stockfish" ? stockfishLineCount : lc0LineCount} onPlayLine={onPlayLine}
             paused={!running[k]} onTogglePause={() => toggleRunning(k)}
+            onEngineMoves={onEngineMoves ? (m) => setMovesOf(k, m) : undefined}
           />
         </div>
       ))}

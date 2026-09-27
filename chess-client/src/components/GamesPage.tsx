@@ -15,6 +15,7 @@ import CloudEngine, { pvString } from "./CloudEngine";
 import { useNeighbourResize } from "../lib/panelResize";
 import { useGamePgn } from "../lib/useGamePgn";
 import { EMPTY_PLAYER_VIEW, loadPlayerViewState, savePlayerViewState } from "../lib/playerViewState";
+import { useArrowToggles, type CombinedMove } from "./HintArrows";
 
 // The Games page: a DB-wide analysis layout with every panel visible at once
 // (#219). Six areas — A main position board, B opening-explorer moves, C engine
@@ -146,6 +147,10 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     setPly((p) => p + clean.length);
   }
   const [moveStats, setMoveStats] = useState<MoveStats[]>([]);
+  // The board's arrows: the engines' moves (from the Engine panel) and which
+  // arrows show (see HintArrows).
+  const [engineMoves, setEngineMoves] = useState<CombinedMove[]>([]);
+  const arrowToggles = useArrowToggles("games");
   const [movesLoading, setMovesLoading] = useState(false);
   const movesAbortRef = useRef<AbortController | null>(null);
 
@@ -589,6 +594,8 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                     showRelatedGame={false}
                     showMoves={false}
                     onMove={appendMove}
+                    engineMoves={engineMoves}
+                    arrowToggles={arrowToggles}
                   />
                 </div>
               </Panel>
@@ -601,6 +608,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                     history={{ startFen: new Chess().fen(), sans: moveSequence }}
                     watchLabel={moveSequence.length ? pvString(new Chess().fen(), moveSequence) : "Starting position"}
                     onPlayLine={appendLine}
+                    onEngineMoves={setEngineMoves}
                   />
                 </div>
               </Panel>
