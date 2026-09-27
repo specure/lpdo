@@ -1803,6 +1803,29 @@ async fn engine_alive_handler(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+/// The engines' results kept in the database, per engine version.
+async fn engine_results_handler(State(state): State<AppState>) -> ApiResult<Vec<crate::engine::StoredEngine>> {
+    crate::engine::EvalStore::new(state.reads.clone()).list().await.map(Json).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
+#[derive(Deserialize)]
+struct EngineResultsDelete {
+    /// The engine's identity as the list gives it ("Stockfish 19").
+    engine: String,
+}
+
+/// Delete one engine version's kept results (and what the engines remember
+/// of them in memory).
+async fn engine_results_delete_handler(
+    State(state): State<AppState>,
+    Query(q): Query<EngineResultsDelete>,
+) -> ApiResult<serde_json::Value> {
+    let n = crate::engine::EvalStore::new(state.reads.clone()).delete(&q.engine).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    state.engine.forget(&q.engine);
+    state.lc0.forget(&q.engine);
+    Ok(Json(serde_json::json!({ "deleted": n })))
+}
+
 /// The panel paused the engine: Stockfish's search is frozen where it is, to
 /// go on when run again on the same position.
 async fn engine_pause_handler(
@@ -2576,6 +2599,9 @@ pub async fn run(
     let engine = crate::engine::Engine::new(db_path.parent().unwrap_or(std::path::Path::new(".")));
     crate::cloud_eval::init_settings(db_path.parent().unwrap_or(std::path::Path::new(".")));
     let lc0 = crate::engine::Engine::new_kind(db_path.parent().unwrap_or(std::path::Path::new(".")), crate::engine::Kind::Lc0);
+    // The engines keep their results in the database (engine_evals).
+    engine.set_store(crate::engine::EvalStore::new(reads.clone()));
+    lc0.set_store(crate::engine::EvalStore::new(reads.clone()));
     let state = AppState { reads, writer, jobs, db_path, setup, engine, lc0 };
 
     // A leftover sentinel means a prior first-run setup didn't finish cleanly. The
@@ -2624,6 +2650,7 @@ pub async fn run(
         .route("/engine/replies",                      get(engine_replies_handler))
         .route("/engine/alive",                        post(engine_alive_handler))
         .route("/engine/pause",                        post(engine_pause_handler))
+        .route("/engine/results",                      get(engine_results_handler).delete(engine_results_delete_handler))
         .route("/engine/remembered",                   get(engine_remembered_handler))
         .route("/engine/bench",                        post(engine_bench_handler))
         .route("/cloud-eval/lines",                    get(cloud_eval_lines_handler))

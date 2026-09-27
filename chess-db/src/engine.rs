@@ -155,7 +155,7 @@ impl EngineSettings {
                 path: None, threads: physical_cores().saturating_sub(5).clamp(1, 64),
                 hash_mb: crate::db::default_engine_hash_mb(), weights: None, backend: None,
                 max_depth: 35, max_nodes: 0, smart_pruning: false, enabled: true,
-                replies: true, helper_threads: 5, helper_hash_mb: 320, helper_depth: 20, strong_cp: 10,
+                replies: true, helper_threads: 5, helper_hash_mb: 320, helper_depth: 24, strong_cp: 10,
                 helper_nodes: 0, strong_pct: 0.0, neutral_cp: 30, neutral_pct: 0.0,
             },
             // Off by default for Lc0: its helper loads a second copy of the
@@ -232,7 +232,7 @@ pub struct LatestRelease {
 }
 
 /// One line of analysis. Scores are from White's point of view.
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Line {
     pub multipv: u32,
     pub eval_cp: Option<i32>,
@@ -258,6 +258,11 @@ pub struct Snapshot {
     /// goes deeper.
     #[serde(default)]
     pub cached: bool,
+    /// Computed by another version of the engine (an older Stockfish, Lc0
+    /// with another network): shown, labelled, until the engine in use has
+    /// a result of its own for the position.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
 }
 
 /// What the stdout reader shares with the controller.
@@ -265,6 +270,10 @@ struct Search {
     gen: u64,
     /// The position's key in the remembered results, with the engine's name.
     key: String,
+    /// The same apart: the engine's identity and the position, for the
+    /// database.
+    ident: String,
+    position: String,
     white_to_move: bool,
     searching: bool,
     /// Lines in a complete set: the MultiPV asked for, or fewer when the
@@ -310,10 +319,157 @@ struct Running {
     stdin: ChildStdin,
     path: String,
     name: String,
+    /// What its results are kept under: the name ("Stockfish 19"), and for
+    /// Lc0 the network too ("Lc0 v0.32.1 · t3-512x15x16h-distill-swa-2767500").
+    ident: String,
+}
+
+/// Engine results kept in the database (`engine_evals`), one per engine and
+/// position — the furthest one, as in memory — so they outlive restarts. It
+/// runs on the read connections: small writes to a table of its own, which
+/// need not wait behind a long import on the writer.
+#[derive(Clone)]
+pub struct EvalStore {
+    reads: crate::jobs::ReadPool,
+}
+
+/// One engine's results in the database, for Maintenance.
+#[derive(Clone, Debug, Serialize)]
+pub struct StoredEngine {
+    pub engine: String,
+    pub kind: String,
+    pub positions: u64,
+    /// Bytes of the lines kept (an estimate of the room they take).
+    pub bytes: u64,
+    /// When the last result was kept, seconds since 1970.
+    pub updated: Option<i64>,
+}
+
+impl EvalStore {
+    pub fn new(reads: crate::jobs::ReadPool) -> Self {
+        Self { reads }
+    }
+
+    /// Keep `snap` for `ident` and `position` if it goes further than what is
+    /// kept (the rule of `deeper`). In the background.
+    fn save(&self, kind: Kind, ident: &str, position: &str, snap: &Snapshot) {
+        if snap.lines.is_empty() { return; }
+        let Ok(lines) = serde_json::to_string(&snap.lines) else { return };
+        let further = match kind {
+            Kind::Lc0 => "excluded.nodes > engine_evals.nodes",
+            Kind::Stockfish => "(excluded.depth > engine_evals.depth OR (excluded.depth = engine_evals.depth AND excluded.nodes > engine_evals.nodes))",
+        };
+        let sql = format!(
+            "INSERT INTO engine_evals (engine, kind, position, depth, nodes, multipv, lines, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, now())
+             ON CONFLICT (engine, position) DO UPDATE SET
+               depth = excluded.depth, nodes = excluded.nodes, multipv = excluded.multipv,
+               lines = excluded.lines, updated_at = excluded.updated_at
+             WHERE excluded.multipv >= engine_evals.multipv AND {further}"
+        );
+        let (ident, position, kind_s) = (ident.to_string(), position.to_string(), kind_name(kind));
+        let (depth, nodes, multipv) = (snap.depth as i64, snap.nodes as i64, snap.lines.len() as i64);
+        self.reads.spawn_fn(move |conn| {
+            if let Err(e) = conn.execute(&sql, duckdb::params![ident, kind_s, position, depth, nodes, multipv, lines]) {
+                eprintln!("engine results: could not keep a result: {e}");
+            }
+        });
+    }
+
+    /// The result kept for `ident` and `position`.
+    async fn load(&self, ident: &str, position: &str) -> Option<Snapshot> {
+        let (ident, position) = (ident.to_string(), position.to_string());
+        self.reads.run(move |conn| {
+            conn.query_row(
+                "SELECT depth, nodes, lines FROM engine_evals WHERE engine = ? AND position = ?",
+                duckdb::params![ident, position],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)),
+            ).ok()
+        }).await.and_then(|(d, n, l)| stored_snapshot(d, n, &l, None))
+    }
+
+    /// The furthest result another version of the engine (same kind, another
+    /// identity) has for `position`, labelled with that engine.
+    async fn load_older(&self, kind: Kind, ident: &str, position: &str) -> Option<Snapshot> {
+        let (ident, position, kind_s) = (ident.to_string(), position.to_string(), kind_name(kind));
+        let order = match kind { Kind::Lc0 => "nodes DESC", Kind::Stockfish => "depth DESC, nodes DESC" };
+        let sql = format!(
+            "SELECT engine, depth, nodes, lines FROM engine_evals
+             WHERE kind = ? AND position = ? AND engine <> ? ORDER BY {order} LIMIT 1"
+        );
+        self.reads.run(move |conn| {
+            conn.query_row(&sql, duckdb::params![kind_s, position, ident],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?)),
+            ).ok()
+        }).await.and_then(|(e, d, n, l)| stored_snapshot(d, n, &l, Some(e)))
+    }
+
+    /// The engines with results kept, most recently used first.
+    pub async fn list(&self) -> Result<Vec<StoredEngine>, String> {
+        self.reads.run(|conn| {
+            let mut st = conn.prepare(
+                "SELECT engine, any_value(kind), count(*), sum(length(lines)), epoch(max(updated_at))::BIGINT
+                 FROM engine_evals GROUP BY engine ORDER BY max(updated_at) DESC",
+            ).map_err(|e| e.to_string())?;
+            let rows = st.query_map([], |r| Ok(StoredEngine {
+                engine: r.get(0)?, kind: r.get(1)?,
+                positions: r.get::<_, i64>(2)? as u64,
+                bytes: r.get::<_, Option<i64>>(3)?.unwrap_or(0) as u64,
+                updated: r.get(4)?,
+            })).map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        }).await
+    }
+
+    /// Delete an engine's results; how many there were.
+    pub async fn delete(&self, ident: &str) -> Result<u64, String> {
+        let ident = ident.to_string();
+        self.reads.run(move |conn| {
+            conn.execute("DELETE FROM engine_evals WHERE engine = ?", duckdb::params![ident])
+                .map(|n| n as u64).map_err(|e| e.to_string())
+        }).await
+    }
+}
+
+fn kind_name(kind: Kind) -> &'static str {
+    match kind { Kind::Stockfish => "stockfish", Kind::Lc0 => "lc0" }
+}
+
+/// A kept result as the panel gets a remembered one.
+fn stored_snapshot(depth: i64, nodes: i64, lines: &str, engine: Option<String>) -> Option<Snapshot> {
+    let lines: Vec<Line> = serde_json::from_str(lines).ok()?;
+    if lines.is_empty() { return None; }
+    Some(Snapshot { gen: 0, depth: depth as u32, nodes: nodes as u64, nps: 0, lines, done: true, cached: true, engine })
+}
+
+/// Where an engine's known identities are kept.
+fn identities_file(kind: Kind) -> String {
+    format!("{}-identities.json", kind_name(kind))
+}
+
+/// What an engine's identity depends on: its program — the file, and when it
+/// was last changed, as an upgrade may replace it in place — and Lc0's
+/// network.
+fn identity_config(path: &str, s: &EngineSettings) -> Option<String> {
+    let changed = std::fs::metadata(path).ok()?.modified().ok()?
+        .duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    Some(format!("{path}|{changed}|{}", s.weights.clone().unwrap_or_default()))
+}
+
+/// A network file's name without its folder and extension.
+fn network_name(path: &str) -> String {
+    let file = Path::new(path).file_name().and_then(|f| f.to_str()).unwrap_or(path);
+    file.trim_end_matches(".gz").trim_end_matches(".pb").trim_end_matches(".onnx").to_string()
 }
 
 pub struct Engine {
     kind: Kind,
+    /// The results kept in the database, once the server has given it one.
+    store: Arc<std::sync::OnceLock<EvalStore>>,
+    /// The identity each program (and network) had when it last ran —
+    /// kept in a file, so the kept results can be found after a restart
+    /// before the engine is started (a paused panel does not start it).
+    identities: std::sync::Mutex<std::collections::HashMap<String, String>>,
     /// When an Engine panel last said it is open.
     alive: std::sync::Mutex<std::time::Instant>,
     data_dir: PathBuf,
@@ -423,6 +579,10 @@ pub struct ReplyAnswer {
 /// What a count stopped because the panel left its position returns.
 const STOPPED: &str = "stopped";
 
+/// The lines a Stockfish helper searches, as many as the Engine panel shows
+/// by default: the strong count is exact up to four, "5+" beyond.
+const HELPER_LINES: u32 = 5;
+
 /// A position the panel has not asked about for this long is left: its
 /// counts are dropped (the panel asks twice a second).
 const REPLY_ASK_TTL: Duration = Duration::from_secs(3);
@@ -527,6 +687,12 @@ impl Engine {
         let helpers = helper_count(kind, &settings);
         Arc::new(Self {
             kind,
+            store: Arc::new(std::sync::OnceLock::new()),
+            identities: std::sync::Mutex::new(
+                std::fs::read_to_string(data_dir.join(identities_file(kind))).ok()
+                    .and_then(|t| serde_json::from_str(&t).ok())
+                    .unwrap_or_default(),
+            ),
             alive: std::sync::Mutex::new(std::time::Instant::now()),
             data_dir: data_dir.to_path_buf(),
             settings_file,
@@ -534,7 +700,7 @@ impl Engine {
             running: Mutex::new(None),
             last_error: Mutex::new(None),
             search: Arc::new(std::sync::Mutex::new(Search {
-                gen: 0, key: String::new(), white_to_move: true, searching: false, want: 1, depth: 0, nodes: 0, nps: 0,
+                gen: 0, key: String::new(), ident: String::new(), position: String::new(), white_to_move: true, searching: false, want: 1, depth: 0, nodes: 0, nps: 0,
                 lines: BTreeMap::new(), stop_at: None, frozen: false, resumed: None,
             })),
             idle: Arc::new(Notify::new()),
@@ -856,8 +1022,22 @@ impl Engine {
                 let idle = self.idle.clone();
                 let tx = self.tx.clone();
                 let remembered = self.remembered.clone();
-                tokio::spawn(read_engine(stdout, search, idle, tx, remembered, self.kind, child.id()));
-                *running = Some(Running { child, stdin, path, name });
+                tokio::spawn(read_engine(stdout, search, idle, tx, remembered, self.kind, child.id(), self.store.clone()));
+                // Lc0's results depend on its network as much as on its version.
+                let ident = match (self.kind, settings.weights.as_deref()) {
+                    (Kind::Lc0, Some(w)) => format!("{name} · {}", network_name(w)),
+                    _ => name.clone(),
+                };
+                if let Some(config) = identity_config(&path, &settings) {
+                    let mut ids = self.identities.lock().unwrap();
+                    if ids.get(&config) != Some(&ident) {
+                        ids.insert(config, ident.clone());
+                        if let Ok(json) = serde_json::to_string_pretty(&*ids) {
+                            let _ = std::fs::write(self.data_dir.join(identities_file(self.kind)), json);
+                        }
+                    }
+                }
+                *running = Some(Running { child, stdin, path, name, ident });
                 *self.last_error.lock().await = None;
                 Ok(())
             }
@@ -900,11 +1080,14 @@ impl Engine {
         // Frozen at its depth, not stopped — unless there is nothing to
         // search: "go infinite" then waits for a stop, spinning a core.
         let freeze = can_freeze(self.kind) && legal > 0;
+        // Remembered per engine: Stockfish 16 and 19 disagree.
+        let ident = self.running.lock().await.as_ref().map(|r| r.ident.clone()).ok_or("the engine stopped")?;
+        let position = position_key(fen);
+        let known = self.lookup(&ident, &position).await;
 
         let mut running = self.running.lock().await;
         let r = running.as_mut().ok_or("the engine stopped")?;
-        // Remembered per engine: Stockfish 16 and 19 disagree.
-        let key = format!("{}|{}", r.name, position_key(fen));
+        let key = format!("{ident}|{position}");
         let pid = r.child.id();
 
         // Stockfish already on this position (searching, or frozen at its
@@ -915,7 +1098,7 @@ impl Engine {
             if s.searching && s.key == key && s.want == want {
                 let snap = |s: &Search, done: bool| Snapshot {
                     gen: s.gen, depth: s.depth, nodes: s.nodes, nps: s.nps,
-                    lines: s.lines.values().cloned().collect(), done, cached: false,
+                    lines: s.lines.values().cloned().collect(), done, cached: false, engine: None,
                 };
                 if s.frozen && depth_to <= s.depth {
                     // Already there: say so.
@@ -932,7 +1115,7 @@ impl Engine {
             }
         }
         let gen = self.gen.fetch_add(1, Ordering::SeqCst) + 1;
-        let remembered = self.remembered.lock().unwrap().get(&key).map(|mut s| { s.gen = gen; s });
+        let remembered = known.map(|mut s| { s.gen = gen; s });
 
         // Finish the previous search first, so its closing `bestmove` is not
         // taken for the end of this one.
@@ -949,6 +1132,8 @@ impl Engine {
             *s = Search {
                 gen,
                 key,
+                ident,
+                position: position.clone(),
                 white_to_move: fen.split_whitespace().nth(1) != Some("b"),
                 searching: true,
                 want,
@@ -1030,6 +1215,12 @@ impl Engine {
         s.frozen = true;
         s.resumed = None;
         signal_engine(pid, false);
+        // Keep what it has, as when a search ends.
+        let (key, ident, position) = (s.key.clone(), s.ident.clone(), s.position.clone());
+        drop(s);
+        if let (Some(store), Some(best)) = (self.store.get(), self.remembered.lock().unwrap().get(&key)) {
+            store.save(self.kind, &ident, &position, &best);
+        }
         true
     }
 
@@ -1068,7 +1259,12 @@ impl Engine {
         // analyses, for the moves' evaluations.
         let cached_only = cached_only || !settings.replies;
         if !cached_only { self.ensure_started().await?; }
-        let name = self.running.lock().await.as_ref().map(|r| r.name.clone());
+        let name = self.ident_now().await;
+        // The positions after the moves, analysed before (perhaps before a
+        // restart): into memory, where the counts below look.
+        if let Some(n) = &name {
+            for fen in fens { let _ = self.lookup_own(n, &position_key(fen)).await; }
+        }
         let state = |fen: &str, state, count, pct, error| ReplyState { fen: fen.to_string(), state, count, pct, error, line: None, line_depth: None, line_nodes: None, at_least: false };
         let Some(name) = name else {
             return Ok(ReplyAnswer { lines: fens.iter().map(|f| state(f, "none", None, None, None)).collect(), pending: 0 });
@@ -1087,7 +1283,7 @@ impl Engine {
                 // strong replies, by the threshold the marks there use.
                 let deep = self.remembered.lock().unwrap().get(&format!("{name}|{}", position_key(fen)))
                     .filter(|d| !d.lines.is_empty() && match self.kind {
-                        Kind::Stockfish => d.depth > settings.helper_depth,
+                        Kind::Stockfish => d.depth >= settings.helper_depth,
                         Kind::Lc0 => d.nodes > settings.helper_nodes,
                     });
                 let deep = deep.map(|d| {
@@ -1118,6 +1314,20 @@ impl Engine {
                 if deep.as_ref().is_some_and(|(_, _, exact)| *exact) {
                     lines.push(with_deep(state(fen, "done", None, None, None)));
                     continue;
+                }
+                // Stockfish counts from its lines alone — the helper's are as
+                // many as the panel's — so every line strong is "5+", not a
+                // reason to count again.
+                if self.kind == Kind::Stockfish {
+                    if let Some((d, strong, _)) = &deep {
+                        let mut st = state(fen, "done", Some(ReplyCount { replies: legal, strong: (*strong).max(1), depth: d.depth, nodes: d.nodes }), None, None);
+                        st.line = d.lines.first().cloned();
+                        st.line_depth = Some(d.depth);
+                        st.line_nodes = Some(d.nodes);
+                        st.at_least = true;
+                        lines.push(st);
+                        continue;
+                    }
                 }
                 let key = Self::reply_key(&name, &settings, fen);
                 if let Some(c) = self.reply_cache.lock().unwrap().get(&key).cloned() {
@@ -1189,7 +1399,8 @@ impl Engine {
             let mut q = self.reply_queue.lock().unwrap();
             match result {
                 Ok(c) => {
-                    self.reply_cache.lock().unwrap().insert(key.clone(), c);
+                    // Stockfish's count is its lines, remembered (see count_one).
+                    if self.kind == Kind::Lc0 { self.reply_cache.lock().unwrap().insert(key.clone(), c); }
                     q.jobs.remove(&key);
                 }
                 // Stopped: the job is gone already.
@@ -1245,9 +1456,11 @@ impl Engine {
         send(&mut h.stdin, &format!("position fen {fen}")).await?;
         match self.kind {
             Kind::Stockfish => {
-                // Stockfish takes at most 256 lines; no position has more
-                // than 218 legal moves.
-                send(&mut h.stdin, &format!("setoption name MultiPV value {}", legal.min(256))).await?;
+                // The best HELPER_LINES replies: the strong count is exact up
+                // to one fewer, "5+" beyond — enough to find the moves with
+                // only one or two good replies, at a fraction of the time
+                // every reply takes (4.5 s to depth 24 against 12 s to 20).
+                send(&mut h.stdin, &format!("setoption name MultiPV value {}", legal.min(HELPER_LINES))).await?;
                 send(&mut h.stdin, &format!("go depth {}", settings.helper_depth.max(1))).await?;
             }
             Kind::Lc0 => {
@@ -1259,6 +1472,8 @@ impl Engine {
         // Stockfish: each reply's last exact score, by line. Lc0: each
         // explored reply's visits and expected score, from the move stats.
         let mut scores: std::collections::HashMap<u32, (u32, i32)> = std::collections::HashMap::new();
+        // Stockfish: the lines themselves, kept as the position's result.
+        let mut found: BTreeMap<u32, Line> = BTreeMap::new();
         let mut stats: std::collections::HashMap<String, (u64, f64)> = std::collections::HashMap::new();
         let (mut depth, mut nodes) = (0u32, 0u64);
         let reference = self.reply_nodes.load(Ordering::Relaxed);
@@ -1305,6 +1520,7 @@ impl Engine {
                             _ => continue,
                         };
                         scores.insert(l.multipv, (info.depth.unwrap_or(0), score));
+                        found.insert(l.multipv, l);
                     }
                     // Progress: Lc0's nodes of its limit. Stockfish's nodes of
                     // what the last count took, or before any count, by depth:
@@ -1332,9 +1548,26 @@ impl Engine {
             Kind::Stockfish => {
                 let old = self.reply_nodes.load(Ordering::Relaxed);
                 self.reply_nodes.store(if old == 0 { nodes } else { (old * 2 + nodes) / 3 }, Ordering::Relaxed);
-                let best = scores.values().map(|&(_, s)| s).max().unwrap_or(0);
-                let thr = settings.strong_cp as i32;
-                let strong = scores.values().filter(|&&(_, s)| s >= best - thr).count() as u32;
+                // The count is a result of the position like any other: its
+                // lines, White-relative as the panel gets them, remembered and
+                // kept — the strong replies are counted from them, by the
+                // threshold of the moment (see `replies`).
+                let white = fen.split_whitespace().nth(1) != Some("b");
+                let lines: Vec<Line> = found.into_values().map(|mut l| {
+                    if !white {
+                        l.eval_cp = l.eval_cp.map(|c| -c);
+                        l.mate = l.mate.map(|m| -m);
+                        l.wdl = l.wdl.map(|[w, d, b]| [b, d, w]);
+                    }
+                    l
+                }).collect();
+                let snap = Snapshot { gen: 0, depth, nodes, nps: 0, lines, done: true, cached: true, engine: None };
+                if let Some(ident) = self.running.lock().await.as_ref().map(|r| r.ident.clone()) {
+                    let position = position_key(fen);
+                    self.remembered.lock().unwrap().offer(&format!("{ident}|{position}"), &snap, self.kind);
+                    if let Some(store) = self.store.get() { store.save(self.kind, &ident, &position, &snap); }
+                }
+                let strong = strong_lines(self.kind, settings, fen, &snap.lines);
                 ReplyCount { replies: legal, strong: strong.max(1), depth, nodes }
             }
             Kind::Lc0 => {
@@ -1352,8 +1585,55 @@ impl Engine {
 
     /// The deepest remembered result for `fen`, with the engine running now.
     pub async fn remembered(&self, fen: &str) -> Option<Snapshot> {
-        let name = self.running.lock().await.as_ref().map(|r| r.name.clone())?;
-        self.remembered.lock().unwrap().get(&format!("{name}|{}", position_key(fen)))
+        let ident = self.ident_now().await?;
+        self.lookup(&ident, &position_key(fen)).await
+    }
+
+    /// The furthest result known for `position`: remembered in memory, kept
+    /// in the database, or — labelled with its engine — one of another
+    /// version of the engine, until this one has its own.
+    async fn lookup(&self, ident: &str, position: &str) -> Option<Snapshot> {
+        if let Some(s) = self.lookup_own(ident, position).await { return Some(s); }
+        let store = self.store.get()?.clone();
+        store.load_older(self.kind, ident, position).await
+    }
+
+    /// This engine's own result for `position` (memory, then the database) —
+    /// what the marks and counts of the positions before it may use.
+    async fn lookup_own(&self, ident: &str, position: &str) -> Option<Snapshot> {
+        let key = format!("{ident}|{position}");
+        if let Some(s) = self.remembered.lock().unwrap().get(&key) { return Some(s); }
+        let store = self.store.get()?.clone();
+        let s = store.load(ident, position).await?;
+        self.remembered.lock().unwrap().offer(&key, &s, self.kind);
+        Some(s)
+    }
+
+    /// The identity results are kept under: the running engine's, or — not
+    /// started yet — the one its program (and network) had when it last ran.
+    async fn ident_now(&self) -> Option<String> {
+        if let Some(r) = self.running.lock().await.as_ref() { return Some(r.ident.clone()); }
+        let mut s = self.settings.lock().await.clone();
+        let path = s.path.clone().or_else(|| self.found().0.into_iter().next())?;
+        if self.kind == Kind::Lc0 && s.weights.is_none() {
+            s.weights = self.networks(Some(&path)).into_iter().next();
+        }
+        let config = identity_config(&path, &s)?;
+        self.identities.lock().unwrap().get(&config).cloned()
+    }
+
+    /// Give the engine the database to keep its results in.
+    pub fn set_store(&self, store: EvalStore) {
+        let _ = self.store.set(store);
+    }
+
+    /// Forget the results remembered in memory for `ident` (they were
+    /// deleted from the database).
+    pub fn forget(&self, ident: &str) {
+        let prefix = format!("{ident}|");
+        let mut r = self.remembered.lock().unwrap();
+        r.by_key.retain(|k, _| !k.starts_with(&prefix));
+        r.order.retain(|k| !k.starts_with(&prefix));
     }
 
     pub fn current_gen(&self) -> u64 {
@@ -1574,6 +1854,7 @@ async fn read_engine(
     remembered: Arc<std::sync::Mutex<Remembered>>,
     kind: Kind,
     pid: Option<u32>,
+    store: Arc<std::sync::OnceLock<EvalStore>>,
 ) {
     let mut line = String::new();
     loop {
@@ -1633,8 +1914,16 @@ async fn read_engine(
                 lines: s.lines.values().cloned().collect(),
                 done: !s.searching || s.frozen,
                 cached: false,
+                engine: None,
             };
             remembered.lock().unwrap().offer(&s.key, &snap, kind);
+            // The search ended or is frozen: keep the furthest result for the
+            // position in the database, so it outlives a restart.
+            if snap.done {
+                if let (Some(store), Some(best)) = (store.get(), remembered.lock().unwrap().get(&s.key)) {
+                    store.save(kind, &s.ident, &s.position, &best);
+                }
+            }
             snap
         };
         let _ = tx.send(snapshot);
@@ -1643,7 +1932,7 @@ async fn read_engine(
     let snapshot = {
         let mut s = search.lock().unwrap();
         s.searching = false;
-        Snapshot { gen: s.gen, depth: s.depth, nodes: s.nodes, nps: s.nps, lines: s.lines.values().cloned().collect(), done: true, cached: false }
+        Snapshot { gen: s.gen, depth: s.depth, nodes: s.nodes, nps: s.nps, lines: s.lines.values().cloned().collect(), done: true, cached: false, engine: None }
     };
     idle.notify_waiters();
     let _ = tx.send(snapshot);
@@ -1834,6 +2123,31 @@ pub fn clean_fen(fen: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The database keeps the furthest result per engine and position, and
+    /// finds another version's for a position the engine in use lacks.
+    #[tokio::test]
+    async fn eval_store_keeps_the_furthest() {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let store = EvalStore::new(crate::jobs::ReadPool::new(vec![conn]));
+        let line = |cp| Line { multipv: 1, eval_cp: Some(cp), mate: None, pv_uci: vec!["e2e4".into()], wdl: None };
+        let snap = |depth, nodes, cp| Snapshot { gen: 1, depth, nodes, nps: 0, lines: vec![line(cp)], done: true, cached: false, engine: None };
+        let pos = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -";
+        store.save(Kind::Stockfish, "Stockfish 19", pos, &snap(30, 1_000, 20));
+        store.save(Kind::Stockfish, "Stockfish 19", pos, &snap(25, 9_000, 50)); // shallower: kept out
+        store.save(Kind::Stockfish, "Stockfish 19", pos, &snap(30, 2_000, 30)); // same depth, more nodes: kept
+        let got = store.load("Stockfish 19", pos).await.unwrap();
+        assert_eq!((got.depth, got.nodes, got.lines[0].eval_cp, got.cached), (30, 2_000, Some(30), true));
+        assert!(store.load("Stockfish 20", pos).await.is_none());
+        let older = store.load_older(Kind::Stockfish, "Stockfish 20", pos).await.unwrap();
+        assert_eq!((older.engine.as_deref(), older.depth), (Some("Stockfish 19"), 30));
+        assert!(store.load_older(Kind::Lc0, "Lc0 v0.32.1 · t1", pos).await.is_none());
+        let listed = store.list().await.unwrap();
+        assert_eq!((listed.len(), listed[0].positions), (1, 1));
+        assert_eq!(store.delete("Stockfish 19").await.unwrap(), 1);
+        assert!(store.load("Stockfish 19", pos).await.is_none());
+    }
 
     #[test]
     fn info_lines_parse() {
