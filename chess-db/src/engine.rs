@@ -426,6 +426,17 @@ impl EvalStore {
         }).await
     }
 
+    /// Delete the result kept for one position (recalculating it). In the
+    /// background.
+    fn delete_one(&self, ident: &str, position: &str) {
+        let (ident, position) = (ident.to_string(), position.to_string());
+        self.reads.spawn_fn(move |conn| {
+            if let Err(e) = conn.execute("DELETE FROM engine_evals WHERE engine = ? AND position = ?", duckdb::params![ident, position]) {
+                eprintln!("engine results: could not delete a result: {e}");
+            }
+        });
+    }
+
     /// Delete an engine's results; how many there were.
     pub async fn delete(&self, ident: &str) -> Result<u64, String> {
         let ident = ident.to_string();
@@ -627,6 +638,9 @@ const REMEMBER_MAX: usize = 20_000;
 impl Remembered {
     fn get(&self, key: &str) -> Option<Snapshot> {
         self.by_key.get(key).cloned()
+    }
+    fn remove(&mut self, key: &str) {
+        if self.by_key.remove(key).is_some() { self.order.retain(|k| k != key); }
     }
     /// Keep `s` if it is deeper than what is remembered for `key` (see
     /// `deeper`).
@@ -1088,6 +1102,7 @@ impl Engine {
         history: Option<(String, Vec<String>)>,
         lines: u32,
         target: Option<u64>,
+        fresh: bool,
     ) -> Result<(u64, Option<Snapshot>, broadcast::Receiver<Snapshot>), String> {
         // A benchmark needs the processor to itself: an analysis beside it
         // skews its figures badly (one run took ten times as long).
@@ -1111,7 +1126,14 @@ impl Engine {
         // Remembered per engine: Stockfish 16 and 19 disagree.
         let ident = self.running.lock().await.as_ref().map(|r| r.ident.clone()).ok_or("the engine stopped")?;
         let position = position_key(fen);
-        let known = self.lookup(&ident, &position).await;
+        // Recalculate (the panel's ⟳): what is known of the position goes —
+        // remembered and kept — and the engine's hash with it (below), so the
+        // search starts from nothing.
+        if fresh {
+            self.remembered.lock().unwrap().remove(&format!("{ident}|{position}"));
+            if let Some(store) = self.store.get() { store.delete_one(&ident, &position); }
+        }
+        let known = if fresh { None } else { self.lookup(&ident, &position).await };
 
         let mut running = self.running.lock().await;
         let r = running.as_mut().ok_or("the engine stopped")?;
@@ -1121,7 +1143,7 @@ impl Engine {
         // Stockfish already on this position (searching, or frozen at its
         // depth) with the same lines: move its target instead of starting
         // again — and thaw it if frozen, so it goes on from where it was.
-        if freeze {
+        if freeze && !fresh {
             let mut s = self.search.lock().unwrap();
             if s.searching && s.key == key && s.want == want {
                 let snap = |s: &Search, done: bool| Snapshot {
@@ -1186,6 +1208,8 @@ impl Engine {
             Some((start, moves)) if !moves.is_empty() => format!("position fen {start} moves {}", moves.join(" ")),
             _ => format!("position fen {fen}"),
         };
+        // A new game to the engine: Stockfish clears its hash, Lc0 its tree.
+        if fresh { send(&mut r.stdin, "ucinewgame").await?; }
         send(&mut r.stdin, &position).await?;
         // Stop at the threshold — or at `target`, the panel's "search further"
         // once the threshold was reached. Never without one: a search runs
@@ -2332,7 +2356,7 @@ mod tests {
         println!("engine: {:?} at {:?}", status.name, status.path);
         // After 1.e4 e5 2.Qh5 Nc6 3.Bc4 Nf6?? White mates: Qxf7#.
         let fen = clean_fen("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4").unwrap();
-        let (gen, _, mut rx) = engine.analyse(&fen, None, 3, None).await.unwrap();
+        let (gen, _, mut rx) = engine.analyse(&fen, None, 3, None, false).await.unwrap();
         let mut last = None;
         while let Ok(Ok(s)) = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
             if s.gen != gen { continue; }
@@ -2374,7 +2398,7 @@ mod tests {
 
         // After 1.e4: Black to move, so the engine's view is flipped to White's.
         let fen = clean_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").unwrap();
-        let (gen, _, mut rx) = engine.analyse(&fen, None, 3, None).await.unwrap();
+        let (gen, _, mut rx) = engine.analyse(&fen, None, 3, None, false).await.unwrap();
         let mut last = None;
         let until = std::time::Instant::now() + Duration::from_secs(20);
         while std::time::Instant::now() < until {
@@ -2426,7 +2450,7 @@ done
 
         // Black to move: the engine's +25 for Black is -25 for White.
         let fen = clean_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").unwrap();
-        let (gen, remembered, mut rx) = engine.analyse(&fen, None, 1, None).await.unwrap();
+        let (gen, remembered, mut rx) = engine.analyse(&fen, None, 1, None, false).await.unwrap();
         assert!(remembered.is_none());
         let mut last = None;
         while let Ok(Ok(s)) = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
@@ -2448,7 +2472,7 @@ done
         assert!(done, "stopping ends the search");
 
         // The same position again: the deepest result comes back at once.
-        let (_, remembered, _rx) = engine.analyse(&fen, None, 1, None).await.unwrap();
+        let (_, remembered, _rx) = engine.analyse(&fen, None, 1, None, false).await.unwrap();
         let r = remembered.expect("remembered");
         assert!(r.cached && r.depth == 2, "{r:?}");
 
