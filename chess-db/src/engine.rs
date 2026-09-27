@@ -106,6 +106,8 @@ pub struct EngineSettings {
     pub smart_pruning: bool,
     /// Switched off, the engine is not started (Lc0 then holds no GPU
     /// memory), its tab leaves the Engine panel and analysis is refused.
+    /// Maintenance's Auto (true, the default) or Off: on Auto the engine runs
+    /// when it is installed on the server — see `Engine::on`.
     pub enabled: bool,
     /// Replies & Strong: a helper process of the same engine counts, for each
     /// candidate move, the opponent's replies and how many of them are strong.
@@ -172,8 +174,12 @@ fn valid_backend(b: &str) -> bool {
 #[derive(Clone, Debug, Serialize)]
 pub struct EngineStatus {
     pub kind: Kind,
-    /// Switched on in the settings (see EngineSettings::enabled).
+    /// In use: on Auto, and installed.
     pub enabled: bool,
+    /// The setting: Auto (true) or Off.
+    pub auto: bool,
+    /// The program (and for Lc0 a network) is on the server.
+    pub installed: bool,
     pub available: bool,
     /// The engine in use (or that would be used).
     pub path: Option<String>,
@@ -491,6 +497,25 @@ impl Engine {
         })
     }
 
+    /// Whether the engine can run: its program (named, or found in the
+    /// standard locations) and, for Lc0, a network.
+    fn installed(&self, s: &EngineSettings) -> bool {
+        let program = s.path.clone().filter(|p| is_executable(Path::new(p)))
+            .or_else(|| self.found().0.into_iter().next());
+        match (self.kind, program) {
+            (_, None) => false,
+            (Kind::Stockfish, Some(_)) => true,
+            (Kind::Lc0, Some(p)) => s.weights.as_deref().is_some_and(|w| Path::new(w).is_file()) || !self.networks(Some(&p)).is_empty(),
+        }
+    }
+
+    /// In use: set to Auto, and installed — looked up each time, so an
+    /// engine installed (or removed) while the server runs is picked up.
+    pub async fn on(&self) -> bool {
+        let s = self.settings.lock().await.clone();
+        s.enabled && self.installed(&s)
+    }
+
     /// The newest Stockfish release, from GitHub. Asked at most once a day
     /// (an hour after a failure), and never for long: a server without
     /// internet access just does not say.
@@ -590,7 +615,9 @@ impl Engine {
     }
 
     pub async fn status(&self) -> EngineStatus {
-        let enabled = self.settings.lock().await.enabled;
+        let auto = self.settings.lock().await.enabled;
+        let installed = self.installed(&self.settings.lock().await.clone());
+        let enabled = auto && installed;
         if enabled { let _ = self.ensure_started().await; }
         let settings = self.settings.lock().await.clone();
         let hash_mb = settings.hash_mb;
@@ -616,6 +643,8 @@ impl Engine {
         EngineStatus {
             kind: self.kind,
             enabled,
+            auto,
+            installed,
             available: running.is_some(),
             path: running.as_ref().map(|r| r.path.clone()).or_else(|| settings.path.clone()).or_else(|| found.first().cloned()),
             name: running.as_ref().map(|r| r.name.clone()),
@@ -1591,7 +1620,7 @@ pub fn lc0_version(name: &str) -> Option<String> {
 /// Just the switch: whether the engine is on, without starting it.
 impl Engine {
     pub async fn enabled(&self) -> bool {
-        self.settings.lock().await.enabled
+        self.on().await
     }
 }
 

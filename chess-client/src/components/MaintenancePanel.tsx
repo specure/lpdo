@@ -327,6 +327,42 @@ function RepliesSettings({ kind, settings, busy, onSave }: {
   );
 }
 
+/** Stockfish's or Lc0's setting: Auto — in use when installed on the server
+ *  (the default) — or Off, and what that means now. */
+function EngineMode({ kind, info, busy, onChange }: {
+  kind: "stockfish" | "lc0";
+  info: { enabled?: boolean; auto?: boolean; installed?: boolean };
+  busy: boolean;
+  onChange: (auto: boolean) => void;
+}) {
+  // An older server has only the switch.
+  const auto = info.auto ?? info.enabled !== false;
+  const installed = info.installed ?? true;
+  const name = kind === "stockfish" ? "Stockfish" : "Lc0";
+  const guide = `https://github.com/specure/lpdo/blob/main/docs/chess-engine.md${kind === "lc0" ? "#leela-chess-zero" : ""}`;
+  const pill = (on: boolean) => `h-8 px-4 text-label-lg ${on ? "bg-primary text-on-primary" : "bg-surface-container text-on-surface-variant hover:bg-on-surface/8"} disabled:opacity-60`;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-3 text-body-sm text-on-surface">
+        <span>Use {name}</span>
+        <div className="inline-flex rounded-full overflow-hidden border border-outline/40">
+          <button className={pill(auto)} disabled={busy} onClick={() => { if (!auto) onChange(true); }}>Auto</button>
+          <button className={pill(!auto)} disabled={busy} onClick={() => { if (auto) onChange(false); }}>Off</button>
+        </div>
+      </div>
+      <p className="text-label-sm text-on-surface-variant">
+        {!auto
+          ? `Off: the server does not use ${name}${kind === "lc0" ? " — it is not started and holds no graphics memory" : ""}.`
+          : installed
+            ? `On: ${name} is installed on the server${kind === "lc0" ? " with a network" : ""}.`
+            : <>Off until {name} is installed on the server{kind === "lc0" ? " (the program and a network)" : ""}; it is used from then on.{" "}
+                <button onClick={() => void openUrl(guide)} className="text-primary hover:underline inline-flex items-center">How to install<ExternalLinkIcon /></button>
+              </>}
+      </p>
+    </div>
+  );
+}
+
 /** An engine's on/off switch, at the top of its card: off, its tab leaves the
  *  Engine panel and the server neither runs nor asks it. */
 function EngineSwitch({ label, on, busy, onChange }: { label: string; on: boolean; busy?: boolean; onChange: (on: boolean) => void }) {
@@ -345,6 +381,8 @@ function EngineSwitch({ label, on, busy, onChange }: { label: string; on: boolea
 // goes in engine.json on the server (see engine.rs for why).
 interface EngineInfo {
   enabled?: boolean;
+  auto?: boolean;
+  installed?: boolean;
   available: boolean;
   path: string | null;
   name: string | null;
@@ -416,17 +454,17 @@ function EngineSection() {
   const field = "w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums";
 
   return (
-    <SectionCard title="Stockfish" status={info ? (info.enabled === false ? "switched off" : info.available ? info.name ?? "running" : "none found") : undefined}>
+    <SectionCard title="Stockfish" status={info ? (info.auto === false ? "off" : info.installed === false ? "not installed" : info.enabled === false ? "switched off" : info.available ? info.name ?? "running" : "not started") : undefined}>
       <p className="text-body-sm text-on-surface-variant">
         The engine behind the Engine panel's <em>Stockfish</em> tab, running on the server — the
         strongest free engine, measured in centipawns. LPDO uses one you install; any UCI engine works.
       </p>
       {info && (
-        <EngineSwitch label="Use Stockfish" on={info.enabled !== false} busy={busy} onChange={(on) => void save({ enabled: on })} />
+        <EngineMode kind="stockfish" info={info} busy={busy} onChange={(auto) => void save({ enabled: auto })} />
       )}
-      {info && !info.available && (
+      {info && info.enabled !== false && !info.available && (
         <p className="text-body-sm text-on-surface-variant">
-          No engine was found on the server. The Engine panel's <em>Stockfish</em> tab shows how to install one.
+          The engine is installed but did not start{info.error ? `: ${info.error}` : "."}
         </p>
       )}
       {info && info.found.length > 0 && (
@@ -538,6 +576,8 @@ const LC0_BACKENDS = [
 
 interface Lc0Info {
   enabled?: boolean;
+  auto?: boolean;
+  installed?: boolean;
   version?: string | null;
   latest?: { version: string; url: string } | null;
   update_available?: boolean;
@@ -591,16 +631,13 @@ function Lc0Section() {
   const select = "flex-1 min-w-0 h-8 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface";
   const name = (p: string) => p.split(/[\\/]/).pop();
   return (
-    <SectionCard title="Lc0" status={info ? (info.enabled === false ? "switched off" : info.available ? info.name ?? "running" : "not installed") : undefined}>
+    <SectionCard title="Lc0" status={info ? (info.auto === false ? "off" : info.installed === false ? "not installed" : info.enabled === false ? "switched off" : info.available ? info.name ?? "running" : "not started") : undefined}>
       <p className="text-body-sm text-on-surface-variant">
         Leela Chess Zero, the second engine on the server: a neural network that gives its chances as win,
         draw and loss. Optional — it needs a graphics card to be fast.
       </p>
       {info && (
-        <EngineSwitch
-          label="Use Lc0 — switched off, it is not started and holds no graphics memory"
-          on={info.enabled !== false} busy={busy} onChange={(on) => void save({ enabled: on })}
-        />
+        <EngineMode kind="lc0" info={info} busy={busy} onChange={(auto) => void save({ enabled: auto })} />
       )}
       {info?.update_available && info.latest && (
         <p className="text-body-sm text-on-surface">
@@ -617,9 +654,9 @@ function Lc0Section() {
           )}
         </p>
       )}
-      {info && !info.available && (
+      {info && info.enabled !== false && !info.available && (
         <p className="text-body-sm text-on-surface-variant">
-          Lc0 was not found on the server. The Engine panel's <em>Lc0</em> tab says how to install it.
+          Lc0 is installed but did not start{info.error ? `: ${info.error}` : "."}
         </p>
       )}
       {info && info.found.length > 0 && (

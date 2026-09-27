@@ -114,11 +114,14 @@ so keep the engine outside `/home` — `/usr/local/bin` or `/opt` work.
 
 ## Switching engines on and off
 
-Maintenance → **Engines** has a switch for each of the four: chessdb.cn and
-Lichess (the cloud engines), Stockfish and Lc0. Switched off, an engine's tab
-leaves the Engine panel and the server neither runs nor asks it — Lc0 then
-holds no graphics memory. LPDO checks once a day for new releases of Stockfish
-and Lc0 and shows a notice when the server runs an older one.
+Maintenance → **Engines** sets each engine. Stockfish and Lc0 are **Auto** or
+**Off**: on Auto, the default, the server uses an engine when it is installed —
+Lc0 with a network — and picks it up when you install it later, without a
+restart; Off, it is never used. chessdb.cn and Lichess, the cloud engines, have
+an on/off switch. An engine not in use leaves the Engine panel, and the server
+neither runs nor asks it — Lc0 then holds no graphics memory. LPDO checks once a
+day for new releases of the Stockfish and Lc0 in use, and shows a notice when
+the server runs an older one.
 
 ## Settings
 
