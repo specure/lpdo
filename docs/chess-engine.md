@@ -165,6 +165,17 @@ minutes — the computer went to sleep, say — the server stops the search.
 While the panel shows a remembered result, deeper than the new search has got,
 its header also says how far the new search is ("searching: depth 22").
 
+## Lines that lead to a repetition
+
+Stockfish can rate a move better than a draw while its line, played out,
+comes back to a position already on the board — from earlier in the line, or
+from the game before it: the moves just shuffle, and at the repetition the
+better side would have to find another, more principled way to make progress.
+Where the side to move is better (by 0.30 pawns or more in the best line),
+the Engine panel shows such lines apart, below the principal ones, under
+**⟲ Leading to a repetition**, greyed; the tooltip says at which move the
+position repeats. They get no arrow on the board.
+
 ## Kept results
 
 Every position Stockfish or Lc0 analyses keeps its furthest result — in the
