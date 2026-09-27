@@ -30,7 +30,13 @@ type EngineStatus = "loading" | "ok" | "unknown" | "offline" | "capped" | "ratel
 
 // Lichess (Stockfish) cloud eval — a few deep PV lines, White-relative eval + depth.
 export interface LichessLine { evalCp: number | null; mate: number | null; pvUci: string[]; }
-interface LichessEval { status: EngineStatus; depth: number; knodes: number; lines: LichessLine[]; retry_in?: number; }
+interface LichessEval { status: EngineStatus; depth: number; knodes: number; lines: LichessLine[]; retry_in?: number; fetched?: number; }
+
+/** " · fetched 3 Sep": a kept answer older than a day (the server fetches it
+ *  afresh behind it). */
+function fetchedNote(fetched: number | null | undefined): string {
+  return fetched ? ` · fetched ${new Date(fetched * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}` : "";
+}
 
 /** Convert a UCI principal variation to SAN by replaying it from `fen`. */
 export function pvToSan(fen: string, pvUci: string[]): string[] {
@@ -197,6 +203,8 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine, onEn
     if (sources.length && !sources.includes(engineSource)) setEngineSource(sources[0]);
   }, [sources.join(","), engineSource]);
   const [engineMoves, setEngineMoves] = useState<CloudMove[]>([]);          // chessdb
+  // A kept answer older than a day: when it was fetched (seconds since 1970).
+  const [dbFetched, setDbFetched] = useState<number | null>(null);
   const [engineLines, setEngineLines] = useState<Record<string, string[]>>({}); // uci → continuation SAN (lazy)
   const [lichessEval, setLichessEval] = useState<LichessEval | null>(null); // lichess
   const [lichessStats, setLichessStats] = useState<Record<string, { replies: number; strong: number }>>({}); // uci → power-move stats (lazy)
@@ -275,10 +283,10 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine, onEn
       const ctrl = new AbortController();
       dbAbort.current = ctrl;
       fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}&cached_only=true`, { signal: ctrl.signal })
-        .then((r) => (r.ok ? r.json() as Promise<{ status: EngineStatus; moves: CloudMove[] }> : null))
+        .then((r) => (r.ok ? r.json() as Promise<{ status: EngineStatus; moves: CloudMove[]; fetched?: number }> : null))
         .then((d) => {
           if (!d?.moves?.length) return;
-          setEngineMoves(d.moves); setDbStatus("ok"); setDbFen(fen); setEngineLines({});
+          setEngineMoves(d.moves); setDbStatus("ok"); setDbFen(fen); setEngineLines({}); setDbFetched(d.fetched ?? null);
           fetch(`/api/cloud-eval/lines?fen=${encodeURIComponent(fen)}&cached_only=true`, { signal: ctrl.signal })
             .then((r) => (r.ok ? r.json() as Promise<{ uci: string; pvSan: string[] }[]> : []))
             .then((ls) => { const map: Record<string, string[]> = {}; for (const l of ls) map[l.uci] = l.pvSan; setEngineLines(map); })
@@ -296,9 +304,9 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine, onEn
     const t = setTimeout(() => {
       setEngineLines({}); // clear stale continuation lines
       fetch(`/api/cloud-eval?fen=${encodeURIComponent(fen)}${rq}`, { signal: ctrl.signal })
-        .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<{ status: EngineStatus; moves: CloudMove[] }>; })
+        .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<{ status: EngineStatus; moves: CloudMove[]; fetched?: number }>; })
         .then((d) => {
-          setEngineMoves(d.moves ?? []); setDbStatus(d.moves?.length ? "ok" : (d.status ?? "unknown")); setDbFen(fen);
+          setEngineMoves(d.moves ?? []); setDbStatus(d.moves?.length ? "ok" : (d.status ?? "unknown")); setDbFen(fen); setDbFetched(d.fetched ?? null);
           // Lazy second pass: fetch the continuation lines (several querypv calls)
           // once the move table is on screen.
           if (d.moves?.length) {
@@ -558,7 +566,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine, onEn
         ) : (
           <div className="flex-1 flex flex-col min-h-0">
             <div className="px-3 py-1 shrink-0 flex items-center justify-between text-label-sm text-on-surface-variant border-b border-outline/40">
-              <span>chessdb</span>
+              <span title={dbFetched ? "Kept from an earlier answer; the server is asking chessdb.cn afresh" : undefined}>chessdb{fetchedNote(dbFetched)}</span>
               <div className="flex items-center gap-1">
                 <button
                   onClick={reloadEngine}
@@ -610,7 +618,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine, onEn
           return (
             <div className="flex-1 flex flex-col min-h-0">
               <div className="px-3 py-1 shrink-0 flex items-center justify-between text-label-sm text-on-surface-variant border-b border-outline/40">
-                <span>Stockfish · depth {lichessEval.depth}</span>
+                <span title={lichessEval.fetched ? "Kept from an earlier answer; the server asks Lichess afresh when it may" : undefined}>Stockfish · depth {lichessEval.depth}{fetchedNote(lichessEval.fetched)}</span>
                 <div className="flex items-center gap-1">
                   <button
                     onClick={reloadEngine}

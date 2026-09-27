@@ -229,6 +229,14 @@ strong-reply counts of the positions before it use only the version in use.
 Maintenance → Engines → **Kept engine results** lists them per version, with the
 room they take, and deletes an old version's. A result takes about 1–2 kB.
 
+The cloud engines' answers are kept the same way — chessdb.cn's moves and
+lines, Lichess's evaluation — so a position once answered is not asked again,
+which also keeps Lichess's tight rate limit at bay. An answer is trusted for a
+week (chessdb, whose analysis deepens as it is asked) or a month (Lichess), a
+"not in the cloud" for a day; after that it still shows at once, with the date
+it was fetched, while the server asks afresh behind it. They are listed in the
+same card, and can be deleted there.
+
 ## Replies & Strong
 
 As chessdb.cn does, the Engine panel can show for each candidate move how many

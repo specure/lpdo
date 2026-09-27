@@ -27,7 +27,107 @@ const CACHE_TTL: Duration = Duration::from_secs(24 * 3600);
 const CHESSDB_TTL: Duration = Duration::from_secs(24 * 3600);
 const CACHE_CAP: usize = 8192;
 
-#[derive(Clone, Serialize)]
+// ── Kept in the database ────────────────────────────────────────────────────
+// Every answer the services give (chessdb's moves and lines, Lichess's
+// evaluation) is kept in `cloud_evals`, so it outlives a restart and a
+// position already answered is not asked again: a request fewer to Lichess,
+// whose rate limit is tight. An answer is trusted for a while — Lichess's
+// cloud evaluations rarely change, chessdb's deepen as it is asked, and a
+// position not in the cloud may be added — and after that still shown at
+// once, labelled with its date, while it is fetched afresh behind it.
+const KEEP_LICHESS: u64 = 30 * 24 * 3600;
+const KEEP_CHESSDB: u64 = 7 * 24 * 3600;
+const KEEP_UNKNOWN: u64 = 24 * 3600;
+/// An answer older than this is labelled with its date.
+const LABEL_AFTER: u64 = 24 * 3600;
+
+static STORE: OnceLock<crate::jobs::ReadPool> = OnceLock::new();
+
+/// Give the cloud look-ups the database to keep their answers in.
+pub fn set_store(reads: crate::jobs::ReadPool) {
+    let _ = STORE.set(reads);
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// Keep an answer (in the background; the newest replaces the one before).
+fn kept_put<T: Serialize>(service: &'static str, zobrist: i64, value: &T) {
+    let (Some(store), Ok(body)) = (STORE.get(), serde_json::to_string(value)) else { return };
+    let at = now_secs();
+    store.spawn_fn(move |conn| {
+        if let Err(e) = conn.execute(
+            "INSERT OR REPLACE INTO cloud_evals (service, zobrist, body, fetched) VALUES (?, ?, ?, ?)",
+            duckdb::params![service, zobrist, body, at],
+        ) {
+            eprintln!("cloud evaluations: could not keep an answer: {e}");
+        }
+    });
+}
+
+/// The answer kept for a position, with its age in seconds and when it was
+/// fetched.
+async fn kept_get<T: serde::de::DeserializeOwned>(service: &'static str, zobrist: i64) -> Option<(T, u64, i64)> {
+    let store = STORE.get()?.clone();
+    let (body, at) = store.run(move |conn| {
+        conn.query_row(
+            "SELECT body, fetched FROM cloud_evals WHERE service = ? AND zobrist = ?",
+            duckdb::params![service, zobrist],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+        ).ok()
+    }).await?;
+    let value = serde_json::from_str(&body).ok()?;
+    Some((value, now_secs().saturating_sub(at).max(0) as u64, at))
+}
+
+/// One service's answers kept, for Maintenance.
+#[derive(Clone, Debug, Serialize)]
+pub struct KeptService {
+    pub service: String,
+    pub positions: u64,
+    pub bytes: u64,
+    pub updated: Option<i64>,
+}
+
+/// What each service has kept ("chessdb" counts its moves and lines).
+pub async fn kept_list() -> Result<Vec<KeptService>, String> {
+    let store = STORE.get().ok_or("no database")?.clone();
+    store.run(|conn| {
+        let mut st = conn.prepare(
+            "SELECT CASE WHEN service = 'lichess' THEN 'lichess' ELSE 'chessdb' END AS s,
+                    count(DISTINCT zobrist), sum(length(body)), max(fetched)
+             FROM cloud_evals GROUP BY s ORDER BY s",
+        ).map_err(|e| e.to_string())?;
+        let rows = st.query_map([], |r| Ok(KeptService {
+            service: r.get(0)?, positions: r.get::<_, i64>(1)? as u64,
+            bytes: r.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64, updated: r.get(3)?,
+        })).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }).await
+}
+
+/// Delete a service's kept answers (and what the server holds of them in
+/// memory); how many rows there were.
+pub async fn kept_delete(service: &str) -> Result<u64, String> {
+    let store = STORE.get().ok_or("no database")?.clone();
+    let lichess = service == "lichess";
+    let s = shared();
+    if lichess { s.lichess_cache.lock().unwrap().clear(); } else { s.cache.lock().unwrap().clear(); s.lines_cache.lock().unwrap().clear(); }
+    store.run(move |conn| {
+        let sql = if lichess { "DELETE FROM cloud_evals WHERE service = 'lichess'" } else { "DELETE FROM cloud_evals WHERE service IN ('chessdb', 'chessdb_lines')" };
+        conn.execute(sql, []).map(|n| n as u64).map_err(|e| e.to_string())
+    }).await
+}
+
+/// Into a memory cache, capped.
+fn remember<T>(cache: &Mutex<HashMap<i64, (Instant, T)>>, zobrist: i64, value: T) {
+    let mut c = cache.lock().unwrap();
+    if c.len() >= CACHE_CAP { c.clear(); }
+    c.insert(zobrist, (Instant::now(), value));
+}
+
+#[derive(Clone, Serialize, serde::Deserialize)]
 pub struct CloudMove {
     pub san: String,
     pub uci: String,
@@ -47,7 +147,7 @@ pub struct CloudMove {
 }
 
 /// A continuation line for one move (fetched lazily, after the move table).
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, serde::Deserialize)]
 pub struct MoveLine {
     pub uci: String,
     /// Best continuation after this move in SAN (chessdb `querypv` on the child).
@@ -55,12 +155,16 @@ pub struct MoveLine {
     pub pv_san: Vec<String>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, serde::Deserialize)]
 pub struct CloudEval {
     /// `"ok"` (moves present), `"unknown"` (not in the cloud DB yet), or
     /// `"offline"` (couldn't reach chessdb.cn).
     pub status: String,
     pub moves: Vec<CloudMove>,
+    /// Kept in the database and older than a day: when it was fetched
+    /// (seconds since 1970), for the panel to say so.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub fetched: Option<i64>,
 }
 
 /// An order-independent hash of the position's move evaluations: sorted
@@ -203,6 +307,12 @@ pub async fn query_lines(fen: &str, zobrist: i64, refresh: bool) -> Vec<MoveLine
                 return lines.clone();
             }
         }
+        if let Some((lines, age, _)) = kept_get::<Vec<MoveLine>>("chessdb_lines", zobrist).await {
+            if age < KEEP_CHESSDB && !lines.is_empty() {
+                remember(&s.lines_cache, zobrist, lines.clone());
+                return lines;
+            }
+        }
     }
     let eval = query(fen, zobrist, refresh).await; // cached move table
     if eval.status != "ok" {
@@ -224,33 +334,36 @@ pub async fn query_lines(fen: &str, zobrist: i64, refresh: bool) -> Vec<MoveLine
     }
     out.sort_by_key(|(i, _)| *i);
     let lines: Vec<MoveLine> = out.into_iter().map(|(_, l)| l).collect();
-    let mut cache = s.lines_cache.lock().unwrap();
-    if cache.len() >= CACHE_CAP {
-        cache.clear();
-    }
-    cache.insert(zobrist, (Instant::now(), lines.clone()));
+    remember(&s.lines_cache, zobrist, lines.clone());
+    if !lines.is_empty() { kept_put("chessdb_lines", zobrist, &lines); }
     lines
 }
 
 /// Query chessdb.cn's `queryall` for a position (cached by Zobrist hash).
 /// What the cache holds for a position, without asking anyone (a paused tab
 /// shows it). "uncached" when it holds nothing fresh.
-pub fn peek(zobrist: i64) -> CloudEval {
-    match shared().cache.lock().unwrap().get(&zobrist) {
-        Some((t, e)) if t.elapsed() < CACHE_TTL => e.clone(),
-        _ => CloudEval { status: "uncached".to_string(), moves: Vec::new() },
+pub async fn peek(zobrist: i64) -> CloudEval {
+    if let Some((t, e)) = shared().cache.lock().unwrap().get(&zobrist) {
+        if t.elapsed() < CACHE_TTL { return e.clone(); }
+    }
+    match kept_get::<CloudEval>("chessdb", zobrist).await {
+        Some((mut e, age, at)) => { if age >= LABEL_AFTER { e.fetched = Some(at); } e }
+        None => CloudEval { status: "uncached".to_string(), moves: Vec::new(), fetched: None },
     }
 }
-pub fn peek_lines(zobrist: i64) -> Vec<MoveLine> {
-    match shared().lines_cache.lock().unwrap().get(&zobrist) {
-        Some((t, l)) if t.elapsed() < CACHE_TTL => l.clone(),
-        _ => Vec::new(),
+pub async fn peek_lines(zobrist: i64) -> Vec<MoveLine> {
+    if let Some((t, l)) = shared().lines_cache.lock().unwrap().get(&zobrist) {
+        if t.elapsed() < CACHE_TTL { return l.clone(); }
     }
+    kept_get::<Vec<MoveLine>>("chessdb_lines", zobrist).await.map(|(l, _, _)| l).unwrap_or_default()
 }
-pub fn peek_lichess(zobrist: i64) -> LichessEval {
-    match shared().lichess_cache.lock().unwrap().get(&zobrist) {
-        Some((t, e)) if t.elapsed() < CACHE_TTL => e.clone(),
-        _ => LichessEval { status: "uncached".to_string(), depth: 0, knodes: 0, lines: Vec::new(), retry_in: None },
+pub async fn peek_lichess(zobrist: i64) -> LichessEval {
+    if let Some((t, e)) = shared().lichess_cache.lock().unwrap().get(&zobrist) {
+        if t.elapsed() < CACHE_TTL { return e.clone(); }
+    }
+    match kept_get::<LichessEval>("lichess", zobrist).await {
+        Some((mut e, age, at)) => { if age >= LABEL_AFTER { e.fetched = Some(at); } e }
+        None => LichessEval { status: "uncached".to_string(), depth: 0, knodes: 0, lines: Vec::new(), retry_in: None, fetched: None },
     }
 }
 
@@ -262,8 +375,26 @@ pub async fn query(fen: &str, zobrist: i64, refresh: bool) -> CloudEval {
                 return eval.clone();
             }
         }
+        if let Some((mut eval, age, at)) = kept_get::<CloudEval>("chessdb", zobrist).await {
+            let keep = if eval.status == "ok" { KEEP_CHESSDB } else { KEEP_UNKNOWN };
+            if age >= keep {
+                // Stale: shown now, fetched afresh behind it.
+                let f = fen.to_string();
+                tokio::spawn(async move { let _ = fetch_chessdb(&f, zobrist).await; });
+            } else {
+                remember(&s.cache, zobrist, eval.clone());
+            }
+            if age >= LABEL_AFTER { eval.fetched = Some(at); }
+            return eval;
+        }
     }
+    fetch_chessdb(fen, zobrist).await
+}
 
+/// Ask chessdb.cn (the move table), and keep a real answer — in memory and
+/// in the database.
+async fn fetch_chessdb(fen: &str, zobrist: i64) -> CloudEval {
+    let s = shared();
     throttle(&s.chessdb_gate, CHESSDB_MIN_GAP).await;
     let eval = match s
         .client
@@ -278,22 +409,19 @@ pub async fn query(fen: &str, zobrist: i64, refresh: bool) -> CloudEval {
         // transient and must NOT be cached, or it poisons the position for a day.
         Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
             Ok(v) => parse_queryall(&v),
-            Err(_) => return CloudEval { status: "offline".into(), moves: vec![] },
+            Err(_) => return CloudEval { status: "offline".into(), moves: vec![], fetched: None },
         },
-        _ => return CloudEval { status: "offline".into(), moves: vec![] },
+        _ => return CloudEval { status: "offline".into(), moves: vec![], fetched: None },
     };
 
-    let mut cache = s.cache.lock().unwrap();
-    if cache.len() >= CACHE_CAP {
-        cache.clear(); // crude cap — evals are cheap to refetch
-    }
-    cache.insert(zobrist, (Instant::now(), eval.clone()));
+    remember(&s.cache, zobrist, eval.clone());
+    kept_put("chessdb", zobrist, &eval);
     eval
 }
 
 fn parse_queryall(v: &serde_json::Value) -> CloudEval {
     if v.get("status").and_then(|s| s.as_str()) != Some("ok") {
-        return CloudEval { status: "unknown".into(), moves: vec![] };
+        return CloudEval { status: "unknown".into(), moves: vec![], fetched: None };
     }
     let moves = v
         .get("moves")
@@ -315,7 +443,7 @@ fn parse_queryall(v: &serde_json::Value) -> CloudEval {
                 .collect()
         })
         .unwrap_or_default();
-    CloudEval { status: "ok".into(), moves }
+    CloudEval { status: "ok".into(), moves, fetched: None }
 }
 
 /// Ask chessdb.cn to analyse an as-yet-unknown position (best-effort).
@@ -439,7 +567,7 @@ fn ensure_poller() {
 
 const LICHESS_URL: &str = "https://lichess.org/api/cloud-eval";
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, serde::Deserialize)]
 pub struct LichessLine {
     /// Centipawns from White's perspective (Lichess convention).
     #[serde(rename = "evalCp")]
@@ -450,7 +578,7 @@ pub struct LichessLine {
     pub pv_uci: Vec<String>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, serde::Deserialize)]
 pub struct LichessEval {
     /// `"ok"`, `"unknown"` (not in Lichess's cloud cache), `"offline"`, or
     /// `"ratelimited"` (Lichess asked us to wait: see `retry_in`).
@@ -459,8 +587,11 @@ pub struct LichessEval {
     pub knodes: i64,
     pub lines: Vec<LichessLine>,
     /// Rate-limited: seconds until Lichess is asked again.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub retry_in: Option<u64>,
+    /// Kept in the database and older than a day: when it was fetched.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub fetched: Option<i64>,
 }
 
 pub async fn query_lichess(fen: &str, zobrist: i64, refresh: bool) -> LichessEval {
@@ -471,11 +602,32 @@ pub async fn query_lichess(fen: &str, zobrist: i64, refresh: bool) -> LichessEva
                 return eval.clone();
             }
         }
+        if let Some((mut eval, age, at)) = kept_get::<LichessEval>("lichess", zobrist).await {
+            let keep = if eval.status == "ok" { KEEP_LICHESS } else { KEEP_UNKNOWN };
+            if age >= keep {
+                // Stale: shown now, fetched afresh behind it — unless Lichess
+                // asks for a rest.
+                if lichess_resting().is_none() {
+                    let f = fen.to_string();
+                    tokio::spawn(async move { let _ = fetch_lichess(&f, zobrist).await; });
+                }
+            } else {
+                remember(&s.lichess_cache, zobrist, eval.clone());
+            }
+            if age >= LABEL_AFTER { eval.fetched = Some(at); }
+            return eval;
+        }
     }
+    fetch_lichess(fen, zobrist).await
+}
 
+/// Ask Lichess (unless it asks for a rest), and keep a real answer — in
+/// memory and in the database.
+async fn fetch_lichess(fen: &str, zobrist: i64) -> LichessEval {
+    let s = shared();
     // Resting after a 429: not asked, or the rest would only grow.
     if let Some(secs) = lichess_resting() {
-        return LichessEval { status: "ratelimited".into(), depth: 0, knodes: 0, lines: vec![], retry_in: Some(secs) };
+        return LichessEval { status: "ratelimited".into(), depth: 0, knodes: 0, lines: vec![], retry_in: Some(secs), fetched: None };
     }
     throttle(&s.lichess_gate, LICHESS_MIN_GAP).await;
     let eval = match s
@@ -491,12 +643,12 @@ pub async fn query_lichess(fen: &str, zobrist: i64, refresh: bool) -> LichessEva
     {
         // 404 = genuinely not in Lichess's cloud — a real answer, safe to cache.
         Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
-            LichessEval { status: "unknown".into(), depth: 0, knodes: 0, lines: vec![], retry_in: None }
+            LichessEval { status: "unknown".into(), depth: 0, knodes: 0, lines: vec![], retry_in: None, fetched: None }
         }
         // 200 with a parseable body = a real eval.
         Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
             Ok(v) => parse_lichess(&v),
-            Err(_) => return LichessEval { status: "offline".into(), depth: 0, knodes: 0, lines: vec![], retry_in: None },
+            Err(_) => return LichessEval { status: "offline".into(), depth: 0, knodes: 0, lines: vec![], retry_in: None, fetched: None },
         },
         // 429: Lichess limits us. Rest as long as it says (Retry-After), else
         // a minute, and say so — not cached, like any transient answer.
@@ -505,19 +657,16 @@ pub async fn query_lichess(fen: &str, zobrist: i64, refresh: bool) -> LichessEva
                 .and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok())
                 .map(Duration::from_secs).unwrap_or(LICHESS_BACKOFF);
             *LICHESS_BLOCKED.lock().unwrap() = Some(Instant::now() + wait);
-            return LichessEval { status: "ratelimited".into(), depth: 0, knodes: 0, lines: vec![], retry_in: Some(wait.as_secs().max(1)) };
+            return LichessEval { status: "ratelimited".into(), depth: 0, knodes: 0, lines: vec![], retry_in: Some(wait.as_secs().max(1)), fetched: None };
         }
         // 5xx / network — transient. Do NOT cache: caching it as "unknown"
         // would wrongly show even popular positions (incl. the start position)
         // as "not in Lichess's cloud" for a whole day.
-        _ => return LichessEval { status: "offline".into(), depth: 0, knodes: 0, lines: vec![], retry_in: None },
+        _ => return LichessEval { status: "offline".into(), depth: 0, knodes: 0, lines: vec![], retry_in: None, fetched: None },
     };
 
-    let mut cache = s.lichess_cache.lock().unwrap();
-    if cache.len() >= CACHE_CAP {
-        cache.clear();
-    }
-    cache.insert(zobrist, (Instant::now(), eval.clone()));
+    remember(&s.lichess_cache, zobrist, eval.clone());
+    kept_put("lichess", zobrist, &eval);
     eval
 }
 
@@ -552,6 +701,7 @@ fn parse_lichess(v: &serde_json::Value) -> LichessEval {
         knodes: v.get("knodes").and_then(|k| k.as_i64()).unwrap_or(0),
         lines,
         retry_in: None,
+        fetched: None,
     }
 }
 
@@ -622,17 +772,17 @@ pub fn beyond_cap(fen: &str) -> bool {
 /// What the endpoints answer instead of asking, past the cap.
 /// What the endpoints answer for a service switched off.
 pub fn disabled_chessdb() -> CloudEval {
-    CloudEval { status: "disabled".to_string(), moves: Vec::new() }
+    CloudEval { status: "disabled".to_string(), moves: Vec::new(), fetched: None }
 }
 pub fn disabled_lichess() -> LichessEval {
-    LichessEval { status: "disabled".to_string(), depth: 0, knodes: 0, lines: Vec::new(), retry_in: None }
+    LichessEval { status: "disabled".to_string(), depth: 0, knodes: 0, lines: Vec::new(), retry_in: None, fetched: None }
 }
 
 pub fn capped_chessdb() -> CloudEval {
-    CloudEval { status: "capped".to_string(), moves: Vec::new() }
+    CloudEval { status: "capped".to_string(), moves: Vec::new(), fetched: None }
 }
 pub fn capped_lichess() -> LichessEval {
-    LichessEval { status: "capped".to_string(), depth: 0, knodes: 0, lines: Vec::new(), retry_in: None }
+    LichessEval { status: "capped".to_string(), depth: 0, knodes: 0, lines: Vec::new(), retry_in: None, fetched: None }
 }
 
 #[cfg(test)]
