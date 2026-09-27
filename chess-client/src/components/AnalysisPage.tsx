@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { GameSummary, MoveStats } from "../types";
 import { LoadedGame } from "../lib/useGamePgn";
@@ -56,6 +56,16 @@ interface Props {
   onMove: (key: string, delta: -1 | 1) => void;
   /** How many games the rail holds at most. */
   capacity: number;
+  /** A panel in the rail's place (#327): the Repertoire page puts its books
+   *  and chapters there and shows one chapter — no rail, no rail commands. */
+  leadingPanel?: ReactNode;
+  leadingPanelSize?: string;
+  leadingPanelMax?: string;
+  /** Where the panel sizes are remembered; a host with a leading panel keeps
+   *  a layout of its own. */
+  layoutId?: string;
+  /** What to show with nothing open. */
+  emptyState?: ReactNode;
   /** Open a related game as a new tab. Resolves to 0, or to how many did not
    *  fit (the rail is full) — then it stayed closed. */
   onOpenGame: (games: GameSummary[]) => Promise<number>;
@@ -72,7 +82,10 @@ const STARTPOS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 type RightTab = "reference" | "related" | "lines";
 const TAB_KEY = "analysisRightTab";
 
-export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onCloseMany, onMove, capacity, onOpenGame, onTabState, onGameMutated }: Props) {
+export default function AnalysisPage({
+  tabs, activeKey, onActivate, onClose, onCloseMany, onMove, capacity, onOpenGame, onTabState, onGameMutated,
+  leadingPanel, leadingPanelSize = "18", leadingPanelMax = "34", layoutId = "analysis-main", emptyState,
+}: Props) {
   const active = tabs.find((t) => t.key === activeKey) ?? null;
   const full = tabs.length >= capacity;
 
@@ -143,7 +156,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
   // Only with more than one game open: for one, the game's own entries say
   // the same, and its ✕ closes it.
   const railExtras: MenuEntry[] = (() => {
-    if (tabs.length < 2) return [];
+    if (tabs.length < 2 || leadingPanel) return [];
     const n = pickedNow.length;
     const subset = n > 0 && n < tabs.length;
     return [
@@ -242,7 +255,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
   // left the move text alone.
   const rz = useNeighbourResize(["rail", "board", "moves", "side"]);
   const [moveHost, setMoveHost] = useState<HTMLDivElement | null>(null);
-  const saved = useDefaultLayout({ id: "analysis-main", storage: localStorage });
+  const saved = useDefaultLayout({ id: layoutId, storage: localStorage });
   const sideCol = useDefaultLayout({ id: "analysis-side", storage: localStorage });
 
   // A related game being previewed in place — picking a row no longer opens a
@@ -313,8 +326,11 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
 
   if (tabs.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md px-6 text-center">
-        Open a game from the Games or Players page ("Open in Analysis") to start analysing.
+      <div className="flex flex-1 overflow-hidden p-1.5 gap-1.5">
+        {leadingPanel && <div className="w-80 shrink-0 min-h-0">{leadingPanel}</div>}
+        <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md px-6 text-center">
+          {emptyState ?? 'Open a game from the Games or Players page ("Open in Analysis") to start analysing.'}
+        </div>
       </div>
     );
   }
@@ -327,10 +343,11 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
       {/* A — open-game tabs (mini-board previews) */}
       <Panel
         id="rail"
-        defaultSize="9"
+        defaultSize={leadingPanel ? leadingPanelSize : "9"}
         minSize={rz.floor("rail") ?? "5"}
-        maxSize="16"
+        maxSize={leadingPanel ? leadingPanelMax : "16"}
       >
+      {leadingPanel ?? (
       <div className="h-full flex flex-col min-h-0">
         {/* The rail is also the export list: what is open, in this order, is
             what "Print all games" writes (from the More menu above the
@@ -382,6 +399,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
         })}
       </div>
       </div>
+      )}
       </Panel>
 
       <Separator className={vHandle} {...rz.separator(0)} />

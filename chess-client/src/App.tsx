@@ -430,23 +430,6 @@ export default function App() {
     }
     return 0;
   }
-  /** Open a repertoire chapter (#327) in the Analysis page, as a tab beside
-   *  the games: the board turned to the book's colour, the chapter's names
-   *  in place of the players'. */
-  async function openChapterInAnalysis(chapterId: number) {
-    const key = `c${chapterId}`;
-    setMode("analysis");
-    if (analysisTabsRef.current.some((t) => t.key === key)) { setActiveAnalysisKey(key); return; }
-    if (analysisTabsRef.current.length >= ANALYSIS_TAB_CAP) return;
-    try {
-      const tab = await loadChapterTab(chapterId);
-      setAnalysisTabs((prev) => (prev.some((p) => p.key === key) ? prev : [...prev, tab]));
-      setActiveAnalysisKey(key);
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error(`Could not open chapter ${chapterId}: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
   /** Move a tab one place up or down the rail — the order games print in. */
   function moveAnalysisTab(key: string, delta: -1 | 1) {
     setAnalysisTabs((prev) => {
@@ -1159,7 +1142,7 @@ export default function App() {
           analysisCapacity={ANALYSIS_TAB_CAP}
         />
       ) : mode === "repertoire" ? (
-        <RepertoirePage onOpenChapter={(id) => void openChapterInAnalysis(id)} />
+        <RepertoirePage onOpenGame={openManyInAnalysis} />
       ) : mode === "analysis" ? (
         <AnalysisPage
           tabs={analysisTabs}

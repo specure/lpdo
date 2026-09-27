@@ -4,24 +4,30 @@ The **Repertoire** page organises the openings you play as **books** and
 **chapters**, loosely the shape of an opening course: a book for a course or a
 topic ("Najdorf for Black", with the colour you play it from and, if you like,
 a link to the course), chapters for its sections, each chapter one tree of
-lines with variations and comments. The design is in
+lines with variations and comments. The books and chapters are in a panel on
+the left (« folds it away, as the Players page's list), and the chapter being
+studied is on the right, with the Analysis page's own layout — board, move
+list, Reference, Games and Lines, the engines — so switching chapters, or
+books, stays on the page. The design is in
 [design/opening-repertoire.md](design/opening-repertoire.md); this is how it
 is used.
 
 ## Books and chapters
 
-**New book** on the Repertoire page asks for a name and the colour. A chapter
-is added in one of three ways:
+**+ New** beside *Books* asks for a name and the colour. A chapter is added
+to the selected book in one of three ways, with the buttons under its
+chapters:
 
-- **Add empty**, then open it and play the lines in with the editor;
+- **+ Empty**, then play the lines in with *Edit lines…*;
 - **Paste PGN…** — a PGN with several games becomes several chapters, named
   from their headers (a Lichess study exports its chapters this way;
   otherwise the players, or the event);
-- **Import PGN file…** — the same from a file.
+- **Import…** — the same from a PGN file.
 
-Chapters are renamed, reordered (▲ ▼), exported as PGN and deleted in their
-row; **Export PGN…** on the book saves all its chapters as one file. Every
-chapter starts from the initial position.
+A chapter's ⋯ renames, reorders (▲ ▼), exports and deletes it; **Book…**
+above the chapters renames the book, sets its colour and link, exports all
+its chapters as one PGN, or deletes it. Every chapter starts from the initial
+position.
 
 ## Active chapters, and switching lines off
 
@@ -39,9 +45,8 @@ differently from another book. The switch is kept in the chapter's PGN (a
 
 ## Studying a chapter
 
-A chapter opens in the **Analysis** page as a tab beside the games, the board
-turned to the book's colour. Everything the page offers for a game is there
-for the line: the **Reference** tab with how often each move is played from
+Click a chapter and it is on the board, turned to the book's colour.
+Everything the Analysis page offers for a game is there for the line: the **Reference** tab with how often each move is played from
 the position, the **Engine** panel with the evaluation and lines, the move
 list with the chapter's variations and comments (a ⋔ marks a move where
 alternatives branch off).
