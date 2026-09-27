@@ -191,14 +191,18 @@ engine once the main search has settled (Stockfish from depth 16, Lc0 from
 it has got, and "…" while it waits for a free helper.
 
 - **Stockfish** (on by default): each helper is a single-threaded Stockfish
-  that searches every reply of one candidate to a set depth (20). By default
-  there are 5 — as many as the lines shown, so all are counted at once — and the
-  main search gets the physical cores less these: 11 + 5 on a 16-core machine.
-  The helpers share 320 MB of hash, out of the same memory budget. A reply is
-  strong within 0.10 pawns of the best (chessdb uses 0.05). One candidate takes
-  about 10–15 s; on one machine, four candidates took 15 s with four
-  single-threaded helpers, against 41 s one after another with one four-thread
-  helper (Stockfish's threads gain little on such short searches).
+  that searches the position after one candidate — its best five replies —
+  to a set depth (24). By default there are 5 helpers, as many as the lines
+  shown, so all are counted at once, and the main search gets the physical
+  cores less these: 11 + 5 on a 16-core machine. The helpers share 320 MB of
+  hash, out of the same memory budget. A reply is strong within 0.10 pawns of
+  the best (chessdb uses 0.05). Five replies are enough for what the column is
+  for — the moves with only one or two good answers: the count is exact up to
+  four, and **5+** (five or more) beyond. A candidate takes about 5 s, where
+  every reply to depth 20 took 11–13 s. The helper's lines are kept like any
+  result of the position (see *Kept results*), so the counts outlive a
+  restart, and a new "Strong within" applies to them at once, without
+  counting again.
 - **Lc0** (off by default: its helper loads a second copy of the network onto
   the card): one helper runs a short search per candidate (50,000 nodes, well
   under a second on an RTX 4090) counting the replies it explored within 1% of

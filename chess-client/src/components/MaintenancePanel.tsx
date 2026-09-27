@@ -270,7 +270,7 @@ function RepliesSettings({ kind, settings, busy, onSave }: {
   const on = !!settings.replies;
   const [threads, setThreads] = useState(String(settings.helper_threads ?? 5));
   const [hash, setHash] = useState(String(settings.helper_hash_mb ?? 320));
-  const [depth, setDepth] = useState(String(settings.helper_depth ?? 20));
+  const [depth, setDepth] = useState(String(settings.helper_depth ?? 24));
   const [pawns, setPawns] = useState(((settings.strong_cp ?? 10) / 100).toFixed(2));
   const [nodes, setNodes] = useState(String(settings.helper_nodes ?? 50000));
   const [pct, setPct] = useState(String(settings.strong_pct ?? 1));
