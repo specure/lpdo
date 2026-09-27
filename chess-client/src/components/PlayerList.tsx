@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PlayerInfo } from "../types";
-import { useShowEngineGames } from "../lib/engineGames";
 
 interface Props {
   selectedId: number | null;
@@ -86,11 +85,6 @@ export default function PlayerList({ selectedId, selectedIds, onSelect, onSelect
   // (the debounce effect keys off it); a change re-fetches via its own effect.
   const collectionIdRef = useRef(collectionId);
   collectionIdRef.current = collectionId;
-  // Engines left out unless engine games are counted (#296) — the switch in
-  // the filters, shared with the Games page and Analysis.
-  const [showEngines] = useShowEngineGames();
-  const showEnginesRef = useRef(showEngines);
-  showEnginesRef.current = showEngines;
 
   const search = useCallback((name: string) => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -108,7 +102,6 @@ export default function PlayerList({ selectedId, selectedIds, onSelect, onSelect
 
     const params = new URLSearchParams({ name: name.trim() });
     if (collectionIdRef.current != null) params.set("collection_id", String(collectionIdRef.current));
-    if (!showEnginesRef.current) params.set("exclude_engines", "true");
     fetch(`/api/players?${params}`, { signal: abortRef.current.signal })
       .then((res) => {
         if (!res.ok) throw new Error(`Server error ${res.status}`);
@@ -143,7 +136,7 @@ export default function PlayerList({ selectedId, selectedIds, onSelect, onSelect
     if (collFirstRef.current) { collFirstRef.current = false; return; }
     if (query.trim().length >= 2) search(query);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [collectionId, showEngines]);
+  }, [collectionId]);
 
   return (
     <div className="flex flex-col h-full bg-surface">

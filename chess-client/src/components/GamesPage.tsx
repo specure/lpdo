@@ -544,14 +544,14 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
               {playerScoped ? (
                 <div className="px-3 py-2 rounded-sm bg-surface-container text-body-md text-on-surface truncate">{p1?.name ?? "—"}</div>
               ) : (
-                <PlayerPicker label="" value={p1} onPick={setP1} excludeId={p2?.id} excludeEngines={!showEngines} />
+                <PlayerPicker label="" value={p1} onPick={setP1} excludeId={p2?.id} />
               )}
             </div>
             <div>
               <div className="text-label-md text-on-surface-variant mb-1.5 flex items-center justify-between">
                 <span>{playerScoped ? "Opponent" : "Player 2"}</span> {colorRow(p2Color, setP2C)}
               </div>
-              <PlayerPicker label="" value={p2} onPick={setP2} excludeId={p1?.id} excludeEngines={!showEngines} />
+              <PlayerPicker label="" value={p2} onPick={setP2} excludeId={p1?.id} />
             </div>
             <input type="text" value={eventInput} onChange={(e) => setEventInput(e.target.value)} placeholder="Event…" className={`w-full ${textInput}`} />
             <div className="flex gap-2">
@@ -576,7 +576,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
             {/* Engine games (#296) — the same switch as on Analysis and the
                 Players list: off, they count nowhere. */}
             <label className="flex items-center gap-2 text-body-sm text-on-surface cursor-pointer"
-              title="TCEC and the like, games rated above any human, and BOT-titled players. Off, they are left out of the games, the move statistics and the players list here and on Analysis.">
+              title="TCEC and the like, games rated above any human, and BOT-titled players. Off, they are left out of the games and the move statistics, here and on Analysis.">
               <input type="checkbox" checked={showEngines} onChange={(e) => setShowEngines(e.target.checked)} className="accent-primary" />
               <span>Include engine games</span>
             </label>

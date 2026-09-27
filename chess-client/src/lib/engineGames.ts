@@ -1,9 +1,8 @@
 // Whether engine games count (#296): TCEC and the like, games rated above
 // any human, BOT-titled players. One setting on this computer for every page
-// that lists games or players — Analysis (Reference, Games), the Games page
-// (its explorer and list) and the Players page (its list of players too) —
-// kept in step between them while they are open. Off by default: engine
-// games drown out the human ones.
+// that lists games — Analysis (Reference, Games) and the Games page (its
+// explorer and list, also on the Players page) — kept in step between them
+// while they are open. Off by default: engine games drown out the human ones.
 
 import { useEffect, useState } from "react";
 

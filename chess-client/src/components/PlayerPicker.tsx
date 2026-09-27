@@ -9,15 +9,12 @@ export default function PlayerPicker({
   value,
   onPick,
   excludeId,
-  excludeEngines = false,
 }: {
   label: string;
   value: PlayerInfo | null;
   onPick: (p: PlayerInfo | null) => void;
   /** Hide this player from results (e.g. the other side of the merge). */
   excludeId?: number;
-  /** Hide engines — players whose every game is an engine game (#296). */
-  excludeEngines?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<PlayerInfo[]>([]);
@@ -34,7 +31,7 @@ export default function PlayerPicker({
     abortRef.current?.abort();
     abortRef.current = new AbortController();
     const t = setTimeout(() => {
-      fetch(`/api/players?name=${encodeURIComponent(q)}${excludeEngines ? "&exclude_engines=true" : ""}`, { signal: abortRef.current!.signal })
+      fetch(`/api/players?name=${encodeURIComponent(q)}`, { signal: abortRef.current!.signal })
         .then((r) => (r.ok ? (r.json() as Promise<PlayerInfo[]>) : []))
         .then((ps) => {
           setResults(ps.filter((p) => p.id !== excludeId));
@@ -43,7 +40,7 @@ export default function PlayerPicker({
         .catch(() => {});
     }, 200);
     return () => clearTimeout(t);
-  }, [query, value, excludeId, excludeEngines]);
+  }, [query, value, excludeId]);
 
   if (value) {
     return (
