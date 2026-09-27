@@ -1258,7 +1258,7 @@ async fn cloud_eval_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<crate::cloud_eval::CloudEval> {
     let zobrist = fen_zobrist(&q.fen)?;
-    if q.cached_only { return Ok(Json(crate::cloud_eval::peek(zobrist))); }
+    if q.cached_only { return Ok(Json(crate::cloud_eval::peek(zobrist).await)); }
     if !crate::cloud_eval::settings().chessdb { return Ok(Json(crate::cloud_eval::disabled_chessdb())); }
     if crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(crate::cloud_eval::capped_chessdb())); }
     Ok(Json(crate::cloud_eval::query(&q.fen, zobrist, q.refresh).await))
@@ -1270,7 +1270,7 @@ async fn cloud_eval_lines_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<Vec<crate::cloud_eval::MoveLine>> {
     let zobrist = fen_zobrist(&q.fen)?;
-    if q.cached_only { return Ok(Json(crate::cloud_eval::peek_lines(zobrist))); }
+    if q.cached_only { return Ok(Json(crate::cloud_eval::peek_lines(zobrist).await)); }
     if !crate::cloud_eval::settings().chessdb || crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(Vec::new())); }
     Ok(Json(crate::cloud_eval::query_lines(&q.fen, zobrist, q.refresh).await))
 }
@@ -1288,7 +1288,7 @@ async fn lichess_eval_handler(
     Query(q): Query<CloudEvalQuery>,
 ) -> ApiResult<crate::cloud_eval::LichessEval> {
     let zobrist = fen_zobrist(&q.fen)?;
-    if q.cached_only { return Ok(Json(crate::cloud_eval::peek_lichess(zobrist))); }
+    if q.cached_only { return Ok(Json(crate::cloud_eval::peek_lichess(zobrist).await)); }
     if !crate::cloud_eval::settings().lichess { return Ok(Json(crate::cloud_eval::disabled_lichess())); }
     if crate::cloud_eval::beyond_cap(&q.fen) { return Ok(Json(crate::cloud_eval::capped_lichess())); }
     Ok(Json(crate::cloud_eval::query_lichess(&q.fen, zobrist, q.refresh).await))
@@ -1312,6 +1312,26 @@ async fn cloud_watch_add_handler(
         return Err((StatusCode::CONFLICT, "chessdb is switched off, or the position is past the move it is asked up to".to_string()));
     }
     Ok(Json(crate::cloud_eval::add_watch(&q.fen, zobrist, &q.label).await))
+}
+
+/// The cloud engines' answers kept in the database, per service.
+async fn cloud_kept_handler() -> ApiResult<Vec<crate::cloud_eval::KeptService>> {
+    crate::cloud_eval::kept_list().await.map(Json).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
+#[derive(Deserialize)]
+struct CloudKeptDelete {
+    /// "chessdb" or "lichess".
+    service: String,
+}
+
+/// Delete one service's kept answers.
+async fn cloud_kept_delete_handler(Query(q): Query<CloudKeptDelete>) -> ApiResult<serde_json::Value> {
+    if q.service != "chessdb" && q.service != "lichess" {
+        return Err((StatusCode::BAD_REQUEST, "service is chessdb or lichess".to_string()));
+    }
+    let n = crate::cloud_eval::kept_delete(&q.service).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(serde_json::json!({ "deleted": n })))
 }
 
 /// How far into a game the cloud engines are asked.
@@ -2620,6 +2640,7 @@ pub async fn run(
     let lc0 = crate::engine::Engine::new_kind(db_path.parent().unwrap_or(std::path::Path::new(".")), crate::engine::Kind::Lc0);
     // The engines keep their results in the database (engine_evals).
     engine.set_store(crate::engine::EvalStore::new(reads.clone()));
+    crate::cloud_eval::set_store(reads.clone());
     lc0.set_store(crate::engine::EvalStore::new(reads.clone()));
     let state = AppState { reads, writer, jobs, db_path, setup, engine, lc0 };
 
@@ -2677,6 +2698,7 @@ pub async fn run(
         .route("/cloud-eval/queue",                    post(cloud_eval_queue_handler))
         .route("/cloud-eval/watch",                    post(cloud_watch_add_handler).delete(cloud_watch_delete_handler))
         .route("/cloud-eval/watches",                  get(cloud_watches_handler))
+        .route("/cloud-eval/kept",                     get(cloud_kept_handler).delete(cloud_kept_delete_handler))
         .route("/cloud-eval/settings",                 get(cloud_settings_handler).put(cloud_settings_put_handler))
         .route("/lichess-eval",                        get(lichess_eval_handler))
         // Long-running mutation jobs with streamed progress.

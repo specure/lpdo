@@ -305,6 +305,18 @@ pub fn init(conn: &Connection) -> Result<()> {
     // identity ("Stockfish 19", Lc0 with its network); `kind` finds another
     // version's result while the one in use has none. Lines as JSON, as the
     // Engine panel gets them (White-relative).
+    // The cloud engines' answers (chessdb.cn's moves and lines, Lichess's
+    // evaluation) per position, by the Zobrist hash the lookups use; the
+    // body as JSON, as the Engine panel gets it.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS cloud_evals (
+            service VARCHAR NOT NULL,
+            zobrist BIGINT NOT NULL,
+            body VARCHAR NOT NULL,
+            fetched BIGINT NOT NULL,
+            PRIMARY KEY (service, zobrist)
+        );",
+    )?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS engine_evals (
             engine VARCHAR NOT NULL,

@@ -1022,17 +1022,29 @@ function EngineResultsSection() {
   const [error, setError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The local engines' results and the cloud engines' answers, one list.
   const load = () => {
-    fetch(apiUrl("/engine/results"))
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
-      .then((d: StoredEngine[]) => { setRows(d); setError(null); })
+    Promise.all([
+      fetch(apiUrl("/engine/results")).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`)))),
+      fetch(apiUrl("/cloud-eval/kept")).then((r) => (r.ok ? r.json() : [])).catch(() => []),
+    ])
+      .then(([engines, cloud]: [StoredEngine[], { service: string; positions: number; bytes: number; updated: number | null }[]]) => {
+        setRows([
+          ...engines,
+          ...cloud.map((c) => ({ engine: c.service === "lichess" ? "Lichess" : "chessdb.cn", kind: `cloud:${c.service}`, positions: c.positions, bytes: c.bytes, updated: c.updated })),
+        ]);
+        setError(null);
+      })
       .catch((e) => setError(String(e)));
   };
   useEffect(load, []);
-  async function remove(engine: string) {
+  async function remove(row: StoredEngine) {
     setBusy(true);
     try {
-      const r = await fetch(apiUrl(`/engine/results?engine=${encodeURIComponent(engine)}`), { method: "DELETE" });
+      const url = row.kind.startsWith("cloud:")
+        ? `/cloud-eval/kept?service=${row.kind.slice(6)}`
+        : `/engine/results?engine=${encodeURIComponent(row.engine)}`;
+      const r = await fetch(apiUrl(url), { method: "DELETE" });
       if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
       setConfirm(null);
       load();
@@ -1050,7 +1062,9 @@ function EngineResultsSection() {
         Stockfish's and Lc0's furthest result for each position they analysed, kept in the database so a
         restart loses nothing — per engine version. After an upgrade the older version's result shows,
         greyed and labelled, until the new one has its own; delete an old version's results here when they
-        are no longer wanted.
+        are no longer wanted. chessdb.cn's and Lichess's answers are kept too, so a position is not asked
+        again: trusted for a week (chessdb) or a month (Lichess), then shown with their date while fetched
+        afresh.
       </p>
       {rows && rows.length === 0 && <p className="text-body-sm text-on-surface-variant">None yet.</p>}
       {rows && rows.length > 0 && (
@@ -1074,7 +1088,7 @@ function EngineResultsSection() {
                 <td className="py-1 pl-2 text-right whitespace-nowrap">
                   {confirm === r.engine ? (
                     <>
-                      <button onClick={() => void remove(r.engine)} disabled={busy} className="h-7 px-3 rounded-full text-label-md text-error hover:bg-error/8 disabled:opacity-50">Delete {r.positions.toLocaleString()}</button>
+                      <button onClick={() => void remove(r)} disabled={busy} className="h-7 px-3 rounded-full text-label-md text-error hover:bg-error/8 disabled:opacity-50">Delete {r.positions.toLocaleString()}</button>
                       <button onClick={() => setConfirm(null)} className="h-7 px-3 rounded-full text-label-md text-on-surface-variant hover:bg-on-surface/8">Cancel</button>
                     </>
                   ) : (
