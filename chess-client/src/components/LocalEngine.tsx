@@ -129,7 +129,8 @@ export default function LocalEngine({
       es.onmessage = (ev) => {
         const s = JSON.parse(ev.data) as Snapshot;
         if (!s.cached) setLive({ depth: s.depth, nodes: s.nodes });
-        setSnap((prev) => (prev?.cached && !s.cached && s.depth <= prev.depth ? prev : s));
+        // A remembered result stays until the new search goes further.
+        setSnap((prev) => (prev?.cached && !s.cached && !deeper(kind, s, prev) ? prev : s));
         if (s.done && !s.cached) { es.close(); setRunning(false); }
       };
       es.onerror = () => {
@@ -349,6 +350,16 @@ export default function LocalEngine({
       </div>
     </div>
   );
+}
+
+/** Whether `next` goes further than `prev` — the server's rule for what it
+ *  remembers: Lc0 by nodes (its "depth" is only the average length of its
+ *  lines, and can fall as the search grows), Stockfish by depth and then by
+ *  nodes; never with fewer lines. */
+function deeper(kind: EngineKind, next: Snapshot, prev: Snapshot): boolean {
+  if (next.lines.length < prev.lines.length) return false;
+  if (kind === "lc0") return next.nodes > prev.nodes;
+  return next.depth > prev.depth || (next.depth === prev.depth && next.nodes > prev.nodes);
 }
 
 /** The position after `uci` is played from `fen`, or null. */

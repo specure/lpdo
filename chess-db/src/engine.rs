@@ -429,11 +429,12 @@ impl Remembered {
     fn get(&self, key: &str) -> Option<Snapshot> {
         self.by_key.get(key).cloned()
     }
-    /// Keep `s` if it is deeper than what is remembered for `key`.
-    fn offer(&mut self, key: &str, s: &Snapshot) {
+    /// Keep `s` if it is deeper than what is remembered for `key` (see
+    /// `deeper`).
+    fn offer(&mut self, key: &str, s: &Snapshot, kind: Kind) {
         if s.lines.is_empty() { return; }
         match self.by_key.get(key) {
-            Some(old) if old.depth > s.depth || (old.depth == s.depth && old.lines.len() >= s.lines.len()) => return,
+            Some(old) if !deeper(kind, s, old) => return,
             Some(_) => {}
             None => {
                 self.order.push_back(key.to_string());
@@ -446,6 +447,18 @@ impl Remembered {
         keep.cached = true;
         keep.done = true;
         self.by_key.insert(key.to_string(), keep);
+    }
+}
+
+/// Whether `new` goes further than `old`: for Lc0 by nodes (its "depth" is
+/// only the average length of its lines, and can fall as the search grows);
+/// for Stockfish by depth, then — at the same depth — by nodes. Never with
+/// fewer lines.
+fn deeper(kind: Kind, new: &Snapshot, old: &Snapshot) -> bool {
+    if new.lines.len() < old.lines.len() { return false; }
+    match kind {
+        Kind::Lc0 => new.nodes > old.nodes,
+        Kind::Stockfish => new.depth > old.depth || (new.depth == old.depth && new.nodes > old.nodes),
     }
 }
 
@@ -814,7 +827,7 @@ impl Engine {
                 let idle = self.idle.clone();
                 let tx = self.tx.clone();
                 let remembered = self.remembered.clone();
-                tokio::spawn(read_engine(stdout, search, idle, tx, remembered));
+                tokio::spawn(read_engine(stdout, search, idle, tx, remembered, self.kind));
                 *running = Some(Running { child, stdin, path, name });
                 *self.last_error.lock().await = None;
                 Ok(())
@@ -1455,6 +1468,7 @@ async fn read_engine(
     idle: Arc<Notify>,
     tx: broadcast::Sender<Snapshot>,
     remembered: Arc<std::sync::Mutex<Remembered>>,
+    kind: Kind,
 ) {
     let mut line = String::new();
     loop {
@@ -1499,7 +1513,7 @@ async fn read_engine(
                 done: !s.searching,
                 cached: false,
             };
-            remembered.lock().unwrap().offer(&s.key, &snap);
+            remembered.lock().unwrap().offer(&s.key, &snap, kind);
             snap
         };
         let _ = tx.send(snapshot);
