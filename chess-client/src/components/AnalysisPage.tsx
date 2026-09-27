@@ -16,6 +16,9 @@ import type { EngineHistory } from "../api";
 import PrintDialog, { ExportableGame } from "./games/PrintDialog";
 import { useShowEngineGames, engineParam as engineParamFor } from "../lib/engineGames";
 import { ArrowToggles, dbArrows, engineArrows, useArrowToggles, type CombinedMove } from "./HintArrows";
+import { saveChapterMoves, type ChapterDocument } from "../lib/repertoire";
+import LinesPanel from "./repertoire/LinesPanel";
+import type { ChapterLine } from "../lib/repertoireLines";
 
 // The Analysis board (#220): the editable, multi-game workbench. Several games
 // open at once as mini-board tabs (A). The active game is edited in a full
@@ -38,6 +41,9 @@ export interface AnalysisTab {
   /** Board orientation for this game — remembered per tab, so flipping to
    *  Black's view survives tab switches, leaving the page, and restarts. */
   flipped: boolean;
+  /** A repertoire chapter (#327) rather than a game; `game` then carries
+   *  its names (id: minus the chapter's) and `loaded` its PGN. */
+  document?: ChapterDocument;
 }
 
 interface Props {
@@ -63,7 +69,7 @@ const vHandle = "w-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-st
 const hHandle = "h-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-state=drag]:bg-primary/50 transition-colors";
 const STARTPOS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-type RightTab = "reference" | "related";
+type RightTab = "reference" | "related" | "lines";
 const TAB_KEY = "analysisRightTab";
 
 export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onCloseMany, onMove, capacity, onOpenGame, onTabState, onGameMutated }: Props) {
@@ -109,7 +115,9 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
     setPicked(new Set([key]));
   }
   /** The games a rail-menu command works on, in rail order. */
-  const targets = (scope: "all" | "picked") => (scope === "picked" ? tabs.filter((t) => picked.has(t.key)) : tabs);
+  // Chapters (#327) export from the Repertoire page; print and export here
+  // are the games'.
+  const targets = (scope: "all" | "picked") => (scope === "picked" ? tabs.filter((t) => picked.has(t.key)) : tabs).filter((t) => !t.document);
   async function exportPgn(scope: "all" | "picked") {
     const list = targets(scope);
     try {
@@ -195,9 +203,32 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
   // was a third tab; it now has the panel below, always shown.)
   const [tab, setTab] = useState<RightTab>(() => {
     const saved = localStorage.getItem(TAB_KEY);
-    return saved === "related" ? saved : "reference";
+    return saved === "related" || saved === "lines" ? saved : "reference";
   });
   useEffect(() => { localStorage.setItem(TAB_KEY, tab); }, [tab]);
+  // The Lines tab belongs to a chapter (#327): on a game it falls back.
+  const shownTab: RightTab = tab === "lines" && !active?.document ? "reference" : tab;
+
+  // A repertoire chapter (#327): its lines, the cursor asked for when one is
+  // picked, and "→ at the end of a line goes on to the next".
+  const [chapterVersion, setChapterVersion] = useState(0);
+  const linesRef = useRef<ChapterLine[]>([]);
+  const [cursorRequest, setCursorRequest] = useState<{ cursor: CursorPath; seq: number } | null>(null);
+  const requestCursor = useCallback((cursor: CursorPath) => setCursorRequest((r) => ({ cursor, seq: (r?.seq ?? 0) + 1 })), []);
+  const forwardAtEnd = useCallback((): boolean => {
+    const cur = tabsRef.current.find((t) => t.key === activeKey)?.cursor;
+    if (!cur) return false;
+    const key = JSON.stringify(cur.steps);
+    const i = linesRef.current.findIndex((l) => JSON.stringify(l.steps) === key);
+    const next = i >= 0 ? linesRef.current[i + 1] : undefined;
+    if (!next) return false;
+    requestCursor({ steps: next.steps, index: next.branchIndex });
+    return true;
+  }, [activeKey, requestCursor]);
+  const onChapterMutated = useCallback(() => { setChapterVersion((v) => v + 1); onGameMutated?.(); }, [onGameMutated]);
+  const chapterDoc = active?.document
+    ? { ...active.document, save: (movetext: string) => saveChapterMoves(active.document!.id, movetext).then(() => ({ ok: true as const })).catch((e) => ({ ok: false as const, error: String(e) })) }
+    : undefined;
 
   // Engine games (TCEC, via the Lichess broadcasts) drown out the human ones
   // in both panels, so they are hidden unless asked for. Persisted like the tab.
@@ -327,7 +358,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
               <button
                 onClick={(e) => pickTab(t.key, e)}
                 className="w-full aspect-square block"
-                title={`${t.game.white} – ${t.game.black}\nCtrl-click adds it to the selection, Shift-click selects a run`}
+                title={`${t.document ? `${t.document.bookName} › ${t.document.chapterName}` : `${t.game.white} – ${t.game.black}`}\nCtrl-click adds it to the selection, Shift-click selects a run`}
               >
                 <MiniBoard
                   game={t.loaded}
@@ -340,7 +371,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
               </button>
               <div className="flex items-center gap-0.5 px-1 py-1 border-t border-outline/40">
                 <span className={`flex-1 min-w-0 truncate text-label-sm ${on ? "text-on-surface" : "text-on-surface-variant"}`}>
-                  {t.game.white.split(",")[0]} – {t.game.black.split(",")[0]}
+                  {t.document ? `${t.document.chapterName}` : `${t.game.white.split(",")[0]} – ${t.game.black.split(",")[0]}`}
                 </span>
                 <button onClick={() => onMove(t.key, -1)} disabled={i === 0} className={nav} title="Move up">▲</button>
                 <button onClick={() => onMove(t.key, 1)} disabled={i === tabs.length - 1} className={nav} title="Move down">▼</button>
@@ -367,10 +398,13 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
                 initialCursor={active.cursor}
                 flipped={active.flipped}
                 onFlippedChange={handleFlippedChange}
-                onGameMutated={onGameMutated}
+                onGameMutated={active.document ? onChapterMutated : onGameMutated}
                 moveListHost={moveHost}
                 playRequest={playRequest}
                 menuExtras={railExtras}
+                chapter={chapterDoc}
+                cursorRequest={active.document ? cursorRequest : null}
+                onForwardAtEnd={active.document ? forwardAtEnd : undefined}
               />
             )}
           </div>
@@ -404,12 +438,13 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
                     // sit together; the cloud engine is a different question.
                     { key: "reference", label: "Reference" },
                     { key: "related", label: `Games${relatedTotal != null ? ` · ${relatedTotal.toLocaleString()}` : ""}` },
+                    ...(active?.document ? [{ key: "lines" as RightTab, label: "Lines" }] : []),
                   ] as { key: RightTab; label: string }[]).map((t) => (
                     <button
                       key={t.key}
                       onClick={() => setTab(t.key)}
                       className={`h-7 px-3 rounded-full text-label-md transition-colors duration-short3 ease-standard ${
-                        tab === t.key ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12"
+                        shownTab === t.key ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12"
                       }`}
                     >
                       {t.label}
@@ -428,7 +463,15 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
                   </button>
                 </div>
 
-                {tab === "reference" ? (
+                {shownTab === "lines" && active?.document ? (
+                  <LinesPanel
+                    chapterId={active.document.id}
+                    reloadKey={chapterVersion}
+                    cursor={active.cursor}
+                    onPick={requestCursor}
+                    onLines={(ls) => { linesRef.current = ls; }}
+                  />
+                ) : shownTab === "reference" ? (
                   refLoading ? (
                     <div className="p-3 text-center text-on-surface-variant text-body-sm">Loading…</div>
                   ) : refMoves.length === 0 ? (
@@ -560,7 +603,7 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
             {/* The engines: always in view, so it shows whether they run. */}
             <Panel id="side-engine" defaultSize="50" minSize="8">
               <div className={panel}>
-                <CloudEngine fen={effFen} history={history} watchLabel={active ? `${active.game.white} – ${active.game.black}` : "Position"} onPlayLine={playSans} onEngineMoves={setEngineMoves} />
+                <CloudEngine fen={effFen} history={history} watchLabel={active ? (active.document ? active.document.chapterName : `${active.game.white} – ${active.game.black}`) : "Position"} onPlayLine={playSans} onEngineMoves={setEngineMoves} />
               </div>
             </Panel>
           </Group>

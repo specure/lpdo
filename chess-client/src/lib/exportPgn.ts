@@ -51,6 +51,21 @@ export async function savePgnFile(games: PgnExportGame[], pgns: string[]): Promi
   return true;
 }
 
+/** Ask where to save `name`, then write `content` (a repertoire book's or
+ *  chapter's PGN). Returns false when the dialog was cancelled. */
+export async function saveTextFile(name: string, content: string): Promise<boolean> {
+  const lastDir = localStorage.getItem(EXPORT_DIR_KEY) ?? "";
+  const path = await save({
+    defaultPath: lastDir ? `${lastDir}/${name}` : name,
+    filters: [{ name: "PGN", extensions: ["pgn"] }],
+  });
+  if (!path) return false;
+  await invoke("write_pgn_file", { path, content });
+  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  if (cut > 0) localStorage.setItem(EXPORT_DIR_KEY, path.substring(0, cut));
+  return true;
+}
+
 function dateStamp(date: string | null | undefined): string {
   const d = (date ?? "").slice(0, 10).replace(/\?/g, "");
   return d || "games";

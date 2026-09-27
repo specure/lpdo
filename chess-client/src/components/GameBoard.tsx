@@ -32,6 +32,7 @@ import { nagsToString, nagToSymbol } from "../lib/parseAnnotations";
 import AnnotatedMoveList from "./AnnotatedMoveList";
 import { useClickToMove, resolveSquareFromPointer, oneClickPointer } from "./useClickToMove";
 import { HintArrowsOverlay, type HintArrow } from "./HintArrows";
+import type { ChapterDocument } from "../lib/repertoire";
 import {
   Breadcrumb,
   CursorPath,
@@ -394,6 +395,15 @@ interface Props {
    *  Analysis page's, see HintArrows), and their checkboxes, shown above it. */
   hintArrows?: HintArrow[];
   arrowControls?: React.ReactNode;
+  /** A repertoire chapter (#327) instead of a game: its names in place of
+   *  the players', no headers/collections/delete, the moves saved to the
+   *  chapter, the off-switch on moves. */
+  chapter?: ChapterDocument & { save: (movetext: string) => Promise<{ ok: true } | { ok: false; error: string }> };
+  /** Put the cursor here (a line picked in the Lines panel). */
+  cursorRequest?: { cursor: CursorPath; seq: number } | null;
+  /** → at the end of the line: true when the host took it (on to the next
+   *  line). */
+  onForwardAtEnd?: () => boolean;
 }
 
 // Tags shown in the compact view always; rest only appear when expanded.
@@ -546,10 +556,13 @@ async function exportGameToPgn(detail: GameDetail): Promise<void> {
 // progress used by soft-delete / restore.
 function GameActionsBar({
   detail, onDetailChanged, onStartEditMoves, detailsOpen, onToggleDetails, unsavedEdits = false,
-  fen, lineSans, ply, startFen, onExportPdf, onPrint, menuExtras,
+  fen, lineSans, ply, startFen, onExportPdf, onPrint, menuExtras, chapter,
 }: {
   detail: GameDetail;
   menuExtras?: MenuEntry[];
+  /** A repertoire chapter (#327): only editing the moves, and the position
+   *  on Lichess or the clipboard — no headers, collections, delete, print. */
+  chapter?: boolean;
   /** Board position, the moves of the line being viewed and the position they
    *  start from — what the Share menu offers to Lichess and the clipboard. */
   fen: string;
@@ -641,34 +654,36 @@ function GameActionsBar({
       )}
 
       <div className="flex items-center gap-2 flex-wrap">
-        <button
-          onClick={() => setEditing(true)}
-          disabled={progress.running || !detail.pgn}
-          className={tonalBtn}
-          title="Edit PGN headers"
-        >
-          Edit headers…
-        </button>
+        {!chapter && (
+          <button
+            onClick={() => setEditing(true)}
+            disabled={progress.running || !detail.pgn}
+            className={tonalBtn}
+            title="Edit PGN headers"
+          >
+            Edit headers…
+          </button>
+        )}
         <button
           onClick={onStartEditMoves}
           disabled={progress.running || !detail.pgn}
           className={tonalBtn}
           title="Edit moves, variations and annotations"
         >
-          Edit game…
+          {chapter ? "Edit lines…" : "Edit game…"}
         </button>
         {/* Exports, Lichess, the clipboard, and the game's own address when
             its PGN names one — together, so the bar keeps to one row. */}
         <GameMoreMenu
-          pgn={detail.pgn}
+          pgn={chapter ? undefined : detail.pgn}
           fen={fen}
           lineSans={lineSans}
           ply={ply}
           startFen={startFen}
-          gameUrl={gameUrlFromPgn(detail.pgn)}
-          onExportPgn={() => void handleExport()}
-          onExportPdf={onExportPdf}
-          onPrint={onPrint}
+          gameUrl={chapter ? null : gameUrlFromPgn(detail.pgn)}
+          onExportPgn={chapter ? undefined : () => void handleExport()}
+          onExportPdf={chapter ? undefined : onExportPdf}
+          onPrint={chapter ? undefined : onPrint}
           extras={menuExtras}
         />
         {/* Restore stays inline with the other actions — it's a recovery action,
@@ -683,11 +698,13 @@ function GameActionsBar({
             {progress.running ? "Restoring…" : "Restore"}
           </button>
         )}
-        <div className="ml-auto flex items-center gap-2">
-          <DetailsToggleButton detail={detail} open={detailsOpen} onToggle={onToggleDetails} />
-          <span className="text-label-sm text-on-surface-variant font-mono">id {detail.id}</span>
-        </div>
-        {!isDeleted && (
+        {!chapter && (
+          <div className="ml-auto flex items-center gap-2">
+            <DetailsToggleButton detail={detail} open={detailsOpen} onToggle={onToggleDetails} />
+            <span className="text-label-sm text-on-surface-variant font-mono">id {detail.id}</span>
+          </div>
+        )}
+        {!isDeleted && !chapter && (
           <button
             onClick={() => setConfirmingDelete(true)}
             disabled={progress.running || confirmingDelete}
@@ -837,7 +854,15 @@ function DetailsPanel({
   );
 }
 
-export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange, menuExtras, hintArrows = [], arrowControls }: Props) {
+export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange, menuExtras, hintArrows = [], arrowControls, chapter, cursorRequest, onForwardAtEnd }: Props) {
+  // Where the moves go: the chapter's route, or the game's.
+  const saveMoves = useCallback(
+    (id: number, movetext: string) => (chapter ? chapter.save(movetext) : saveMovetextViaServer(id, movetext)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [chapter?.id],
+  );
+  const saveMovesRef = useRef(saveMoves);
+  saveMovesRef.current = saveMoves;
   const [detail, setDetail] = useState<GameDetail | null>(null);
   const [detailReloadKey, setDetailReloadKey] = useState(0);
   // The board's DOM id, unique per mounted GameBoard. react-chessboard finds a
@@ -920,6 +945,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   const pendingFocusIndexRef = useRef<number | null>(null);
   const movesEditor = useMovesEditor({
     gameId: game.id,
+    save: chapter ? chapter.save : undefined,
     onSaved: (focusIndex) => {
       pendingFocusIndexRef.current = focusIndex;
       setDetailReloadKey((k) => k + 1);
@@ -942,15 +968,19 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   }, [movesEditor.active, onEditingChange]);
 
   const prevGameIdRef = useRef<number | null>(null);
+  // The previous document's save, for the autosave when it is switched away.
+  const prevSaveRef = useRef(saveMoves);
   useEffect(() => {
     const prevId = prevGameIdRef.current;
+    const prevSave = prevSaveRef.current;
     prevGameIdRef.current = game.id;
+    prevSaveRef.current = saveMovesRef.current;
     if (prevId === null || prevId === game.id) return;
     const ed = editorRef.current;
     if (ed.active && ed.dirty && ed.game) {
       const movetext = serializeMovetext(ed.game);
       ed.cancel();
-      saveMovetextViaServer(prevId, movetext).then((res) => {
+      prevSave(prevId, movetext).then((res) => {
         if (!res.ok) {
           // Surface enough to debug, without blocking the new game's UI.
           // eslint-disable-next-line no-console
@@ -975,7 +1005,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
       const id = prevGameIdRef.current;
       if (id != null && ed.active && ed.dirty && ed.game) {
         const movetext = serializeMovetext(ed.game);
-        saveMovetextViaServer(id, movetext).then((res) => {
+        prevSaveRef.current(id, movetext).then((res) => {
           if (!res.ok) {
             // eslint-disable-next-line no-console
             console.error(`Autosave on unmount (game ${id}) failed: ${res.error}`);
@@ -1192,12 +1222,18 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
       // Cache-bust on detailReloadKey so the webview always hits a freshly
        // respawned chess-db serve after a writer (set-moves / set-headers /
       // soft-delete) — otherwise a stale 200 would mask the new pgn.
-      fetch(`/api/games/${game.id}?_=${detailReloadKey}`, { cache: "no-store" })
+      // A repertoire chapter (#327) comes from its own route, as a detail
+      // with the chapter's names in place of the players'.
+      const url = chapter ? `/api/repertoire/chapters/${chapter.id}?_=${detailReloadKey}` : `/api/games/${game.id}?_=${detailReloadKey}`;
+      fetch(url, { cache: "no-store" })
         .then((r) => {
           if (!r.ok) throw new Error(`Server error ${r.status}`);
-          return r.json() as Promise<GameDetail>;
+          return r.json() as Promise<GameDetail | { name: string; pgn: string; book: { name: string } }>;
         })
-        .then(applyDetail)
+        .then((d) => applyDetail("book" in d ? {
+          id: game.id, white: d.name, black: d.book.name, white_fide_id: null, black_fide_id: null, white_elo: null, black_elo: null,
+          event: d.book.name, date: null, result: null, eco: null, move_count: null, pgn: d.pgn, visibility: null, collections: [], deleted_at: null,
+        } : d))
         .catch((e) => {
           if (!cancelled) {
             setError(e.message);
@@ -1207,7 +1243,8 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     }
 
     return () => { cancelled = true; };
-  }, [game.id, directPgn, detailReloadKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game.id, directPgn, detailReloadKey, chapter?.id]);
 
   // ── Navigation helpers ──────────────────────────────────────────────────
 
@@ -1301,7 +1338,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   const keepScratch = useCallback(async () => {
     if (!scratch || !annotatedGame) return;
     setKeepingScratch(true);
-    const result = await saveMovetextViaServer(game.id, serializeMovetext(clearScratchMarks(annotatedGame)));
+    const result = await saveMoves(game.id, serializeMovetext(clearScratchMarks(annotatedGame)));
     setKeepingScratch(false);
     if (!result.ok) { setError(`Couldn't keep the line: ${result.error}`); return; }
     // Reload from the server, landing on the move the line ended on — it is a
@@ -1310,7 +1347,35 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     setScratch(null);
     setDetailReloadKey((k) => k + 1);
     onGameMutated?.();
-  }, [scratch, annotatedGame, game.id, cursor, onGameMutated]);
+  }, [scratch, annotatedGame, game.id, cursor, onGameMutated, saveMoves]);
+
+  /** The repertoire's off-switch (#327) on a move of the chapter, in view
+   *  mode: flip it and save, staying where the cursor is. */
+  const toggleOff = useCallback(async (line: MoveNode[], index: number, off: boolean) => {
+    if (!annotatedGame || !chapter) return;
+    const node = line[index - 1];
+    if (!node) return;
+    node.annotations.off = off || undefined;
+    setAnnotatedGame({ ...annotatedGame });
+    const result = await saveMoves(game.id, serializeMovetext(clearScratchMarks(annotatedGame)));
+    if (!result.ok) { setError(`Couldn't save the switch: ${result.error}`); return; }
+    pendingCursorRef.current = cursor;
+    setDetailReloadKey((k) => k + 1);
+    onGameMutated?.();
+  }, [annotatedGame, chapter, game.id, cursor, onGameMutated, saveMoves]);
+
+  // A cursor the host asks for (a line picked in the Lines panel).
+  useEffect(() => {
+    if (!cursorRequest || !annotatedGame || movesEditor.active) return;
+    const r = resolvePathSafe(annotatedGame.mainLine, cursorRequest.cursor.steps);
+    if (!r) return;
+    const index = Math.max(0, Math.min(cursorRequest.cursor.index, r.line.length));
+    if (scratch) { discardScratch({ steps: cursorRequest.cursor.steps, index }); return; }
+    setActiveLine(r.line);
+    setBreadcrumbs(r.breadcrumbs);
+    setActiveIndex(index);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cursorRequest?.seq]);
 
   /** A piece dropped outside edit mode: play it as a scratch move, asking
    *  which piece first when it is a promotion. */
@@ -1645,6 +1710,8 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             return;
           }
         }
+        // At the end of a chapter's line: on to the next line (#327).
+        if (useAnnotated && !scratch && effectiveIndex >= activeLine.length && onForwardAtEnd?.()) return;
         goTo(effectiveIndex + 1);
       }
     };
@@ -1810,16 +1877,28 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
               <span className="ml-1 text-outline font-sans">[Tab]</span>
             </button>
           )}
-          <div className="text-title-md text-on-surface">
-            {detail.white}{detail.white_elo ? ` (${detail.white_elo})` : ""}{" "}
-            <span className="text-on-surface-variant">vs</span>{" "}
-            {detail.black}{detail.black_elo ? ` (${detail.black_elo})` : ""}
-          </div>
-          <div className="text-body-sm text-on-surface-variant mt-0.5 flex gap-2 items-center">
-            {detail.event && <span>{detail.event}</span>}
-            {detail.date && <span>{detail.date.slice(0, 10)}</span>}
-            {detail.result && <span className="text-on-surface">{detail.result === "1/2-1/2" ? "½-½" : detail.result}</span>}
-          </div>
+          {chapter ? (
+            <>
+              <div className="text-title-md text-on-surface">{chapter.chapterName}</div>
+              <div className="text-body-sm text-on-surface-variant mt-0.5 flex gap-2 items-center">
+                <span>{chapter.bookName}</span>
+                <span>· repertoire as {chapter.color === "white" ? "White" : "Black"}</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="text-title-md text-on-surface">
+                {detail.white}{detail.white_elo ? ` (${detail.white_elo})` : ""}{" "}
+                <span className="text-on-surface-variant">vs</span>{" "}
+                {detail.black}{detail.black_elo ? ` (${detail.black_elo})` : ""}
+              </div>
+              <div className="text-body-sm text-on-surface-variant mt-0.5 flex gap-2 items-center">
+                {detail.event && <span>{detail.event}</span>}
+                {detail.date && <span>{detail.date.slice(0, 10)}</span>}
+                {detail.result && <span className="text-on-surface">{detail.result === "1/2-1/2" ? "½-½" : detail.result}</span>}
+              </div>
+            </>
+          )}
         </div>
 
         {/* Action toolbar — always visible (when not in moves-editor mode), so
@@ -1827,6 +1906,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
         {!movesEditor.active && (
           <GameActionsBar
             detail={detail}
+            chapter={!!chapter}
             onExportPdf={() => setPdfOpen("save")}
             onPrint={() => setPdfOpen("print")}
             menuExtras={menuExtras}
@@ -2209,6 +2289,8 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             onExpandSubVariations={handleExpandSubVariations}
             onCollapseSubVariations={handleCollapseSubVariations}
             onToggleAnnotations={() => setShowAnnotations((v) => !v)}
+                      offAware={!!chapter}
+            onToggleOff={chapter && !scratch ? (line, index, off) => void toggleOff(line, index, off) : undefined}
           />
         ) : fens.length > 0 ? (
           <MoveList moves={moves} currentIndex={currentIndex} onSelect={goTo} />

@@ -183,6 +183,9 @@ export async function saveMovetextViaServer(
 
 interface UseMovesEditorOpts {
   gameId: number | null;
+  /** Where the moves go on save, instead of the game's `POST /games/{id}/moves`
+   *  — a repertoire chapter's route (#327). */
+  save?: (movetext: string) => Promise<{ ok: true } | { ok: false; error: string }>;
   /** Fires on successful save. `focusIndex` is the main-line ply the host
    *  should restore the read-only cursor to after reload. */
   onSaved?: (focusIndex: number) => void;
@@ -215,7 +218,7 @@ function nagRank(n: number): number {
   return 2;
 }
 
-export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEditor {
+export function useMovesEditor({ gameId, onSaved, save: saveTarget }: UseMovesEditorOpts): MovesEditor {
   const [active, setActive] = useState(false);
   const [game, setGame] = useState<AnnotatedGame | null>(null);
   const [activeLine, setActiveLine] = useState<MoveNode[]>([]);
@@ -711,7 +714,7 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     setSaving(true);
     setError(null);
     const movetext = serializeMovetext(game);
-    const result = await saveMovetextViaServer(gameId, movetext);
+    const result = await (saveTarget ? saveTarget(movetext) : saveMovetextViaServer(gameId, movetext));
     if (result.ok) {
       const focusIndex = activeLine === game.mainLine ? activeIndex : game.mainLine.length;
       onSaved?.(focusIndex);

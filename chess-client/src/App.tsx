@@ -14,6 +14,27 @@ import LocalGameList from "./components/local/LocalGameList";
 import GamesPage from "./components/GamesPage";
 import PlayerProfileModal from "./components/PlayerProfileModal";
 import MergePlayersDialog from "./components/MergePlayersDialog";
+import RepertoirePage from "./components/RepertoirePage";
+import { getChapter, documentOf, type ChapterDocument } from "./lib/repertoire";
+import { buildPlayback } from "./lib/useGamePgn";
+
+/** An Analysis tab for a repertoire chapter (#327), fetched afresh. */
+async function loadChapterTab(chapterId: number): Promise<AnalysisTab> {
+  const c = await getChapter(chapterId);
+  const game: GameSummary = {
+    id: -c.id, white: c.name, black: c.book.name, white_elo: null, black_elo: null,
+    event: c.book.name, date: null, result: null, eco: null, move_count: null, opening_line: null,
+  };
+  return {
+    key: `c${c.id}`,
+    game,
+    loaded: { id: -c.id, white: c.name, black: c.book.name, result: null, date: null, event: c.book.name, pgn: c.pgn, gameUrl: null, ...buildPlayback(c.pgn) },
+    fen: null,
+    cursor: null,
+    flipped: c.book.color === "black",
+    document: documentOf(c),
+  };
+}
 import AnalysisPage, { AnalysisTab } from "./components/AnalysisPage";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { useNeighbourResize } from "./lib/panelResize";
@@ -409,6 +430,23 @@ export default function App() {
     }
     return 0;
   }
+  /** Open a repertoire chapter (#327) in the Analysis page, as a tab beside
+   *  the games: the board turned to the book's colour, the chapter's names
+   *  in place of the players'. */
+  async function openChapterInAnalysis(chapterId: number) {
+    const key = `c${chapterId}`;
+    setMode("analysis");
+    if (analysisTabsRef.current.some((t) => t.key === key)) { setActiveAnalysisKey(key); return; }
+    if (analysisTabsRef.current.length >= ANALYSIS_TAB_CAP) return;
+    try {
+      const tab = await loadChapterTab(chapterId);
+      setAnalysisTabs((prev) => (prev.some((p) => p.key === key) ? prev : [...prev, tab]));
+      setActiveAnalysisKey(key);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error(`Could not open chapter ${chapterId}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
   /** Move a tab one place up or down the rail — the order games print in. */
   function moveAnalysisTab(key: string, delta: -1 | 1) {
     setAnalysisTabs((prev) => {
@@ -459,11 +497,17 @@ export default function App() {
   const analysisRestored = useRef(false);
   useEffect(() => {
     const raw = localStorage.getItem("analysisTabs");
-    let persisted: { tabs: { key: string; game: GameSummary; fen?: string | null; cursor?: unknown; flipped?: boolean }[]; activeKey: string | null } | null = null;
+    let persisted: { tabs: { key: string; game: GameSummary; fen?: string | null; cursor?: unknown; flipped?: boolean; document?: ChapterDocument }[]; activeKey: string | null } | null = null;
     try { persisted = raw ? JSON.parse(raw) : null; } catch { /* ignore */ }
     if (!persisted?.tabs?.length) { analysisRestored.current = true; return; }
     Promise.all(persisted.tabs.map(async (p) => {
-      try { return { key: p.key, game: p.game, loaded: await loadGamePgn(p.game.id), fen: p.fen ?? null, cursor: readCursor(p.cursor), flipped: p.flipped ?? false } as AnalysisTab; }
+      try {
+        if (p.document) {
+          const tab = await loadChapterTab(p.document.id);
+          return { ...tab, fen: p.fen ?? null, cursor: readCursor(p.cursor), flipped: p.flipped ?? tab.flipped } as AnalysisTab;
+        }
+        return { key: p.key, game: p.game, loaded: await loadGamePgn(p.game.id), fen: p.fen ?? null, cursor: readCursor(p.cursor), flipped: p.flipped ?? false } as AnalysisTab;
+      }
       catch { return null; }
     })).then((results) => {
       const tabs = results.filter((t): t is AnalysisTab => t !== null);
@@ -476,13 +520,13 @@ export default function App() {
   useEffect(() => {
     if (!analysisRestored.current) return;
     localStorage.setItem("analysisTabs", JSON.stringify({
-      tabs: analysisTabs.map((t) => ({ key: t.key, game: t.game, fen: t.fen, cursor: t.cursor, flipped: t.flipped })),
+      tabs: analysisTabs.map((t) => ({ key: t.key, game: t.game, fen: t.fen, cursor: t.cursor, flipped: t.flipped, document: t.document })),
       activeKey: activeAnalysisKey,
     }));
   }, [analysisTabs, activeAnalysisKey]);
   const [showSetup, setShowSetup] = useState(false);
   const [showAddGame, setShowAddGame] = useState(false);
-  const [mode, setMode] = useState<"home" | "players" | "prep" | "games" | "analysis" | "local" | "maintenance">("home");
+  const [mode, setMode] = useState<"home" | "players" | "prep" | "games" | "analysis" | "repertoire" | "local" | "maintenance">("home");
   // When set, focuses the player search input on the next render (used so the
   // Home screen's "Search a player" card can switch tabs and focus in one step).
   const [pendingSearchFocus, setPendingSearchFocus] = useState(false);
@@ -747,7 +791,7 @@ export default function App() {
 
           {/* Segmented mode switcher — outlined pill */}
           <div className="inline-flex items-center h-9 rounded-full border border-outline overflow-hidden">
-            {(["home", "players", "prep", "games", "analysis", "local"] as const).map((m) => (
+            {(["home", "players", "prep", "games", "analysis", "repertoire", "local"] as const).map((m) => (
               <button
                 key={m}
                 onClick={() => setMode(m)}
@@ -757,7 +801,7 @@ export default function App() {
                     : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
                 }`}
               >
-                {m === "home" ? "Home" : m === "players" ? "Players" : m === "prep" ? "Prep" : m === "games" ? "Games" : m === "analysis" ? "Analysis" : "PGNs"}
+                {m === "home" ? "Home" : m === "players" ? "Players" : m === "prep" ? "Prep" : m === "games" ? "Games" : m === "analysis" ? "Analysis" : m === "repertoire" ? "Repertoire" : "PGNs"}
               </button>
             ))}
           </div>
@@ -930,6 +974,7 @@ export default function App() {
           onMyGames={handleMyGames}
           onSearchPlayer={() => { setMode("players"); setPendingSearchFocus(true); }}
           onOpenTournament={() => setMode("prep")}
+          onOpenRepertoire={() => setMode("repertoire")}
           onBrowseLocal={() => setMode("local")}
           onRunWizard={() => setShowSetup(true)}
         />
@@ -946,7 +991,7 @@ export default function App() {
         />
       )}
 
-      {(status === "disconnected" || status === "unauthorized") && (mode === "players" || mode === "prep" || mode === "games" || mode === "analysis") ? (
+      {(status === "disconnected" || status === "unauthorized") && (mode === "players" || mode === "prep" || mode === "games" || mode === "analysis" || mode === "repertoire") ? (
         <div className="flex-1 flex items-center justify-center bg-surface-dim">
           {/* M3 outlined card — Expressive uses xl (28px) corners */}
           <div className="max-w-md p-8 rounded-xl bg-surface-container-high text-center space-y-3">
@@ -1113,6 +1158,8 @@ export default function App() {
           onOpenManyInAnalysis={openManyInAnalysis}
           analysisCapacity={ANALYSIS_TAB_CAP}
         />
+      ) : mode === "repertoire" ? (
+        <RepertoirePage onOpenChapter={(id) => void openChapterInAnalysis(id)} />
       ) : mode === "analysis" ? (
         <AnalysisPage
           tabs={analysisTabs}

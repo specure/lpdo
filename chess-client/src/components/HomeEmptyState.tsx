@@ -18,6 +18,8 @@ interface Props {
   onMyGames: () => void;
   onSearchPlayer: () => void;
   onOpenTournament: () => void;
+  /** Open the Repertoire page (#327). */
+  onOpenRepertoire: () => void;
   onBrowseLocal: () => void;
   /** Open the Setup Wizard (used by the empty-database CTA). */
   onRunWizard: () => void;
@@ -28,6 +30,14 @@ const IconBoard = () => (
   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="3" y="3" width="18" height="18" rx="2" />
     <path d="M3 12h18M12 3v18" />
+  </svg>
+);
+
+// An open book, for the repertoire.
+const IconBook = () => (
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M2 4h6a4 4 0 0 1 4 4v12a3 3 0 0 0-3-3H2z" />
+    <path d="M22 4h-6a4 4 0 0 0-4 4v12a3 3 0 0 1 3-3h7z" />
   </svg>
 );
 
@@ -292,7 +302,7 @@ function ActionCard({
 }
 
 export default function HomeEmptyState({
-  status, onMyGames, onSearchPlayer, onOpenTournament, onBrowseLocal, onRunWizard,
+  status, onMyGames, onSearchPlayer, onOpenTournament, onOpenRepertoire, onBrowseLocal, onRunWizard,
 }: Props) {
   // Live first-run readiness (overrides the parent's slow-polled status). The
   // slot below the quick-start cards becomes one of: Preparing… / failed (Reset)
@@ -350,7 +360,7 @@ export default function HomeEmptyState({
             Each icon has its own personality: the magnifier tilts as if peering,
             the trophy lifts up like a podium presentation, the folder pops at
             an angle suggesting it's about to open. Cards rise in 60ms apart. */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
           <ActionCard
             tone="primary"
             icon={<IconBoard />}
@@ -371,6 +381,15 @@ export default function HomeEmptyState({
             description="Add a chess-results.com tournament and prep against likely opponents."
             onClick={onOpenTournament}
             delayMs={120}
+          />
+          <ActionCard
+            tone="secondary"
+            icon={<IconBook />}
+            iconHoverClass="group-hover:-rotate-3 group-hover:scale-110"
+            title="My repertoire"
+            description="Opening books and chapters — the lines you play, studied with the database and the engines."
+            onClick={onOpenRepertoire}
+            delayMs={150}
           />
           <ActionCard
             tone="secondary"

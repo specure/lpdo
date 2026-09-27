@@ -88,6 +88,9 @@ the rest of the app. The home screen shows what came in and when.
 - **Match preparation** against an upcoming opponent — look them up, pull their
   recent games, and study what you'll be facing.
 - **Opening tree** over any position, with game counts, scores and performance.
+- **Opening repertoire** as books and chapters — the lines you play, studied
+  in the Analysis page beside the reference database and the engines, with
+  chapters and moves switched on or off.
 - **Position search** across the whole database, backed by a position index.
 
 **Keep it current**
@@ -196,6 +199,8 @@ Longer-form design documents for planned or in-progress work live in
 - [Running the server on another machine](docs/remote-server.md) — putting the
   database on one computer and using it from LPDO on others over the local
   network, with the access token that guards it.
+- [Opening repertoire](docs/opening-repertoire.md) — books and chapters,
+  active lines, the study view, PGN import and export.
 - [Installing a chess engine](docs/chess-engine.md) — Stockfish (or any UCI
   engine) for the Engine panel's local analysis: on Linux, macOS and Windows,
   the newest release, and where the server looks.

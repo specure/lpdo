@@ -233,6 +233,7 @@ pub fn init(conn: &Connection) -> Result<()> {
     }
 
     init_collections(conn)?;
+    init_repertoire(conn)?;
     init_schedule(conn)?;
 
     // Soft-delete column. NULL = alive. DuckDB ALTER ADD COLUMN is fast on
@@ -504,6 +505,45 @@ fn init_sources(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+    Ok(())
+}
+
+/// Opening repertoire (#327): books of chapters, each chapter a PGN game
+/// (moves, variations, comments, marks), and every position of every
+/// variation indexed — see repertoire.rs and docs/design/opening-repertoire.md.
+fn init_repertoire(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS repertoire_books (
+            id          INTEGER PRIMARY KEY,
+            name        VARCHAR NOT NULL,
+            color       VARCHAR NOT NULL,
+            description VARCHAR,
+            url         VARCHAR,
+            ord         INTEGER NOT NULL,
+            created_at  TIMESTAMP NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS repertoire_chapters (
+            id          INTEGER PRIMARY KEY,
+            book_id     INTEGER NOT NULL,
+            ord         INTEGER NOT NULL,
+            name        VARCHAR NOT NULL,
+            active      BOOLEAN NOT NULL DEFAULT TRUE,
+            pgn         VARCHAR NOT NULL,
+            lines       INTEGER NOT NULL DEFAULT 0,
+            lines_off   INTEGER NOT NULL DEFAULT 0,
+            updated_at  TIMESTAMP NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS repertoire_positions (
+            chapter_id   INTEGER NOT NULL,
+            zobrist_hash BIGINT NOT NULL,
+            ply          SMALLINT NOT NULL,
+            next_move    VARCHAR NOT NULL,
+            mover        VARCHAR NOT NULL,
+            active       BOOLEAN NOT NULL
+        );
+        ",
+    )?;
     Ok(())
 }
 

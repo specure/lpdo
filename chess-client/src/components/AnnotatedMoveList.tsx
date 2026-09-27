@@ -24,12 +24,18 @@ interface AnnotatedMoveListProps {
   onExpandSubVariations: () => void;
   onCollapseSubVariations: () => void;
   onToggleAnnotations: () => void;
+  /** A repertoire chapter (#327): moves switched off (their `off`, or one
+   *  above them) are greyed, and a move with alternatives gets a mark. */
+  offAware?: boolean;
+  /** Switch the move at `index` (1-based) of `line` off or on — offered on
+   *  the current move. */
+  onToggleOff?: (line: MoveNode[], index: number, off: boolean) => void;
 }
 
 export default function AnnotatedMoveList({
   game, activeLine, activeIndex, showAnnotations, collapsedNodes, partialNodes, inSubVariation,
   breadcrumbs, onNavigate, onToggleCollapse, onExpandAll, onCollapseAll,
-  onExpandSubVariations, onCollapseSubVariations, onToggleAnnotations,
+  onExpandSubVariations, onCollapseSubVariations, onToggleAnnotations, offAware, onToggleOff,
 }: AnnotatedMoveListProps) {
   const activeRef = useRef<HTMLSpanElement>(null);
 
@@ -49,14 +55,21 @@ export default function AnnotatedMoveList({
     activeRef.current?.scrollIntoView({ block: "nearest" });
   }, [activeIndex, activeLine]);
 
-  function renderLine(line: MoveNode[], pathPrefix: string, depth: number) {
+  function renderLine(line: MoveNode[], pathPrefix: string, depth: number, inheritedOff = false) {
     const isActive = line === activeLine;
     const pathMaxIndex = pathMap.get(line); // undefined if not on path
     const elements: React.ReactNode[] = [];
     let needsBlackNumber = false;
+    // The off-switch (#327) covers everything below a move; a variation of a
+    // move inherits the state as it was before that move.
+    let offNow = inheritedOff;
 
     for (let i = 0; i < line.length; i++) {
       const node = line[i];
+      const offBefore = offNow;
+      const ownOff = !!node.annotations.off;
+      const nodeOff = !!offAware && (offNow || ownOff);
+      if (ownOff) offNow = true;
       const moveIdx = i + 1;
       const isCurrentMove = isActive && activeIndex === moveIdx;
       const isOnPath = pathMaxIndex !== undefined && moveIdx <= pathMaxIndex;
@@ -98,6 +111,13 @@ export default function AnnotatedMoveList({
         }
       }
 
+      // A move with alternatives, shown (collapsed ones have the [+]).
+      if (offAware && hasVariations && !isCollapsed) {
+        elements.push(
+          <span key={`b-${i}`} className="text-outline select-none mr-0.5" style={{ fontSize: "0.7em" }} title="Alternatives branch off here">⋔</span>
+        );
+      }
+
       // Move (with optional move number as single clickable unit)
       const numPrefix = showNumber
         ? (node.color === "w" ? `${moveNum}.` : `${moveNum}...`)
@@ -111,18 +131,30 @@ export default function AnnotatedMoveList({
           // lib/scratchLine.ts), so it is drawn as a dashed, tentative thing.
           className={`cursor-pointer rounded-sm transition-colors duration-short3 ease-standard ${
             node.scratch ? "italic underline decoration-dashed underline-offset-2 " : ""
-          }${
+          }${nodeOff ? "opacity-45 " : ""}${
             isCurrentMove
               ? "bg-primary-container text-on-primary-container px-0.5"
               : isOnPath
               ? "text-primary"
               : "text-on-surface hover:bg-on-surface/8"
           }`}
-          title={node.scratch ? "Played on the board only — not saved in the game" : undefined}
+          title={node.scratch ? "Played on the board only — not saved in the game" : nodeOff ? (ownOff ? "Switched off: not in the active repertoire from here" : "Not in the active repertoire — a move above is switched off") : undefined}
         >
           {numPrefix}{node.san}{nagsToString(node.annotations.nags)}
         </span>
       );
+      // The off-switch, on the current move: its own, or "on" to undo it.
+      // A move off through one above it has its switch there.
+      if (isCurrentMove && onToggleOff && !node.scratch && (ownOff || !offBefore)) {
+        elements.push(
+          <button
+            key={`o-${i}`}
+            onClick={(e) => { e.stopPropagation(); onToggleOff(line, moveIdx, !ownOff); }}
+            className="ml-1 h-4 px-1 rounded-full text-[10px] leading-none align-middle border border-outline text-on-surface-variant hover:bg-on-surface/8"
+            title={ownOff ? "Switch this move back on" : "Switch off: not in my repertoire from here"}
+          >{ownOff ? "on" : "off"}</button>
+        );
+      }
 
       const hasGraphical = (node.annotations.arrows?.length ?? 0) > 0 || (node.annotations.circles?.length ?? 0) > 0;
       const hasComment = !!node.annotations.comment;
@@ -201,14 +233,14 @@ export default function AnnotatedMoveList({
             shortVars.push(
               <span key={`v-${i}-${vi}`} className="text-on-surface-variant text-body-sm">
                 {"( "}
-                {renderLine(variation, varPath, depth + 1)}
+                {renderLine(variation, varPath, depth + 1, offBefore)}
                 {") "}
               </span>
             );
           } else {
             blockVars.push(
               <div key={`v-${i}-${vi}`} className="text-body-sm text-on-surface-variant leading-normal">
-                {renderLine(variation, varPath, depth + 1)}
+                {renderLine(variation, varPath, depth + 1, offBefore)}
               </div>
             );
           }

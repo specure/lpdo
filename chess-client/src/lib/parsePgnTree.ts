@@ -7,6 +7,9 @@ export interface Annotations {
   circles?: CslCircle[];
   /** NAG codes (PGN $n) on this move, in order — e.g. [1, 16] for "!" + "±". */
   nags?: number[];
+  /** The repertoire's off-switch (#327): this move and everything below it
+   *  are not in the active repertoire. A `[%rep off]` tag in the comment. */
+  off?: boolean;
 }
 
 export interface MoveNode {
@@ -243,6 +246,7 @@ class Parser {
     if (parsed.circles.length) {
       node.annotations.circles = [...(node.annotations.circles ?? []), ...parsed.circles];
     }
+    if (parsed.off) node.annotations.off = true;
   }
 
   private makeCommentSentinel(raw: string): MoveNode {

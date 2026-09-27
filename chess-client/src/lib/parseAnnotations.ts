@@ -13,7 +13,11 @@ export interface ParsedComment {
   text: string;
   arrows: CalArrow[];
   circles: CslCircle[];
+  /** The repertoire's off-switch, `[%rep off]` (#327). */
+  off: boolean;
 }
+
+export const REP_OFF_TAG = "[%rep off]";
 
 // PGN colour codes → rgba. G/R/Y/B are the portable, widely-supported set;
 // M (magenta) and C (cyan) are LPDO extensions — they round-trip here but other
@@ -78,12 +82,14 @@ export function parseComment(raw: string): ParsedComment {
     }
   }
 
+  const off = raw.includes(REP_OFF_TAG);
+
   // Strip all [%...] tags from text (cal, csl, evp, clk, etc.)
   const text = raw
     .replace(/\[%[^\]]*\]/g, "")
     .trim();
 
-  return { text, arrows, circles };
+  return { text, arrows, circles, off };
 }
 
 export const NAG_MAP: Record<number, string> = {
