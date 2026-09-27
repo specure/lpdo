@@ -391,7 +391,7 @@ interface Props {
   flipped?: boolean;
   onFlippedChange?: (flipped: boolean) => void;
   /** Database and engine arrows over the board (the
-   *  Analysis page's, see HintArrows), and their checkboxes for the toolbar. */
+   *  Analysis page's, see HintArrows), and their checkboxes, shown above it. */
   hintArrows?: HintArrow[];
   arrowControls?: React.ReactNode;
 }
@@ -1895,6 +1895,10 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
           </div>
         )}
 
+        {/* The arrows' checkboxes in a row above the board, as on the Games
+            page; the board scales to fit what is left. */}
+        {arrowControls && <div className="shrink-0 px-2 pb-1">{arrowControls}</div>}
+
         {/* Board */}
         <div ref={boardContainerRef} className="flex-1 min-h-0 min-w-0 overflow-hidden flex items-center justify-center relative">
           <div
@@ -2131,7 +2135,6 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
                   <button onClick={() => goTo(maxIndex)} disabled={effectiveIndex === maxIndex} className={navBtn} title="Last move (↓)"><IconLast /></button>
                   <div className="w-px h-5 bg-outline-variant mx-2" />
                   <button onClick={toggleFlipped} className={navBtn} title="Flip board"><IconFlip /></button>
-                  {arrowControls && <span className="ml-2">{arrowControls}</span>}
                 </>
               );
             })()}
