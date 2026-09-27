@@ -360,7 +360,7 @@ function BookDetails({ book, busy, first, last, onUpdate, onDelete, onAddEmpty, 
           <div className="text-title-sm text-on-surface break-words">{book.name}</div>
           {book.author && <div className="text-label-md text-on-surface-variant break-words">by {book.author}</div>}
         </div>
-        <BookMenu entries={[
+        <Menu up title="The book: add chapters, edit, reorder, export, delete" entries={[
           { label: "New empty chapter", onClick: () => onAddEmpty(`Chapter ${book.chapters.length + 1}`), disabled: busy },
           { label: "Paste PGN…", onClick: () => setPasting(true) },
           { label: "Import PGN files…", onClick: () => fileRef.current?.click(), disabled: busy },
@@ -417,9 +417,10 @@ function BookDetails({ book, busy, first, last, onUpdate, onDelete, onAddEmpty, 
   );
 }
 
-/** The book's commands behind one ⋯: it sits at the foot of the panel, so the
- *  menu opens upwards. */
-function BookMenu({ entries }: { entries: { label: string; onClick: () => void; disabled?: boolean; separated?: boolean }[] }) {
+/** Commands behind one ⋯. `up`: opens upwards (at the foot of a panel). */
+function Menu({ entries, title, up = false }: {
+  entries: { label: string; onClick: () => void; disabled?: boolean; separated?: boolean }[]; title: string; up?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -432,9 +433,9 @@ function BookMenu({ entries }: { entries: { label: string; onClick: () => void; 
   }, [open]);
   return (
     <div ref={ref} className="relative shrink-0">
-      <button onClick={() => setOpen((o) => !o)} className={`${nav} text-body-sm`} title="Edit, reorder, export, delete" aria-haspopup="menu" aria-expanded={open}>⋯</button>
+      <button onClick={() => setOpen((o) => !o)} className={`${nav} text-body-sm`} title={title} aria-haspopup="menu" aria-expanded={open}>⋯</button>
       {open && (
-        <div role="menu" className="absolute right-0 bottom-full mb-1 z-20 min-w-40 py-1 rounded-md bg-surface-container-high border border-outline/40 shadow-lg flex flex-col">
+        <div role="menu" className={`absolute right-0 ${up ? "bottom-full mb-1" : "top-full mt-1"} z-20 min-w-44 py-1 rounded-md bg-surface-container-high border border-outline/40 shadow-lg flex flex-col`}>
           {entries.map((e) => (
             <button key={e.label} role="menuitem" disabled={e.disabled}
               onClick={() => { setOpen(false); e.onClick(); }}
@@ -448,6 +449,8 @@ function BookMenu({ entries }: { entries: { label: string; onClick: () => void; 
   );
 }
 
+/** The book's chapters, with one menu for the chapter on the board and a
+ *  mode for putting them in order. */
 function ChaptersList({ book, busy, current, onPick, onChapter, onDeleteChapter }: {
   book: BookWithChapters; busy: boolean; current: number | null;
   onPick: (id: number) => void;
@@ -455,23 +458,59 @@ function ChaptersList({ book, busy, current, onPick, onChapter, onDeleteChapter 
   onDeleteChapter: (id: number) => void;
 }) {
   const [note, setNote] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<number | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [arranging, setArranging] = useState(false);
+  const [dragged, setDragged] = useState<number | null>(null);
+  const [over, setOver] = useState<number | null>(null);
+  const chapter = book.chapters.find((c) => c.id === current) ?? null;
+  useEffect(() => setConfirmDelete(false), [current]);
+  const none = !chapter || busy;
 
   return (
     <div className="flex flex-col">
       <div className="px-3 pt-2 pb-1 flex items-center gap-2">
         <ColorDot color={book.color} />
         <span className="flex-1 min-w-0 truncate text-title-sm text-on-surface" title={book.name}>{book.name}</span>
+        {arranging ? (
+          <button onClick={() => setArranging(false)} className={tonal}>Done</button>
+        ) : (
+          <Menu title={chapter ? `The chapter on the board — ${chapter.name}` : "Rearrange the chapters; choose one for the rest"} entries={[
+            { label: "Rename chapter…", onClick: () => chapter && setRenaming(chapter.id), disabled: none },
+            { label: "Export chapter PGN…", onClick: () => chapter && void exportPgn(chapterPgnPath(chapter.id), `${book.name}-${chapter.name}`).then(setNote), disabled: none },
+            { label: "Delete chapter…", onClick: () => setConfirmDelete(true), disabled: none },
+            { label: "Rearrange chapters", onClick: () => { setArranging(true); setRenaming(null); }, disabled: busy || book.chapters.length < 2, separated: true },
+          ]} />
+        )}
       </div>
+      {arranging && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Drag a chapter to its place, or move it with ▲ ▼.</div>}
+      {confirmDelete && chapter && (
+        <div className="px-3 pb-1 flex items-center gap-1 flex-wrap">
+          <button onClick={() => { setConfirmDelete(false); onDeleteChapter(chapter.id); }} disabled={busy} className="h-7 px-2 rounded-full text-label-md text-error hover:bg-error/8 truncate max-w-full">Delete “{chapter.name}”</button>
+          <button onClick={() => setConfirmDelete(false)} className={plain}>Cancel</button>
+        </div>
+      )}
       {!book.active && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">The book is off: these chapters are out of the repertoire whatever their switches say.</div>}
       <div className={`flex flex-col py-1 ${book.active ? "" : "opacity-70"}`}>
         {book.chapters.map((c, i) => (
-          <ChapterRow key={c.id} chapter={c} busy={busy} current={c.id === current} first={i === 0} last={i === book.chapters.length - 1}
+          <ChapterRow key={c.id} chapter={c} busy={busy} current={c.id === current}
+            renaming={renaming === c.id} arranging={arranging} first={i === 0} last={i === book.chapters.length - 1}
+            dropTarget={arranging && over === c.id && dragged !== c.id}
             onPick={() => onPick(c.id)}
             onActive={(active) => onChapter(c.id, { active })}
-            onRename={(n) => onChapter(c.id, { name: n })}
+            onRename={(n) => { setRenaming(null); if (n && n !== c.name) onChapter(c.id, { name: n }); }}
             onMove={(delta) => onChapter(c.id, { ord: c.ord + delta })}
-            onExport={() => void exportPgn(chapterPgnPath(c.id), `${book.name}-${c.name}`).then(setNote)}
-            onDelete={() => onDeleteChapter(c.id)} />
+            drag={{
+              onDragStart: () => setDragged(c.id),
+              onDragOver: (e) => { if (dragged != null) { e.preventDefault(); setOver(c.id); } },
+              onDragLeave: () => setOver((o) => (o === c.id ? null : o)),
+              onDrop: (e) => {
+                e.preventDefault();
+                if (dragged != null && dragged !== c.id) onChapter(dragged, { ord: c.ord });
+                setDragged(null); setOver(null);
+              },
+              onDragEnd: () => { setDragged(null); setOver(null); },
+            }} />
         ))}
         {book.chapters.length === 0 && <div className="px-3 py-1 text-label-sm text-on-surface-variant">No chapters yet — the book's ⋯ adds one: empty, pasted PGN, or PGN files.</div>}
       </div>
@@ -480,47 +519,41 @@ function ChaptersList({ book, busy, current, onPick, onChapter, onDeleteChapter 
   );
 }
 
-function ChapterRow({ chapter: c, busy, current, first, last, onPick, onActive, onRename, onMove, onExport, onDelete }: {
-  chapter: ChapterSummary; busy: boolean; current: boolean; first: boolean; last: boolean;
-  onPick: () => void; onActive: (a: boolean) => void; onRename: (n: string) => void; onMove: (delta: -1 | 1) => void; onExport: () => void; onDelete: () => void;
+function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, last, dropTarget, onPick, onActive, onRename, onMove, drag }: {
+  chapter: ChapterSummary; busy: boolean; current: boolean; renaming: boolean; arranging: boolean;
+  first: boolean; last: boolean; dropTarget: boolean;
+  onPick: () => void; onActive: (a: boolean) => void; onRename: (n: string) => void; onMove: (delta: -1 | 1) => void;
+  drag: Pick<React.HTMLAttributes<HTMLDivElement>, "onDragStart" | "onDragOver" | "onDragLeave" | "onDrop" | "onDragEnd">;
 }) {
-  const [menu, setMenu] = useState(false);
-  const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(c.name);
-  const [confirm, setConfirm] = useState(false);
-  useEffect(() => setName(c.name), [c.name]);
+  useEffect(() => setName(c.name), [c.name, renaming]);
+  const counts = `${c.lines} ${c.lines === 1 ? "line" : "lines"}${c.lines_off ? `, ${c.lines_off} off` : ""}`;
   return (
-    <div className={`flex flex-col ${current ? "bg-primary-container/40" : ""} ${c.active ? "" : "opacity-70"}`}>
-      <div className="flex items-center gap-1.5 px-3 py-1">
-        <input type="checkbox" checked={c.active} disabled={busy} onChange={(e) => onActive(e.target.checked)} className="accent-primary shrink-0" title="Active: part of the repertoire you are playing now" />
-        {renaming ? (
-          <input autoFocus value={name} onChange={(e) => setName(e.target.value)}
-            onBlur={() => { setRenaming(false); if (name.trim() && name.trim() !== c.name) onRename(name.trim()); }}
-            onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") { setName(c.name); setRenaming(false); } }}
-            className={`${field} flex-1 min-w-0 h-7`} />
-        ) : (
-          <button onClick={onPick} className={`flex-1 min-w-0 text-left text-body-sm truncate ${current ? "text-on-surface font-medium" : "text-on-surface hover:text-primary"}`} title={`${c.name} — ${c.lines} ${c.lines === 1 ? "line" : "lines"}${c.lines_off ? `, ${c.lines_off} off` : ""}`}>
-            {c.ord}. {c.name}
-          </button>
-        )}
-        <span className="text-label-sm text-on-surface-variant tabular-nums shrink-0">{c.lines}{c.lines_off ? `−${c.lines_off}` : ""}</span>
-        <button onClick={() => setMenu((m) => !m)} className={`${nav} text-body-sm`} title="Rename, reorder, export, delete">⋯</button>
-      </div>
-      {menu && (
-        <div className="px-3 pb-1.5 pl-8 flex items-center gap-1 flex-wrap">
-          <button onClick={() => { setMenu(false); setRenaming(true); }} className={plain} disabled={busy}>Rename</button>
+    <div
+      draggable={arranging && !busy}
+      {...(arranging ? drag : {})}
+      className={`flex items-center gap-1.5 px-3 py-1 ${current ? "bg-primary-container/40" : ""} ${c.active ? "" : "opacity-70"} ${arranging ? "cursor-grab" : ""} ${dropTarget ? "border-t-2 border-primary" : "border-t-2 border-transparent"}`}
+    >
+      {arranging
+        ? <span className="shrink-0 text-on-surface-variant text-body-sm select-none" aria-hidden>⠿</span>
+        : <input type="checkbox" checked={c.active} disabled={busy} onChange={(e) => onActive(e.target.checked)} className="accent-primary shrink-0" title="Active: part of the repertoire you are playing now" />}
+      {renaming ? (
+        <input autoFocus value={name} onChange={(e) => setName(e.target.value)}
+          onBlur={() => onRename(name.trim())}
+          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") { setName(c.name); onRename(c.name); } }}
+          className={`${field} flex-1 min-w-0 h-7`} />
+      ) : (
+        <button onClick={onPick} className={`flex-1 min-w-0 text-left text-body-sm truncate ${current ? "text-on-surface font-medium" : "text-on-surface hover:text-primary"}`} title={`${c.name} — ${counts}`}>
+          {c.ord}. {c.name}
+        </button>
+      )}
+      {arranging ? (
+        <>
           <button onClick={() => onMove(-1)} disabled={busy || first} className={nav} title="Move up">▲</button>
           <button onClick={() => onMove(1)} disabled={busy || last} className={nav} title="Move down">▼</button>
-          <button onClick={() => { setMenu(false); onExport(); }} className={plain} title="Save the chapter as a PGN file">PGN…</button>
-          {confirm ? (
-            <>
-              <button onClick={() => { setConfirm(false); setMenu(false); onDelete(); }} disabled={busy} className="h-7 px-2 rounded-full text-label-md text-error hover:bg-error/8">Delete</button>
-              <button onClick={() => setConfirm(false)} className={plain}>Cancel</button>
-            </>
-          ) : (
-            <button onClick={() => setConfirm(true)} disabled={busy} className={plain}>Delete…</button>
-          )}
-        </div>
+        </>
+      ) : (
+        <span className="text-label-sm text-on-surface-variant tabular-nums shrink-0" title={counts}>{c.lines}{c.lines_off ? `−${c.lines_off}` : ""}</span>
       )}
     </div>
   );

@@ -34,7 +34,10 @@ same ⋯ menu:
   becomes a chapter (or a chapter per game, for a file of several), named
   from its headers or else after the file.
 
-A chapter's ⋯ renames, reorders (▲ ▼), exports and deletes it. Every chapter
+The ⋯ above the chapters works on the chapter on the board: rename it,
+export it as PGN, delete it. **Rearrange chapters** there puts the list in
+a mode for ordering: drag a chapter to its place, or move it with ▲ ▼, and
+**Done** when it is right. Every chapter
 starts from the initial position.
 
 ## Active books and chapters, and switching lines off
