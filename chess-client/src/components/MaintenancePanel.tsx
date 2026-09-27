@@ -340,16 +340,9 @@ function EngineMode({ kind, info, busy, onChange }: {
   const installed = info.installed ?? true;
   const name = kind === "stockfish" ? "Stockfish" : "Lc0";
   const guide = `https://github.com/specure/lpdo/blob/main/docs/chess-engine.md${kind === "lc0" ? "#leela-chess-zero" : ""}`;
-  const pill = (on: boolean) => `h-8 px-4 text-label-lg ${on ? "bg-primary text-on-primary" : "bg-surface-container text-on-surface-variant hover:bg-on-surface/8"} disabled:opacity-60`;
   return (
     <div className="space-y-1">
-      <div className="flex items-center gap-3 text-body-sm text-on-surface">
-        <span>Use {name}</span>
-        <div className="inline-flex rounded-full overflow-hidden border border-outline/40">
-          <button className={pill(auto)} disabled={busy} onClick={() => { if (!auto) onChange(true); }}>Auto</button>
-          <button className={pill(!auto)} disabled={busy} onClick={() => { if (auto) onChange(false); }}>Off</button>
-        </div>
-      </div>
+      <UseToggle label={`Use ${name}`} on={auto} onLabel="Auto" busy={busy} onChange={onChange} />
       <p className="text-label-sm text-on-surface-variant">
         {!auto
           ? `Off: the server does not use ${name}${kind === "lc0" ? " — it is not started and holds no graphics memory" : ""}.`
@@ -359,6 +352,23 @@ function EngineMode({ kind, info, busy, onChange }: {
                 <button onClick={() => void openUrl(guide)} className="text-primary hover:underline inline-flex items-center">How to install<ExternalLinkIcon /></button>
               </>}
       </p>
+    </div>
+  );
+}
+
+/** "Use …" with a two-part choice — Auto / Off for the local engines, On / Off
+ *  for the cloud ones. */
+function UseToggle({ label, on, onLabel, busy, onChange }: {
+  label: string; on: boolean; onLabel: string; busy?: boolean; onChange: (on: boolean) => void;
+}) {
+  const pill = (sel: boolean) => `h-8 px-4 text-label-lg ${sel ? "bg-primary text-on-primary" : "bg-surface-container text-on-surface-variant hover:bg-on-surface/8"} disabled:opacity-60`;
+  return (
+    <div className="flex items-center gap-3 text-body-sm text-on-surface">
+      <span>{label}</span>
+      <div className="inline-flex rounded-full overflow-hidden border border-outline/40">
+        <button className={pill(on)} disabled={busy} onClick={() => { if (!on) onChange(true); }}>{onLabel}</button>
+        <button className={pill(!on)} disabled={busy} onClick={() => { if (on) onChange(false); }}>Off</button>
+      </div>
     </div>
   );
 }
@@ -931,7 +941,7 @@ function CloudEnginesSection() {
           your own.
         </p>
         {maxMove != null && (
-          <EngineSwitch label="Use chessdb.cn" on={services.chessdb} onChange={(on) => { setFrom("chessdb"); void save({ chessdb: on }); }} />
+          <UseToggle label="Use chessdb.cn" onLabel="On" on={services.chessdb} onChange={(on) => { setFrom("chessdb"); void save({ chessdb: on }); }} />
         )}
         {cap("chessdb")}
         {result("chessdb")}
@@ -943,7 +953,7 @@ function CloudEnginesSection() {
         </p>
         {maxMove != null && (
           <>
-            <EngineSwitch label="Use Lichess" on={services.lichess} onChange={(on) => { setFrom("lichess"); void save({ lichess: on }); }} />
+            <UseToggle label="Use Lichess" onLabel="On" on={services.lichess} onChange={(on) => { setFrom("lichess"); void save({ lichess: on }); }} />
             <LichessStats />
             <div className="flex items-center gap-4 text-body-sm text-on-surface flex-wrap">
               <label className="flex items-center gap-2" title="A move within this much of the best is strong: marked ! in the Engine panel, and counted among the strong replies">
