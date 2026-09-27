@@ -10,7 +10,7 @@
 // Editing is lossless: variations, comments, NAGs and arrows on the loaded game
 // are preserved (a deep clone is edited and serialised back to PGN movetext).
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Chess } from "chess.js";
 import { postJson } from "../api";
 import { AnnotatedGame, MoveNode } from "../lib/parsePgnTree";
@@ -30,12 +30,12 @@ import {
 } from "../lib/moveTreeNav";
 import { serializeMovetext } from "../lib/serializeMovetext";
 import { nagToSymbol, nagsToString, DRAW_COLORS } from "../lib/parseAnnotations";
-import { MoveStats } from "../types";
+import { useClickToMove, type ClickToMove } from "./useClickToMove";
 import AnnotatedMoveList from "./AnnotatedMoveList";
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
 
-export interface MovesEditor {
+export interface MovesEditor extends ClickToMove {
   /** True when editing — host swaps the board / panel into edit mode. */
   active: boolean;
   /** Working copy of the move tree under edit (null when inactive). */
@@ -225,7 +225,6 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
   const [pendingPromotion, setPendingPromotion] = useState<{ from: string; to: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   // "Game end" / analysis mode: when on, a move played at the main-line tip
   // branches into an analysis pseudo-variation instead of extending the game.
@@ -249,15 +248,6 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     try { return new Chess(fen).turn(); } catch { return "w"; }
   }, [active, fen]);
 
-  const legalDestinations = useMemo<string[]>(() => {
-    if (!active || !selectedSquare || !fen) return [];
-    try {
-      const c = new Chess(fen);
-      return c.moves({ square: selectedSquare as never, verbose: true }).map((m) => m.to as string);
-    } catch {
-      return [];
-    }
-  }, [active, selectedSquare, fen]);
 
   // Two distinct comment slots for the current position:
   //  - moveComment: the trailing comment of the move at the cursor ("" at a line start).
@@ -292,156 +282,16 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     return breadcrumbs.length === 0 ? game.startAnnotations?.circles ?? [] : [];
   }, [active, game, activeLine, activeIndex, breadcrumbs]);
 
-  // Selection / preview must not survive a position change.
-  useEffect(() => { setSelectedSquare(null); }, [activeLine, activeIndex, breadcrumbs, pendingDivergence, pendingPromotion]);
-
-  // ── One-click destination ───────────────────────────────────────────────
-  const [previewMove, setPreviewMove] = useState<{ from: string; to: string } | null>(null);
-  const [pendingDest, setPendingDest] = useState<{ sq: string; committed: boolean } | null>(null);
-  const [positionMovesData, setPositionMovesData] = useState<{ fen: string; moves: MoveStats[] } | null>(null);
-  const positionMovesCacheRef = useRef<Map<string, MoveStats[]>>(new Map());
-  const positionMoves: MoveStats[] = positionMovesData?.fen === fen ? positionMovesData.moves : [];
-  const positionMovesLoading = active && fen !== "" && positionMovesData?.fen !== fen;
-
-  useEffect(() => {
-    setPreviewMove(null);
-    setPendingDest(null);
-  }, [activeLine, activeIndex, breadcrumbs, pendingDivergence, pendingPromotion]);
-
-  useEffect(() => {
-    if (!active || !fen) return;
-    const cached = positionMovesCacheRef.current.get(fen);
-    if (cached) { setPositionMovesData({ fen, moves: cached }); return; }
-    const ctrl = new AbortController();
-    fetch(`/api/position/moves?fen=${encodeURIComponent(fen)}`, { signal: ctrl.signal })
-      .then((r) => r.ok ? (r.json() as Promise<MoveStats[]>) : Promise.resolve([] as MoveStats[]))
-      .then((data) => {
-        positionMovesCacheRef.current.set(fen, data);
-        setPositionMovesData({ fen, moves: data });
-      })
-      .catch(() => { /* abort or network — leave previous list, harmless */ });
-    return () => ctrl.abort();
-  }, [active, fen]);
-
-  const prefetchInFlightRef = useRef<Set<string>>(new Set());
-  function prefetchPositionMoves(fenStr: string) {
-    if (!fenStr) return;
-    if (positionMovesCacheRef.current.has(fenStr)) return;
-    if (prefetchInFlightRef.current.has(fenStr)) return;
-    prefetchInFlightRef.current.add(fenStr);
-    fetch(`/api/position/moves?fen=${encodeURIComponent(fenStr)}`)
-      .then((r) => r.ok ? (r.json() as Promise<MoveStats[]>) : null)
-      .then((data) => {
-        if (data) positionMovesCacheRef.current.set(fenStr, data);
-      })
-      .catch(() => { /* fire-and-forget — ignore */ })
-      .finally(() => { prefetchInFlightRef.current.delete(fenStr); });
-  }
-
-  function shouldHandleAsDestination(square: string): boolean {
-    if (!active) return false;
-    if (selectedSquare !== null) return false;
-    try {
-      const c = new Chess(fen);
-      const piece = c.get(square as never);
-      if (!piece) return true;
-      return piece.color !== c.turn();
-    } catch { return false; }
-  }
-
-  function pickSourceFor(square: string): string | null {
-    if (!active) return null;
-    let candidates: { from: string; san: string }[];
-    try {
-      const c = new Chess(fen);
-      candidates = c.moves({ verbose: true })
-        .filter((m) => m.to === square)
-        .map((m) => ({ from: m.from as string, san: m.san as string }));
-    } catch { return null; }
-    if (candidates.length === 0) return null;
-    if (candidates.length === 1) return candidates[0].from;
-    const popularity = new Map(positionMoves.map((s) => [s.mv, s.games]));
-    candidates.sort((a, b) => {
-      const popA = popularity.get(a.san) ?? -1;
-      const popB = popularity.get(b.san) ?? -1;
-      if (popA !== popB) return popB - popA;
-      return a.from.localeCompare(b.from);
-    });
-    return candidates[0].from;
-  }
-
-  function countLegalSourcesFor(square: string): number {
-    if (!active) return 0;
-    try {
-      const c = new Chess(fen);
-      return c.moves({ verbose: true }).filter((m) => m.to === square).length;
-    } catch { return 0; }
-  }
-
-  function isLegalSourceFor(src: string, dest: string): boolean {
-    if (!active) return false;
-    try {
-      const c = new Chess(fen);
-      return c.moves({ verbose: true }).some((m) => m.from === src && m.to === dest);
-    } catch { return false; }
-  }
-
-  function dragTo(sq: string) {
-    if (!active) return;
-    const currentDest = previewMove?.to ?? pendingDest?.sq ?? null;
-    if (!currentDest) return;
-    if (sq === currentDest) return;
-    if (sq === previewMove?.from) return;
-    if (isLegalSourceFor(sq, currentDest)) {
-      setPendingDest(null);
-      setPreviewMove({ from: sq, to: currentDest });
-      return;
-    }
-  }
-
-  function requestPreview(square: string) {
-    if (!active) return;
-    const n = countLegalSourcesFor(square);
-    if (n === 0) {
-      setPreviewMove(null);
-      setPendingDest(null);
-      return;
-    }
-    if (n === 1 || !positionMovesLoading) {
-      const src = pickSourceFor(square);
-      setPendingDest(null);
-      if (src) setPreviewMove({ from: src, to: square });
-      else setPreviewMove(null);
-      return;
-    }
-    setPreviewMove(null);
-    setPendingDest({ sq: square, committed: false });
-  }
-
-  function commitPreview() {
-    if (previewMove) {
-      const { from, to } = previewMove;
-      setPreviewMove(null);
-      setPendingDest(null);
-      tryMove(from, to);
-      return;
-    }
-    if (pendingDest && !pendingDest.committed) {
-      setPendingDest({ sq: pendingDest.sq, committed: true });
-    }
-  }
-
-  useEffect(() => {
-    if (positionMovesLoading) return;
-    if (!pendingDest) return;
-    const { sq, committed } = pendingDest;
-    const src = pickSourceFor(sq);
-    if (!src) { setPendingDest(null); return; }
-    setPendingDest(null);
-    if (committed) tryMove(src, sq);
-    else setPreviewMove({ from: src, to: sq });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [positionMovesLoading, positionMovesData, pendingDest]);
+  // Click-to-move and the one-click destination, shared with the Analysis
+  // board (see useClickToMove). `tryMove` is hoisted (a function declaration).
+  const ctm = useClickToMove({
+    active,
+    fen,
+    blocked: !!pendingDivergence || !!pendingPromotion || saving,
+    tryMove: (from, to) => tryMove(from, to),
+    resetKey: [activeLine, activeIndex, breadcrumbs, pendingDivergence, pendingPromotion],
+  });
+  const { active: _ctmActive, ...ctmRest } = ctm;
 
   // ── Tree editing core ─────────────────────────────────────────────────────
 
@@ -477,9 +327,8 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     setBreadcrumbs([]);
     setPendingDivergence(null);
     setPendingPromotion(null);
-    setSelectedSquare(null);
-    setPreviewMove(null);
-    setPendingDest(null);
+    ctm.clearSelection();
+    ctm.clearPreview();
     setUndoStack([]);
     setRedoStack([]);
     setDirty(false);
@@ -838,7 +687,7 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     setActiveLine(line);
     setActiveIndex(prev.activeIndex);
     setBreadcrumbs(bc);
-    setSelectedSquare(null);
+    ctm.clearSelection();
     setUndoStack((s) => s.slice(0, -1));
   }
 
@@ -853,32 +702,8 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     setActiveLine(line);
     setActiveIndex(next.activeIndex);
     setBreadcrumbs(bc);
-    setSelectedSquare(null);
+    ctm.clearSelection();
     setRedoStack((s) => s.slice(0, -1));
-  }
-
-  function clickSquare(square: string) {
-    if (!active) return;
-    if (pendingDivergence || pendingPromotion || saving) return;
-
-    const board = new Chess(fen);
-    const piece = board.get(square as never);
-    const isOwnPiece = piece && piece.color === board.turn();
-
-    if (selectedSquare === null) {
-      if (isOwnPiece) setSelectedSquare(square);
-      return;
-    }
-    if (selectedSquare === square) {
-      setSelectedSquare(null);
-      return;
-    }
-    const accepted = tryMove(selectedSquare, square);
-    if (accepted) {
-      setSelectedSquare(null);
-      return;
-    }
-    setSelectedSquare(isOwnPiece ? square : null);
   }
 
   async function save() {
@@ -926,17 +751,7 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     toggleArrow,
     clearAnnotations,
     canDraw,
-    selectedSquare,
-    legalDestinations,
-    previewMove,
-    gestureActive: previewMove !== null || pendingDest !== null,
-    shouldHandleAsDestination,
-    pickSourceFor,
-    requestPreview,
-    dragTo,
-    clearPreview: () => { setPreviewMove(null); setPendingDest(null); },
-    commitPreview,
-    prefetchPositionMoves,
+    ...ctmRest,
     canUndo: undoStack.length > 0,
     canRedo: redoStack.length > 0,
     start,
@@ -949,7 +764,6 @@ export function useMovesEditor({ gameId, onSaved }: UseMovesEditorOpts): MovesEd
     promoteVariation,
     demoteLine,
     tryMove,
-    clickSquare,
     commitOverwrite,
     commitNewVariation,
     commitNewMainLine,

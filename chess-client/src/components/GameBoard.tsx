@@ -30,6 +30,7 @@ import { appendScratchMove, clearScratchMarks, replayAsScratch, sansToCursor, ty
 import type { CalArrow, CslCircle } from "../lib/parseAnnotations";
 import { nagsToString, nagToSymbol } from "../lib/parseAnnotations";
 import AnnotatedMoveList from "./AnnotatedMoveList";
+import { useClickToMove, resolveSquareFromPointer, oneClickPointer } from "./useClickToMove";
 import {
   Breadcrumb,
   CursorPath,
@@ -174,27 +175,6 @@ function MoveList({ moves, currentIndex, onSelect }: MoveListProps) {
       ))}
     </div>
   );
-}
-
-/** Convert a pointer event on the sized board container to an algebraic
- *  square ("e4"), or null if the pointer is outside. Inverse of
- *  AnnotationOverlay.squareCenter — kept geometric (no DOM coupling) so it
- *  works regardless of react-chessboard internals. */
-function resolveSquareFromPointer(
-  e: React.PointerEvent<HTMLDivElement>,
-  flipped: boolean,
-): string | null {
-  const rect = e.currentTarget.getBoundingClientRect();
-  const x = e.clientX - rect.left;
-  const y = e.clientY - rect.top;
-  if (x < 0 || y < 0 || x >= rect.width || y >= rect.height) return null;
-  const sq = rect.width / 8;
-  const col = Math.floor(x / sq);
-  const row = Math.floor(y / sq);
-  if (col < 0 || col > 7 || row < 0 || row > 7) return null;
-  const file = flipped ? 7 - col : col;
-  const rank = flipped ? row : 7 - row;
-  return `${String.fromCharCode(97 + file)}${rank + 1}`;
 }
 
 // ── Custom Annotation Overlay (arrows + circles) ────────────────────────────
@@ -884,7 +864,6 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   // Scratch line: the game's own tree, kept aside while a scratch line is on
   // screen, plus where that line branched off. null = no scratch line.
   const [scratch, setScratch] = useState<{ saved: AnnotatedGame; anchor: CursorPath } | null>(null);
-  const [scratchFrom, setScratchFrom] = useState<string | null>(null);        // click-to-move source
   const [scratchPromotion, setScratchPromotion] = useState<{ from: string; to: string } | null>(null);
   const [keepingScratch, setKeepingScratch] = useState(false);
   // A cursor to restore after the next reload (set when a scratch line is kept).
@@ -1091,7 +1070,6 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     setActiveIndex(0);
     setBreadcrumbs([]);
     setScratch(null);
-    setScratchFrom(null);
     setScratchPromotion(null);
     setLoadedGameId(null);
 
@@ -1288,7 +1266,6 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     setActiveLine(at.line);
     setBreadcrumbs(at.breadcrumbs);
     setActiveIndex(next.cursor.index);
-    setScratchFrom(null);
     return true;
   }, [useAnnotated, annotatedGame, movesEditor.active, cursor]);
 
@@ -1306,7 +1283,6 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
           return back ? { ...back, index: Math.min(anchor.index, back.line.length) } : null;
         })();
     setScratch(null);
-    setScratchFrom(null);
     setScratchPromotion(null);
     setAnnotatedGame(saved);
     if (at) {
@@ -1343,17 +1319,19 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     return false;
   }, [useAnnotated, movesEditor.active, playScratch, currentFen]);
 
-  /** Click-to-move outside edit mode: first click picks a piece of the side to
-   *  move, second click tries the move. Clicking elsewhere clears the pick. */
-  const scratchClickSquare = useCallback((square: string) => {
-    if (!useAnnotated || movesEditor.active) return;
-    const chess = new Chess(currentFen);
-    const piece = chess.get(square as Parameters<typeof chess.get>[0]);
-    if (scratchFrom && scratchFrom !== square) {
-      if (tryScratchDrop(scratchFrom, square)) { setScratchFrom(null); return; }
-    }
-    setScratchFrom(piece && piece.color === chess.turn() ? square : null);
-  }, [useAnnotated, movesEditor.active, currentFen, scratchFrom, tryScratchDrop]);
+  /** Click-to-move outside edit mode — the editor's own (useClickToMove):
+   *  click a piece then its square, or only the square. The moves go into a
+   *  scratch line. */
+  const scratchCtm = useClickToMove({
+    active: useAnnotated && !movesEditor.active,
+    fen: currentFen,
+    blocked: !!scratchPromotion,
+    tryMove: tryScratchDrop,
+    resetKey: [currentFen, scratchPromotion, movesEditor.active],
+  });
+  /** The board's click-to-move: the editor's while editing, else the scratch one. */
+  const ctm = movesEditor.active ? movesEditor : scratchCtm;
+  const oneClick = oneClickPointer(ctm, flipped, oneClickPressedRef);
 
   /** Leave the editor without saving, but stay on the position being looked
    *  at: the moves of the current line that the game doesn't hold come back as
@@ -1370,7 +1348,6 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     const at = replayed ? resolvePathSafe(replayed.game.mainLine, replayed.cursor.steps) : null;
     if (!replayed || !at) { discardScratch(); return; }
     setScratch(replayed.scratched ? { saved: base, anchor: replayed.anchor } : null);
-    setScratchFrom(null);
     setScratchPromotion(null);
     setAnnotatedGame(replayed.game);
     setActiveLine(at.line);
@@ -1708,21 +1685,21 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   // radial-gradient on empty squares mirrors the standard "legal-move" hint
   // (small dot in the centre); on occupied squares we use an inset ring so
   // capturable pieces stay visible.
-  const editorSquareStyles: Record<string, React.CSSProperties> = useMemo(() => {
-    if (!movesEditor.active || !movesEditor.selectedSquare) return {};
+  const clickSquareStyles: Record<string, React.CSSProperties> = useMemo(() => {
+    if (!ctm.active || !ctm.selectedSquare) return {};
     const styles: Record<string, React.CSSProperties> = {
-      [movesEditor.selectedSquare]: { background: "rgba(255, 215, 0, 0.45)" },
+      [ctm.selectedSquare]: { background: "rgba(255, 215, 0, 0.45)" },
     };
     let board: Chess | null = null;
-    try { board = new Chess(movesEditor.fen); } catch { board = null; }
-    for (const sq of movesEditor.legalDestinations) {
+    try { board = new Chess(movesEditor.active ? movesEditor.fen : currentFen); } catch { board = null; }
+    for (const sq of ctm.legalDestinations) {
       const occupied = board ? !!board.get(sq as never) : false;
       styles[sq] = occupied
         ? { boxShadow: "inset 0 0 0 4px rgba(0,0,0,0.45)" }
         : { background: "radial-gradient(circle, rgba(0,0,0,0.35) 18%, transparent 22%)" };
     }
     return styles;
-  }, [movesEditor.active, movesEditor.selectedSquare, movesEditor.legalDestinations, movesEditor.fen]);
+  }, [ctm.active, ctm.selectedSquare, ctm.legalDestinations, movesEditor.active, movesEditor.fen, currentFen]);
 
   // Last-move highlight while editing — same shading as view mode, computed
   // from the editor's own cursor (the viewer's is frozen during edit).
@@ -1865,8 +1842,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
                 const carried = clearScratchMarks(annotatedGame);
                 const at = resolvePathSafe(carried.mainLine, cursor.steps);
                 if (at) movesEditor.start(carried, at.line, Math.min(cursor.index, at.line.length), at.breadcrumbs, true);
-                setScratchFrom(null);
-                setScratchPromotion(null);
+                            setScratchPromotion(null);
                 return;
               }
               movesEditor.start(annotatedGame, activeLine, activeIndex, breadcrumbs);
@@ -1933,22 +1909,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
               e.stopPropagation();
               e.preventDefault();
             }}
-            onPointerDown={(e) => {
-              if (!movesEditor.active) return;
-              if (movesEditor.pendingDivergence || movesEditor.pendingPromotion) return;
-              const sq = resolveSquareFromPointer(e, flipped);
-              if (!sq) return;
-              if (!movesEditor.shouldHandleAsDestination(sq)) return;
-              // Cheap legality check — pickSourceFor returns null when no
-              // legal move at all lands on this square, regardless of DB.
-              if (!movesEditor.pickSourceFor(sq)) return;
-              movesEditor.requestPreview(sq);
-              oneClickPressedRef.current = true;
-              try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* no-op */ }
-              // Prevent the synthesised click that would otherwise fire onSquareClick
-              // and select the destination square as a source after our commit.
-              e.preventDefault();
-            }}
+            onPointerDown={(e) => oneClick.onPointerDown(e)}
             onPointerMove={(e) => {
               // Drawing gesture: track the hovered square for the live preview.
               if (drawingRef.current) {
@@ -1956,14 +1917,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
                 setDrawPreview({ from: drawingRef.current.from, to: sq ?? drawingRef.current.from, color: movesEditor.drawColor });
                 return;
               }
-              // Only follow the cursor while the user is still pressing —
-              // after release, the gesture may stay "active" (silent wait
-              // for DB data) but the user is no longer aiming.
-              if (!oneClickPressedRef.current) return;
-              if (!movesEditor.gestureActive) return;
-              const sq = resolveSquareFromPointer(e, flipped);
-              if (!sq) { movesEditor.clearPreview(); return; }
-              movesEditor.dragTo(sq);
+              oneClick.onPointerMove(e);
             }}
             onPointerUp={(e) => {
               // Drawing gesture: same square → circle, different → arrow.
@@ -1978,18 +1932,12 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
                 }
                 return;
               }
-              if (!oneClickPressedRef.current) return;
-              oneClickPressedRef.current = false;
-              if (!movesEditor.gestureActive) return;
-              const sq = resolveSquareFromPointer(e, flipped);
-              if (!sq) { movesEditor.clearPreview(); return; }
-              movesEditor.commitPreview();
+              oneClick.onPointerUp(e);
             }}
             onPointerCancel={() => {
               drawingRef.current = null;
               setDrawPreview(null);
-              oneClickPressedRef.current = false;
-              movesEditor.clearPreview();
+              oneClick.onPointerCancel();
             }}
           >
             <BoardErrorBoundary>
@@ -2004,10 +1952,8 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
                   ? !movesEditor.pendingDivergence && !movesEditor.pendingPromotion
                   : useAnnotated && !scratchPromotion,
                 squareStyles: movesEditor.active
-                  ? { ...editorLastMoveSquares, ...editorSquareStyles }
-                  : scratchFrom
-                  ? { ...lastMoveSquares, [scratchFrom]: { boxShadow: "inset 0 0 0 3px var(--color-primary)" } }
-                  : lastMoveSquares,
+                  ? { ...editorLastMoveSquares, ...clickSquareStyles }
+                  : { ...lastMoveSquares, ...clickSquareStyles },
                 allowDrawingArrows: false,
                 darkSquareStyle: { backgroundColor: "var(--color-board-game-dark)" },
                 lightSquareStyle: { backgroundColor: "var(--color-board-game-light)" },
@@ -2017,10 +1963,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
                   if (movesEditor.active) return movesEditor.tryMove(sourceSquare, targetSquare);
                   return tryScratchDrop(sourceSquare, targetSquare);
                 },
-                onSquareClick: ({ square }) => {
-                  if (movesEditor.active) { movesEditor.clickSquare(square); return; }
-                  scratchClickSquare(square);
-                },
+                onSquareClick: ({ square }) => ctm.clickSquare(square),
               }}
             />
             </BoardErrorBoundary>
@@ -2056,11 +1999,11 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
               <MoveNagBadge square={moveNagBadge.square} nag={moveNagBadge.nag} flipped={flipped} size={squareSize} />
             )}
             {/* One-click destination preview — shown while the pointer is held */}
-            {movesEditor.active && movesEditor.previewMove && (
+            {ctm.active && ctm.previewMove && (
               <AnnotationOverlay
                 arrows={[{
-                  from: movesEditor.previewMove.from,
-                  to: movesEditor.previewMove.to,
+                  from: ctm.previewMove.from,
+                  to: ctm.previewMove.to,
                   color: "rgba(56, 142, 60, 0.85)",
                 }]}
                 circles={[]}

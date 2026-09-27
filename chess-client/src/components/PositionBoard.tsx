@@ -1,10 +1,11 @@
-import { useMemo, useLayoutEffect, useRef, useState } from "react";
+import { useMemo, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { Chessboard, Arrow } from "react-chessboard";
 import { fitBoard } from "../lib/boardSize";
 import BoardErrorBoundary from "./BoardErrorBoundary";
 import { Chess } from "chess.js";
 import { GameSummary, MoveStats } from "../types";
 import PositionMoves from "./PositionMoves";
+import { useClickToMove, oneClickPointer } from "./useClickToMove";
 
 const IconFlip = () => (
   <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -37,11 +38,15 @@ interface Props {
   /** Render the nav + move list beside the board (Players). Off on the Games page,
    *  which shows them in a dedicated B1 panel. */
   showMoves?: boolean;
+  /** Moves played on the board (SAN): dragged, two clicks, or one click on
+   *  the destination — as on the Analysis board. Without it the board only
+   *  shows the position. */
+  onMove?: (san: string) => void;
 }
 
 export default function PositionBoard({
   moveSequence, onBack, onReset, onForward, onEnd, onJumpTo, fullLine,
-  relatedGame, onSwitchToGame, moveStats, selectedMoveSan, showRelatedGame = true, showMoves = true,
+  relatedGame, onSwitchToGame, moveStats, selectedMoveSan, showRelatedGame = true, showMoves = true, onMove,
 }: Props) {
   const [flipped, setFlipped] = useState(false);
   const [copiedFen, setCopiedFen] = useState(false);
@@ -68,6 +73,37 @@ export default function PositionBoard({
 
   const fen = useMemo(() => fenFromMoves(moveSequence), [moveSequence]);
 
+  // Playing moves on the board (with onMove): the Analysis board's
+  // click-to-move (useClickToMove). A pawn reaching the last rank becomes a
+  // queen — this board explores openings, where under-promotions are rare.
+  const tryMove = (from: string, to: string): boolean => {
+    if (!onMove) return false;
+    try {
+      const c = new Chess(fen);
+      const m = c.move({ from, to, promotion: "q" });
+      if (!m) return false;
+      // SAN as chess.js writes it — with "+", as the database's moves are.
+      onMove(m.san);
+      return true;
+    } catch { return false; }
+  };
+  const ctm = useClickToMove({ active: !!onMove, fen, blocked: false, tryMove, resetKey: [fen] });
+  const pressedRef = useRef(false);
+  const oneClick = oneClickPointer(ctm, flipped, pressedRef);
+  const clickStyles = useMemo(() => {
+    const styles: Record<string, CSSProperties> = {};
+    if (!ctm.selectedSquare) return styles;
+    styles[ctm.selectedSquare] = { background: "rgba(255, 215, 0, 0.45)" };
+    let board: Chess | null = null;
+    try { board = new Chess(fen); } catch { board = null; }
+    for (const sq of ctm.legalDestinations) {
+      styles[sq] = board?.get(sq as never)
+        ? { boxShadow: "inset 0 0 0 4px rgba(0,0,0,0.45)" }
+        : { background: "radial-gradient(circle, rgba(0,0,0,0.35) 18%, transparent 22%)" };
+    }
+    return styles;
+  }, [ctm.selectedSquare, ctm.legalDestinations, fen]);
+
   const arrows = useMemo((): Arrow[] => {
     if (!moveStats?.length) return [];
     const chess = new Chess();
@@ -86,6 +122,10 @@ export default function PositionBoard({
     }
     return selected ? [...others, selected] : others;
   }, [fen, moveStats, selectedMoveSan]);
+  // The one-click preview, over the database arrows.
+  const shownArrows = ctm.previewMove
+    ? [...arrows, { startSquare: ctm.previewMove.from, endSquare: ctm.previewMove.to, color: "rgba(56, 142, 60, 0.85)" }]
+    : arrows;
 
   return (
     <div className="flex flex-1 overflow-hidden p-2 gap-2 bg-surface min-h-0 min-w-0">
@@ -105,15 +145,24 @@ export default function PositionBoard({
         >
           {copiedFen ? "Copied" : "FEN"}
         </button>
-        <div style={{ width: squareSize, height: squareSize, flexShrink: 0 }}>
+        <div
+          style={{ width: squareSize, height: squareSize, flexShrink: 0 }}
+          onPointerDown={onMove ? oneClick.onPointerDown : undefined}
+          onPointerMove={onMove ? oneClick.onPointerMove : undefined}
+          onPointerUp={onMove ? oneClick.onPointerUp : undefined}
+          onPointerCancel={onMove ? oneClick.onPointerCancel : undefined}
+        >
           <BoardErrorBoundary>
           <Chessboard
             options={{
               id: "position-board", // unique id — see MiniBoard note (shared default id collides)
               position: fen,
               boardOrientation: flipped ? "black" : "white",
-              allowDragging: false,
-              arrows,
+              allowDragging: !!onMove,
+              arrows: shownArrows,
+              squareStyles: clickStyles,
+              onPieceDrop: ({ sourceSquare, targetSquare }) => !!sourceSquare && !!targetSquare && tryMove(sourceSquare, targetSquare),
+              onSquareClick: ({ square }) => ctm.clickSquare(square),
               clearArrowsOnPositionChange: false,
               allowDrawingArrows: false,
               darkSquareStyle: { backgroundColor: "var(--color-board-position-dark)" },

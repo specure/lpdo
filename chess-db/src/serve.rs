@@ -1826,6 +1826,21 @@ async fn engine_results_delete_handler(
     Ok(Json(serde_json::json!({ "deleted": n })))
 }
 
+#[derive(Deserialize)]
+struct EngineQuickQuery { fen: String }
+
+/// Stockfish's first-sight order of the moves in a position (a shallow
+/// search): what a one-click move falls back on without database games or a
+/// deeper evaluation.
+async fn engine_quick_handler(
+    State(state): State<AppState>,
+    Query(q): Query<EngineQuickQuery>,
+) -> ApiResult<serde_json::Value> {
+    let fen = crate::engine::clean_fen(&q.fen).ok_or((StatusCode::BAD_REQUEST, "not a legal position".to_string()))?;
+    let moves = state.engine.quick_order(&fen).await.map_err(|e| (StatusCode::CONFLICT, e))?;
+    Ok(Json(serde_json::json!({ "moves": moves })))
+}
+
 /// The panel paused the engine: Stockfish's search is frozen where it is, to
 /// go on when run again on the same position.
 async fn engine_pause_handler(
@@ -2650,6 +2665,7 @@ pub async fn run(
         .route("/engine/replies",                      get(engine_replies_handler))
         .route("/engine/alive",                        post(engine_alive_handler))
         .route("/engine/pause",                        post(engine_pause_handler))
+        .route("/engine/quick",                        get(engine_quick_handler))
         .route("/engine/results",                      get(engine_results_handler).delete(engine_results_delete_handler))
         .route("/engine/remembered",                   get(engine_remembered_handler))
         .route("/engine/bench",                        post(engine_bench_handler))
