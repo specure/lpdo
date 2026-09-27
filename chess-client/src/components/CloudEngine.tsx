@@ -26,11 +26,11 @@ function parseNote(note: string): { mark: string; opp: string; oppStrong: string
 }
 
 type EngineSource = "chessdb" | "lichess" | "stockfish" | "lc0";
-type EngineStatus = "loading" | "ok" | "unknown" | "offline" | "capped";
+type EngineStatus = "loading" | "ok" | "unknown" | "offline" | "capped" | "ratelimited";
 
 // Lichess (Stockfish) cloud eval — a few deep PV lines, White-relative eval + depth.
 export interface LichessLine { evalCp: number | null; mate: number | null; pvUci: string[]; }
-interface LichessEval { status: EngineStatus; depth: number; knodes: number; lines: LichessLine[]; }
+interface LichessEval { status: EngineStatus; depth: number; knodes: number; lines: LichessLine[]; retry_in?: number; }
 
 /** Convert a UCI principal variation to SAN by replaying it from `fen`. */
 export function pvToSan(fen: string, pvUci: string[]): string[] {
@@ -203,7 +203,9 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine, onEn
   // Lichess analysis settings (persisted): chessdb-style Replies/Strong (extra
   // per-move requests) vs plain lines, and how many lines to show/analyse.
   // Set under Maintenance → Engines → Engine panel (per device).
-  const [lichessShowStats] = useState(() => localStorage.getItem("lichessShowStats") !== "false");
+  // Off unless switched on: its extra request per move soon runs into
+  // Lichess's rate limit.
+  const [lichessShowStats] = useState(() => localStorage.getItem("lichessShowStats") === "true");
   // Lichess's threshold for strong moves (Maintenance → Engines, on the server).
   const [lichessStrongCp, setLichessStrongCp] = useState(DEFAULT_LICHESS_STRONG_CP);
   const [lichessNeutralCp, setLichessNeutralCp] = useState(DEFAULT_LICHESS_NEUTRAL_CP);
@@ -231,6 +233,17 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine, onEn
   // Each cloud service's own status: both can run while either tab is shown.
   const [dbStatus, setDbStatus] = useState<EngineStatus>("ok");
   const [liStatus, setLiStatus] = useState<EngineStatus>("ok");
+  // Lichess answered 429: when it may be asked again (the server rests till
+  // then), and a tick that asks again at that time.
+  const [liRetryAt, setLiRetryAt] = useState<number | null>(null);
+  const [liRetryTick, setLiRetryTick] = useState(0);
+  const [, setSecondTick] = useState(0);
+  useEffect(() => {
+    if (liStatus !== "ratelimited" || liRetryAt == null) return;
+    const count = window.setInterval(() => setSecondTick((n) => n + 1), 1000);
+    const retry = window.setTimeout(() => setLiRetryTick((n) => n + 1), Math.max(0, liRetryAt - Date.now()) + 500);
+    return () => { window.clearInterval(count); window.clearTimeout(retry); };
+  }, [liStatus, liRetryAt]);
   // The position each service's result is for: a paused tab still shows its
   // result for the position on the board, and only that one.
   const [dbFen, setDbFen] = useState<string | null>(null);
@@ -320,12 +333,17 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine, onEn
     const t = setTimeout(() => {
       fetch(`/api/lichess-eval?fen=${encodeURIComponent(fen)}${rq}`, { signal: ctrl.signal })
         .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<LichessEval>; })
-        .then((d) => { setLichessEval(d); setLiStatus(d.lines?.length ? "ok" : (d.status ?? "unknown")); setLiFen(fen); })
+        .then((d) => {
+          setLichessEval(d);
+          setLiStatus(d.lines?.length ? "ok" : (d.status ?? "unknown"));
+          setLiRetryAt(d.status === "ratelimited" ? Date.now() + (d.retry_in ?? 60) * 1000 : null);
+          setLiFen(fen);
+        })
         .catch((e) => { if (!(e instanceof DOMException && e.name === "AbortError")) { setLichessEval(null); setLiStatus("offline"); } });
     }, 350);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fen, liOn, engineRefreshTick]);
+  }, [fen, liOn, engineRefreshTick, liRetryTick]);
   const engineStatus: EngineStatus = engineSource === "chessdb" ? dbStatus : liStatus;
 
   // Power-move stats for Lichess (async, after the lines are on screen): for each
@@ -515,6 +533,14 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine, onEn
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center text-on-surface-variant text-body-sm px-3">
           <span>The cloud engines are asked only in the opening, up to the move set under Maintenance → Others → Cloud engines. Positions later in a game stay on your server.</span>
           <button onClick={() => setEngineSource("stockfish")} className="h-8 px-3 rounded-full text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard">Analyse with Stockfish on the server</button>
+        </div>
+      ) : engineStatus === "ratelimited" ? (
+        <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center text-on-surface-variant text-body-sm px-3">
+          <span>
+            Lichess limits how often it may be asked, and asks for a rest — it is asked again
+            {liRetryAt != null && liRetryAt > Date.now() ? ` in ${Math.ceil((liRetryAt - Date.now()) / 1000)} s` : " now"}.
+            Positions it answered before still show at once.
+          </span>
         </div>
       ) : engineStatus === "offline" ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center text-on-surface-variant text-body-sm px-3">

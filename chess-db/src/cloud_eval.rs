@@ -108,7 +108,22 @@ async fn throttle(gate: &tokio::sync::Mutex<Instant>, min_gap: Duration) {
     *last = Instant::now();
 }
 
-const LICHESS_MIN_GAP: Duration = Duration::from_millis(200);
+/// Lichess wants one request at a time, not a burst: one a second, which a
+/// position (its own eval and the Replies & Strong look-ups) stays within.
+const LICHESS_MIN_GAP: Duration = Duration::from_millis(1000);
+/// After a 429 Lichess asks for a full minute's rest (unless it says how
+/// long); asking meanwhile only extends it.
+const LICHESS_BACKOFF: Duration = Duration::from_secs(60);
+
+/// Until when Lichess is not asked (it answered 429).
+static LICHESS_BLOCKED: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
+/// Seconds Lichess is still resting, if it is.
+fn lichess_resting() -> Option<u64> {
+    let until = (*LICHESS_BLOCKED.lock().unwrap())?;
+    let left = until.saturating_duration_since(Instant::now());
+    (!left.is_zero()).then(|| left.as_secs().max(1))
+}
 const CHESSDB_MIN_GAP: Duration = Duration::from_millis(80);
 
 fn shared() -> &'static Shared {
@@ -235,7 +250,7 @@ pub fn peek_lines(zobrist: i64) -> Vec<MoveLine> {
 pub fn peek_lichess(zobrist: i64) -> LichessEval {
     match shared().lichess_cache.lock().unwrap().get(&zobrist) {
         Some((t, e)) if t.elapsed() < CACHE_TTL => e.clone(),
-        _ => LichessEval { status: "uncached".to_string(), depth: 0, knodes: 0, lines: Vec::new() },
+        _ => LichessEval { status: "uncached".to_string(), depth: 0, knodes: 0, lines: Vec::new(), retry_in: None },
     }
 }
 
@@ -437,11 +452,15 @@ pub struct LichessLine {
 
 #[derive(Clone, Serialize)]
 pub struct LichessEval {
-    /// `"ok"`, `"unknown"` (not in Lichess's cloud cache), or `"offline"`.
+    /// `"ok"`, `"unknown"` (not in Lichess's cloud cache), `"offline"`, or
+    /// `"ratelimited"` (Lichess asked us to wait: see `retry_in`).
     pub status: String,
     pub depth: i32,
     pub knodes: i64,
     pub lines: Vec<LichessLine>,
+    /// Rate-limited: seconds until Lichess is asked again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_in: Option<u64>,
 }
 
 pub async fn query_lichess(fen: &str, zobrist: i64, refresh: bool) -> LichessEval {
@@ -454,6 +473,10 @@ pub async fn query_lichess(fen: &str, zobrist: i64, refresh: bool) -> LichessEva
         }
     }
 
+    // Resting after a 429: not asked, or the rest would only grow.
+    if let Some(secs) = lichess_resting() {
+        return LichessEval { status: "ratelimited".into(), depth: 0, knodes: 0, lines: vec![], retry_in: Some(secs) };
+    }
     throttle(&s.lichess_gate, LICHESS_MIN_GAP).await;
     let eval = match s
         .client
@@ -468,17 +491,26 @@ pub async fn query_lichess(fen: &str, zobrist: i64, refresh: bool) -> LichessEva
     {
         // 404 = genuinely not in Lichess's cloud — a real answer, safe to cache.
         Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
-            LichessEval { status: "unknown".into(), depth: 0, knodes: 0, lines: vec![] }
+            LichessEval { status: "unknown".into(), depth: 0, knodes: 0, lines: vec![], retry_in: None }
         }
         // 200 with a parseable body = a real eval.
         Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
             Ok(v) => parse_lichess(&v),
-            Err(_) => return LichessEval { status: "offline".into(), depth: 0, knodes: 0, lines: vec![] },
+            Err(_) => return LichessEval { status: "offline".into(), depth: 0, knodes: 0, lines: vec![], retry_in: None },
         },
-        // 429 (rate-limited) / 5xx / network — transient. Do NOT cache: caching a
-        // 429 as "unknown" would wrongly show even popular positions (incl. the
-        // start position) as "not in Lichess's cloud" for a whole day.
-        _ => return LichessEval { status: "offline".into(), depth: 0, knodes: 0, lines: vec![] },
+        // 429: Lichess limits us. Rest as long as it says (Retry-After), else
+        // a minute, and say so — not cached, like any transient answer.
+        Ok(resp) if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+            let wait = resp.headers().get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok())
+                .map(Duration::from_secs).unwrap_or(LICHESS_BACKOFF);
+            *LICHESS_BLOCKED.lock().unwrap() = Some(Instant::now() + wait);
+            return LichessEval { status: "ratelimited".into(), depth: 0, knodes: 0, lines: vec![], retry_in: Some(wait.as_secs().max(1)) };
+        }
+        // 5xx / network — transient. Do NOT cache: caching it as "unknown"
+        // would wrongly show even popular positions (incl. the start position)
+        // as "not in Lichess's cloud" for a whole day.
+        _ => return LichessEval { status: "offline".into(), depth: 0, knodes: 0, lines: vec![], retry_in: None },
     };
 
     let mut cache = s.lichess_cache.lock().unwrap();
@@ -519,6 +551,7 @@ fn parse_lichess(v: &serde_json::Value) -> LichessEval {
         depth: v.get("depth").and_then(|d| d.as_i64()).unwrap_or(0) as i32,
         knodes: v.get("knodes").and_then(|k| k.as_i64()).unwrap_or(0),
         lines,
+        retry_in: None,
     }
 }
 
@@ -592,14 +625,14 @@ pub fn disabled_chessdb() -> CloudEval {
     CloudEval { status: "disabled".to_string(), moves: Vec::new() }
 }
 pub fn disabled_lichess() -> LichessEval {
-    LichessEval { status: "disabled".to_string(), depth: 0, knodes: 0, lines: Vec::new() }
+    LichessEval { status: "disabled".to_string(), depth: 0, knodes: 0, lines: Vec::new(), retry_in: None }
 }
 
 pub fn capped_chessdb() -> CloudEval {
     CloudEval { status: "capped".to_string(), moves: Vec::new() }
 }
 pub fn capped_lichess() -> LichessEval {
-    LichessEval { status: "capped".to_string(), depth: 0, knodes: 0, lines: Vec::new() }
+    LichessEval { status: "capped".to_string(), depth: 0, knodes: 0, lines: Vec::new(), retry_in: None }
 }
 
 #[cfg(test)]
