@@ -873,10 +873,12 @@ function Lc0Bench({ network, backend }: { network: string; backend: string }) {
 /** Lichess's Replies & Strong columns: chessdb-style counts from the
  *  positions after each move, a few extra requests per move. Per device. */
 function LichessStats() {
-  const [on, setOn] = useState(() => { try { return localStorage.getItem("lichessShowStats") !== "false"; } catch { return true; } });
+  // Off unless switched on: its extra request per move soon runs into
+  // Lichess's rate limit (429).
+  const [on, setOn] = useState(() => { try { return localStorage.getItem("lichessShowStats") === "true"; } catch { return false; } });
   return (
     <EngineSwitch
-      label="Replies & Strong columns (a few extra requests per move)"
+      label="Replies & Strong columns (an extra request per move — Lichess soon limits them)"
       on={on}
       onChange={(v) => { setOn(v); try { localStorage.setItem("lichessShowStats", String(v)); } catch { /* per-device convenience only */ } }}
     />
