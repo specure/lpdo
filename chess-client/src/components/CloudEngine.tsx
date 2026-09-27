@@ -544,10 +544,9 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine, onEn
         </div>
       ) : engineStatus === "ratelimited" ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center text-on-surface-variant text-body-sm px-3">
-          <span>
-            Lichess limits how often it may be asked, and asks for a rest — it is asked again
+          <span title="Lichess limits how often it may be asked. Positions it answered before still show at once.">
+            Lichess is busy — retrying
             {liRetryAt != null && liRetryAt > Date.now() ? ` in ${Math.ceil((liRetryAt - Date.now()) / 1000)} s` : " now"}.
-            Positions it answered before still show at once.
           </span>
         </div>
       ) : engineStatus === "offline" ? (
