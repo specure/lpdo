@@ -53,13 +53,25 @@ export function combineEngineMoves(perEngine: EngineMove[][]): CombinedMove[] {
 }
 
 
-export const HINT_ARROWS = 3;
+/** The database's arrows cover this share of the games from the position —
+ *  one move where it dominates, more where play is spread — up to DB_MAX. */
+const DB_COVERAGE = 0.75;
+const DB_MAX = 6;
 
-/** The database's top moves (SAN with game counts) in `fen` as arrows. */
+/** The database's most played moves (SAN with game counts) in `fen` as
+ *  arrows: the fewest that together cover DB_COVERAGE of the games. */
 export function dbArrows(fen: string, moves: { mv: string; games: number }[], selectedSan?: string | null): HintArrow[] {
-  const top = [...moves].sort((a, b) => b.games - a.games).slice(0, HINT_ARROWS);
-  const most = top[0]?.games ?? 0;
+  const sorted = [...moves].filter((m) => m.games > 0).sort((a, b) => b.games - a.games);
+  const total = sorted.reduce((n, m) => n + m.games, 0);
+  const most = sorted[0]?.games ?? 0;
   if (!most) return [];
+  const top: typeof sorted = [];
+  let covered = 0;
+  for (const m of sorted) {
+    if (covered >= DB_COVERAGE * total || top.length >= DB_MAX) break;
+    top.push(m);
+    covered += m.games;
+  }
   let verbose: { san: string; from: string; to: string }[] = [];
   try { verbose = new Chess(fen).moves({ verbose: true }); } catch { return []; }
   const out: HintArrow[] = [];
@@ -160,7 +172,7 @@ export function ArrowToggles({ on, set }: ReturnType<typeof useArrowToggles>) {
   );
   return (
     <span className="inline-flex items-center gap-3 text-label-sm text-on-surface-variant">
-      {box("db", "Database", COLOR.db, "Arrows for the three moves played most often from here")}
+      {box("db", "Database", COLOR.db, "Arrows for the moves played most often from here — as many as cover three quarters of the games (at most six)")}
       {box("engine", "Engine", COLOR.engine, "Arrows for the strong moves (marked !) of every engine with a result for the position — stronger the more engines agree")}
     </span>
   );

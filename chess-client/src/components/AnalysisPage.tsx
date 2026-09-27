@@ -271,9 +271,9 @@ export default function AnalysisPage({ tabs, activeKey, onActivate, onClose, onC
       .catch(() => {});
   }, [active?.key, effFen, atStart, engineParam]);
 
-  // The board's arrows (see HintArrows): the database's three most played
-  // moves (the Reference moves), every engine's strong moves (from the Engine
-  // panel) — as the checkboxes have them.
+  // The board's arrows (see HintArrows): the database's most played moves
+  // (the Reference moves covering three quarters of the games) and every
+  // engine's strong moves (from the Engine panel) — as the checkboxes have them.
   const [engineMoves, setEngineMoves] = useState<CombinedMove[]>([]);
   const arrowToggles = useArrowToggles("analysis");
   const hintArrows = useMemo(() => [

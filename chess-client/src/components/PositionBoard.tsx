@@ -111,8 +111,8 @@ export default function PositionBoard({
     return styles;
   }, [ctm.selectedSquare, ctm.legalDestinations, fen]);
 
-  // The database's three most played moves, the engines' strong moves and
-  // (see HintArrows), as the checkboxes have them.
+  // The database's most played moves (covering three quarters of the games)
+  // and the engines' strong moves (see HintArrows), as the checkboxes have them.
   const on = arrowToggles?.on ?? { db: true, engine: false };
   const hints = useMemo(() => [
     ...(on.db ? dbArrows(fen, moveStats ?? [], selectedMoveSan) : []),
