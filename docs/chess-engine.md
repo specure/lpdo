@@ -209,9 +209,10 @@ move that is rarely played violet alone. While a game has arrows of its own
   <img src="images/board-arrows.png" alt="The Games board after 1.e4 c5 2.Nf3 d6 3.d4 cxd4 4.Nxd4 Nf6 5.Nc3 a6: orange arrows for the most played moves, violet for Stockfish's strong ones, and the Engine panel below" width="470">
 </p>
 
-After 5…a6 in the Najdorf, 6.Bg5, 6.Be3 and 6.Be2 are the most played;
-Stockfish's strong moves are 6.f3, 6.Be2, 6.Bg5 and 6.g3 — Be2 and Bg5 are
-both, the orange arrow with a violet core.
+After 5…a6 in the Najdorf, the five most played moves (6.Bg5, 6.Be3,
+6.Be2, 6.Bc4, 6.h3) cover three quarters of the games and get orange
+arrows; Stockfish's strong moves 6.f3, 6.Be2, 6.Bg5 and 6.g3 get violet
+ones — and 6.Be3, whose line repeats, none.
 
 ## Kept results
 
