@@ -215,12 +215,16 @@ async fn throttle(gate: &tokio::sync::Mutex<Instant>, min_gap: Duration) {
 /// Lichess wants one request at a time, not a burst: one a second, which a
 /// position (its own eval and the Replies & Strong look-ups) stays within.
 const LICHESS_MIN_GAP: Duration = Duration::from_millis(1000);
-/// After a 429 Lichess asks for a full minute's rest (unless it says how
-/// long); asking meanwhile only extends it.
-const LICHESS_BACKOFF: Duration = Duration::from_secs(60);
+/// After a 429 Lichess asks for at least a full minute's rest; asking
+/// meanwhile only extends it. A 429 again when the rest is over means it is
+/// still too soon: each rest in a row is longer — 1, 2, 5, 10, 20 minutes,
+/// then 30 — until Lichess answers again. Longer when Lichess says so.
+const LICHESS_BACKOFF_MINUTES: [u64; 6] = [1, 2, 5, 10, 20, 30];
 
 /// Until when Lichess is not asked (it answered 429).
 static LICHESS_BLOCKED: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+/// 429s in a row (reset by a real answer).
+static LICHESS_STRIKES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Seconds Lichess is still resting, if it is.
 fn lichess_resting() -> Option<u64> {
@@ -643,19 +647,23 @@ async fn fetch_lichess(fen: &str, zobrist: i64) -> LichessEval {
     {
         // 404 = genuinely not in Lichess's cloud — a real answer, safe to cache.
         Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
+            LICHESS_STRIKES.store(0, Ordering::Relaxed);
             LichessEval { status: "unknown".into(), depth: 0, knodes: 0, lines: vec![], retry_in: None, fetched: None }
         }
         // 200 with a parseable body = a real eval.
         Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
-            Ok(v) => parse_lichess(&v),
+            Ok(v) => { LICHESS_STRIKES.store(0, Ordering::Relaxed); parse_lichess(&v) }
             Err(_) => return LichessEval { status: "offline".into(), depth: 0, knodes: 0, lines: vec![], retry_in: None, fetched: None },
         },
         // 429: Lichess limits us. Rest as long as it says (Retry-After), else
         // a minute, and say so — not cached, like any transient answer.
         Ok(resp) if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
-            let wait = resp.headers().get(reqwest::header::RETRY_AFTER)
+            let strikes = LICHESS_STRIKES.fetch_add(1, Ordering::Relaxed);
+            let ladder = Duration::from_secs(60 * LICHESS_BACKOFF_MINUTES[strikes.min(LICHESS_BACKOFF_MINUTES.len() - 1)]);
+            let said = resp.headers().get(reqwest::header::RETRY_AFTER)
                 .and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok())
-                .map(Duration::from_secs).unwrap_or(LICHESS_BACKOFF);
+                .map(Duration::from_secs).unwrap_or_default();
+            let wait = ladder.max(said);
             *LICHESS_BLOCKED.lock().unwrap() = Some(Instant::now() + wait);
             return LichessEval { status: "ratelimited".into(), depth: 0, knodes: 0, lines: vec![], retry_in: Some(wait.as_secs().max(1)), fetched: None };
         }

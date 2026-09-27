@@ -32,6 +32,12 @@ type EngineStatus = "loading" | "ok" | "unknown" | "offline" | "capped" | "ratel
 export interface LichessLine { evalCp: number | null; mate: number | null; pvUci: string[]; }
 interface LichessEval { status: EngineStatus; depth: number; knodes: number; lines: LichessLine[]; retry_in?: number; fetched?: number; }
 
+/** "38 s", "5 min": how long until Lichess is asked again. */
+function waitText(ms: number): string {
+  const secs = Math.ceil(ms / 1000);
+  return secs > 90 ? `${Math.ceil(secs / 60)} min` : `${secs} s`;
+}
+
 /** " · fetched 3 Sep": a kept answer older than a day (the server fetches it
  *  afresh behind it). */
 function fetchedNote(fetched: number | null | undefined): string {
@@ -544,10 +550,9 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine, onEn
         </div>
       ) : engineStatus === "ratelimited" ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center text-on-surface-variant text-body-sm px-3">
-          <span>
-            Lichess limits how often it may be asked, and asks for a rest — it is asked again
-            {liRetryAt != null && liRetryAt > Date.now() ? ` in ${Math.ceil((liRetryAt - Date.now()) / 1000)} s` : " now"}.
-            Positions it answered before still show at once.
+          <span title="Lichess limits how often it may be asked; each rest in a row is longer, up to half an hour. Positions it answered before still show at once.">
+            Rate limit reached — retrying
+            {liRetryAt != null && liRetryAt > Date.now() ? ` in ${waitText(liRetryAt - Date.now())}` : " now"}.
           </span>
         </div>
       ) : engineStatus === "offline" ? (
