@@ -1906,6 +1906,9 @@ struct EngineAnalyseQuery {
     #[serde(default = "default_engine_lines")]
     lines: u32,
     engine: Option<String>,
+    /// Search past the engine's threshold (depth or nodes), up to the time cap.
+    #[serde(default)]
+    beyond: bool,
 }
 fn default_engine_lines() -> u32 { 3 }
 
@@ -1939,7 +1942,7 @@ async fn engine_analyse_handler(
     };
     let engine = pick_engine(&state, &WhichEngine { engine: q.engine.clone() })?;
     let (gen, remembered, rx) = engine
-        .analyse(&fen, history, q.lines)
+        .analyse(&fen, history, q.lines, q.beyond)
         .await
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e))?;
     let guard = Arc::new(StopOnDrop { engine: engine.clone(), gen });

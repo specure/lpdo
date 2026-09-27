@@ -821,6 +821,7 @@ impl Engine {
         fen: &str,
         history: Option<(String, Vec<String>)>,
         lines: u32,
+        beyond: bool,
     ) -> Result<(u64, Option<Snapshot>, broadcast::Receiver<Snapshot>), String> {
         // A benchmark needs the processor to itself: an analysis beside it
         // skews its figures badly (one run took ten times as long).
@@ -866,9 +867,10 @@ impl Engine {
             _ => format!("position fen {fen}"),
         };
         send(&mut r.stdin, &position).await?;
-        // Stop at the configured threshold; the time cap below is the net
-        // under it (and under "no limit").
-        let limits = { let s = self.settings.lock().await; (s.max_depth, s.max_nodes) };
+        // Stop at the configured threshold — unless asked to go beyond it (the
+        // panel's "search again" after the threshold was reached); the time
+        // cap below is the net under it (and under "no limit").
+        let limits = if beyond { (0, 0) } else { let s = self.settings.lock().await; (s.max_depth, s.max_nodes) };
         let go = match (self.kind, limits) {
             (Kind::Stockfish, (d, _)) if d > 0 => format!("go depth {d}"),
             (Kind::Lc0, (_, n)) if n > 0 => format!("go nodes {n}"),
@@ -1752,7 +1754,7 @@ mod tests {
         println!("engine: {:?} at {:?}", status.name, status.path);
         // After 1.e4 e5 2.Qh5 Nc6 3.Bc4 Nf6?? White mates: Qxf7#.
         let fen = clean_fen("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4").unwrap();
-        let (gen, _, mut rx) = engine.analyse(&fen, None, 3).await.unwrap();
+        let (gen, _, mut rx) = engine.analyse(&fen, None, 3, false).await.unwrap();
         let mut last = None;
         while let Ok(Ok(s)) = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
             if s.gen != gen { continue; }
@@ -1794,7 +1796,7 @@ mod tests {
 
         // After 1.e4: Black to move, so the engine's view is flipped to White's.
         let fen = clean_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").unwrap();
-        let (gen, _, mut rx) = engine.analyse(&fen, None, 3).await.unwrap();
+        let (gen, _, mut rx) = engine.analyse(&fen, None, 3, false).await.unwrap();
         let mut last = None;
         let until = std::time::Instant::now() + Duration::from_secs(20);
         while std::time::Instant::now() < until {
@@ -1846,7 +1848,7 @@ done
 
         // Black to move: the engine's +25 for Black is -25 for White.
         let fen = clean_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").unwrap();
-        let (gen, remembered, mut rx) = engine.analyse(&fen, None, 1).await.unwrap();
+        let (gen, remembered, mut rx) = engine.analyse(&fen, None, 1, false).await.unwrap();
         assert!(remembered.is_none());
         let mut last = None;
         while let Ok(Ok(s)) = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
@@ -1868,7 +1870,7 @@ done
         assert!(done, "stopping ends the search");
 
         // The same position again: the deepest result comes back at once.
-        let (_, remembered, _rx) = engine.analyse(&fen, None, 1).await.unwrap();
+        let (_, remembered, _rx) = engine.analyse(&fen, None, 1, false).await.unwrap();
         let r = remembered.expect("remembered");
         assert!(r.cached && r.depth == 2, "{r:?}");
 

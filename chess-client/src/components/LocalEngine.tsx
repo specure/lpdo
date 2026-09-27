@@ -15,7 +15,7 @@ interface EngineStatus {
   path: string | null;
   name: string | null;
   error: string | null;
-  settings: { path: string | null; threads: number; hash_mb: number; replies?: boolean; strong_cp?: number; strong_pct?: number; neutral_cp?: number; neutral_pct?: number };
+  settings: { path: string | null; threads: number; hash_mb: number; max_depth?: number; max_nodes?: number; replies?: boolean; strong_cp?: number; strong_pct?: number; neutral_cp?: number; neutral_pct?: number };
   found: string[];
   searched: string[];
   settings_file: string;
@@ -68,6 +68,8 @@ export default function LocalEngine({
   // is deeper — the evaluation on screen never gets shallower.
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [running, setRunning] = useState(true);
+  // Searching again after the search ended by itself: past the threshold.
+  const [beyond, setBeyond] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
 
@@ -119,7 +121,7 @@ export default function LocalEngine({
     // search is deeper, as a remembered result does.
     setSnap((prev) => (prev ? { ...prev, cached: true } : prev));
     const t = window.setTimeout(() => {
-      const es = new EventSource(engineAnalyseUrl(fen, lineCount, historyRef.current, kind));
+      const es = new EventSource(engineAnalyseUrl(fen, lineCount, historyRef.current, kind, beyond));
       esRef.current = es;
       es.onmessage = (ev) => {
         const s = JSON.parse(ev.data) as Snapshot;
@@ -139,7 +141,7 @@ export default function LocalEngine({
       esRef.current?.close();
       esRef.current = null;
     };
-  }, [fen, historyKey, lineCount, status?.available, running, kind, paused]);
+  }, [fen, historyKey, lineCount, status?.available, running, kind, paused, beyond]);
 
   // Replies & Strong (when switched on for this engine). The replies are the
   // legal moves, counted here at once; the strong ones the server's helpers
@@ -182,7 +184,7 @@ export default function LocalEngine({
   }, [repliesOn, settled, candidateKey, fen, kind, paused]);
 
   // A new position starts a new search, even if the last one was stopped.
-  useEffect(() => { setRunning(true); }, [fen]);
+  useEffect(() => { setRunning(true); setBeyond(false); }, [fen]);
 
   if (statusError) {
     return <div className="p-3 text-center text-error text-body-sm">{statusError}</div>;
@@ -229,6 +231,10 @@ export default function LocalEngine({
   const markBest = markScores.length ? Math.max(...markScores) : 0;
   const markThreshold = byWdl ? (status.settings.strong_pct ?? 1) / 100 : kind === "lc0" ? 10 : (status.settings.strong_cp ?? 10);
   const neutralThreshold = byWdl ? (status.settings.neutral_pct ?? 3) / 100 : kind === "lc0" ? 30 : (status.settings.neutral_cp ?? 30);
+  // Why a search ended by itself: its threshold, or the time cap.
+  const limit = kind === "lc0" ? status.settings.max_nodes ?? 0 : status.settings.max_depth ?? 0;
+  const reached = !!snap && !beyond && limit > 0 && (kind === "lc0" ? snap.nodes >= limit : snap.depth >= limit);
+  const stopReason = reached ? "limit reached" : "stopped after 5 minutes";
   // Stockfish counts in millions a second, Lc0 in thousands.
   const speed = !snap?.nps ? "" : snap.nps >= 1e6 ? `${(snap.nps / 1e6).toFixed(snap.nps >= 1e7 ? 0 : 1)} Mn/s` : `${Math.round(snap.nps / 1e3)}k n/s`;
 
@@ -238,23 +244,35 @@ export default function LocalEngine({
         <span className="min-w-0 truncate" title={status.path ?? undefined}>
           {status.name ?? "Engine"}
           {snap ? (kind === "lc0" ? ` · ${fmtNodes(snap.nodes)} nodes` : ` · depth ${snap.depth}`) : ""}
-          {snap?.done && !snap.cached ? " · done" : ""}
+          {snap?.done && !snap.cached ? ` · ${stopReason}` : ""}
           {snap?.cached
             ? <span title={paused ? "Remembered from an earlier search" : "Remembered from an earlier search; the engine is deepening it"}> (cached)</span>
             : speed ? ` · ${speed}` : ""}
         </span>
-        <button
-          onClick={() => {
-            if (paused) onTogglePause?.();
-            else if (!running) setRunning(true);
-            else if (onTogglePause) onTogglePause();
-            else setRunning(false);
-          }}
-          className="h-6 px-2 shrink-0 rounded-full text-label-sm text-primary hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard"
-          title={paused ? "Run the engine" : running ? "Pause the engine" : "Analyse this position again"}
-        >
-          {paused ? "Run" : running ? "Pause" : "Analyse"}
-        </button>
+        <span className="shrink-0 flex items-center gap-1">
+          {/* The search ended by itself: search this position again — past
+              the threshold, up to the time cap — as the cloud tabs ask again. */}
+          {!paused && !running && (
+            <button
+              onClick={() => { setBeyond(true); setRunning(true); }}
+              className="w-6 h-6 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
+              title="Search this position again, past the depth or node limit, for up to five more minutes"
+            >⟳</button>
+          )}
+          {(paused || running || onTogglePause) && (
+            <button
+              onClick={() => {
+                if (paused) onTogglePause?.();
+                else if (onTogglePause) onTogglePause();
+                else setRunning(false);
+              }}
+              className="h-6 px-2 rounded-full text-label-sm text-primary hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard"
+              title={paused ? "Run the engine" : "Pause the engine: it analyses no position until run again"}
+            >
+              {paused ? "Run" : "Pause"}
+            </button>
+          )}
+        </span>
       </div>
       {status.update_available && status.latest && (
         <div className="px-3 py-1 text-label-sm text-on-surface-variant border-b border-outline/40">
