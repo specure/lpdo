@@ -282,17 +282,15 @@ export default function LocalEngine({
               title={further ? `Search further: to ${kind === "lc0" ? `${fmtNodes(further)} nodes` : `depth ${further}`}` : "Search again"}
             >⟳</button>
           )}
-          {(paused || running || onTogglePause) && (
+          {/* Run and pause are the engine's tab's own button (onTogglePause);
+              without one, a plain Stop. */}
+          {!onTogglePause && running && (
             <button
-              onClick={() => {
-                if (paused) onTogglePause?.();
-                else if (onTogglePause) onTogglePause();
-                else setRunning(false);
-              }}
+              onClick={() => setRunning(false)}
               className="h-6 px-2 rounded-full text-label-sm text-primary hover:bg-primary/8 active:bg-primary/12 transition-colors duration-short3 ease-standard"
-              title={paused ? "Run the engine" : "Pause the engine: it analyses no position until run again"}
+              title="Stop the search"
             >
-              {paused ? "Run" : "Pause"}
+              Stop
             </button>
           )}
         </span>
