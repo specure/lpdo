@@ -342,6 +342,13 @@ function BookDetails({ book, busy, first, last, onUpdate, onDelete }: {
           <div className="text-title-sm text-on-surface break-words">{book.name}</div>
           {book.author && <div className="text-label-md text-on-surface-variant break-words">by {book.author}</div>}
         </div>
+        <BookMenu entries={[
+          { label: editing ? "Done editing" : "Edit…", onClick: () => setEditing((e) => !e) },
+          { label: "Move up", onClick: () => onUpdate({ ord: book.ord - 1 }), disabled: busy || first },
+          { label: "Move down", onClick: () => onUpdate({ ord: book.ord + 1 }), disabled: busy || last },
+          { label: "Export PGN…", onClick: () => void exportPgn(bookPgnPath(book.id), book.name).then(setNote), disabled: busy || book.chapters.length === 0 },
+          { label: "Delete…", onClick: () => setConfirmDelete(true), disabled: busy, separated: true },
+        ]} />
       </div>
       <div className="text-label-sm text-on-surface-variant">
         Played as {book.color} · {plural(book.chapters.length, "chapter")}{active.length !== book.chapters.length ? `, ${active.length} active` : ""} · {plural(lines, "line")}{off ? `, ${off} off` : ""}
@@ -353,20 +360,12 @@ function BookDetails({ book, busy, first, last, onUpdate, onDelete }: {
         </button>
       )}
       {book.description && <div className="text-body-sm text-on-surface-variant whitespace-pre-wrap break-words">{book.description}</div>}
-      <div className="flex items-center gap-1 flex-wrap">
-        <button onClick={() => setEditing((e) => !e)} className={plain} title="Name, author, colour, link, notes">{editing ? "Done" : "Edit…"}</button>
-        <button onClick={() => onUpdate({ ord: book.ord - 1 })} disabled={busy || first} className={nav} title="Move the book up">▲</button>
-        <button onClick={() => onUpdate({ ord: book.ord + 1 })} disabled={busy || last} className={nav} title="Move the book down">▼</button>
-        <button onClick={() => void exportPgn(bookPgnPath(book.id), book.name).then(setNote)} disabled={busy || book.chapters.length === 0} className={plain} title="Save the book's chapters as one PGN file">PGN…</button>
-        {confirmDelete ? (
-          <>
-            <button onClick={() => { setConfirmDelete(false); onDelete(); }} disabled={busy} className="h-7 px-2 rounded-full text-label-md text-error hover:bg-error/8">Delete it and its {plural(book.chapters.length, "chapter")}</button>
-            <button onClick={() => setConfirmDelete(false)} className={plain}>Cancel</button>
-          </>
-        ) : (
-          <button onClick={() => setConfirmDelete(true)} disabled={busy} className={plain}>Delete…</button>
-        )}
-      </div>
+      {confirmDelete && (
+        <div className="flex items-center gap-1 flex-wrap">
+          <button onClick={() => { setConfirmDelete(false); onDelete(); }} disabled={busy} className="h-7 px-2 rounded-full text-label-md text-error hover:bg-error/8">Delete it and its {plural(book.chapters.length, "chapter")}</button>
+          <button onClick={() => setConfirmDelete(false)} className={plain}>Cancel</button>
+        </div>
+      )}
       {editing && (
         <div className="flex flex-col gap-1.5">
           <input value={name} onChange={(e) => setName(e.target.value)} onBlur={() => { if (name.trim() && name.trim() !== book.name) onUpdate({ name: name.trim() }); }}
@@ -378,9 +377,41 @@ function BookDetails({ book, busy, first, last, onUpdate, onDelete }: {
             onKeyDown={enter} placeholder="Link to the course (optional)" className={field} />
           <textarea value={description} onChange={(e) => setDescription(e.target.value)} onBlur={() => commit("description", description, book.description)}
             rows={3} placeholder="Notes (optional)" className="w-full text-body-sm p-2 rounded-sm bg-surface-container border border-outline/40 text-on-surface" />
+          <button onClick={() => setEditing(false)} className={`${tonal} self-end`} title="Each field is saved as you leave it">Done</button>
         </div>
       )}
       {note && <div className="text-label-sm text-on-surface-variant">{note}</div>}
+    </div>
+  );
+}
+
+/** The book's commands behind one ⋯: it sits at the foot of the panel, so the
+ *  menu opens upwards. */
+function BookMenu({ entries }: { entries: { label: string; onClick: () => void; disabled?: boolean; separated?: boolean }[] }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("pointerdown", away);
+    document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("pointerdown", away); document.removeEventListener("keydown", esc); };
+  }, [open]);
+  return (
+    <div ref={ref} className="relative shrink-0">
+      <button onClick={() => setOpen((o) => !o)} className={`${nav} text-body-sm`} title="Edit, reorder, export, delete" aria-haspopup="menu" aria-expanded={open}>⋯</button>
+      {open && (
+        <div role="menu" className="absolute right-0 bottom-full mb-1 z-20 min-w-40 py-1 rounded-md bg-surface-container-high border border-outline/40 shadow-lg flex flex-col">
+          {entries.map((e) => (
+            <button key={e.label} role="menuitem" disabled={e.disabled}
+              onClick={() => { setOpen(false); e.onClick(); }}
+              className={`text-left px-3 py-1.5 text-body-sm text-on-surface hover:bg-on-surface/8 disabled:opacity-40 disabled:hover:bg-transparent ${e.separated ? "border-t border-outline/40 mt-1 pt-2" : ""}`}>
+              {e.label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
