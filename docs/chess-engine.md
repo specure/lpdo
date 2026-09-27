@@ -178,6 +178,41 @@ move the position repeats. They get no arrow on the board. Maintenance →
 Engines → Stockfish switches this off (*Show non-principal lines
 separately*) or sets the advantage it needs, per computer.
 
+<p align="center">
+  <img src="images/engine-repetition.png" alt="Stockfish's lines in the Engine panel: four principal moves, and 6.Be3 Ng4 7.Bc1 Nf6 apart under Leading to a repetition" width="470">
+</p>
+
+Here 6.Be3 rates +0.16, but after 6…Ng4 7.Bc1 Nf6 the position is back
+where it was: the principal moves are the four above.
+
+## Arrows on the board
+
+The boards on the Games and Analysis pages draw the most played and the
+strongest moves, each with a checkbox above the board (per page, per
+computer):
+
+- **Database** (orange): the most played moves from the position — as many as
+  cover three quarters of its games, thicker for a larger share. One arrow
+  where a move dominates; many thin ones where play is spread and there is no
+  favourite.
+- **Engine** (violet): every move any engine with a result for the position
+  marks **!** — chessdb.cn, Lichess, Stockfish and Lc0 together — stronger
+  the more of them agree. Stockfish's lines that lead to a repetition get
+  none.
+
+Where a move is both, the violet arrow is drawn thinner inside the orange
+one: a popular move no engine rates strong shows orange alone, and a strong
+move that is rarely played violet alone. While a game has arrows of its own
+(from its PGN), these are drawn fainter.
+
+<p align="center">
+  <img src="images/board-arrows.png" alt="The Games board after 1.e4 c5 2.Nf3 d6 3.d4 cxd4 4.Nxd4 Nf6 5.Nc3 a6: orange arrows for the most played moves, violet for Stockfish's strong ones, and the Engine panel below" width="470">
+</p>
+
+After 5…a6 in the Najdorf, 6.Bg5, 6.Be3 and 6.Be2 are the most played;
+Stockfish's strong moves are 6.f3, 6.Be2, 6.Bg5 and 6.g3 — Be2 and Bg5 are
+both, the orange arrow with a violet core.
+
 ## Kept results
 
 Every position Stockfish or Lc0 analyses keeps its furthest result — in the
