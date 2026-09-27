@@ -31,6 +31,7 @@ import type { CalArrow, CslCircle } from "../lib/parseAnnotations";
 import { nagsToString, nagToSymbol } from "../lib/parseAnnotations";
 import AnnotatedMoveList from "./AnnotatedMoveList";
 import { useClickToMove, resolveSquareFromPointer, oneClickPointer } from "./useClickToMove";
+import { HintArrowsOverlay, type HintArrow } from "./HintArrows";
 import {
   Breadcrumb,
   CursorPath,
@@ -389,6 +390,11 @@ interface Props {
    * page switches and restarts (remembered per open game). */
   flipped?: boolean;
   onFlippedChange?: (flipped: boolean) => void;
+  /** Database and engine arrows and forcing rings over the board (the
+   *  Analysis page's, see HintArrows), and their checkboxes for the toolbar. */
+  hintArrows?: HintArrow[];
+  hintRings?: { from: string; to: string }[];
+  arrowControls?: React.ReactNode;
 }
 
 // Tags shown in the compact view always; rest only appear when expanded.
@@ -832,7 +838,7 @@ function DetailsPanel({
   );
 }
 
-export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange, menuExtras }: Props) {
+export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange, menuExtras, hintArrows = [], hintRings = [], arrowControls }: Props) {
   const [detail, setDetail] = useState<GameDetail | null>(null);
   const [detailReloadKey, setDetailReloadKey] = useState(0);
   // The board's DOM id, unique per mounted GameBoard. react-chessboard finds a
@@ -1967,6 +1973,15 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
               }}
             />
             </BoardErrorBoundary>
+            {/* Database / engine arrows and forcing rings — fainter while the
+                game's own arrows are on the board, which keep the stage. */}
+            <HintArrowsOverlay
+              arrows={hintArrows}
+              rings={hintRings}
+              flipped={flipped}
+              size={squareSize}
+              faint={movesEditor.active ? movesEditor.currentArrows.length > 0 : annotationArrows.length > 0}
+            />
             {/* Custom annotation overlay (arrows + circles) in view mode */}
             {!movesEditor.active && (annotationArrows.length > 0 || annotationCircles.length > 0) && (
               <AnnotationOverlay
@@ -2118,6 +2133,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
                   <button onClick={() => goTo(maxIndex)} disabled={effectiveIndex === maxIndex} className={navBtn} title="Last move (↓)"><IconLast /></button>
                   <div className="w-px h-5 bg-outline-variant mx-2" />
                   <button onClick={toggleFlipped} className={navBtn} title="Flip board"><IconFlip /></button>
+                  {arrowControls && <span className="ml-2">{arrowControls}</span>}
                 </>
               );
             })()}

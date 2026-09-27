@@ -6,6 +6,7 @@ import { Chess } from "chess.js";
 import { GameSummary, MoveStats } from "../types";
 import PositionMoves from "./PositionMoves";
 import { useClickToMove, oneClickPointer } from "./useClickToMove";
+import { ArrowToggles, HintArrowsOverlay, dbArrows, engineArrows, forcingRings, type CombinedMove, type useArrowToggles } from "./HintArrows";
 
 const IconFlip = () => (
   <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -42,11 +43,17 @@ interface Props {
    *  the destination — as on the Analysis board. Without it the board only
    *  shows the position. */
   onMove?: (san: string) => void;
+  /** The engines' moves for this position (the Engine panel beside it), for
+   *  their arrows and forcing rings. */
+  engineMoves?: CombinedMove[];
+  /** Which arrows show, with their checkboxes on the board. Without it, the
+   *  database's arrows only (the Players page). */
+  arrowToggles?: ReturnType<typeof useArrowToggles>;
 }
 
 export default function PositionBoard({
   moveSequence, onBack, onReset, onForward, onEnd, onJumpTo, fullLine,
-  relatedGame, onSwitchToGame, moveStats, selectedMoveSan, showRelatedGame = true, showMoves = true, onMove,
+  relatedGame, onSwitchToGame, moveStats, selectedMoveSan, showRelatedGame = true, showMoves = true, onMove, engineMoves = [], arrowToggles,
 }: Props) {
   const [flipped, setFlipped] = useState(false);
   const [copiedFen, setCopiedFen] = useState(false);
@@ -104,55 +111,54 @@ export default function PositionBoard({
     return styles;
   }, [ctm.selectedSquare, ctm.legalDestinations, fen]);
 
-  const arrows = useMemo((): Arrow[] => {
-    if (!moveStats?.length) return [];
-    const chess = new Chess();
-    try { chess.load(fen); } catch { return []; }
-    const verboseMoves = chess.moves({ verbose: true });
-    const others: Arrow[] = [];
-    let selected: Arrow | null = null;
-    for (const stat of moveStats) {
-      const match = verboseMoves.find((m) => m.san === stat.mv);
-      if (!match) continue;
-      if (stat.mv === selectedMoveSan) {
-        selected = { startSquare: match.from, endSquare: match.to, color: "rgba(255, 170, 0, 0.9)" };
-      } else {
-        others.push({ startSquare: match.from, endSquare: match.to, color: "rgba(255, 170, 0, 0.3)" });
-      }
-    }
-    return selected ? [...others, selected] : others;
-  }, [fen, moveStats, selectedMoveSan]);
-  // The one-click preview, over the database arrows.
-  const shownArrows = ctm.previewMove
-    ? [...arrows, { startSquare: ctm.previewMove.from, endSquare: ctm.previewMove.to, color: "rgba(56, 142, 60, 0.85)" }]
-    : arrows;
+  // The database's three most played moves, the engines' strong moves and
+  // the forcing moves (see HintArrows), as the checkboxes have them.
+  const on = arrowToggles?.on ?? { db: true, engine: false, forcing: false };
+  const hints = useMemo(() => [
+    ...(on.db ? dbArrows(fen, moveStats ?? [], selectedMoveSan) : []),
+    ...(on.engine ? engineArrows(engineMoves) : []),
+  ], [on.db, on.engine, fen, moveStats, selectedMoveSan, engineMoves]);
+  const rings = useMemo(() => (on.forcing ? forcingRings(engineMoves) : []), [on.forcing, engineMoves]);
+
+  // The one-click preview.
+  const shownArrows: Arrow[] = ctm.previewMove
+    ? [{ startSquare: ctm.previewMove.from, endSquare: ctm.previewMove.to, color: "rgba(56, 142, 60, 0.85)" }]
+    : [];
 
   return (
     <div className="flex flex-1 overflow-hidden p-2 gap-2 bg-surface min-h-0 min-w-0">
-      {/* Board (scales to fit) with a flip button overlaid top-right. */}
+      {/* A row above the board — the arrows' checkboxes on the left, flip and
+          FEN on the right — then the board, scaled to fit what is left. */}
+      <div className="flex-1 min-h-0 min-w-0 flex flex-col">
+      <div className="shrink-0 pb-1 flex items-center justify-between gap-2">
+        <span>{arrowToggles && <ArrowToggles {...arrowToggles} />}</span>
+        <span className="inline-flex items-center gap-1">
+          <button
+            onClick={() => { navigator.clipboard?.writeText(fen).then(() => { setCopiedFen(true); window.setTimeout(() => setCopiedFen(false), 1200); }).catch(() => {}); }}
+            className="h-7 px-1.5 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 text-label-sm transition-colors duration-short3 ease-standard"
+            title="Copy FEN of the current position to the clipboard"
+          >
+            {copiedFen ? "Copied" : "FEN"}
+          </button>
+          <button
+            onClick={() => setFlipped((f) => !f)}
+            className="w-7 h-7 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
+            title="Flip board"
+          >
+            <IconFlip />
+          </button>
+        </span>
+      </div>
       <div ref={boardContainerRef} className="flex-1 min-h-0 min-w-0 overflow-hidden relative flex items-center justify-center">
-        <button
-          onClick={() => setFlipped((f) => !f)}
-          className="absolute top-0 right-0 z-10 w-7 h-7 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
-          title="Flip board"
-        >
-          <IconFlip />
-        </button>
-        <button
-          onClick={() => { navigator.clipboard?.writeText(fen).then(() => { setCopiedFen(true); window.setTimeout(() => setCopiedFen(false), 1200); }).catch(() => {}); }}
-          className="absolute top-8 right-0 z-10 h-7 px-1.5 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 text-label-sm transition-colors duration-short3 ease-standard"
-          title="Copy FEN of the current position to the clipboard"
-        >
-          {copiedFen ? "Copied" : "FEN"}
-        </button>
         <div
-          style={{ width: squareSize, height: squareSize, flexShrink: 0 }}
+          style={{ width: squareSize, height: squareSize, flexShrink: 0, position: "relative" }}
           onPointerDown={onMove ? oneClick.onPointerDown : undefined}
           onPointerMove={onMove ? oneClick.onPointerMove : undefined}
           onPointerUp={onMove ? oneClick.onPointerUp : undefined}
           onPointerCancel={onMove ? oneClick.onPointerCancel : undefined}
         >
           <BoardErrorBoundary>
+          <HintArrowsOverlay arrows={hints} rings={rings} flipped={flipped} size={squareSize} />
           <Chessboard
             options={{
               id: "position-board", // unique id — see MiniBoard note (shared default id collides)
@@ -172,6 +178,7 @@ export default function PositionBoard({
           />
           </BoardErrorBoundary>
         </div>
+      </div>
       </div>
 
       {showMoves && (
