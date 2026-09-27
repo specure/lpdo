@@ -501,9 +501,9 @@ function EngineSection() {
             <input type="number" min={16} max={info.max_hash_mb} step={256} value={hash} onChange={(e) => setHash(e.target.value)} className={field} />
             <span className="text-on-surface-variant">MB</span>
           </label>
-          <label className="flex items-center gap-2" title="The search stops at this depth; 0 searches until you move on (five minutes at most)">
+          <label className="flex items-center gap-2" title="The search stops at this depth, or when you move on or close the panel; ⟳ in the Engine panel then searches further">
             <span>Stop at depth</span>
-            <input type="number" min={0} max={245} value={depth} onChange={(e) => setDepth(e.target.value)} className={field} />
+            <input type="number" min={1} max={245} value={depth} onChange={(e) => setDepth(e.target.value)} className={field} />
           </label>
           <ActionButton
             onClick={() => void save({
@@ -702,7 +702,7 @@ function Lc0Section() {
             <input type="number" min={0} max={64} value={threads} onChange={(e) => setThreads(e.target.value)}
               className="w-16 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
           </label>
-          <label className="flex items-center gap-2" title="The search stops after this many nodes; 0 searches until you move on (five minutes at most)">
+          <label className="flex items-center gap-2" title="The search stops after this many nodes (at least 1,000), or when you move on or close the panel; ⟳ in the Engine panel then searches further">
             <span>Stop at</span>
             <input value={nodes} onChange={(e) => setNodes(e.target.value)} inputMode="numeric"
               className="w-28 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
@@ -735,7 +735,7 @@ function Lc0Section() {
       <p className="text-label-sm text-on-surface-variant">
         Threads 0 lets Lc0 choose: its work is on the graphics card, so a few search threads suffice.
         Lc0 is limited by nodes, not depth — its "depth" is only the average length of the lines it
-        explores; 10 million nodes take about five minutes on a fast card.
+        explores; 2 million nodes (the default) take about a minute on a fast card.
         
         Networks are found in the data directory's networks folder and beside the program; another file
         can be named in {info ? <span className="font-mono">{info.settings_file}</span> : "lc0.json"} on the server.

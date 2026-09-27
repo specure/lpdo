@@ -146,11 +146,17 @@ settings on one machine), and hash hardly shows in a benchmark. One run is
 marked *recommended*: at most one thread per physical core, and of those the
 fewest threads that reach 80% of the fastest; **Use** sets it.
 
-A search stops when you move to another position or close the panel, when it
-reaches its threshold, and after five minutes at the latest. The thresholds are
-set per engine under Maintenance (0 for none): **depth 40** for Stockfish, and
-**10 million nodes** for Lc0 — Lc0's "depth" is only the average length of the
-lines it explores, so nodes are its measure (about five minutes on an RTX 4090).
+A search stops when you move to another position or close the panel, or when it
+reaches its threshold, set per engine under Maintenance: **depth 35** for
+Stockfish, and **2 million nodes** for Lc0 — Lc0's "depth" is only the average
+length of the lines it explores, so nodes are its measure. There is always a
+threshold; **⟳** in the Engine panel then searches further (Stockfish five
+plies deeper, Lc0 as many nodes again). While a search runs the panel tells
+the server every 15 seconds that it is still open; when it has not for three
+minutes — the computer went to sleep, say — the server stops the search.
+
+While the panel shows a remembered result, deeper than the new search has got,
+its header also says how far the new search is ("searching: depth 22").
 
 ## Replies & Strong
 

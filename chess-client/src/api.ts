@@ -99,14 +99,15 @@ export type EngineKind = "stockfish" | "lc0";
 export interface EngineHistory { startFen: string; sans: string[] }
 
 /** Absolute SSE URL for the local engine's analysis of a position (#309). */
-export function engineAnalyseUrl(fen: string, lines: number, history?: EngineHistory, engine: EngineKind = "stockfish", beyond = false): string {
+export function engineAnalyseUrl(fen: string, lines: number, history?: EngineHistory, engine: EngineKind = "stockfish", target?: number): string {
   // With the moves that led to the position the engine can tell a draw by
   // repetition; the server checks they really end on `fen`.
   const moves = history && history.sans.length
     ? `&start=${encodeURIComponent(history.startFen)}&moves=${encodeURIComponent(history.sans.join(","))}`
     : "";
-  // `beyond`: past the engine's depth or node threshold, up to the time cap.
-  const path = `/engine/analyse?fen=${encodeURIComponent(fen)}&lines=${lines}${moves}&engine=${engine}${beyond ? "&beyond=true" : ""}`;
+  // `target`: search to this depth (Stockfish) or node count (Lc0) instead of
+  // the engine's threshold — "search further".
+  const path = `/engine/analyse?fen=${encodeURIComponent(fen)}&lines=${lines}${moves}&engine=${engine}${target ? `&target=${target}` : ""}`;
   const base = import.meta.env.DEV ? "/api" + path : serverUrl() + path;
   const token = serverToken();
   return token ? `${base}&token=${encodeURIComponent(token)}` : base;

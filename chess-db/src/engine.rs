@@ -79,8 +79,12 @@ impl Kind {
     }
 }
 
-/// No search runs longer than this unless the client asks again.
-const MAX_SEARCH: Duration = Duration::from_secs(300);
+/// The Engine panel says it is still open this often (the client's timer);
+/// a search whose panel has not said so for `ALIVE_TTL` — closed without
+/// word, or its computer asleep — is stopped. Generous, as a hidden browser
+/// tab runs its timers only once a minute.
+const ALIVE_TTL: Duration = Duration::from_secs(180);
+const ALIVE_CHECK: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -96,9 +100,10 @@ pub struct EngineSettings {
     pub weights: Option<String>,
     /// Lc0's backend ("cuda-fp16", "opencl", …). None: the engine picks.
     pub backend: Option<String>,
-    /// Stop a search here, 0 for no limit: a depth for Stockfish (its depth
-    /// is how far it has searched), a node count for Lc0 (whose "depth" is
-    /// only the average length of its playouts, so nodes are the measure).
+    /// Stop a search here — always set, as a search runs for as long as its
+    /// panel is open: a depth for Stockfish (its depth is how far it has
+    /// searched), a node count for Lc0 (whose "depth" is only the average
+    /// length of its playouts, so nodes are the measure).
     pub max_depth: u32,
     pub max_nodes: u64,
     /// Lc0's smart pruning: end a search once the best move cannot be
@@ -149,7 +154,7 @@ impl EngineSettings {
             Kind::Stockfish => Self {
                 path: None, threads: physical_cores().saturating_sub(5).clamp(1, 64),
                 hash_mb: crate::db::default_engine_hash_mb(), weights: None, backend: None,
-                max_depth: 40, max_nodes: 0, smart_pruning: false, enabled: true,
+                max_depth: 35, max_nodes: 0, smart_pruning: false, enabled: true,
                 replies: true, helper_threads: 5, helper_hash_mb: 320, helper_depth: 20, strong_cp: 10,
                 helper_nodes: 0, strong_pct: 0.0, neutral_cp: 30, neutral_pct: 0.0,
             },
@@ -157,7 +162,7 @@ impl EngineSettings {
             // network onto the graphics card.
             Kind::Lc0 => Self {
                 path: None, threads: 0, hash_mb: 0, weights: None, backend: None,
-                max_depth: 0, max_nodes: 10_000_000, smart_pruning: false, enabled: true,
+                max_depth: 0, max_nodes: 2_000_000, smart_pruning: false, enabled: true,
                 replies: false, helper_threads: 0, helper_hash_mb: 0, helper_depth: 0, strong_cp: 0,
                 helper_nodes: 50_000, strong_pct: 1.0, neutral_cp: 0, neutral_pct: 3.0,
             },
@@ -281,6 +286,8 @@ struct Running {
 
 pub struct Engine {
     kind: Kind,
+    /// When an Engine panel last said it is open.
+    alive: std::sync::Mutex<std::time::Instant>,
     data_dir: PathBuf,
     settings_file: PathBuf,
     settings: Mutex<EngineSettings>,
@@ -467,10 +474,19 @@ impl Engine {
                 serde_json::from_value(base).ok()
             })
             .unwrap_or_else(|| EngineSettings::for_kind(kind));
+        // The old "0: no limit" is gone — a search runs while its panel is
+        // open — so such a file gets the default threshold.
+        let mut settings = settings;
+        match kind {
+            Kind::Stockfish if settings.max_depth == 0 => settings.max_depth = EngineSettings::for_kind(kind).max_depth,
+            Kind::Lc0 if settings.max_nodes == 0 => settings.max_nodes = EngineSettings::for_kind(kind).max_nodes,
+            _ => {}
+        }
         let (tx, _) = broadcast::channel(64);
         let helpers = helper_count(kind, &settings);
         Arc::new(Self {
             kind,
+            alive: std::sync::Mutex::new(std::time::Instant::now()),
             data_dir: data_dir.to_path_buf(),
             settings_file,
             settings: Mutex::new(settings),
@@ -720,8 +736,8 @@ impl Engine {
                 }
                 s.weights = Some(w);
             }
-            if let Some(d) = max_depth { s.max_depth = d.min(245); }
-            if let Some(n) = max_nodes { s.max_nodes = n.min(1_000_000_000_000); }
+            if let Some(d) = max_depth { s.max_depth = d.clamp(1, 245); }
+            if let Some(n) = max_nodes { s.max_nodes = n.clamp(1_000, 1_000_000_000_000); }
             if let Some(p) = smart_pruning { s.smart_pruning = p; }
             if let Some(e) = enabled { s.enabled = e; }
             if let Some(v) = reply.replies { s.replies = v; }
@@ -821,7 +837,7 @@ impl Engine {
         fen: &str,
         history: Option<(String, Vec<String>)>,
         lines: u32,
-        beyond: bool,
+        target: Option<u64>,
     ) -> Result<(u64, Option<Snapshot>, broadcast::Receiver<Snapshot>), String> {
         // A benchmark needs the processor to itself: an analysis beside it
         // skews its figures badly (one run took ten times as long).
@@ -867,25 +883,39 @@ impl Engine {
             _ => format!("position fen {fen}"),
         };
         send(&mut r.stdin, &position).await?;
-        // Stop at the configured threshold — unless asked to go beyond it (the
-        // panel's "search again" after the threshold was reached); the time
-        // cap below is the net under it (and under "no limit").
-        let limits = if beyond { (0, 0) } else { let s = self.settings.lock().await; (s.max_depth, s.max_nodes) };
-        let go = match (self.kind, limits) {
-            (Kind::Stockfish, (d, _)) if d > 0 => format!("go depth {d}"),
-            (Kind::Lc0, (_, n)) if n > 0 => format!("go nodes {n}"),
-            _ => "go infinite".to_string(),
+        // Stop at the threshold — or at `target`, the panel's "search further"
+        // once the threshold was reached. Never without one: a search runs
+        // as long as its panel is open (see ALIVE_TTL).
+        let go = {
+            let s = self.settings.lock().await;
+            match self.kind {
+                Kind::Stockfish => format!("go depth {}", target.map_or(s.max_depth, |t| t.min(245) as u32).clamp(1, 245)),
+                Kind::Lc0 => format!("go nodes {}", target.unwrap_or(s.max_nodes).clamp(1_000, 1_000_000_000_000)),
+            }
         };
         send(&mut r.stdin, &go).await?;
         drop(running);
 
-        // The cap: an analysis nobody asked about again ends by itself.
+        // Stop the search once its panel has gone quiet.
+        self.alive();
         let me = self.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(MAX_SEARCH).await;
-            me.stop(gen).await;
+            loop {
+                tokio::time::sleep(ALIVE_CHECK).await;
+                let current = { let s = me.search.lock().unwrap(); s.gen == gen && s.searching };
+                if !current { return; }
+                if me.alive.lock().unwrap().elapsed() > ALIVE_TTL {
+                    me.stop(gen).await;
+                    return;
+                }
+            }
         });
         Ok((gen, remembered, rx))
+    }
+
+    /// The Engine panel is still open: its search goes on.
+    pub fn alive(&self) {
+        *self.alive.lock().unwrap() = std::time::Instant::now();
     }
 
     /// Stop search `gen` if it is still the current one.
@@ -1754,7 +1784,7 @@ mod tests {
         println!("engine: {:?} at {:?}", status.name, status.path);
         // After 1.e4 e5 2.Qh5 Nc6 3.Bc4 Nf6?? White mates: Qxf7#.
         let fen = clean_fen("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4").unwrap();
-        let (gen, _, mut rx) = engine.analyse(&fen, None, 3, false).await.unwrap();
+        let (gen, _, mut rx) = engine.analyse(&fen, None, 3, None).await.unwrap();
         let mut last = None;
         while let Ok(Ok(s)) = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
             if s.gen != gen { continue; }
@@ -1796,7 +1826,7 @@ mod tests {
 
         // After 1.e4: Black to move, so the engine's view is flipped to White's.
         let fen = clean_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").unwrap();
-        let (gen, _, mut rx) = engine.analyse(&fen, None, 3, false).await.unwrap();
+        let (gen, _, mut rx) = engine.analyse(&fen, None, 3, None).await.unwrap();
         let mut last = None;
         let until = std::time::Instant::now() + Duration::from_secs(20);
         while std::time::Instant::now() < until {
@@ -1848,7 +1878,7 @@ done
 
         // Black to move: the engine's +25 for Black is -25 for White.
         let fen = clean_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").unwrap();
-        let (gen, remembered, mut rx) = engine.analyse(&fen, None, 1, false).await.unwrap();
+        let (gen, remembered, mut rx) = engine.analyse(&fen, None, 1, None).await.unwrap();
         assert!(remembered.is_none());
         let mut last = None;
         while let Ok(Ok(s)) = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
@@ -1870,7 +1900,7 @@ done
         assert!(done, "stopping ends the search");
 
         // The same position again: the deepest result comes back at once.
-        let (_, remembered, _rx) = engine.analyse(&fen, None, 1, false).await.unwrap();
+        let (_, remembered, _rx) = engine.analyse(&fen, None, 1, None).await.unwrap();
         let r = remembered.expect("remembered");
         assert!(r.cached && r.depth == 2, "{r:?}");
 

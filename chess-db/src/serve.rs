@@ -1793,6 +1793,16 @@ async fn engines_enabled_handler(State(state): State<AppState>) -> Json<serde_js
     }))
 }
 
+/// The Engine panel is still open: the engine's search goes on (it is
+/// stopped a few minutes after the last word).
+async fn engine_alive_handler(
+    State(state): State<AppState>,
+    Query(q): Query<WhichEngine>,
+) -> ApiResult<serde_json::Value> {
+    pick_engine(&state, &q)?.alive();
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 #[derive(Deserialize)]
 struct EngineRepliesQuery {
     /// The position analysed, and those after its candidate moves, separated
@@ -1906,9 +1916,9 @@ struct EngineAnalyseQuery {
     #[serde(default = "default_engine_lines")]
     lines: u32,
     engine: Option<String>,
-    /// Search past the engine's threshold (depth or nodes), up to the time cap.
-    #[serde(default)]
-    beyond: bool,
+    /// Search to this depth (Stockfish) or node count (Lc0) instead of the
+    /// engine's threshold: the panel's "search further".
+    target: Option<u64>,
 }
 fn default_engine_lines() -> u32 { 3 }
 
@@ -1942,7 +1952,7 @@ async fn engine_analyse_handler(
     };
     let engine = pick_engine(&state, &WhichEngine { engine: q.engine.clone() })?;
     let (gen, remembered, rx) = engine
-        .analyse(&fen, history, q.lines, q.beyond)
+        .analyse(&fen, history, q.lines, q.target)
         .await
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e))?;
     let guard = Arc::new(StopOnDrop { engine: engine.clone(), gen });
@@ -2602,6 +2612,7 @@ pub async fn run(
         .route("/engine/stop",                         post(engine_stop_handler))
         .route("/engines",                             get(engines_enabled_handler))
         .route("/engine/replies",                      get(engine_replies_handler))
+        .route("/engine/alive",                        post(engine_alive_handler))
         .route("/engine/remembered",                   get(engine_remembered_handler))
         .route("/engine/bench",                        post(engine_bench_handler))
         .route("/cloud-eval/lines",                    get(cloud_eval_lines_handler))
