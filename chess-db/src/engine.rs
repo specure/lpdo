@@ -280,9 +280,10 @@ struct Search {
     stop_at: Option<u32>,
     /// Frozen at `stop_at`: the search is kept, but uses no processor.
     frozen: bool,
-    /// Thawed at this node count: the speed is measured from then, not over
-    /// the time it was frozen.
-    resumed: Option<(std::time::Instant, u64)>,
+    /// Thawed: the speed is measured from the first report after the thaw
+    /// (its time and nodes — what came before the freeze was not all read),
+    /// not over the time it was frozen.
+    resumed: Option<Option<(std::time::Instant, u64)>>,
 }
 
 /// Stockfish on Unix is frozen at its target depth instead of stopped: a
@@ -923,7 +924,7 @@ impl Engine {
                 s.stop_at = Some(depth_to);
                 if s.frozen {
                     s.frozen = false;
-                    s.resumed = Some((std::time::Instant::now(), s.nodes));
+                    s.resumed = Some(None);
                     signal_engine(pid, true);
                 }
                 self.alive();
@@ -1015,6 +1016,21 @@ impl Engine {
                 let _ = send(&mut r.stdin, "stop").await;
             }
         }
+    }
+
+    /// The panel paused this engine: freeze Stockfish's search where it is
+    /// (Unix), so running it again goes on from there — the next analysis of
+    /// the same position thaws it. Other engines, and elsewhere, the search
+    /// just stops when the panel's stream closes.
+    pub async fn pause(&self) -> bool {
+        if !can_freeze(self.kind) { return false; }
+        let pid = self.running.lock().await.as_ref().and_then(|r| r.child.id());
+        let mut s = self.search.lock().unwrap();
+        if !s.searching || s.frozen || s.stop_at.is_none() { return false; }
+        s.frozen = true;
+        s.resumed = None;
+        signal_engine(pid, false);
+        true
     }
 
     /// A stream of search `gen` went away. Stop the search unless another
@@ -1582,9 +1598,11 @@ async fn read_engine(
                 if let Some(n) = info.nps {
                     // Stockfish's own figure counts the time it was frozen.
                     s.nps = match s.resumed {
-                        Some((at, n0)) if at.elapsed().as_millis() > 0 =>
+                        None => n,
+                        Some(None) => { s.resumed = Some(Some((std::time::Instant::now(), s.nodes))); s.nps }
+                        Some(Some((at, n0))) if at.elapsed().as_millis() > 0 =>
                             (s.nodes.saturating_sub(n0) as u128 * 1000 / at.elapsed().as_millis()) as u64,
-                        _ => n,
+                        Some(Some(_)) => s.nps,
                     };
                 }
                 match info.line {

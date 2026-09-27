@@ -1803,6 +1803,16 @@ async fn engine_alive_handler(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+/// The panel paused the engine: Stockfish's search is frozen where it is, to
+/// go on when run again on the same position.
+async fn engine_pause_handler(
+    State(state): State<AppState>,
+    Query(q): Query<WhichEngine>,
+) -> ApiResult<serde_json::Value> {
+    let frozen = pick_engine(&state, &q)?.pause().await;
+    Ok(Json(serde_json::json!({ "frozen": frozen })))
+}
+
 #[derive(Deserialize)]
 struct EngineRepliesQuery {
     /// The position analysed, and those after its candidate moves, separated
@@ -2613,6 +2623,7 @@ pub async fn run(
         .route("/engines",                             get(engines_enabled_handler))
         .route("/engine/replies",                      get(engine_replies_handler))
         .route("/engine/alive",                        post(engine_alive_handler))
+        .route("/engine/pause",                        post(engine_pause_handler))
         .route("/engine/remembered",                   get(engine_remembered_handler))
         .route("/engine/bench",                        post(engine_bench_handler))
         .route("/cloud-eval/lines",                    get(cloud_eval_lines_handler))

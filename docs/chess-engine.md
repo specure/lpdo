@@ -155,7 +155,9 @@ plies deeper, Lc0 as many nodes again), also while the search still runs. It
 goes on from where the search got: Lc0 keeps its search tree, and on Linux and
 macOS the server freezes Stockfish at its depth rather than ending the search
 (a frozen process uses no processor), so the search continues — until you move
-to another position, which the engine is needed for. On Windows Stockfish
+to another position, which the engine is needed for. **Pause** on the engine's
+tab freezes Stockfish's search the same way, and **Run** on the same position
+goes on from there. On Windows Stockfish
 starts again, its hash making the first depths quick. While a search runs the panel tells
 the server every 15 seconds that it is still open; when it has not for three
 minutes — the computer went to sleep, say — the server stops the search.

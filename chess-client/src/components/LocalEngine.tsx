@@ -111,7 +111,12 @@ export default function LocalEngine({
     // Paused on a new position: show what the server remembers for it, if
     // anything — never a search.
     if (paused) {
-      if (!fresh) return;
+      // Paused during a search: the server freezes it (Stockfish), and
+      // running again on this position goes on from there.
+      if (!fresh) {
+        if (running) fetch(apiUrl(`/engine/pause?engine=${kind}`), { method: "POST" }).catch(() => {});
+        return;
+      }
       const ctrl = new AbortController();
       fetch(apiUrl(`/engine/remembered?engine=${kind}&fen=${encodeURIComponent(fen)}`), { signal: ctrl.signal })
         .then((r) => (r.ok ? r.json() : null))
@@ -151,9 +156,9 @@ export default function LocalEngine({
 
   // While the panel is open, tell the server now and then: a search nobody
   // watches any more is stopped a few minutes after the last word — also one
-  // frozen at its depth, which is kept for "search further" until then.
+  // frozen at its depth or by Pause, which is kept for ⟳ or Run until then.
   const searching = running && !paused && !!status?.available;
-  const open = !paused && !!status?.available;
+  const open = !!status?.available;
   useEffect(() => {
     if (!open) return;
     const t = window.setInterval(() => {
