@@ -126,6 +126,19 @@ export default function RepertoirePage({ onOpenGame }: Props) {
 
   const book = books?.find((b) => b.id === selectedBook) ?? null;
 
+  const addEmpty = (bookId: number, name: string) =>
+    run(async () => { const [c] = await addChapters(bookId, { name }); if (c) setChapterId(c.id); });
+  const importPgn = (bookId: number, items: { pgn: string; file?: string }[]) => run(async () => {
+    // One file at a time, in the order picked: each adds its chapters at the
+    // end. A file that fails stops the rest.
+    let first: number | null = null;
+    for (const it of items) {
+      const cs = await addChapters(bookId, it).catch((e) => { throw new Error(it.file ? `${it.file}: ${String(e)}` : String(e)); });
+      first ??= cs[0]?.id ?? null;
+    }
+    if (first != null && chapterId == null) setChapterId(first);
+  });
+
   const booksPanel = booksFolded ? <Strip label="Books" onOpen={() => setBooksFolded(false)} /> : (
     <div className={box}>
       <BooksPanel
@@ -133,6 +146,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
         onSelect={setSelectedBook} onFold={() => setBooksFolded(true)}
         onCreate={(b) => run(async () => { const nb = await createBook(b); setSelectedBook(nb.id); })}
         onUpdate={(id, patch) => run(() => updateBook(id, patch))}
+        onAddEmpty={addEmpty} onImport={importPgn}
         onDelete={(b) => run(async () => {
           await deleteBook(b.id);
           if (b.chapters.some((c) => c.id === chapterId)) dropChapter();
@@ -152,17 +166,6 @@ export default function RepertoirePage({ onOpenGame }: Props) {
           <ChaptersList
             book={book} busy={busy} current={chapterId}
             onPick={setChapterId}
-            onAddEmpty={(name) => run(async () => { const [c] = await addChapters(book.id, { name }); if (c) setChapterId(c.id); })}
-            onImport={(items) => run(async () => {
-              // One file at a time, in the order picked: each adds its
-              // chapters at the end. A file that fails stops the rest.
-              let first: number | null = null;
-              for (const it of items) {
-                const cs = await addChapters(book.id, it).catch((e) => { throw new Error(it.file ? `${it.file}: ${String(e)}` : String(e)); });
-                first ??= cs[0]?.id ?? null;
-              }
-              if (first != null && chapterId == null) setChapterId(first);
-            })}
             onChapter={(id, patch) => run(() => updateChapter(id, patch))}
             onDeleteChapter={(id) => run(async () => { await deleteChapter(id); if (id === chapterId) dropChapter(); })}
           />
@@ -195,7 +198,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
       layoutId={layoutId}
       emptyState={books && books.length === 0
         ? "No books yet. A book is one opening course or one topic — \"Najdorf for Black\" — with the colour you play it from; its chapters hold the lines. Add a book on the left."
-        : "Choose a chapter on the left to study it here — or add one: empty, from pasted PGN, or from a PGN file."}
+        : "Choose a chapter on the left to study it here — or add one with the book's ⋯: empty, from pasted PGN, or from PGN files."}
     />
   );
 }
@@ -241,11 +244,15 @@ async function exportPgn(path: string, filename: string): Promise<string | null>
   } catch (e) { return `Could not export: ${e instanceof Error ? e.message : String(e)}`; }
 }
 
-function BooksPanel({ books, selected, busy, error, onSelect, onFold, onCreate, onUpdate, onDelete }: {
+type ImportItem = { pgn: string; file?: string };
+
+function BooksPanel({ books, selected, busy, error, onSelect, onFold, onCreate, onUpdate, onAddEmpty, onImport, onDelete }: {
   books: BookWithChapters[] | null; selected: number | null; busy: boolean; error: string | null;
   onSelect: (id: number) => void; onFold: () => void;
   onCreate: (b: { name: string; author: string | null; color: BookColor }) => void;
   onUpdate: (id: number, patch: BookPatch) => void;
+  onAddEmpty: (bookId: number, name: string) => void;
+  onImport: (bookId: number, items: ImportItem[]) => void;
   onDelete: (b: BookWithChapters) => void;
 }) {
   const [adding, setAdding] = useState(false);
@@ -299,7 +306,8 @@ function BooksPanel({ books, selected, busy, error, onSelect, onFold, onCreate, 
         </div>
         {book && books && (
           <BookDetails key={book.id} book={book} busy={busy} first={book.id === books[0]?.id} last={book.id === books[books.length - 1]?.id}
-            onUpdate={(patch) => onUpdate(book.id, patch)} onDelete={() => onDelete(book)} />
+            onUpdate={(patch) => onUpdate(book.id, patch)} onDelete={() => onDelete(book)}
+            onAddEmpty={(name) => onAddEmpty(book.id, name)} onImport={(items) => onImport(book.id, items)} />
         )}
       </div>
     </>
@@ -307,10 +315,20 @@ function BooksPanel({ books, selected, busy, error, onSelect, onFold, onCreate, 
 }
 
 /** The selected book: what it is, and its settings. */
-function BookDetails({ book, busy, first, last, onUpdate, onDelete }: {
+function BookDetails({ book, busy, first, last, onUpdate, onDelete, onAddEmpty, onImport }: {
   book: BookWithChapters; busy: boolean; first: boolean; last: boolean;
   onUpdate: (patch: BookPatch) => void; onDelete: () => void;
+  onAddEmpty: (name: string) => void; onImport: (items: ImportItem[]) => void;
 }) {
+  const [pasting, setPasting] = useState(false);
+  const [pasted, setPasted] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+  async function pickFiles(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = [...(e.target.files ?? [])];
+    e.target.value = "";
+    if (files.length === 0) return;
+    onImport(await Promise.all(files.map(async (f) => ({ pgn: await f.text(), file: f.name.replace(/\.[^.]+$/, "") }))));
+  }
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(book.name);
   const [author, setAuthor] = useState(book.author ?? "");
@@ -343,7 +361,10 @@ function BookDetails({ book, busy, first, last, onUpdate, onDelete }: {
           {book.author && <div className="text-label-md text-on-surface-variant break-words">by {book.author}</div>}
         </div>
         <BookMenu entries={[
-          { label: editing ? "Done editing" : "Edit…", onClick: () => setEditing((e) => !e) },
+          { label: "New empty chapter", onClick: () => onAddEmpty(`Chapter ${book.chapters.length + 1}`), disabled: busy },
+          { label: "Paste PGN…", onClick: () => setPasting(true) },
+          { label: "Import PGN files…", onClick: () => fileRef.current?.click(), disabled: busy },
+          { label: editing ? "Done editing" : "Edit…", onClick: () => setEditing((e) => !e), separated: true },
           { label: "Move up", onClick: () => onUpdate({ ord: book.ord - 1 }), disabled: busy || first },
           { label: "Move down", onClick: () => onUpdate({ ord: book.ord + 1 }), disabled: busy || last },
           { label: "Export PGN…", onClick: () => void exportPgn(bookPgnPath(book.id), book.name).then(setNote), disabled: busy || book.chapters.length === 0 },
@@ -360,6 +381,17 @@ function BookDetails({ book, busy, first, last, onUpdate, onDelete }: {
         </button>
       )}
       {book.description && <div className="text-body-sm text-on-surface-variant whitespace-pre-wrap break-words">{book.description}</div>}
+      <input ref={fileRef} type="file" multiple accept=".pgn,text/plain" className="hidden" onChange={(e) => void pickFiles(e)} />
+      {pasting && (
+        <div className="flex flex-col gap-1.5">
+          <textarea autoFocus value={pasted} onChange={(e) => setPasted(e.target.value)} rows={6} placeholder={"[Event \"Najdorf: 6.Bg5\"]\n\n1. e4 c5 2. Nf3 d6 ..."} className="w-full font-mono text-body-sm p-2 rounded-sm bg-surface-container border border-outline/40 text-on-surface" />
+          <span className="text-label-sm text-on-surface-variant">Several games become several chapters, named from their headers.</span>
+          <div className="flex items-center gap-1 justify-end">
+            <button onClick={() => { setPasting(false); setPasted(""); }} className={plain}>Cancel</button>
+            <button onClick={() => { onImport([{ pgn: pasted }]); setPasted(""); setPasting(false); }} disabled={busy || !pasted.trim()} className={tonal}>Add as chapters</button>
+          </div>
+        </div>
+      )}
       {confirmDelete && (
         <div className="flex items-center gap-1 flex-wrap">
           <button onClick={() => { setConfirmDelete(false); onDelete(); }} disabled={busy} className="h-7 px-2 rounded-full text-label-md text-error hover:bg-error/8">Delete it and its {plural(book.chapters.length, "chapter")}</button>
@@ -416,24 +448,13 @@ function BookMenu({ entries }: { entries: { label: string; onClick: () => void; 
   );
 }
 
-function ChaptersList({ book, busy, current, onPick, onAddEmpty, onImport, onChapter, onDeleteChapter }: {
+function ChaptersList({ book, busy, current, onPick, onChapter, onDeleteChapter }: {
   book: BookWithChapters; busy: boolean; current: number | null;
   onPick: (id: number) => void;
-  onAddEmpty: (name: string) => void; onImport: (items: { pgn: string; file?: string }[]) => void;
   onChapter: (id: number, patch: { name?: string; ord?: number; active?: boolean }) => void;
   onDeleteChapter: (id: number) => void;
 }) {
-  const [pasting, setPasting] = useState(false);
-  const [pasted, setPasted] = useState("");
-  const fileRef = useRef<HTMLInputElement>(null);
   const [note, setNote] = useState<string | null>(null);
-
-  async function pickFiles(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = [...(e.target.files ?? [])];
-    e.target.value = "";
-    if (files.length === 0) return;
-    onImport(await Promise.all(files.map(async (f) => ({ pgn: await f.text(), file: f.name.replace(/\.[^.]+$/, "") }))));
-  }
 
   return (
     <div className="flex flex-col">
@@ -452,21 +473,8 @@ function ChaptersList({ book, busy, current, onPick, onAddEmpty, onImport, onCha
             onExport={() => void exportPgn(chapterPgnPath(c.id), `${book.name}-${c.name}`).then(setNote)}
             onDelete={() => onDeleteChapter(c.id)} />
         ))}
-        {book.chapters.length === 0 && <div className="px-3 py-1 text-label-sm text-on-surface-variant">No chapters yet.</div>}
+        {book.chapters.length === 0 && <div className="px-3 py-1 text-label-sm text-on-surface-variant">No chapters yet — the book's ⋯ adds one: empty, pasted PGN, or PGN files.</div>}
       </div>
-      <div className="px-3 py-2 flex items-center gap-1 flex-wrap border-t border-outline/40">
-        <button onClick={() => onAddEmpty(`Chapter ${book.chapters.length + 1}`)} disabled={busy} className={tonal} title="An empty chapter: play the lines in with Edit lines…">+ Empty</button>
-        <button onClick={() => setPasting((p) => !p)} className={tonal}>{pasting ? "Cancel" : "Paste PGN…"}</button>
-        <button onClick={() => fileRef.current?.click()} disabled={busy} className={tonal} title="PGN files, one or several: one chapter per game, named from its headers (a Lichess study exports this way) or else after its file">Import…</button>
-        <input ref={fileRef} type="file" multiple accept=".pgn,text/plain" className="hidden" onChange={(e) => void pickFiles(e)} />
-      </div>
-      {pasting && (
-        <div className="px-3 pb-2 flex flex-col gap-1.5">
-          <textarea value={pasted} onChange={(e) => setPasted(e.target.value)} rows={6} placeholder={"[Event \"Najdorf: 6.Bg5\"]\n\n1. e4 c5 2. Nf3 d6 ..."} className="w-full font-mono text-body-sm p-2 rounded-sm bg-surface-container border border-outline/40 text-on-surface" />
-          <button onClick={() => { onImport([{ pgn: pasted }]); setPasted(""); setPasting(false); }} disabled={busy || !pasted.trim()} className={tonal}>Add as chapters</button>
-          <span className="text-label-sm text-on-surface-variant">Several games become several chapters, named from their headers.</span>
-        </div>
-      )}
       {note && <div className="px-3 pb-2 text-label-sm text-on-surface-variant">{note}</div>}
     </div>
   );

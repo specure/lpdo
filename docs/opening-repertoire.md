@@ -23,14 +23,14 @@ to reorder the books, **Export PGN…** for all its chapters as one file, and
 **Delete…** to delete it with its chapters. The author
 goes into the chapters' PGN as `[Annotator]`.
 
-A chapter is added to the selected book in one of three ways, with the
-buttons under its chapters:
+A chapter is added to the selected book in one of three ways, from the
+same ⋯ menu:
 
-- **+ Empty**, then play the lines in with *Edit lines…*;
+- **New empty chapter**, then play the lines in with *Edit lines…*;
 - **Paste PGN…** — a PGN with several games becomes several chapters, named
   from their headers (a Lichess study exports its chapters this way;
   otherwise the players, or the event);
-- **Import…** — the same from PGN files, one or several at once: each file
+- **Import PGN files…** — the same from PGN files, one or several at once: each file
   becomes a chapter (or a chapter per game, for a file of several), named
   from its headers or else after the file.
 
