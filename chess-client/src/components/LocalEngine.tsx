@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Chess } from "chess.js";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { apiUrl, engineAnalyseUrl, type EngineHistory, type EngineKind } from "../api";
 import ExternalLinkIcon from "./ExternalLinkIcon";
 import { PvLine, pvToSan, fmtLichess, moverScore, moveMark, evalColor } from "./CloudEngine";
 import type { EngineMove } from "./HintArrows";
+import { gamePositions, repetitionAt, repetitionSettings } from "../lib/repetition";
 
 // The server's own engine (#309): Stockfish or any UCI engine installed on
 // the machine the server runs on. LPDO does not ship one, so when none is
@@ -192,6 +193,11 @@ export default function LocalEngine({
     return () => window.clearInterval(t);
   }, [open, kind]);
 
+  // The game's positions up to here, for lines that come back to one (#314).
+  const beforeHere = useMemo(() => gamePositions(fen, historyRef.current), [fen, historyKey]);
+  // Whether to set them apart, and above what advantage (per computer).
+  const [repetition] = useState(repetitionSettings);
+
   // Replies & Strong (when switched on for this engine). The replies are the
   // legal moves, counted here at once; the strong ones the server's helpers
   // count once the search has settled, several candidates at a time. The
@@ -280,9 +286,14 @@ export default function LocalEngine({
   const markBest = markScores.length ? Math.max(...markScores) : 0;
   const markThreshold = byWdl ? (status.settings.strong_pct ?? 1) / 100 : kind === "lc0" ? 10 : (status.settings.strong_cp ?? 10);
   const neutralThreshold = byWdl ? (status.settings.neutral_pct ?? 3) / 100 : kind === "lc0" ? 30 : (status.settings.neutral_cp ?? 30);
+  // Stockfish's lines that lead to a repetition (#314), where the side to
+  // move is better: shown apart, below the principal lines, and given no
+  // arrow.
+  const better = kind === "stockfish" && repetition.apart && markBest > repetition.aboveCp;
+  const repeatsAt = lines.map((l) => (better ? repetitionAt(fen, l.pv_uci, beforeHere) : null));
   movesRef.current = lines.flatMap((l, i) => {
     const uci = l.pv_uci[0];
-    if (!uci || moveMark(markBest, markScores[i], markThreshold, neutralThreshold) === "?") return [];
+    if (!uci || repeatsAt[i] != null || moveMark(markBest, markScores[i], markThreshold, neutralThreshold) === "?") return [];
     return [{ from: uci.slice(0, 2), to: uci.slice(2, 4), strong: moveMark(markBest, markScores[i], markThreshold, neutralThreshold) === "!" }];
   });
   // Why a search ended by itself: its threshold, or the time cap.
@@ -382,13 +393,26 @@ export default function LocalEngine({
             <span className={kind === "lc0" ? "w-32" : "w-14"}></span>
           </div>
         )}
-        {lines.map((l, i) => {
+        {[...lines.keys()].filter((i) => repeatsAt[i] == null).concat([-1], [...lines.keys()].filter((i) => repeatsAt[i] != null)).map((i) => {
+          // -1: the heading above the lines that repeat, if there are any.
+          if (i === -1) {
+            return repeatsAt.some((r) => r != null) ? (
+              <div key="repeats" className="px-2 pt-2 pb-0.5 text-label-sm text-on-surface-variant select-none"
+                title="These moves rate better than a draw, but their lines come back to a position already on the board: with best play the moves repeat, and to win the side to move has to find another way.">
+                ⟲ Leading to a repetition
+              </div>
+            ) : null;
+          }
+          const l = lines[i];
           const { child, rs: rc } = l;
           const deepTitle = l.deepDepth != null
             ? `From the analysis of the position after this move: ${kind === "lc0" ? `${fmtNodes(l.deepNodes ?? 0)} nodes` : `depth ${l.deepDepth}`}`
             : undefined;
+          const repeat = repeatsAt[i];
           return (
-          <div key={l.multipv} className="w-full flex items-baseline gap-2 px-2 py-1 rounded-sm hover:bg-on-surface/8 transition-colors duration-short3 ease-standard">
+          <div key={l.multipv}
+            className={`w-full flex items-baseline gap-2 px-2 py-1 rounded-sm hover:bg-on-surface/8 transition-colors duration-short3 ease-standard ${repeat != null ? "opacity-60" : ""}`}
+            title={repeat != null ? `The line comes back to a position already on the board at its move ${Math.ceil(repeat / 2)} (${repeat} half-moves in)` : undefined}>
             <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface-variant">
               <PvLine startFen={fen} sans={pvToSan(fen, l.pv_uci)} onPick={onPlayLine} mark={moveMark(markBest, markScores[i], markThreshold, neutralThreshold)} />
             </div>
