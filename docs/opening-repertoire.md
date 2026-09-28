@@ -40,6 +40,24 @@ a mode for ordering: drag a chapter to its place, or move it with ▲ ▼, and
 **Done** when it is right. Every chapter
 starts from the initial position.
 
+**Rename chapters…** there renames many at once, by find and replace over
+their names — to take out the book's name repeated in each, for instance,
+which is what *Find* starts with. Every chapter's new name is shown before
+anything changes; the spaces, dashes and colons a removal leaves at either
+end are trimmed, and *Regular expression* allows patterns (`^\d+\s*` for a
+leading number).
+
+**Merge chapters…** there folds several chapters into one — the same
+section imported twice, or split over several files. Tick the chapters and
+**Merge**: the topmost keeps its name, its place and its main line, and
+takes in the others' lines and comments; they are deleted after. A move it
+lacks is added as a variation where it branches off; a comment, line intro
+or move mark (!, ?, …) it lacks is taken over, arrows and circles are
+joined, and a move switched off in any of them stays off. Where both have a
+comment and they differ, a window lists each such place with the versions
+side by side: keep one, or both one after the other — or pick a chapter's
+version for all of them at once.
+
 ## Active books and chapters, and switching lines off
 
 The checkbox on a chapter marks it **active** — part of the repertoire you are
@@ -49,8 +67,8 @@ its chapters count, whatever their own checkboxes say, and they keep them for
 when the book is switched on again.
 
 Within a chapter, any move can be switched **off**: "not in my repertoire from
-here". Open the chapter, put the cursor on the move, and click the small
-**off** button beside it in the move list (and **on** to undo). The move and
+here". Open the chapter, put the cursor on the move, and click **Off** in
+the toolbar under the move list, beside All+ / All− (and **On** to undo). The move and
 everything below it stay in the chapter, greyed, and count as inactive — for
 an alternative you are not following for now, or a variation you play
 differently from another book. The switch is kept in the chapter's PGN (a

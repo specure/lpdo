@@ -38,6 +38,9 @@ export default function AnnotatedMoveList({
   onExpandSubVariations, onCollapseSubVariations, onToggleAnnotations, offAware, onToggleOff,
 }: AnnotatedMoveListProps) {
   const activeRef = useRef<HTMLSpanElement>(null);
+  // The current move's off-switch state, found while the moves are drawn; the
+  // switch itself is in the toolbar.
+  const found: { off: { line: MoveNode[]; index: number; own: boolean; before: boolean } | null } = { off: null };
 
   // Build path map: for each line in the path, store the max move index that's "on the path"
   const pathMap = useMemo(() => {
@@ -143,18 +146,7 @@ export default function AnnotatedMoveList({
           {numPrefix}{node.san}{nagsToString(node.annotations.nags)}
         </span>
       );
-      // The off-switch, on the current move: its own, or "on" to undo it.
-      // A move off through one above it has its switch there.
-      if (isCurrentMove && onToggleOff && !node.scratch && (ownOff || !offBefore)) {
-        elements.push(
-          <button
-            key={`o-${i}`}
-            onClick={(e) => { e.stopPropagation(); onToggleOff(line, moveIdx, !ownOff); }}
-            className="ml-1 h-4 px-1 rounded-full text-[10px] leading-none align-middle border border-outline text-on-surface-variant hover:bg-on-surface/8"
-            title={ownOff ? "Switch this move back on" : "Switch off: not in my repertoire from here"}
-          >{ownOff ? "on" : "off"}</button>
-        );
-      }
+      if (isCurrentMove && !node.scratch) found.off = { line, index: moveIdx, own: !!ownOff, before: !!offBefore };
 
       const hasGraphical = (node.annotations.arrows?.length ?? 0) > 0 || (node.annotations.circles?.length ?? 0) > 0;
       const hasComment = !!node.annotations.comment;
@@ -307,6 +299,23 @@ export default function AnnotatedMoveList({
           className={`${miniBtn} ${showAnnotations ? "" : "opacity-50"}`}
           title={showAnnotations ? "Hide annotations" : "Show annotations"}
         >💬</button>
+        {onToggleOff && (() => {
+          // The off-switch for the current move: its own, or "On" to undo it.
+          // A move off through one above it has its switch there.
+          const t = found.off;
+          const usable = !!t && (t.own || !t.before);
+          return (
+            <button
+              onClick={() => t && usable && onToggleOff(t.line, t.index, !t.own)}
+              disabled={!usable}
+              className={`${miniBtn} ml-auto`}
+              title={!t ? "Go to a move to switch it off"
+                : t.own ? "Switch this move back on"
+                : t.before ? "Off already — a move above is switched off; switch it on there"
+                : "Switch off: not in my repertoire from here"}
+            >{t?.own ? "On" : "Off"}</button>
+          );
+        })()}
       </div>
     </div>
   );

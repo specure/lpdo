@@ -20,7 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   next), and the editor to adjust the lines. Books and chapters are marked
   active, and
   any move can be switched off — "not in my repertoire from here" — greyed
-  with everything below it, the switch kept in the PGN. Design in
+  with everything below it, the switch kept in the PGN. Chapters can be
+  merged — the same course imported twice, or a section split over several
+  files: new moves become variations, missing comments are taken over, and
+  where the comments differ you choose which stays. Chapters can be renamed
+  together, by find and replace over their names, with a preview. Design in
   `docs/design/opening-repertoire.md`. (#327, #329)
 
 ## [0.21.0] - 2026-09-27

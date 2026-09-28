@@ -10,12 +10,15 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { GameSummary } from "../types";
 import {
   addChapters, bookPgnPath, chapterPgnPath, createBook, deleteBook, deleteChapter, getChapter, listRepertoire,
-  updateBook, updateChapter, documentOf, type BookColor, type BookWithChapters, type ChapterSummary,
+  saveChapterMoves, updateBook, updateChapter, documentOf, type BookColor, type BookWithChapters, type ChapterSummary,
 } from "../lib/repertoire";
 import { saveTextFile } from "../lib/exportPgn";
 import { buildPlayback } from "../lib/useGamePgn";
 import { apiUrl } from "../api";
 import AnalysisPage, { type AnalysisTab } from "./AnalysisPage";
+import MergeChaptersDialog from "./repertoire/MergeChaptersDialog";
+import RenameChaptersDialog from "./repertoire/RenameChaptersDialog";
+import { mergeChapters, resolveMerge, type MergeChoices } from "../lib/mergeChapters";
 import type { CursorPath } from "../lib/moveTreeNav";
 
 interface Props {
@@ -71,6 +74,10 @@ export default function RepertoirePage({ onOpenGame }: Props) {
     return Number.isFinite(v) && v > 0 ? v : null;
   });
   const [selectedBook, setSelectedBook] = useState<number | null>(null);
+  // Chapters being merged: the lines already merged, the conflicts to choose.
+  const [merging, setMerging] = useState<{
+    target: ChapterSummary; others: ChapterSummary[]; labels: string[]; result: ReturnType<typeof mergeChapters>;
+  } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -139,6 +146,33 @@ export default function RepertoirePage({ onOpenGame }: Props) {
     if (first != null && chapterId == null) setChapterId(first);
   });
 
+  // Merge the chapters into the topmost of them: its tree gains the others'
+  // lines and comments, then they are deleted.
+  const startMerge = (ids: number[]) => run(async () => {
+    const cs = (book?.chapters ?? []).filter((c) => ids.includes(c.id)).sort((a, b) => a.ord - b.ord);
+    if (cs.length < 2) return;
+    const [first, ...rest] = await Promise.all(cs.map((c) => getChapter(c.id)));
+    // Names as the list shows them; a repeated one numbered "(2)", "(3)" in
+    // list order, so the merge window tells them apart.
+    const seen = new Map<string, number>();
+    const labels = cs.map((c) => {
+      const n = (seen.get(c.name) ?? 0) + 1;
+      seen.set(c.name, n);
+      return n > 1 ? `${c.name} (${n})` : c.name;
+    });
+    const result = mergeChapters({ name: labels[0], pgn: first.pgn }, rest.map((c, i) => ({ name: labels[i + 1], pgn: c.pgn })));
+    setMerging({ target: cs[0], others: cs.slice(1), labels, result });
+  });
+  const finishMerge = (choices: MergeChoices) => merging && run(async () => {
+    const { target, others, result } = merging;
+    await saveChapterMoves(target.id, resolveMerge(result, choices));
+    for (const o of others) await deleteChapter(o.id);
+    setMerging(null);
+    // The merged chapter on the board, read again.
+    if (chapterId === target.id) setTab(await loadTab(target.id));
+    else setChapterId(target.id);
+  });
+
   const booksPanel = booksFolded ? <Strip label="Books" onOpen={() => setBooksFolded(false)} /> : (
     <div className={box}>
       <BooksPanel
@@ -166,6 +200,8 @@ export default function RepertoirePage({ onOpenGame }: Props) {
           <ChaptersList
             book={book} busy={busy} current={chapterId}
             onPick={setChapterId}
+            onMerge={startMerge}
+            onRenameMany={(changes) => run(async () => { for (const c of changes) await updateChapter(c.id, { name: c.name }); })}
             onChapter={(id, patch) => run(() => updateChapter(id, patch))}
             onDeleteChapter={(id) => run(async () => { await deleteChapter(id); if (id === chapterId) dropChapter(); })}
           />
@@ -178,7 +214,15 @@ export default function RepertoirePage({ onOpenGame }: Props) {
 
   // Each fold has a layout of its own: the group reads its sizes once.
   const layoutId = `repertoire-${booksFolded ? "b" : "B"}${chaptersFolded ? "c" : "C"}`;
-  return (
+  return (<>
+    {merging && (
+      <MergeChaptersDialog
+        target={merging.labels[0]}
+        others={merging.labels.slice(1)}
+        added={merging.result.added} takenOver={merging.result.takenOver} conflicts={merging.result.conflicts}
+        busy={busy} onMerge={finishMerge} onCancel={() => setMerging(null)}
+      />
+    )}
     <AnalysisPage
       key={layoutId}
       tabs={tab ? [tab] : []}
@@ -200,7 +244,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
         ? "No books yet. A book is one opening course or one topic — \"Najdorf for Black\" — with the colour you play it from; its chapters hold the lines. Add a book on the left."
         : "Choose a chapter on the left to study it here — or add one with the book's ⋯: empty, from pasted PGN, or from PGN files."}
     />
-  );
+  </>);
 }
 
 // ── The panels ───────────────────────────────────────────────────────────────
@@ -451,9 +495,11 @@ function Menu({ entries, title, up = false }: {
 
 /** The book's chapters, with one menu for the chapter on the board and a
  *  mode for putting them in order. */
-function ChaptersList({ book, busy, current, onPick, onChapter, onDeleteChapter }: {
+function ChaptersList({ book, busy, current, onPick, onMerge, onRenameMany, onChapter, onDeleteChapter }: {
   book: BookWithChapters; busy: boolean; current: number | null;
   onPick: (id: number) => void;
+  onMerge: (ids: number[]) => void;
+  onRenameMany: (changes: { id: number; name: string }[]) => Promise<void>;
   onChapter: (id: number, patch: { name?: string; ord?: number; active?: boolean }) => void;
   onDeleteChapter: (id: number) => void;
 }) {
@@ -463,6 +509,10 @@ function ChaptersList({ book, busy, current, onPick, onChapter, onDeleteChapter 
   const [arranging, setArranging] = useState(false);
   const [dragged, setDragged] = useState<number | null>(null);
   const [over, setOver] = useState<number | null>(null);
+  // Merge mode: the chapters ticked for merging.
+  const [selecting, setSelecting] = useState<number[] | null>(null);
+  const [renamingAll, setRenamingAll] = useState(false);
+  useEffect(() => setSelecting(null), [book.id]);
   const chapter = book.chapters.find((c) => c.id === current) ?? null;
   useEffect(() => setConfirmDelete(false), [current]);
   const none = !chapter || busy;
@@ -474,16 +524,31 @@ function ChaptersList({ book, busy, current, onPick, onChapter, onDeleteChapter 
         <span className="flex-1 min-w-0 truncate text-title-sm text-on-surface" title={book.name}>{book.name}</span>
         {arranging ? (
           <button onClick={() => setArranging(false)} className={tonal}>Done</button>
+        ) : selecting ? (
+          <>
+            <button onClick={() => setSelecting(null)} className={plain}>Cancel</button>
+            <button onClick={() => { onMerge(selecting); setSelecting(null); }} disabled={busy || selecting.length < 2} className={tonal}>
+              Merge{selecting.length >= 2 ? ` ${selecting.length}` : ""}
+            </button>
+          </>
         ) : (
           <Menu title={chapter ? `The chapter on the board — ${chapter.name}` : "Rearrange the chapters; choose one for the rest"} entries={[
             { label: "Rename chapter…", onClick: () => chapter && setRenaming(chapter.id), disabled: none },
             { label: "Export chapter PGN…", onClick: () => chapter && void exportPgn(chapterPgnPath(chapter.id), `${book.name}-${chapter.name}`).then(setNote), disabled: none },
             { label: "Delete chapter…", onClick: () => setConfirmDelete(true), disabled: none },
-            { label: "Rearrange chapters", onClick: () => { setArranging(true); setRenaming(null); }, disabled: busy || book.chapters.length < 2, separated: true },
+            { label: "Rename chapters…", onClick: () => { setRenamingAll(true); setRenaming(null); }, disabled: busy || book.chapters.length === 0, separated: true },
+            { label: "Rearrange chapters", onClick: () => { setArranging(true); setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
+            { label: "Merge chapters…", onClick: () => { setSelecting(current != null && chapter ? [current] : []); setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
           ]} />
         )}
       </div>
+      {renamingAll && (
+        <RenameChaptersDialog bookName={book.name} chapters={book.chapters} busy={busy}
+          onRename={(changes) => void onRenameMany(changes).then(() => setRenamingAll(false))}
+          onCancel={() => setRenamingAll(false)} />
+      )}
       {arranging && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Drag a chapter to its place, or move it with ▲ ▼.</div>}
+      {selecting && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Tick the chapters to merge. The topmost keeps its name, place and main line; the others' lines and comments go into it, and they are deleted.</div>}
       {confirmDelete && chapter && (
         <div className="px-3 pb-1 flex items-center gap-1 flex-wrap">
           <button onClick={() => { setConfirmDelete(false); onDeleteChapter(chapter.id); }} disabled={busy} className="h-7 px-2 rounded-full text-label-md text-error hover:bg-error/8 truncate max-w-full">Delete “{chapter.name}”</button>
@@ -496,6 +561,8 @@ function ChaptersList({ book, busy, current, onPick, onChapter, onDeleteChapter 
           <ChapterRow key={c.id} chapter={c} busy={busy} current={c.id === current}
             renaming={renaming === c.id} arranging={arranging} first={i === 0} last={i === book.chapters.length - 1}
             dropTarget={arranging && over === c.id && dragged !== c.id}
+            selected={selecting ? selecting.includes(c.id) : undefined}
+            onSelect={(on) => setSelecting((s) => s && (on ? [...s, c.id] : s.filter((x) => x !== c.id)))}
             onPick={() => onPick(c.id)}
             onActive={(active) => onChapter(c.id, { active })}
             onRename={(n) => { setRenaming(null); if (n && n !== c.name) onChapter(c.id, { name: n }); }}
@@ -519,9 +586,11 @@ function ChaptersList({ book, busy, current, onPick, onChapter, onDeleteChapter 
   );
 }
 
-function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, last, dropTarget, onPick, onActive, onRename, onMove, drag }: {
+function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, last, dropTarget, selected, onSelect, onPick, onActive, onRename, onMove, drag }: {
   chapter: ChapterSummary; busy: boolean; current: boolean; renaming: boolean; arranging: boolean;
   first: boolean; last: boolean; dropTarget: boolean;
+  /** In merge mode: ticked for merging (undefined outside it). */
+  selected?: boolean; onSelect: (on: boolean) => void;
   onPick: () => void; onActive: (a: boolean) => void; onRename: (n: string) => void; onMove: (delta: -1 | 1) => void;
   drag: Pick<React.HTMLAttributes<HTMLDivElement>, "onDragStart" | "onDragOver" | "onDragLeave" | "onDrop" | "onDragEnd">;
 }) {
@@ -536,6 +605,8 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
     >
       {arranging
         ? <span className="shrink-0 text-on-surface-variant text-body-sm select-none" aria-hidden>⠿</span>
+        : selected !== undefined
+        ? <input type="checkbox" checked={selected} disabled={busy} onChange={(e) => onSelect(e.target.checked)} className="accent-tertiary shrink-0" title="Merge this chapter" />
         : <input type="checkbox" checked={c.active} disabled={busy} onChange={(e) => onActive(e.target.checked)} className="accent-primary shrink-0" title="Active: part of the repertoire you are playing now" />}
       {renaming ? (
         <input autoFocus value={name} onChange={(e) => setName(e.target.value)}
@@ -544,7 +615,7 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
           className={`${field} flex-1 min-w-0 h-7`} />
       ) : (
         <button onClick={onPick} className={`flex-1 min-w-0 text-left text-body-sm truncate ${current ? "text-on-surface font-medium" : "text-on-surface hover:text-primary"}`} title={`${c.name} — ${counts}`}>
-          {c.ord}. {c.name}
+          {c.name}
         </button>
       )}
       {arranging ? (
