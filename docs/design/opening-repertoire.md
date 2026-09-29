@@ -6,9 +6,9 @@ An opening repertoire organised as **books** and **chapters**, loosely the
 shape of an opening course — a Chessable course, a Lichess study — with the
 chapters you are playing marked **active**, the lines studied with the
 reference database and the engines beside them, and new lines added and
-existing ones adjusted with the editor. Practice (spaced repetition) and the
-comparison of your own games against the repertoire come later, on the same
-model.
+existing ones adjusted with the editor. Practice — training units taken to
+the phone, see [Practice](#practice) — and the comparison of your own games
+against the repertoire come later, on the same model.
 
 ## Baseline: what exists today
 
@@ -146,6 +146,144 @@ another book, delete; add a chapter (empty, pasted PGN, PGN file); export the
 book or a chapter. A **Repertoire card** on the Home page lists the active
 books with their active chapter counts and opens the page.
 
+## Practice
+
+Learning the lines, not just reading them: **training units** planned on
+the desktop, practised there or — the main case — on the phone, offline and
+private. The practice today goes through ChessTempo: the chapter synced to
+its servers first, online only, and other users' comments turning up on
+one's own moves. That is a workaround; this replaces it.
+
+### What a unit is
+
+A **training unit** is a planned piece of study: the lines of a chapter (or
+of several, or of one variation in a chapter) chosen for a purpose —
+the topic an upcoming game suggests, a line lost in a game, a new opening,
+or a systematic pass through the repertoire. The purpose is to study and
+understand a line over months, not to cram for one opponent, so the
+opponent's moves are weighted by the whole database; a game coming up only
+picks the topic.
+
+A unit is a **snapshot**: the lines, the chapter's comments and the
+statistics of every position, as they were when it was made. Editing the
+chapter afterwards does not change a unit already on the phone. On the
+desktop a unit is send-and-forget: it is kept (to show again, or to note
+when a topic was studied), not tracked.
+
+### Choosing the lines
+
+Only the opponent's moves are a matter of chance — one's own are the
+repertoire's. A line's **likelihood** is the product, over the opponent's
+moves in it, of the move's share of the games from its position (the
+Reference tab's figures, from the positions index); a move not in the
+database counts as rare, not impossible. Lines switched off are left out.
+
+The lines are taken in order of likelihood until they reach a target, set
+one of two ways, the other shown alongside:
+
+- **Coverage** — the share of the games reaching the unit's start that stay
+  within its lines ("12 of 20 lines, 75% of games"); the default, 75%.
+- **Time** — "about 60 minutes": lines are added while the estimate stays
+  under it.
+
+The **estimate** counts **decisions**, not moves or lines: the distinct
+positions where it is one's own move (lines share their beginnings — 20
+lines may be 60 decisions). Time ≈ decisions × repetitions × seconds per
+decision, with fixed guesses to start (say 3 repetitions, 15 s), shown as
+an estimate.
+
+The positions index covers each game's first ~40 plies; deeper positions
+have no statistics and inherit their line's likelihood.
+
+### Training: study and drill
+
+- **Study** — the unit's lines one after another, with the chapter's
+  comments; at each position, on demand, how many games reached it, the
+  moves played there with their share and score, whether the repertoire's
+  move is the main move or a side line, and the engine's evaluation where
+  the database has one stored (no engine runs on the phone).
+- **Drill** — the opponent's moves are played, chosen by their weight, and
+  one's own moves are entered on the board. A wrong move shows the right one
+  and the same figures ("the book move is Nf3 — 62% of games, scores 55%").
+  Each decision is a **card**; a card missed comes back sooner, one known
+  comes back later (spaced repetition, kept on the device where the drill
+  runs).
+
+The desktop has both in the Repertoire page from the first step; the
+phone trainer is the same code.
+
+### The unit format
+
+One JSON document, documented and versioned, read by the desktop training,
+the phone trainer and any later app alike:
+
+```jsonc
+{
+  "format": "lpdo-unit", "version": 1,
+  "id": "3f9c…",                     // random, stable: the unit's identity
+  "name": "Classical English — 3…Nc6",
+  "created": "2026-09-29T10:00:00Z",
+  "color": "white",                  // the side trained
+  "source": { "book": "Classical English", "chapters": ["21 3...Nc6"] },
+  "selection": { "coverage": 0.75, "lines": 12, "of": 20, "decisions": 38, "minutes": 35 },
+  "tree": [                          // from the initial position
+    { "san": "c4",
+      "card": "a1b2c3d4e5f60718:c2c4",  // own moves: position hash + UCI move
+      "comment": "…", "nags": [1],
+      "stats": { "games": 889516, "moves": [["e5", 0.31, 0.47], ["Nf6", 0.29, 0.45]], "eval": 12 },
+      "children": [ … ] }            // in the chapter's order; the first is the main line
+  ]
+}
+```
+
+- `stats` is the position after the move: games reaching it, the moves
+  from it (SAN, share, score for the side to move), and a stored evaluation
+  in centipawns when there is one.
+- `card` keys are position plus move, so a card's history survives a unit
+  being rebuilt or sent again, and results could later be synced back by
+  key without changing the format.
+- An option leaves the comments out, roughly halving the size, for a unit
+  only to be drilled.
+
+### Taking a unit to the phone
+
+The phone trainer is a **web app** published on a public HTTPS page
+(GitHub Pages, next to the APT repository, or lpdo.com): static, no
+accounts, no server, no analytics — everything stays on the phone, which the
+open source lets anyone check. Added to the home screen it works offline;
+units and progress live in the browser's storage (IndexedDB). One code base
+for iPhone and Android, shared with the desktop's training view.
+
+A unit gets there one way — nothing comes back:
+
+- **Animated QR code** (the main way): the desktop shows the unit as a
+  short loop of QR codes; the trainer scans it with the camera. A unit is
+  roughly 5–15 KB compressed; at ~500 bytes a frame that is 10–30 frames, a
+  few seconds. Fountain coding (as crypto wallets use to pass transactions
+  between devices, e.g. BC-UR) lets the phone pick up frames in any order
+  and miss some. No network is involved.
+- **A file** (always works — large units, sending a unit to someone): the
+  desktop saves `<name>.lpdo-unit.json`; the trainer imports it from the
+  phone's files.
+
+A QR code holding a link instead would not do: on the iPhone a scanned link
+opens in Safari, whose storage is not the home-screen app's, and the app on
+HTTPS may not fetch from a server on plain HTTP.
+
+Caveats: on the iPhone the app must be on the home screen to keep its data
+reliably, and storage can still be cleared after long disuse — that loses
+the schedule, not the lines; sending the unit again restores it. Scanning
+speed from a monitor needs a prototype on a real iPhone before the rest is
+built on it.
+
+### Later: a native app
+
+The same code wrapped with Tauri mobile (F-Droid / Play Store easily; the
+App Store takes a developer account and review). With it: practice results
+synced back by card key, the desktop's own schedule of what is due, units
+planned from weak spots and from one's own games (where a game left the
+repertoire), and the time estimate calibrated from one's actual pace.
+
 ## Phases
 
 1. **First version:** the tables and routes; the Repertoire page; import and
@@ -158,13 +296,17 @@ books with their active chapter counts and opens the page.
    the opponent left the book); the opponent's games against your active lines
    on the Prep page; an engine pass over a chapter flagging moves it marks "?"
    (the queued analysis left open in #309).
-3. **Practice:** spaced repetition per line — the opponent's moves played for
-   you, yours entered on the board; a review schedule per line, "due today" on
-   the Home card.
+3. **Practice** — see [Practice](#practice): (a) training units and training
+   on the desktop, with the unit format; (b) the phone trainer, units carried
+   over by animated QR code or file; (c) later, with a native app, results
+   synced back and units planned from them.
 
 ## Out of scope
 
 Chapters starting from a set-up position (a PGN `[FEN]` header) — every
 chapter starts from the initial position; importing from Chessable (it has
 no export); ChessBase repertoire files; sharing books between servers other
-than as PGN.
+than as PGN. For practice: syncing with ChessTempo or any other online
+trainer; accounts or a server of our own for the phone trainer; practice
+results going back from the phone to the desktop before there is a native
+app.
