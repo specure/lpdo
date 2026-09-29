@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>QR transfer — sender</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <main class="send">
+    <section class="controls">
+      <h1>QR transfer — sender</h1>
+      <p class="hint">Prototype for carrying a training unit to the phone
+        (<code>docs/design/opening-repertoire.md</code>, Practice). Open the
+        receiver on the phone, then press Play and point the phone at the code.</p>
+
+      <fieldset>
+        <legend>Payload</legend>
+        <label>A file (a chapter's PGN export, a unit JSON) <input type="file" id="file" /></label>
+        <label>…or generated text, KB <input type="number" id="synthKb" value="12" min="1" max="200" /></label>
+        <button id="synth">Generate</button>
+        <div id="payload" class="stats">No payload yet.</div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Code</legend>
+        <label>Bytes per frame <input type="range" id="frag" min="100" max="1000" step="50" value="300" /> <output id="fragOut"></output></label>
+        <label>Frames per second <input type="range" id="fps" min="1" max="20" value="8" /> <output id="fpsOut"></output></label>
+        <label>Error correction
+          <select id="ecc"><option>L</option><option selected>M</option><option>Q</option></select></label>
+        <label>Size, px <input type="range" id="size" min="200" max="1000" step="20" value="560" /> <output id="sizeOut"></output></label>
+        <div id="code" class="stats"></div>
+      </fieldset>
+
+      <div class="buttons">
+        <button id="play" disabled>Play</button>
+        <button id="stop" disabled>Stop</button>
+      </div>
+
+      <fieldset>
+        <legend>Receiver</legend>
+        <p class="hint">Scan this with the phone's camera to open the receiver
+          (the phone warns about the certificate once — accept it). Open this
+          sender page through the network address Vite prints, not localhost,
+          so the link points at this machine.</p>
+        <canvas id="link"></canvas>
+        <div id="linkText" class="stats"></div>
+      </fieldset>
+    </section>
+
+    <section class="stage">
+      <canvas id="qr"></canvas>
+      <div id="frame" class="stats"></div>
+    </section>
+  </main>
+  <script type="module" src="/src/sender.js"></script>
+</body>
+</html>

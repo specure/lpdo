@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>QR transfer — receiver</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <main class="receive">
+    <h1>QR transfer — receiver</h1>
+    <div class="viewer">
+      <video id="video" playsinline muted></video>
+      <div class="frame-guide"></div>
+    </div>
+    <div class="bar"><div id="progress"></div></div>
+    <div id="status" class="stats">Press Start and point the camera at the sender's code.</div>
+    <div class="buttons">
+      <button id="start">Start</button>
+      <button id="again" hidden>Again</button>
+      <label class="small">Decoder <select id="decoder"></select></label>
+    </div>
+    <div id="result" class="stats"></div>
+    <pre id="preview"></pre>
+  </main>
+  <script type="module" src="/src/receiver.js"></script>
+</body>
+</html>
