@@ -258,10 +258,10 @@ A unit gets there one way — nothing comes back:
 
 - **Animated QR code** (the main way): the desktop shows the unit as a
   short loop of QR codes; the trainer scans it with the camera. A unit is
-  roughly 5–15 KB compressed; at ~500 bytes a frame that is 10–30 frames, a
-  few seconds. Fountain coding (as crypto wallets use to pass transactions
-  between devices, e.g. BC-UR) lets the phone pick up frames in any order
-  and miss some. No network is involved.
+  roughly 5–15 KB compressed (a real chapter: 10.7 KB of PGN, 4.6 KB
+  compressed). Fountain coding (BC-UR, as crypto wallets use to pass
+  transactions between devices) lets the phone pick up frames in any order
+  and miss some. No network is involved. Measured — see below.
 - **A file** (always works — large units, sending a unit to someone): the
   desktop saves `<name>.lpdo-unit.json`; the trainer imports it from the
   phone's files.
@@ -272,9 +272,31 @@ HTTPS may not fetch from a server on plain HTTP.
 
 Caveats: on the iPhone the app must be on the home screen to keep its data
 reliably, and storage can still be cleared after long disuse — that loses
-the schedule, not the lines; sending the unit again restores it. Scanning
-speed from a monitor needs a prototype on a real iPhone before the rest is
-built on it.
+the schedule, not the lines; sending the unit again restores it.
+
+**Measured** with a prototype (branch `qr-prototype`,
+`prototypes/qr-transfer`: a sender page, a receiver page, and an automated
+test playing the frames to headless Chrome as its camera). On an iPhone
+(iOS 18.7, Safari, jsQR) reading the desktop's monitor:
+
+| Bytes a frame | Frames/s | Time |
+|---:|---:|---|
+| 300 | 8 | 3.2 s |
+| 400 | 10 | 3–4 s, consistently |
+| 600 | 12 | 0.6–0.9 s at best, up to 6 s |
+
+The denser, faster codes are missed more often when the camera is not
+steady; the fountain code keeps going, only slower. So the trainer uses a
+steady setting (300–400 bytes, 8–10 frames/s — a few seconds for a unit)
+and shows progress while it reads. A faster decoder than jsQR (ZXing as
+WebAssembly) may make the fast settings reliable — to check when the
+trainer is built.
+
+Also found: Safari on iOS 18 does not accept a self-signed certificate at
+all ("Continue" past its warning retries over plain HTTP). The trainer
+therefore needs a host with a proper certificate — which the public HTTPS
+page above has; serving it from one's own LPDO server would not work on
+the iPhone without extra setup (a trusted certificate, e.g. Tailscale's).
 
 ### Later: a native app
 
