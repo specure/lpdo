@@ -12,17 +12,33 @@ app.
 
 ```bash
 npm install
-npm run dev          # HTTPS on port 5443, self-signed
+npm run phone        # builds, then serves over HTTPS on port 5443
 ```
 
-1. On the desktop open the **Network** address Vite prints
-   (`https://<this machine's IP>:5443/`), not localhost, and accept the
-   certificate warning.
+`npm run phone` serves the built pages with a small Node server
+(`serve.mjs`: a self-signed certificate naming this machine's addresses,
+kept in `.cert/`, and a log of every connection and request).
+
+**The iPhone needs a certificate it trusts.** Safari on iOS 18 does not let
+you accept a self-signed one: "Continue" after its warning retries the
+address over plain HTTP, which fails against the HTTPS port ("the network
+connection was lost"). So the phone gets the pages through a Cloudflare
+quick tunnel — no account, a random public address with a real certificate
+while it runs (the pages carry no data; the payload goes by camera):
+
+```bash
+cloudflared tunnel --protocol http2 --url https://127.0.0.1:5443 --no-tls-verify
+```
+
+(the binary from github.com/cloudflare/cloudflared/releases; `--protocol
+http2` where QUIC is blocked). The real trainer, hosted with a proper
+certificate, does not have this problem.
+
+1. On the desktop open the tunnel's `https://….trycloudflare.com/` address.
 2. Choose a payload: a chapter's PGN export (the Repertoire page's ⋯ →
    Export chapter PGN…) or generated text of a given size.
 3. Scan the small "Receiver" code with the phone's camera app, open the
-   link, accept the certificate warning, press **Start** and allow the
-   camera.
+   link, press **Start** and allow the camera.
 4. Press **Play** on the desktop and point the phone at the big code. The
    phone shows progress, and at the end the time taken and a checksum that
    must match the sender's.
@@ -59,4 +75,16 @@ compressed), jsQR:
 
 jsQR took 22–40 ms a scan on the desktop CPU.
 
-**iPhone:** to do — the measurement this prototype is for.
+**iPhone** (iOS 18.7, Safari, jsQR, reading the desktop's monitor):
+generated text at the default settings — 300 bytes a frame, 8 frames/s,
+error correction M, 560 px — arrived in **3.2 s**. At 600 bytes a frame
+and 12 frames/s (QR version 23): **0.6 s and 0.9 s** at best, but at times
+**up to 6 s** — the denser codes, each on screen ~80 ms, are missed more
+often when the camera is not steady or in focus; the fountain code keeps
+it going, only slower. Either way fast enough for a unit, taken once before
+leaving. At 400 bytes and 10 frames/s: **3–4 s, consistently** — steady,
+but no faster than the defaults. For the product: a steady setting like
+this (300–400 bytes, 8–10 frames/s), progress shown while it reads. A
+faster decoder than jsQR on the phone (ZXing as WebAssembly) may let the
+denser, faster settings read as reliably — to check when the trainer is
+built.
