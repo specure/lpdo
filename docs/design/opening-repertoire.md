@@ -6,9 +6,9 @@ An opening repertoire organised as **books** and **chapters**, loosely the
 shape of an opening course — a Chessable course, a Lichess study — with the
 chapters you are playing marked **active**, the lines studied with the
 reference database and the engines beside them, and new lines added and
-existing ones adjusted with the editor. Practice — training units taken to
-the phone, see [Practice](#practice) — and the comparison of your own games
-against the repertoire come later, on the same model.
+existing ones adjusted with the editor. Practice — chapters taken to the
+phone and trained there, see [Practice](#practice) — and the comparison of
+your own games against the repertoire come later, on the same model.
 
 ## Baseline: what exists today
 
@@ -148,123 +148,153 @@ books with their active chapter counts and opens the page.
 
 ## Practice
 
-Learning the lines, not just reading them: **training units** planned on
-the desktop, practised there or — the main case — on the phone, offline and
-private. The practice today goes through ChessTempo: the chapter synced to
-its servers first, online only, and other users' comments turning up on
-one's own moves. That is a workaround; this replaces it.
+Learning the lines, not just reading them: chapters taken to the phone —
+offline and private — and practised there, or on the desktop. The practice
+today goes through ChessTempo: the chapter synced to its servers first,
+online only, and other users' comments turning up on one's own moves. That
+is a workaround; this replaces it.
 
-### What a unit is
+The purpose is to study and understand a line over months, not to cram for
+one opponent: the opponent's moves are weighted by the whole database, and
+a game coming up only picks the topic.
 
-A **training unit** is a planned piece of study: the lines of a chapter (or
-of several, or of one variation in a chapter) chosen for a purpose —
-the topic an upcoming game suggests, a line lost in a game, a new opening,
-or a systematic pass through the repertoire. The purpose is to study and
-understand a line over months, not to cram for one opponent, so the
-opponent's moves are weighted by the whole database; a game coming up only
-picks the topic.
+### What goes to the phone: the enriched chapter
 
-A unit is a **snapshot**: the lines, the chapter's comments and the
-statistics of every position, as they were when it was made. Editing the
-chapter afterwards does not change a unit already on the phone. On the
-desktop a unit is send-and-forget: it is kept (to show again, or to note
-when a topic was studied), not tracked.
+What travels is a **whole chapter, enriched** with what the desktop knows
+and the phone cannot look up: for every position, how many games reached
+it, the moves played from it — the chapter's and the others — with their
+share and score, and an evaluation where the database has one stored. The
+chapter's comments and NAGs come with it; moves switched off come marked,
+left out of practice by default.
 
-### Choosing the lines
+It is a **snapshot**. Editing the chapter on the desktop does not change
+the copy on the phone; sending it again replaces the tree there and keeps
+the history of every card that still exists (cards are keyed by position
+and move — see the format). The phone shows the version it holds ("chapter
+of 2 October").
+
+What to practise is decided **on the phone, when practising** — a
+**session**, from the chapters it holds (below). There is no unit made on
+the desktop: planning happens where the practice does, sized to the time at
+hand, and studying the same chapter more thoroughly later needs nothing
+sent again. The one thing the desktop can add is a **focus**: sent with the
+chapter, a branch to start from ("prepare the 5...Nb6 line for Saturday"),
+offered on the phone as a ready session.
+
+### A session: choosing the lines
 
 Only the opponent's moves are a matter of chance — one's own are the
 repertoire's. A line's **likelihood** is the product, over the opponent's
 moves in it, of the move's share of the games from its position (the
-Reference tab's figures, from the positions index); a move not in the
-database counts as rare, not impossible. Lines switched off are left out.
+Reference tab's figures, from the positions index, shipped in the
+chapter); a move not in the database counts as rare, not impossible. Lines
+switched off are left out.
 
-The lines are taken in order of likelihood until they reach a target, set
-one of two ways, the other shown alongside:
+A session starts from a chapter (several, or a branch — the focus, or one
+picked in the tree) and takes its lines in order of likelihood until they
+reach a target, set one of two ways, the other shown alongside:
 
-- **Coverage** — the share of the games reaching the unit's start that stay
-  within its lines ("12 of 20 lines, 75% of games"); the default, 75%.
-- **Time** — "about 60 minutes": lines are added while the estimate stays
-  under it.
+- **Coverage** — the share of the games reaching the start that stay within
+  the lines chosen ("12 of 20 lines, 75% of games"); the default, 75%.
+- **Time** — "20 minutes": lines are added while the estimate stays under
+  it.
 
 The **estimate** counts **decisions**, not moves or lines: the distinct
 positions where it is one's own move (lines share their beginnings — 20
 lines may be 60 decisions). Time ≈ decisions × repetitions × seconds per
 decision, with fixed guesses to start (say 3 repetitions, 15 s), shown as
-an estimate.
+an estimate. Cards already known and not yet due count for less.
+
+A session can be kept as a **preset** ("Classical English — 3…Nc6, 75%") to
+run again.
 
 The positions index covers each game's first ~40 plies; deeper positions
 have no statistics and inherit their line's likelihood.
 
 ### Training: study and drill
 
-- **Study** — the unit's lines one after another, with the chapter's
+- **Study** — the session's lines one after another, with the chapter's
   comments; at each position, on demand, how many games reached it, the
   moves played there with their share and score, whether the repertoire's
-  move is the main move or a side line, and the engine's evaluation where
-  the database has one stored (no engine runs on the phone).
+  move is the main move or a side line, and the evaluation where there is
+  one (no engine runs on the phone).
 - **Drill** — the opponent's moves are played, chosen by their weight, and
   one's own moves are entered on the board. A wrong move shows the right one
   and the same figures ("the book move is Nf3 — 62% of games, scores 55%").
-  Each decision is a **card**; a card missed comes back sooner, one known
-  comes back later (spaced repetition, kept on the device where the drill
-  runs).
+  Each decision is a **card** of the chapter, not of the session: a card
+  missed comes back sooner, one known comes back later (spaced repetition,
+  kept on the device where the drill runs), whatever session it turns up in.
 
-The desktop has both in the Repertoire page from the first step; the
-phone trainer is the same code.
+The desktop has both, with the same session setup, in the Repertoire page
+from the first step; the phone trainer is the same code.
 
-### The unit format
+### The chapter format
 
 One JSON document, documented and versioned, read by the desktop training,
 the phone trainer and any later app alike:
 
 ```jsonc
 {
-  "format": "lpdo-unit", "version": 1,
-  "id": "3f9c…",                     // random, stable: the unit's identity
-  "name": "Classical English — 3…Nc6",
-  "created": "2026-09-29T10:00:00Z",
-  "color": "white",                  // the side trained
-  "source": { "book": "Classical English", "chapters": ["21 3...Nc6"] },
-  "selection": { "coverage": 0.75, "lines": 12, "of": 20, "decisions": 38, "minutes": 35 },
+  "format": "lpdo-chapter", "version": 1,
+  "chapter": { "id": 65, "updated": "2026-10-02T09:12:00Z" },  // which chapter, which version
+  "server": "7c1e…",                 // the LPDO database it came from (ids are per database)
+  "sent": "2026-10-02T09:30:00Z",
+  "book": { "name": "Classical English", "author": "…", "color": "white" },  // the side trained
+  "name": "21 3...Nc6",
+  "focus": null,                     // or the path to a branch: ["c4", "e5", "g3", "Nf6", …]
   "tree": [                          // from the initial position
     { "san": "c4",
       "card": "a1b2c3d4e5f60718:c2c4",  // own moves: position hash + UCI move
-      "comment": "…", "nags": [1],
+      "comment": "…", "nags": [1], "off": false,
       "stats": { "games": 889516, "moves": [["e5", 0.31, 0.47], ["Nf6", 0.29, 0.45]], "eval": 12 },
       "children": [ … ] }            // in the chapter's order; the first is the main line
   ]
 }
 ```
 
-- `stats` is the position after the move: games reaching it, the moves
-  from it (SAN, share, score for the side to move), and a stored evaluation
+- `stats` is the position after the move: games reaching it, the database's
+  most played moves from it (SAN, share, score for the side to move — the
+  chapter's moves and the others, up to a handful), and a stored evaluation
   in centipawns when there is one.
-- `card` keys are position plus move, so a card's history survives a unit
-  being rebuilt or sent again, and results could later be synced back by
-  key without changing the format.
-- An option leaves the comments out, roughly halving the size, for a unit
-  only to be drilled.
+- `card` keys are position plus move, so a card's history survives the
+  chapter being edited and sent again, and results could later be synced
+  back by key without changing the format.
+- A chapter is identified by `server` and `chapter.id`; a newer
+  `chapter.updated` replaces the copy on the phone.
+- A **book** is a file of its chapters (`"format": "lpdo-book"`, the
+  chapters in order) — for the file route only, see below.
+- An option leaves the comments out, roughly halving the size, for a
+  chapter only to be drilled.
+- Later, optionally: evaluations filled in by the desktop when sending — a
+  short engine pass over the positions of one's own moves where the
+  database has none (minutes for a chapter).
 
-### Taking a unit to the phone
+### Taking chapters to the phone
 
 The phone trainer is a **web app** published on a public HTTPS page
 (GitHub Pages, next to the APT repository, or lpdo.com): static, no
 accounts, no server, no analytics — everything stays on the phone, which the
 open source lets anyone check. Added to the home screen it works offline;
-units and progress live in the browser's storage (IndexedDB). One code base
-for iPhone and Android, shared with the desktop's training view.
+chapters, presets and progress live in the browser's storage (IndexedDB).
+One code base for iPhone and Android, shared with the desktop's training
+view.
 
-A unit gets there one way — nothing comes back:
+**Send to phone** on a chapter (the chapter's ⋯, optionally with the branch
+on the board as its focus) or a book. It gets there one way — nothing comes
+back:
 
-- **Animated QR code** (the main way): the desktop shows the unit as a
-  short loop of QR codes; the trainer scans it with the camera. A unit is
-  roughly 5–15 KB compressed (a real chapter: 10.7 KB of PGN, 4.6 KB
-  compressed). Fountain coding (BC-UR, as crypto wallets use to pass
-  transactions between devices) lets the phone pick up frames in any order
-  and miss some. No network is involved. Measured — see below.
-- **A file** (always works — large units, sending a unit to someone): the
-  desktop saves `<name>.lpdo-unit.json`; the trainer imports it from the
-  phone's files.
+- **Animated QR code** — one chapter at a time: the desktop shows it as a
+  loop of QR codes; the trainer scans it with the camera. Fountain coding
+  (BC-UR, as crypto wallets use to pass transactions between devices) lets
+  the phone pick up frames in any order and miss some. No network is
+  involved. A real chapter's PGN is 10.7 KB, 4.6 KB compressed; with the
+  statistics of every position an enriched chapter is estimated at 10–15 KB
+  compressed — about 30 frames, 5–10 s at the steady setting below (to be
+  measured once the format exists).
+- **A file** — a chapter or a whole book (a book of 26 chapters is a few
+  hundred KB: minutes of scanning, so books go this way only), and for
+  sending a chapter to someone: the desktop saves `<name>.lpdo.json`; the
+  trainer imports it from the phone's files.
 
 A QR code holding a link instead would not do: on the iPhone a scanned link
 opens in Safari, whose storage is not the home-screen app's, and the app on
@@ -272,7 +302,7 @@ HTTPS may not fetch from a server on plain HTTP.
 
 Caveats: on the iPhone the app must be on the home screen to keep its data
 reliably, and storage can still be cleared after long disuse — that loses
-the schedule, not the lines; sending the unit again restores it.
+the schedule, not the lines; sending the chapter again restores them.
 
 **Measured** with a prototype (branch `qr-prototype`,
 `prototypes/qr-transfer`: a sender page, a receiver page, and an automated
@@ -287,7 +317,7 @@ test playing the frames to headless Chrome as its camera). On an iPhone
 
 The denser, faster codes are missed more often when the camera is not
 steady; the fountain code keeps going, only slower. So the trainer uses a
-steady setting (300–400 bytes, 8–10 frames/s — a few seconds for a unit)
+steady setting (300–400 bytes, 8–10 frames/s — a few seconds for a chapter)
 and shows progress while it reads. A faster decoder than jsQR (ZXing as
 WebAssembly) may make the fast settings reliable — to check when the
 trainer is built.
@@ -302,9 +332,10 @@ the iPhone without extra setup (a trusted certificate, e.g. Tailscale's).
 
 The same code wrapped with Tauri mobile (F-Droid / Play Store easily; the
 App Store takes a developer account and review). With it: practice results
-synced back by card key, the desktop's own schedule of what is due, units
-planned from weak spots and from one's own games (where a game left the
-repertoire), and the time estimate calibrated from one's actual pace.
+synced back by card key, the desktop's own schedule of what is due,
+sessions suggested from weak spots and from one's own games (where a game
+left the repertoire), and the time estimate calibrated from one's actual
+pace.
 
 ## Phases
 
@@ -318,10 +349,11 @@ repertoire), and the time estimate calibrated from one's actual pace.
    the opponent left the book); the opponent's games against your active lines
    on the Prep page; an engine pass over a chapter flagging moves it marks "?"
    (the queued analysis left open in #309).
-3. **Practice** — see [Practice](#practice): (a) training units and training
-   on the desktop, with the unit format; (b) the phone trainer, units carried
-   over by animated QR code or file; (c) later, with a native app, results
-   synced back and units planned from them.
+3. **Practice** — see [Practice](#practice): (a) the enriched chapter format,
+   and training on the desktop — sessions, study and drill — in the code the
+   phone will share; (b) the phone trainer, chapters sent by animated QR code
+   or file, with an optional focus; (c) later, with a native app, results
+   synced back and sessions suggested from them.
 
 ## Out of scope
 
