@@ -586,6 +586,11 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
     })();
     return () => { gone = true; };
   }, [show, book.id, chaptersKey]);
+  // Which games count — for the tooltips: "Your games as Black, the last 12
+  // months (set on the Maintenance page, Repertoire tab)".
+  const gamesScope = games
+    ? `Your games as ${games.color === "white" ? "White" : "Black"}, ${games.months ? `the last ${games.months} months` : "all of them"} (the period is set on the Maintenance page, Repertoire tab)`
+    : null;
   const gamesFor = (id: number): Score | null => (show === "games" && games ? games.chapters.find((c) => c.id === id) ?? null : null);
   const [renamingAll, setRenamingAll] = useState(false);
   useEffect(() => setSelecting(null), [book.id]);
@@ -626,13 +631,27 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
           onCancel={() => setRenamingAll(false)} />
       )}
       {!arranging && !selecting && (
-        <div className="px-3 pb-1 flex items-center gap-1">
-          {(["lines", "games"] as const).map((v) => (
-            <button key={v} onClick={() => setShow(v)}
-              className={`h-6 px-2 rounded-full text-label-sm transition-colors duration-short3 ${show === v ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8"}`}>
-              {v === "lines" ? "Lines" : "Your games"}
-            </button>
-          ))}
+        <div className="px-3 pb-1 flex items-center gap-1.5">
+          <span className="flex-1 min-w-0 flex items-center gap-1">
+            {(["lines", "games"] as const).map((v) => (
+              <button key={v} onClick={() => setShow(v)}
+                title={v === "games" ? gamesScope ?? "Your games in each chapter" : "The chapters' lines"}
+                className={`h-6 px-2 rounded-full text-label-sm transition-colors duration-short3 ${show === v ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8"}`}>
+                {v === "lines" ? "Lines" : "Your games"}
+              </button>
+            ))}
+          </span>
+          {/* The columns' names, over the book's row and every chapter's. */}
+          {show === "games" && (
+            <>
+              <span className="flex items-center gap-1 shrink-0 text-label-sm text-on-surface-variant" title={gamesScope ?? undefined}>
+                <span className="w-6 text-right">games</span>
+                <span className="w-10 text-right">score</span>
+                <span className="w-10 text-right" title="Your performance rating, with three rated opponents or more">perf</span>
+              </span>
+              <span className="shrink-0 w-2" />
+            </>
+          )}
         </div>
       )}
       {show === "games" && !arranging && !selecting && (
@@ -689,13 +708,13 @@ function BookGamesSummary({ games, note, picked, onPick }: { games: BookGames | 
   const b = games.in_book;
   return (
     <>
-      <div className="px-3 pb-1 text-label-sm text-on-surface-variant" title="The period is set on the Maintenance page, Repertoire tab.">
-        Your games as {colour}, {period}
-      </div>
       <button onClick={onPick}
         className={`flex items-center gap-1.5 px-3 py-1 text-left border-t-2 border-transparent ${picked ? "bg-primary-container/40" : "hover:bg-on-surface/4"}`}
-        title={`Your games in this book's opening: ${b.games} · +${b.w} =${b.d} −${b.l}${b.perf ? ` · performance ${b.perf}` : ""}. Click: list them under My games.`}>
-        <span className={`flex-1 min-w-0 truncate text-body-sm ${picked ? "text-on-surface font-medium" : "text-on-surface"}`}>The whole book</span>
+        title={`Your games as ${colour}, ${period}, in this book's opening. Click: list them under My games.`}>
+        <span className="flex-1 min-w-0 flex flex-col">
+          <span className={`truncate text-body-sm ${picked ? "text-on-surface font-medium" : "text-on-surface"}`}>The whole book</span>
+          {b.games > 0 && <span className="text-label-sm text-on-surface-variant tabular-nums">+{b.w} ={b.d} −{b.l}</span>}
+        </span>
         <span className="flex items-center gap-1 shrink-0">
           <span className="w-6 text-right text-label-sm text-on-surface-variant tabular-nums">{b.games || "–"}</span>
           <ScoreCell s={b} />
