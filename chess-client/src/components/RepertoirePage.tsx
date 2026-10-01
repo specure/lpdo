@@ -671,12 +671,16 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
         </>
       ) : (
         <>
-          {analysedOn && (
-            <span aria-label={stale ? "changed since analysed" : "analysed"}
-              className={`shrink-0 w-1.5 h-1.5 rounded-full ${stale ? "bg-tertiary" : "bg-primary"}`}
-              title={stale ? `Changed since the analysis of ${analysedOn} — analyse again for the new moves` : `Analysed ${analysedOn}`} />
-          )}
           <span className="text-label-sm text-on-surface-variant tabular-nums shrink-0" title={counts}>{c.lines}{c.lines_off ? `−${c.lines_off}` : ""}</span>
+          {/* Analysed for practice: a dot in a column of its own at the end,
+              an empty slot when not, so neither the counts nor the dots move. */}
+          <span className="shrink-0 w-2 flex justify-center"
+            title={analysedOn ? (stale ? `Changed since the analysis of ${analysedOn} — analyse again for the new moves` : `Analysed ${analysedOn}`) : "Not analysed"}>
+            {analysedOn && (
+              <span aria-label={stale ? "changed since analysed" : "analysed"}
+                className={`w-1.5 h-1.5 rounded-full ${stale ? "bg-tertiary" : "bg-primary"}`} />
+            )}
+          </span>
         </>
       )}
     </div>

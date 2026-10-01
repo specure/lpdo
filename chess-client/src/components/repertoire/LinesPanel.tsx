@@ -81,10 +81,14 @@ export default function LinesPanel({ chapterId, reloadKey, analysedAt, cursor, o
               title={l.off ? "Switched off — not in the active repertoire" : undefined}
             >
               <span className="text-on-surface-variant tabular-nums w-6 shrink-0">{i + 1}.</span>
-              <span aria-hidden className={`self-center shrink-0 w-1.5 h-1.5 rounded-full ${isAnalysed(l) ? "bg-primary" : "border border-outline"}`}
-                title={isAnalysed(l) ? "Analysed for practice" : analysed ? "Not in the analysis — moves added since; analyse again" : "Not analysed yet"} />
               <span className="font-mono">{l.name}</span>
               <span className="ml-auto text-label-sm text-on-surface-variant tabular-nums">{l.length} {l.length === 1 ? "move" : "moves"}{l.off ? " · off" : ""}</span>
+              {/* In the analysis or not: a column of its own at the end, the
+                  same for every line whatever its depth. */}
+              <span className="self-center shrink-0 w-2 flex justify-center"
+                title={isAnalysed(l) ? "Analysed for practice" : analysed ? "Not in the analysis — moves added since; analyse again" : "Not analysed yet"}>
+                <span aria-hidden className={`w-1.5 h-1.5 rounded-full ${isAnalysed(l) ? "bg-primary" : "border border-outline"}`} />
+              </span>
             </button>
           );
         })}
