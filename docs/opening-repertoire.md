@@ -50,8 +50,9 @@ leading number).
 **Remove FENs from comments** there (or **in all chapters**) deletes the
 FEN strings courses exported from other tools leave in the text
 ("…reminiscent of the King's Indian rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR
-w KQkq - 0 1 1.d4 Nf6…"); the rest of each comment stays as written, and it
-says how many it removed.
+w KQkq - 0 1 1.d4 Nf6…"); the rest of each comment stays as written. It
+counts them first — "25 FEN codes will be removed", per chapter — and
+removes them when you say so; "No FEN codes found" otherwise.
 
 **Merge chapters…** there folds several chapters into one — the same
 section imported twice, or split over several files. Tick the chapters and

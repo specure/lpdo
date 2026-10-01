@@ -234,10 +234,22 @@ export default function RepertoirePage({ onOpenGame }: Props) {
     const result = mergeChapters({ name: labels[0], pgn: first.pgn }, rest.map((c, i) => ({ name: labels[i + 1], pgn: c.pgn })));
     setMerging({ target: cs[0], others: cs.slice(1), labels, result });
   });
+  // How many FENs each chapter's comments hold — nothing changed.
+  const countFens = async (ids: number[]): Promise<{ id: number; name: string; n: number }[]> => {
+    const out: { id: number; name: string; n: number }[] = [];
+    for (const id of ids) {
+      const c = await getChapter(id);
+      out.push({ id, name: c.name, n: stripFens(parsePgnTree(c.pgn)) });
+    }
+    return out;
+  };
+
   // FEN strings left in the comments (exports from other tools): removed,
-  // the chapters saved; how many were removed.
-  const removeFens = async (ids: number[]): Promise<number> => {
+  // the chapters saved; how many were removed — null when it failed (the
+  // error shows instead).
+  const removeFens = async (ids: number[]): Promise<number | null> => {
     let total = 0;
+    let done = false;
     await run(async () => {
       for (const id of ids) {
         const c = await getChapter(id);
@@ -251,8 +263,9 @@ export default function RepertoirePage({ onOpenGame }: Props) {
         setTab(await loadTab(chapterId));
         setDocReload((v) => v + 1);
       }
+      done = true;
     });
-    return total;
+    return done ? total : null;
   };
 
   const finishMerge = (choices: MergeChoices) => merging && run(async () => {
@@ -314,7 +327,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
             bookPicked={bookPicked} onPickBook={setBookPicked}
             onMerge={startMerge}
             onAnalyse={startAnalysis} analysing={analysing}
-            onRemoveFens={removeFens}
+            onRemoveFens={removeFens} onCountFens={countFens}
             onRenameMany={(changes) => run(async () => { for (const c of changes) await updateChapter(c.id, { name: c.name }); })}
             onChapter={(id, patch) => run(() => updateChapter(id, patch))}
             onDeleteChapter={(id) => run(async () => { await deleteChapter(id); if (id === chapterId) dropChapter(); })}
@@ -612,14 +625,17 @@ function Menu({ entries, title, up = false }: {
 
 /** The book's chapters, with one menu for the chapter on the board and a
  *  mode for putting them in order. */
-function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onRenameMany, onChapter, onDeleteChapter }: {
+function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onCountFens, onRenameMany, onChapter, onDeleteChapter }: {
   book: BookWithChapters; busy: boolean; current: number | null;
   onPick: (id: number) => void;
   onMerge: (ids: number[]) => void;
   /** Analyse chapters for practice; `analysing`: a run is going on. */
   onAnalyse: (ids: number[]) => void;
-  /** Remove the FENs left in chapters' comments; resolves to how many. */
-  onRemoveFens: (ids: number[]) => Promise<number>;
+  /** Remove the FENs left in chapters' comments; resolves to how many
+   *  (null: it failed, the error shows). */
+  onRemoveFens: (ids: number[]) => Promise<number | null>;
+  /** How many FENs each of these chapters holds, nothing changed. */
+  onCountFens: (ids: number[]) => Promise<{ id: number; name: string; n: number }[]>;
   /** "Your games": the book's line picked, and picking it (or not). */
   bookPicked: boolean;
   onPickBook: (on: boolean) => void;
@@ -663,6 +679,8 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
     : null;
   const gamesFor = (id: number): Score | null => (games ? games.chapters.find((c) => c.id === id) ?? null : null);
   const [renamingAll, setRenamingAll] = useState(false);
+  // Removing FENs: which chapters, said how — the dialog counts first.
+  const [fens, setFens] = useState<{ ids: number[]; what: string } | null>(null);
   useEffect(() => setSelecting(null), [book.id]);
   const chapter = book.chapters.find((c) => c.id === current) ?? null;
   useEffect(() => setConfirmDelete(false), [current]);
@@ -692,13 +710,25 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
             { label: "Merge chapters…", onClick: () => { setSelecting(current != null && chapter ? [current] : []); setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
             { label: "Analyse chapter", onClick: () => chapter && onAnalyse([chapter.id]), disabled: none || analysing, separated: true },
             { label: "Analyse all chapters", onClick: () => onAnalyse(book.chapters.map((c) => c.id)), disabled: busy || analysing || book.chapters.length === 0 },
-            { label: "Remove FENs from comments", separated: true, disabled: none,
-              onClick: () => chapter && void onRemoveFens([chapter.id]).then((n) => setNote(n ? `Removed ${n} FEN${n === 1 ? "" : "s"} from “${chapter.name}”.` : `No FENs in “${chapter.name}”.`)) },
-            { label: "Remove FENs in all chapters", disabled: busy || book.chapters.length === 0,
-              onClick: () => void onRemoveFens(book.chapters.map((c) => c.id)).then((n) => setNote(n ? `Removed ${n} FEN${n === 1 ? "" : "s"} from the book's comments.` : "No FENs in the book's comments.")) },
+            { label: "Remove FENs from comments…", separated: true, disabled: none,
+              onClick: () => chapter && setFens({ ids: [chapter.id], what: `“${chapter.name}”` }) },
+            { label: "Remove FENs in all chapters…", disabled: busy || book.chapters.length === 0,
+              onClick: () => setFens({ ids: book.chapters.map((c) => c.id), what: "the book's chapters" }) },
           ]} />
         )}
       </div>
+      {/* What the last command did ("Removed 5 FEN codes…"), at the top where
+          it is seen — not under the last chapter. */}
+      {note && (
+        <div className="mx-3 mb-1 px-2 py-1 flex items-start gap-2 rounded-sm bg-secondary-container text-on-secondary-container text-label-sm">
+          <span className="flex-1 min-w-0">{note}</span>
+          <button onClick={() => setNote(null)} className="shrink-0 leading-none px-1 hover:opacity-70" title="Dismiss" aria-label="Dismiss">×</button>
+        </div>
+      )}
+      {fens && (
+        <RemoveFensDialog what={fens.what} busy={busy} count={() => onCountFens(fens.ids)}
+          onRemove={() => onRemoveFens(fens.ids)} onClose={() => setFens(null)} />
+      )}
       {renamingAll && (
         <RenameChaptersDialog bookName={book.name} chapters={book.chapters} busy={busy}
           onRename={(changes) => void onRenameMany(changes).then(() => setRenamingAll(false))}
@@ -756,7 +786,76 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
         ))}
         {book.chapters.length === 0 && <div className="px-3 py-1 text-label-sm text-on-surface-variant">No chapters yet — the book's ⋯ adds one: empty, pasted PGN, or PGN files.</div>}
       </div>
-      {note && <div className="px-3 pb-2 text-label-sm text-on-surface-variant">{note}</div>}
+
+    </div>
+  );
+}
+
+/** Removing the FENs from chapters' comments: counted first, nothing
+ *  changed — "25 FEN codes will be removed", per chapter — then removed on
+ *  the user's word; "No FEN codes found" with an OK when there are none. */
+function RemoveFensDialog({ what, busy, count, onRemove, onClose }: {
+  what: string; busy: boolean;
+  count: () => Promise<{ id: number; name: string; n: number }[]>;
+  onRemove: () => Promise<number | null>;
+  onClose: () => void;
+}) {
+  const [found, setFound] = useState<{ id: number; name: string; n: number }[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [removing, setRemoving] = useState(false);
+  useEffect(() => {
+    let gone = false;
+    count().then((f) => { if (!gone) setFound(f); }).catch((e) => { if (!gone) setError(String(e)); });
+    return () => { gone = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const total = found?.reduce((n, c) => n + c.n, 0) ?? 0;
+  const withFens = found?.filter((c) => c.n > 0) ?? [];
+  const codes = (n: number) => `${n} FEN ${n === 1 ? "code" : "codes"}`;
+  async function remove() {
+    setRemoving(true);
+    const n = await onRemove();
+    setRemoving(false);
+    if (n == null) setError("Removing them failed — see the message above the chapters.");
+    else onClose();
+  }
+  const btn = "h-9 px-4 inline-flex items-center rounded-full text-label-lg transition-all duration-short3 ease-standard disabled:opacity-50";
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-surface/40" onClick={removing ? undefined : onClose}>
+      <div className="bg-surface-container-high rounded-xl shadow-2xl w-[30rem] max-w-[92vw] max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="px-6 pt-4 pb-2 shrink-0">
+          <h2 className="text-title-md text-on-surface">Remove FENs from comments</h2>
+        </div>
+        <div className="px-6 py-2 flex-1 min-h-0 overflow-y-auto text-body-md text-on-surface">
+          {error ? <p className="text-error">{error}</p>
+            : !found ? <p className="text-on-surface-variant">Looking through {what}…</p>
+            : total === 0 ? <p>No FEN codes found in {what}.</p>
+            : (
+              <>
+                <p>{codes(total)} will be removed from {what}{withFens.length > 1 ? `, in ${withFens.length} chapters` : ""}. The rest of each comment stays as it is.</p>
+                {withFens.length > 1 && (
+                  <ul className="mt-2 text-body-sm text-on-surface-variant">
+                    {withFens.map((c) => (
+                      <li key={c.id} className="flex gap-2"><span className="flex-1 min-w-0 truncate">{c.name}</span><span className="tabular-nums">{c.n}</span></li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
+        </div>
+        <div className="px-6 py-4 shrink-0 flex items-center justify-end gap-2">
+          {found && total > 0 && !error ? (
+            <>
+              <button onClick={onClose} disabled={removing} className={`${btn} text-primary hover:bg-primary/8`}>Cancel</button>
+              <button onClick={() => void remove()} disabled={removing || busy} className={`${btn} bg-primary text-on-primary hover:brightness-110`}>
+                {removing ? "Removing…" : `Remove ${total}`}
+              </button>
+            </>
+          ) : (
+            <button onClick={onClose} disabled={removing} className={`${btn} bg-primary text-on-primary hover:brightness-110`}>{found || error ? "OK" : "Cancel"}</button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
