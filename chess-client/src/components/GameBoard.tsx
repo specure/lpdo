@@ -404,9 +404,9 @@ interface Props {
   reloadKey?: number;
   /** Put the cursor here (a line picked in the Lines panel). */
   cursorRequest?: { cursor: CursorPath; seq: number } | null;
-  /** → at the end of the line: true when the host took it (on to the next
-   *  line). */
-  onForwardAtEnd?: () => boolean;
+  /** ↑ / ↓ while viewing: the previous / next line of a repertoire chapter
+   *  (#327); true when the host took it. */
+  onLineStep?: (delta: -1 | 1) => boolean;
 }
 
 // Tags shown in the compact view always; rest only appear when expanded.
@@ -857,7 +857,7 @@ function DetailsPanel({
   );
 }
 
-export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange, menuExtras, hintArrows = [], arrowControls, chapter, cursorRequest, onForwardAtEnd, reloadKey }: Props) {
+export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange, menuExtras, hintArrows = [], arrowControls, chapter, cursorRequest, onLineStep, reloadKey }: Props) {
   // Where the moves go: the chapter's route, or the game's.
   const saveMoves = useCallback(
     (id: number, movetext: string) => (chapter ? chapter.save(movetext) : saveMovetextViaServer(id, movetext)),
@@ -1713,14 +1713,23 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             return;
           }
         }
-        // At the end of a chapter's line: on to the next line (#327).
-        if (useAnnotated && !scratch && effectiveIndex >= activeLine.length && onForwardAtEnd?.()) return;
+        // At the end of a line it stays there: ↓ goes on to the next line.
         goTo(effectiveIndex + 1);
+      }
+      // End: the end of the line the cursor is on — the variation, not the
+      // game's main line.
+      if (e.key === "End" && useAnnotated && !scratch) {
+        e.preventDefault();
+        goTo(activeLine.length);
+      }
+      // ↑ / ↓: a repertoire chapter's previous / next line.
+      if ((e.key === "ArrowUp" || e.key === "ArrowDown") && useAnnotated && !scratch && onLineStep) {
+        if (onLineStep(e.key === "ArrowUp" ? -1 : 1)) e.preventDefault();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [effectiveIndex, goTo, scratch, discardScratch, cancelEditing, varChoice, useAnnotated, activeLine, movesEditor.active, movesEditor.pendingDivergence, movesEditor.pendingPromotion, movesEditor.activeIndex, movesEditor.activeLine, movesEditor.breadcrumbs, movesEditor.canUndo, movesEditor.canRedo]);
+  }, [effectiveIndex, goTo, scratch, discardScratch, cancelEditing, varChoice, useAnnotated, activeLine, onLineStep, movesEditor.active, movesEditor.pendingDivergence, movesEditor.pendingPromotion, movesEditor.activeIndex, movesEditor.activeLine, movesEditor.breadcrumbs, movesEditor.canUndo, movesEditor.canRedo]);
 
   // ── Board annotations ──────────────────────────────────────────────────
 

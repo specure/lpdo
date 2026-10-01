@@ -256,14 +256,15 @@ export default function AnalysisPage({
   const linesRef = useRef<ChapterLine[]>([]);
   const [cursorRequest, setCursorRequest] = useState<{ cursor: CursorPath; seq: number } | null>(null);
   const requestCursor = useCallback((cursor: CursorPath) => setCursorRequest((r) => ({ cursor, seq: (r?.seq ?? 0) + 1 })), []);
-  const forwardAtEnd = useCallback((): boolean => {
+  // ↑ / ↓ on the board: the previous / next line, at its branching move.
+  const lineStep = useCallback((delta: -1 | 1): boolean => {
     const cur = tabsRef.current.find((t) => t.key === activeKey)?.cursor;
     if (!cur) return false;
     const key = JSON.stringify(cur.steps);
     const i = linesRef.current.findIndex((l) => JSON.stringify(l.steps) === key);
-    const next = i >= 0 ? linesRef.current[i + 1] : undefined;
-    if (!next) return false;
-    requestCursor({ steps: next.steps, index: next.branchIndex });
+    const to = i >= 0 ? linesRef.current[i + delta] : undefined;
+    if (!to) return false;
+    requestCursor({ steps: to.steps, index: to.branchIndex });
     return true;
   }, [activeKey, requestCursor]);
   const onChapterMutated = useCallback(() => { setChapterVersion((v) => v + 1); onGameMutated?.(); }, [onGameMutated]);
@@ -452,7 +453,7 @@ export default function AnalysisPage({
                 menuExtras={railExtras}
                 chapter={chapterDoc}
                 cursorRequest={active.document ? cursorRequest : null}
-                onForwardAtEnd={active.document ? forwardAtEnd : undefined}
+                onLineStep={active.document ? lineStep : undefined}
                 reloadKey={active.document ? documentReload : undefined}
               />
             )}

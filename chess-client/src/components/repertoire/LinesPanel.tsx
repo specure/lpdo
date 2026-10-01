@@ -10,7 +10,6 @@ import { useEffect, useState } from "react";
 import { parsePgnTree } from "../../lib/parsePgnTree";
 import { chapterLines, type ChapterLine } from "../../lib/repertoireLines";
 import { getMoveNum } from "../../lib/moveTreeNav";
-import type { MoveNode } from "../../lib/parsePgnTree";
 import { getChapter, getStoredAnalysis } from "../../lib/repertoire";
 import { positionKey } from "../../trainer/buildPackage";
 import type { CursorPath } from "../../lib/moveTreeNav";
@@ -31,15 +30,23 @@ interface Props {
 /** A line written out: White's moves numbered ("5.c3"), a Black move after
  *  nothing numbered too ("5...c5") — the shared moves greyed, the line's own
  *  solid. */
-function LineText({ before, own }: { before: MoveNode[]; own: MoveNode[] }) {
-  const moves = [...before.map((n) => ({ n, shared: true })), ...own.filter((n) => n.san).map((n) => ({ n, shared: false }))];
+function LineText({ line, onMove }: { line: ChapterLine; onMove: (cursor: CursorPath) => void }) {
+  // Each move with where it is: a shared one in the line it comes from.
+  const moves = [
+    ...line.before.map((n, k) => ({ n, shared: true, at: line.beforeAt[k] })),
+    ...line.line.map((n, k) => ({ n, shared: false, at: { steps: line.steps, index: k + 1 } })).filter((m) => m.n.san),
+  ];
   return (
     <span className="min-w-0 flex-1 leading-6">
       {moves.map(({ n, shared }, i) => {
         const num = n.color === "w" ? `${getMoveNum(n)}.` : i === 0 ? `${getMoveNum(n)}...` : "";
         return (
           <span key={i} className={shared ? "text-on-surface-variant/60" : ""}>
-            {i > 0 ? " " : ""}<span className="whitespace-nowrap">{num}{n.san}</span>
+            {i > 0 ? " " : ""}
+            <span role="button" tabIndex={-1}
+              onClick={(e) => { e.stopPropagation(); onMove(moves[i].at); }}
+              className="whitespace-nowrap rounded-sm cursor-pointer hover:bg-on-surface/12 hover:text-on-surface"
+              title="The board to this move">{num}{n.san}</span>
           </span>
         );
       })}
@@ -87,7 +94,7 @@ export default function LinesPanel({ chapterId, reloadKey, analysedAt, cursor, o
       <div className="px-3 py-1 shrink-0 text-label-sm text-on-surface-variant border-b border-outline/40">
         {lines.length} {lines.length === 1 ? "line" : "lines"}{off ? ` · ${off} off` : ""}
         {" · "}{analysed ? (done === lines.length ? "all analysed" : `${done} analysed`) : "not analysed"}
-        <span className="ml-2 text-outline">→ at the end of a line goes on to the next</span>
+        <span className="ml-2 text-outline">click a move: the board there · ↑ ↓ previous / next line · End: the end of the line</span>
       </div>
       <div className="flex-1 overflow-y-auto">
         {lines.map((l, i) => {
@@ -102,7 +109,7 @@ export default function LinesPanel({ chapterId, reloadKey, analysedAt, cursor, o
               title={`${l.name}${l.off ? " — switched off, not in the active repertoire" : ""}`}
             >
               <span className="text-on-surface-variant tabular-nums w-6 shrink-0 text-right leading-6">{i + 1}.</span>
-              <LineText before={l.before} own={l.line} />
+              <LineText line={l} onMove={onPick} />
               {l.off && <span className="shrink-0 leading-6 text-label-sm text-on-surface-variant">off</span>}
               {/* Only a line the analysis lacks is marked: usually all are in. */}
               {analysed && !isAnalysed(l) && (

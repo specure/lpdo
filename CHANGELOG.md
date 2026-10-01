@@ -16,10 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The Repertoire page keeps the books and the chapters in panels on the left
   and the chapter on the board beside them, the board turned to the book's
   colour, with the Reference tab and the engines for every position, a
-  Lines tab (click puts the board on a line, → at its end goes on to the
-  next), and the editor to adjust the lines. Books and chapters are marked
-  active, and
-  any move can be switched off — "not in my repertoire from here" — greyed
+  Lines tab (click a line or any of its moves; ↑ ↓ for the previous and
+  next line, End for the end of a line), and the editor to adjust the
+  lines. Books and chapters are marked active, and any move can be
+  switched off — "not in my repertoire from here" — greyed
   with everything below it, the switch kept in the PGN. Chapters can be
   merged — the same course imported twice, or a section split over several
   files: new moves become variations, missing comments are taken over, and

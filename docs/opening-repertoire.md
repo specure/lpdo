@@ -92,9 +92,12 @@ alternatives branch off).
 The **Lines** tab lists the chapter's lines in reading order — the main
 line, then each variation — each written out whole, from move 1: the moves
 it shares with the line it branches off greyed, its own moves in black;
-off ones greyed, marked "off". Click a line and the board is on it; **→** steps through it and, at
-its end, goes on to the next line — the way to replay a chapter on a physical
-board.
+off ones greyed, marked "off". Click a line and the board is on its
+branching move — or click any move in it, a greyed one too, and the board
+and the move text go to that move. On the board, **→** steps through the
+line and stops at its end, **End** goes to the end of the line the board is
+on, and **↑ ↓** go to the previous and next line — the way to replay a
+chapter on a physical board.
 
 **Edit lines…** opens the editor: play moves on the board (a new move mid-line
 asks whether it is a variation or the new main line), add comments and marks,
