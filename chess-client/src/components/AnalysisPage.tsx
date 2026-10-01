@@ -70,6 +70,9 @@ interface Props {
    *  the book's games (with its chapters' names), and a game's chapter is
    *  put on the board with `onPickChapter`. */
   myGamesBook?: { id: number; chapters: { id: number; name: string }[] } | null;
+  /** Bumped by the host when the document's moves changed outside the
+   *  editor — the board, Lines and My games read them again. */
+  documentReload?: number;
   onPickChapter?: (id: number) => void;
   /** Open a related game as a new tab. Resolves to 0, or to how many did not
    *  fit (the rail is full) — then it stayed closed. */
@@ -101,7 +104,7 @@ export interface LeadingPanel {
 
 export default function AnalysisPage({
   tabs, activeKey, onActivate, onClose, onCloseMany, onMove, capacity, onOpenGame, onTabState, onGameMutated,
-  leadingPanels, layoutId = "analysis-main", emptyState, myGamesBook, onPickChapter,
+  leadingPanels, layoutId = "analysis-main", emptyState, myGamesBook, onPickChapter, documentReload = 0,
 }: Props) {
   const lead = leadingPanels && leadingPanels.length > 0 ? leadingPanels : null;
   const leadIds = lead ? lead.map((p) => p.id) : ["rail"];
@@ -450,6 +453,7 @@ export default function AnalysisPage({
                 chapter={chapterDoc}
                 cursorRequest={active.document ? cursorRequest : null}
                 onForwardAtEnd={active.document ? forwardAtEnd : undefined}
+                reloadKey={active.document ? documentReload : undefined}
               />
             )}
           </div>
@@ -513,14 +517,14 @@ export default function AnalysisPage({
                     chapterId={active.document.id}
                     book={myGamesBook ?? null}
                     onPickChapter={onPickChapter}
-                    reloadKey={chapterVersion}
+                    reloadKey={chapterVersion + documentReload}
                     onPick={requestCursor}
                     onOpen={(g) => void openRelated(g)}
                   />
                 ) : shownTab === "lines" && active?.document ? (
                   <LinesPanel
                     chapterId={active.document.id}
-                    reloadKey={chapterVersion}
+                    reloadKey={chapterVersion + documentReload}
                     analysedAt={active.document.analysedAt}
                     cursor={active.cursor}
                     onPick={requestCursor}

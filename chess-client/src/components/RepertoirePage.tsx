@@ -122,6 +122,9 @@ export default function RepertoirePage({ onOpenGame }: Props) {
   // "Your games": the book's line picked instead of a chapter — My games then
   // lists the whole book's games (the chapter stays on the board).
   const [bookPicked, setBookPicked] = useState(false);
+  // Bumped when the chapter on the board was changed here, outside the
+  // editor (FENs removed, chapters merged into it): the board reads it again.
+  const [docReload, setDocReload] = useState(0);
   useEffect(() => setBookPicked(false), [selectedBook]);
   // Chapters being merged: the lines already merged, the conflicts to choose.
   const [merging, setMerging] = useState<{
@@ -244,7 +247,10 @@ export default function RepertoirePage({ onOpenGame }: Props) {
         await saveChapterMoves(id, serializeMovetext(tree));
         total += n;
       }
-      if (total && chapterId != null && ids.includes(chapterId)) setTab(await loadTab(chapterId));
+      if (total && chapterId != null && ids.includes(chapterId)) {
+        setTab(await loadTab(chapterId));
+        setDocReload((v) => v + 1);
+      }
     });
     return total;
   };
@@ -255,7 +261,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
     for (const o of others) await deleteChapter(o.id);
     setMerging(null);
     // The merged chapter on the board, read again.
-    if (chapterId === target.id) setTab(await loadTab(target.id));
+    if (chapterId === target.id) { setTab(await loadTab(target.id)); setDocReload((v) => v + 1); }
     else setChapterId(target.id);
   });
 
@@ -345,6 +351,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
       onGameMutated={() => void load()}
       myGamesBook={bookPicked && book ? { id: book.id, chapters: book.chapters.map((c) => ({ id: c.id, name: c.name })) } : null}
       onPickChapter={(id) => { setChapterId(id); setBookPicked(false); }}
+      documentReload={docReload}
       leadingPanels={[
         booksFolded ? { id: "books", node: booksPanel, size: "3", strip: true } : { id: "books", node: booksPanel, size: "14", min: "9", max: "30" },
         chaptersFolded ? { id: "chapters", node: chaptersPanel, size: "3", strip: true } : { id: "chapters", node: chaptersPanel, size: "16", min: "10", max: "34" },

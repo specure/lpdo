@@ -399,6 +399,9 @@ interface Props {
    *  the players', no headers/collections/delete, the moves saved to the
    *  chapter, the off-switch on moves. */
   chapter?: ChapterDocument & { save: (movetext: string) => Promise<{ ok: true } | { ok: false; error: string }> };
+  /** Bumped when the moves were changed elsewhere (a chapter's FENs removed,
+   *  other chapters merged into it): read them again. */
+  reloadKey?: number;
   /** Put the cursor here (a line picked in the Lines panel). */
   cursorRequest?: { cursor: CursorPath; seq: number } | null;
   /** → at the end of the line: true when the host took it (on to the next
@@ -854,7 +857,7 @@ function DetailsPanel({
   );
 }
 
-export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange, menuExtras, hintArrows = [], arrowControls, chapter, cursorRequest, onForwardAtEnd }: Props) {
+export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange, menuExtras, hintArrows = [], arrowControls, chapter, cursorRequest, onForwardAtEnd, reloadKey }: Props) {
   // Where the moves go: the chapter's route, or the game's.
   const saveMoves = useCallback(
     (id: number, movetext: string) => (chapter ? chapter.save(movetext) : saveMovetextViaServer(id, movetext)),
@@ -1244,7 +1247,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
 
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [game.id, directPgn, detailReloadKey, chapter?.id]);
+  }, [game.id, directPgn, detailReloadKey, chapter?.id, reloadKey]);
 
   // ── Navigation helpers ──────────────────────────────────────────────────
 
