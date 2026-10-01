@@ -18,6 +18,8 @@ interface Props {
   onMyGames: () => void;
   onSearchPlayer: () => void;
   onOpenTournament: () => void;
+  /** Open the Repertoire page (#327). */
+  onOpenRepertoire: () => void;
   onBrowseLocal: () => void;
   /** Open the Setup Wizard (used by the empty-database CTA). */
   onRunWizard: () => void;
@@ -28,6 +30,14 @@ const IconBoard = () => (
   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="3" y="3" width="18" height="18" rx="2" />
     <path d="M3 12h18M12 3v18" />
+  </svg>
+);
+
+// An open book, for the repertoire.
+const IconBook = () => (
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M2 4h6a4 4 0 0 1 4 4v12a3 3 0 0 0-3-3H2z" />
+    <path d="M22 4h-6a4 4 0 0 0-4 4v12a3 3 0 0 1 3-3h7z" />
   </svg>
 );
 
@@ -231,7 +241,7 @@ const TONE_CLASSES: Record<Tone, { card: string; iconBg: string }> = {
 };
 
 function ActionCard({
-  tone, icon, iconHoverClass, title, description, onClick, delayMs, disabled,
+  tone, icon, iconHoverClass, title, description, onClick, delayMs, disabled, wide = false, className = "",
 }: {
   tone: Tone;
   icon: React.ReactNode;
@@ -246,6 +256,10 @@ function ActionCard({
   /** Dim + block the card (no hover morph, not clickable). Used by "My games"
    *  when no profile player is configured yet. */
   disabled?: boolean;
+  /** A secondary card: the icon beside the text, a row of its own height. */
+  wide?: boolean;
+  /** Grid placement (column spans). */
+  className?: string;
 }) {
   const t = TONE_CLASSES[tone];
   // M3 Expressive moves:
@@ -259,7 +273,7 @@ function ActionCard({
       onClick={onClick}
       disabled={disabled}
       style={delayMs !== undefined ? { animationDelay: `${delayMs}ms` } : undefined}
-      className={`group flex flex-col items-start gap-5 p-6 ${t.card} text-left h-full
+      className={`group flex ${wide ? "flex-row items-center" : "flex-col items-start"} gap-5 p-6 ${t.card} text-left h-full ${className}
         rounded-2xl
         ${disabled
           ? "opacity-40 cursor-not-allowed"
@@ -273,7 +287,7 @@ function ActionCard({
       {/* Icon plate: 56×56, so rounded-[28px] is a perfect circle without the
           9999px jump. Uses ease-emphasized (no overshoot) — the spring would
           briefly clamp border-radius to 0 on hover-out, looking like a square. */}
-      <div className={`w-14 h-14 inline-flex items-center justify-center
+      <div className={`w-14 h-14 shrink-0 inline-flex items-center justify-center
         rounded-2xl group-hover:rounded-[28px]
         ${t.iconBg}
         transition-all duration-medium2 ease-emphasized
@@ -292,7 +306,7 @@ function ActionCard({
 }
 
 export default function HomeEmptyState({
-  status, onMyGames, onSearchPlayer, onOpenTournament, onBrowseLocal, onRunWizard,
+  status, onMyGames, onSearchPlayer, onOpenTournament, onOpenRepertoire, onBrowseLocal, onRunWizard,
 }: Props) {
   // Live first-run readiness (overrides the parent's slow-polled status). The
   // slot below the quick-start cards becomes one of: Preparing… / failed (Reset)
@@ -350,7 +364,9 @@ export default function HomeEmptyState({
             Each icon has its own personality: the magnifier tilts as if peering,
             the trophy lifts up like a podium presentation, the folder pops at
             an angle suggesting it's about to open. Cards rise in 60ms apart. */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Two rows on wide screens: the three main actions, then the two
+            secondary ones as wide, shorter cards. */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
           <ActionCard
             tone="primary"
             icon={<IconBoard />}
@@ -362,6 +378,7 @@ export default function HomeEmptyState({
             onClick={onMyGames}
             disabled={!hasMyPlayer}
             delayMs={60}
+            className="lg:col-span-2"
           />
           <ActionCard
             tone="tertiary"
@@ -371,6 +388,17 @@ export default function HomeEmptyState({
             description="Add a chess-results.com tournament and prep against likely opponents."
             onClick={onOpenTournament}
             delayMs={120}
+            className="lg:col-span-2"
+          />
+          <ActionCard
+            tone="secondary"
+            icon={<IconBook />}
+            iconHoverClass="group-hover:-rotate-3 group-hover:scale-110"
+            title="My repertoire"
+            description="Opening books and chapters — the lines you play, studied with the database and the engines."
+            onClick={onOpenRepertoire}
+            delayMs={150}
+            className="lg:col-span-2"
           />
           <ActionCard
             tone="secondary"
@@ -380,6 +408,7 @@ export default function HomeEmptyState({
             description="Find any player in the database and explore their games and openings."
             onClick={onSearchPlayer}
             delayMs={180}
+            wide className="lg:col-span-3"
           />
           <ActionCard
             tone="neutral"
@@ -389,6 +418,7 @@ export default function HomeEmptyState({
             description="Open PGN files from your filesystem without touching the database."
             onClick={onBrowseLocal}
             delayMs={240}
+            wide className="lg:col-span-3"
           />
         </div>
 

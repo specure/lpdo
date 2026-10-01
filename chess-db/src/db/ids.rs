@@ -22,6 +22,8 @@ fn table_for(entity: &str) -> Result<&'static str> {
         "players" => Ok("players"),
         "games" => Ok("games"),
         "collections" => Ok("collections"),
+        "repertoire_books" => Ok("repertoire_books"),
+        "repertoire_chapters" => Ok("repertoire_chapters"),
         _ => bail!("unknown id entity: {entity}"),
     }
 }

@@ -68,6 +68,22 @@ export async function apiGet<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export async function putJson<T>(path: string, body?: unknown): Promise<T> {
+  const res = await ensureOk(
+    await fetch(apiUrl(path), {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }),
+  );
+  const text = await res.text();
+  return (text ? JSON.parse(text) : {}) as T;
+}
+
+export async function apiDelete(path: string): Promise<void> {
+  await ensureOk(await fetch(apiUrl(path), { method: "DELETE" }));
+}
+
 export async function postJson<T>(path: string, body?: unknown): Promise<T> {
   const res = await ensureOk(
     await fetch(apiUrl(path), {

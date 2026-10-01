@@ -24,14 +24,23 @@ interface AnnotatedMoveListProps {
   onExpandSubVariations: () => void;
   onCollapseSubVariations: () => void;
   onToggleAnnotations: () => void;
+  /** A repertoire chapter (#327): moves switched off (their `off`, or one
+   *  above them) are greyed, and a move with alternatives gets a mark. */
+  offAware?: boolean;
+  /** Switch the move at `index` (1-based) of `line` off or on — offered on
+   *  the current move. */
+  onToggleOff?: (line: MoveNode[], index: number, off: boolean) => void;
 }
 
 export default function AnnotatedMoveList({
   game, activeLine, activeIndex, showAnnotations, collapsedNodes, partialNodes, inSubVariation,
   breadcrumbs, onNavigate, onToggleCollapse, onExpandAll, onCollapseAll,
-  onExpandSubVariations, onCollapseSubVariations, onToggleAnnotations,
+  onExpandSubVariations, onCollapseSubVariations, onToggleAnnotations, offAware, onToggleOff,
 }: AnnotatedMoveListProps) {
   const activeRef = useRef<HTMLSpanElement>(null);
+  // The current move's off-switch state, found while the moves are drawn; the
+  // switch itself is in the toolbar.
+  const found: { off: { line: MoveNode[]; index: number; own: boolean; before: boolean } | null } = { off: null };
 
   // Build path map: for each line in the path, store the max move index that's "on the path"
   const pathMap = useMemo(() => {
@@ -49,14 +58,21 @@ export default function AnnotatedMoveList({
     activeRef.current?.scrollIntoView({ block: "nearest" });
   }, [activeIndex, activeLine]);
 
-  function renderLine(line: MoveNode[], pathPrefix: string, depth: number) {
+  function renderLine(line: MoveNode[], pathPrefix: string, depth: number, inheritedOff = false) {
     const isActive = line === activeLine;
     const pathMaxIndex = pathMap.get(line); // undefined if not on path
     const elements: React.ReactNode[] = [];
     let needsBlackNumber = false;
+    // The off-switch (#327) covers everything below a move; a variation of a
+    // move inherits the state as it was before that move.
+    let offNow = inheritedOff;
 
     for (let i = 0; i < line.length; i++) {
       const node = line[i];
+      const offBefore = offNow;
+      const ownOff = !!node.annotations.off;
+      const nodeOff = !!offAware && (offNow || ownOff);
+      if (ownOff) offNow = true;
       const moveIdx = i + 1;
       const isCurrentMove = isActive && activeIndex === moveIdx;
       const isOnPath = pathMaxIndex !== undefined && moveIdx <= pathMaxIndex;
@@ -98,6 +114,13 @@ export default function AnnotatedMoveList({
         }
       }
 
+      // A move with alternatives, shown (collapsed ones have the [+]).
+      if (offAware && hasVariations && !isCollapsed) {
+        elements.push(
+          <span key={`b-${i}`} className="text-outline select-none mr-0.5" style={{ fontSize: "0.7em" }} title="Alternatives branch off here">⋔</span>
+        );
+      }
+
       // Move (with optional move number as single clickable unit)
       const numPrefix = showNumber
         ? (node.color === "w" ? `${moveNum}.` : `${moveNum}...`)
@@ -111,18 +134,19 @@ export default function AnnotatedMoveList({
           // lib/scratchLine.ts), so it is drawn as a dashed, tentative thing.
           className={`cursor-pointer rounded-sm transition-colors duration-short3 ease-standard ${
             node.scratch ? "italic underline decoration-dashed underline-offset-2 " : ""
-          }${
+          }${nodeOff ? "opacity-45 " : ""}${
             isCurrentMove
               ? "bg-primary-container text-on-primary-container px-0.5"
               : isOnPath
               ? "text-primary"
               : "text-on-surface hover:bg-on-surface/8"
           }`}
-          title={node.scratch ? "Played on the board only — not saved in the game" : undefined}
+          title={node.scratch ? "Played on the board only — not saved in the game" : nodeOff ? (ownOff ? "Switched off: not in the active repertoire from here" : "Not in the active repertoire — a move above is switched off") : undefined}
         >
           {numPrefix}{node.san}{nagsToString(node.annotations.nags)}
         </span>
       );
+      if (isCurrentMove && !node.scratch) found.off = { line, index: moveIdx, own: !!ownOff, before: !!offBefore };
 
       const hasGraphical = (node.annotations.arrows?.length ?? 0) > 0 || (node.annotations.circles?.length ?? 0) > 0;
       const hasComment = !!node.annotations.comment;
@@ -201,14 +225,14 @@ export default function AnnotatedMoveList({
             shortVars.push(
               <span key={`v-${i}-${vi}`} className="text-on-surface-variant text-body-sm">
                 {"( "}
-                {renderLine(variation, varPath, depth + 1)}
+                {renderLine(variation, varPath, depth + 1, offBefore)}
                 {") "}
               </span>
             );
           } else {
             blockVars.push(
               <div key={`v-${i}-${vi}`} className="text-body-sm text-on-surface-variant leading-normal">
-                {renderLine(variation, varPath, depth + 1)}
+                {renderLine(variation, varPath, depth + 1, offBefore)}
               </div>
             );
           }
@@ -275,6 +299,23 @@ export default function AnnotatedMoveList({
           className={`${miniBtn} ${showAnnotations ? "" : "opacity-50"}`}
           title={showAnnotations ? "Hide annotations" : "Show annotations"}
         >💬</button>
+        {onToggleOff && (() => {
+          // The off-switch for the current move: its own, or "On" to undo it.
+          // A move off through one above it has its switch there.
+          const t = found.off;
+          const usable = !!t && (t.own || !t.before);
+          return (
+            <button
+              onClick={() => t && usable && onToggleOff(t.line, t.index, !t.own)}
+              disabled={!usable}
+              className={`${miniBtn} ml-auto`}
+              title={!t ? "Go to a move to switch it off"
+                : t.own ? "Switch this move back on"
+                : t.before ? "Off already — a move above is switched off; switch it on there"
+                : "Switch off: not in my repertoire from here"}
+            >{t?.own ? "On" : "Off"}</button>
+          );
+        })()}
       </div>
     </div>
   );

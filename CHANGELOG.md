@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Opening repertoire** — books and chapters, loosely the shape of an
+  opening course: a book for a course or a topic, with the colour you play it
+  from, an author, a course link and notes; chapters as one tree of lines
+  each, added empty, from pasted PGN or PGN files, several at once (one
+  chapter per game, named from its headers or the file), exported as PGN.
+  The Repertoire page keeps the books and the chapters in panels on the left
+  and the chapter on the board beside them, the board turned to the book's
+  colour, with the Reference tab and the engines for every position, a
+  Lines tab (click a line or any of its moves; ↑ ↓ for the previous and
+  next line, End for the end of a line), and the editor to adjust the
+  lines. Books and chapters are marked active, and any move can be
+  switched off — "not in my repertoire from here" — greyed
+  with everything below it, the switch kept in the PGN. Chapters can be
+  merged — the same course imported twice, or a section split over several
+  files: new moves become variations, missing comments are taken over, and
+  where the comments differ you choose which stays. Chapters can be renamed
+  together, by find and replace over their names, with a preview. Chapters
+  are analysed for practice on request (Analyse chapter / all chapters): the
+  database's figures for every position, kept until analysed again; the
+  chapter list and the Lines tab show what is analysed. Your own games
+  through a chapter's positions are looked up live — with the book's colour,
+  from the last 12 months (Maintenance → Repertoire) — and the chapter list
+  shows, per chapter, how many of your games went
+  into it with your score and performance, and for the whole book — picked,
+  its games are listed under My games, each with its chapter; the **My
+  games** tab lists the chapter's games and
+  where each left it — by you or your opponent — the board going there on a
+  click. Remove FENs from comments (a chapter, or all of them) deletes the
+  FEN strings exported courses leave in the text. Design in
+  `docs/design/opening-repertoire.md`. (#327, #329)
+
+### Fixed
+- **Home: your profile showing another player's games** — the profile kept
+  the player's database id, which changes when the players are renumbered;
+  the card then showed the statistics of whoever has that id now. The
+  profile is now looked up by FIDE id (or name) and its stored id corrected
+  (as "My games" already did, #249).
+
 ## [0.21.0] - 2026-09-27
 
 ### Added

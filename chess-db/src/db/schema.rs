@@ -233,6 +233,8 @@ pub fn init(conn: &Connection) -> Result<()> {
     }
 
     init_collections(conn)?;
+    init_repertoire(conn)?;
+    crate::repertoire::fill_positions_hashes(conn)?;
     init_schedule(conn)?;
 
     // Soft-delete column. NULL = alive. DuckDB ALTER ADD COLUMN is fast on
@@ -504,6 +506,62 @@ fn init_sources(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+    Ok(())
+}
+
+/// Opening repertoire (#327): books of chapters, each chapter a PGN game
+/// (moves, variations, comments, marks), and every position of every
+/// variation indexed — see repertoire.rs and docs/design/opening-repertoire.md.
+fn init_repertoire(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS repertoire_books (
+            id          INTEGER PRIMARY KEY,
+            name        VARCHAR NOT NULL,
+            color       VARCHAR NOT NULL,
+            description VARCHAR,
+            url         VARCHAR,
+            ord         INTEGER NOT NULL,
+            created_at  TIMESTAMP NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS repertoire_chapters (
+            id          INTEGER PRIMARY KEY,
+            book_id     INTEGER NOT NULL,
+            ord         INTEGER NOT NULL,
+            name        VARCHAR NOT NULL,
+            active      BOOLEAN NOT NULL DEFAULT TRUE,
+            pgn         VARCHAR NOT NULL,
+            lines       INTEGER NOT NULL DEFAULT 0,
+            lines_off   INTEGER NOT NULL DEFAULT 0,
+            updated_at  TIMESTAMP NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS repertoire_positions (
+            chapter_id   INTEGER NOT NULL,
+            zobrist_hash BIGINT NOT NULL,
+            ply          SMALLINT NOT NULL,
+            next_move    VARCHAR NOT NULL,
+            mover        VARCHAR NOT NULL,
+            active       BOOLEAN NOT NULL
+        );
+        -- A chapter's analysis for practice: the database's figures (and one's
+        -- own games) for every position, as JSON, from the chapter as it was
+        -- (`chapter_updated`); made again only when asked.
+        CREATE TABLE IF NOT EXISTS repertoire_analysis (
+            chapter_id      INTEGER PRIMARY KEY,
+            chapter_updated TIMESTAMP NOT NULL,
+            player_id       INTEGER,
+            analysed_at     TIMESTAMP NOT NULL,
+            positions       VARCHAR NOT NULL
+        );
+        -- A fingerprint of a chapter's set of positions — what its analysis
+        -- depends on — on the chapter and on its analysis: the analysis is
+        -- out of date when they differ, not on any save (comments, FENs).
+        ALTER TABLE repertoire_chapters ADD COLUMN IF NOT EXISTS positions_hash BIGINT;
+        ALTER TABLE repertoire_analysis ADD COLUMN IF NOT EXISTS positions_hash BIGINT;
+        ALTER TABLE repertoire_books ADD COLUMN IF NOT EXISTS author VARCHAR;
+        ALTER TABLE repertoire_books ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE;
+        ",
+    )?;
     Ok(())
 }
 

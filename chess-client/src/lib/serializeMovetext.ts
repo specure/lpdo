@@ -1,5 +1,5 @@
 import type { AnnotatedGame, Annotations, MoveNode } from "./parsePgnTree";
-import { encodeCal, encodeCsl } from "./parseAnnotations";
+import { encodeCal, encodeCsl, REP_OFF_TAG } from "./parseAnnotations";
 
 // Inverse of `parsePgnTree`: turn a (possibly annotated, possibly branched)
 // move tree back into PGN movetext. Emits movetext only — no tag pairs and no
@@ -19,6 +19,7 @@ function encodeComment(ann: Annotations): string {
   if (csl) inner.push(csl);
   const cal = encodeCal(ann.arrows ?? []);
   if (cal) inner.push(cal);
+  if (ann.off) inner.push(REP_OFF_TAG);
   return inner.length ? `{${inner.join(" ")}}` : "";
 }
 

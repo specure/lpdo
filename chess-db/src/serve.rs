@@ -3,7 +3,7 @@ use axum::{
     extract::{DefaultBodyLimit, Path as AxumPath, Query, State},
     http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use tokio::io::AsyncWriteExt;
@@ -1250,6 +1250,164 @@ fn fen_zobrist(fen: &str) -> std::result::Result<i64, (StatusCode, String)> {
     let board: Chess = parsed.into_position(shakmaty::CastlingMode::Standard)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(board.zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64)
+}
+
+// ── Opening repertoire (#327) ─────────────────────────────────────────────────
+
+async fn repertoire_list_handler(State(state): State<AppState>) -> ApiResult<Vec<crate::repertoire::BookWithChapters>> {
+    state.reads.run(|conn| crate::repertoire::list(conn).map(Json).map_err(db_err)).await
+}
+
+#[derive(Deserialize)]
+struct BookBody {
+    name: Option<String>,
+    color: Option<String>,
+    /// Absent: unchanged; null: cleared.
+    #[serde(default, deserialize_with = "deserialize_nullable")]
+    author: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_nullable")]
+    description: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_nullable")]
+    url: Option<Option<String>>,
+    ord: Option<i64>,
+    active: Option<bool>,
+}
+
+/// A field that may be absent (None), null (Some(None)) or set (Some(Some)).
+fn deserialize_nullable<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(d).map(Some)
+}
+
+async fn repertoire_book_create_handler(State(state): State<AppState>, Json(b): Json<BookBody>) -> ApiResult<crate::repertoire::Book> {
+    state.writer.run(move |conn| {
+        let name = b.name.unwrap_or_default();
+        let color = b.color.unwrap_or_else(|| "white".to_string());
+        crate::repertoire::create_book(conn, &name, &color, b.author.flatten().as_deref(), b.description.flatten().as_deref(), b.url.flatten().as_deref())
+            .map(Json).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+    }).await
+}
+
+async fn repertoire_book_update_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Json(b): Json<BookBody>) -> ApiResult<crate::repertoire::Book> {
+    state.writer.run(move |conn| {
+        let patch = crate::repertoire::BookPatch { name: b.name, color: b.color, author: b.author, description: b.description, url: b.url, ord: b.ord, active: b.active };
+        crate::repertoire::update_book(conn, id, patch).map(Json).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+    }).await
+}
+
+async fn repertoire_book_delete_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>) -> ApiResult<serde_json::Value> {
+    state.writer.run(move |conn| {
+        crate::repertoire::delete_book(conn, id).map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+        Ok(msg(format!("Book {id} deleted.")))
+    }).await
+}
+
+#[derive(Deserialize)]
+struct ChaptersAddBody {
+    /// The one chapter's name (an empty chapter, or a PGN with one game).
+    name: Option<String>,
+    /// PGN text: one chapter per game.
+    pgn: Option<String>,
+    /// The file the PGN came from (its name without the extension): names
+    /// the chapters its headers do not.
+    file: Option<String>,
+}
+
+async fn repertoire_chapters_add_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Json(b): Json<ChaptersAddBody>) -> ApiResult<Vec<crate::repertoire::ChapterSummary>> {
+    state.writer.run(move |conn| {
+        crate::repertoire::add_chapters(conn, id, b.name.as_deref(), b.pgn.as_deref(), b.file.as_deref())
+            .map(Json).map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))
+    }).await
+}
+
+async fn repertoire_chapter_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>) -> ApiResult<crate::repertoire::ChapterDetail> {
+    state.reads.run(move |conn| crate::repertoire::get_chapter(conn, id).map(Json).map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))).await
+}
+
+#[derive(Deserialize)]
+struct ChapterBody {
+    name: Option<String>,
+    ord: Option<i64>,
+    active: Option<bool>,
+    book_id: Option<i64>,
+}
+
+async fn repertoire_chapter_update_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Json(b): Json<ChapterBody>) -> ApiResult<crate::repertoire::ChapterSummary> {
+    state.writer.run(move |conn| {
+        let patch = crate::repertoire::ChapterPatch { name: b.name, ord: b.ord, active: b.active, book_id: b.book_id };
+        crate::repertoire::update_chapter(conn, id, patch).map(Json).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
+    }).await
+}
+
+async fn repertoire_chapter_moves_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Json(b): Json<MovesBody>) -> ApiResult<crate::repertoire::ChapterSummary> {
+    state.writer.run(move |conn| {
+        crate::repertoire::set_moves(conn, id, &b.moves).map(Json).map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))
+    }).await
+}
+
+async fn repertoire_chapter_delete_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>) -> ApiResult<serde_json::Value> {
+    state.writer.run(move |conn| {
+        crate::repertoire::delete_chapter(conn, id).map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+        Ok(msg(format!("Chapter {id} deleted.")))
+    }).await
+}
+
+async fn repertoire_book_pgn_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>) -> std::result::Result<String, (StatusCode, String)> {
+    state.reads.run(move |conn| crate::repertoire::book_pgn(conn, id).map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))).await
+}
+
+#[derive(Deserialize)]
+struct ChapterStatsQuery {
+    /// Only what is stored: an empty analysis when the chapter has none,
+    /// never worked out on the spot (3–6 s).
+    stored: Option<bool>,
+}
+
+/// A chapter's analysis for practice — the database's figures for every
+/// position (docs/design/opening-repertoire.md, Practice): the stored one,
+/// else worked out now.
+async fn repertoire_chapter_stats_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<ChapterStatsQuery>) -> ApiResult<crate::repertoire::Analysis> {
+    state.reads.run(move |conn| {
+        let err = |e: anyhow::Error| (StatusCode::NOT_FOUND, format!("{e:#}"));
+        if let Some(a) = crate::repertoire::stored_analysis(conn, id).map_err(err)? { return Ok(Json(a)); }
+        let positions = if q.stored.unwrap_or(false) { Vec::new() } else { crate::repertoire::chapter_stats(conn, id).map_err(err)? };
+        Ok(Json(crate::repertoire::Analysis { analysed_at: None, chapter_updated: None, positions }))
+    }).await
+}
+
+#[derive(Deserialize)]
+struct ChapterMineQuery { player_id: i64 }
+
+/// One's own games through a chapter's positions, looked up live: with the
+/// book's colour, from the period the settings give.
+async fn repertoire_chapter_mine_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<ChapterMineQuery>) -> ApiResult<crate::repertoire::OwnGames> {
+    state.reads.run(move |conn| crate::repertoire::chapter_mine(conn, id, q.player_id).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
+}
+
+/// One's own games across a book's chapters, looked up live.
+async fn repertoire_book_mine_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<ChapterMineQuery>) -> ApiResult<crate::repertoire::BookGames> {
+    state.reads.run(move |conn| crate::repertoire::book_mine(conn, id, q.player_id).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
+}
+
+/// One's games in a chapter, with how far each followed it.
+async fn repertoire_chapter_games_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<ChapterMineQuery>) -> ApiResult<crate::repertoire::ChapterGameList> {
+    state.reads.run(move |conn| crate::repertoire::chapter_games(conn, id, q.player_id).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
+}
+
+/// One's games in a book's opening, with the chapter each went into.
+async fn repertoire_book_games_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<ChapterMineQuery>) -> ApiResult<crate::repertoire::BookGameList> {
+    state.reads.run(move |conn| crate::repertoire::book_games(conn, id, q.player_id).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
+}
+
+async fn repertoire_settings_handler() -> Json<crate::repertoire::RepertoireSettings> {
+    Json(crate::repertoire::settings())
+}
+
+async fn repertoire_settings_put_handler(Json(body): Json<crate::repertoire::RepertoireSettings>) -> ApiResult<crate::repertoire::RepertoireSettings> {
+    crate::repertoire::set_settings(body).map(Json).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
+async fn repertoire_chapter_pgn_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>) -> std::result::Result<String, (StatusCode, String)> {
+    state.reads.run(move |conn| crate::repertoire::chapter_pgn(conn, id).map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))).await
 }
 
 /// Cloud engine evaluation (chessdb.cn) for a FEN — a multi-move table with
@@ -2637,6 +2795,7 @@ pub async fn run(
     let setup = Arc::new(std::sync::Mutex::new(SetupPhase::Idle));
     let engine = crate::engine::Engine::new(db_path.parent().unwrap_or(std::path::Path::new(".")));
     crate::cloud_eval::init_settings(db_path.parent().unwrap_or(std::path::Path::new(".")));
+    crate::repertoire::init_settings(db_path.parent().unwrap_or(std::path::Path::new(".")));
     let lc0 = crate::engine::Engine::new_kind(db_path.parent().unwrap_or(std::path::Path::new(".")), crate::engine::Kind::Lc0);
     // The engines keep their results in the database (engine_evals).
     engine.set_store(crate::engine::EvalStore::new(reads.clone()));
@@ -2658,6 +2817,21 @@ pub async fn run(
     let app = Router::new()
         .route("/status",                              get(status_handler))
         .route("/collections",                         get(collections_handler))
+        // Opening repertoire (#327): books of chapters.
+        .route("/repertoire",                          get(repertoire_list_handler))
+        .route("/repertoire/books",                    post(repertoire_book_create_handler))
+        .route("/repertoire/books/{id}",               put(repertoire_book_update_handler).delete(repertoire_book_delete_handler))
+        .route("/repertoire/books/{id}/chapters",      post(repertoire_chapters_add_handler))
+        .route("/repertoire/books/{id}/pgn",           get(repertoire_book_pgn_handler))
+        .route("/repertoire/chapters/{id}",            get(repertoire_chapter_handler).put(repertoire_chapter_update_handler).delete(repertoire_chapter_delete_handler))
+        .route("/repertoire/chapters/{id}/moves",      put(repertoire_chapter_moves_handler))
+        .route("/repertoire/chapters/{id}/pgn",        get(repertoire_chapter_pgn_handler))
+        .route("/repertoire/chapters/{id}/stats",      get(repertoire_chapter_stats_handler))
+        .route("/repertoire/chapters/{id}/mine",       get(repertoire_chapter_mine_handler))
+        .route("/repertoire/books/{id}/mine",          get(repertoire_book_mine_handler))
+        .route("/repertoire/chapters/{id}/games",      get(repertoire_chapter_games_handler))
+        .route("/repertoire/books/{id}/games",         get(repertoire_book_games_handler))
+        .route("/repertoire/settings",                 get(repertoire_settings_handler).put(repertoire_settings_put_handler))
         .route("/sources",                             get(sources_handler))
         .route("/sources/{key}/enabled",               post(set_source_enabled_handler))
         .route("/schedule",                            get(get_schedule_handler).post(set_schedule_handler))

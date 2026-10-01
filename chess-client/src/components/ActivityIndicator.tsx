@@ -57,6 +57,10 @@ function jobLabel(j: Job): string {
     case "players_import":     return "Import players";
     case "players_export":     return "Export players";
     case "backup":             return p.collection ? `Backup ${p.collection}` : "Backup";
+    case "repertoire_analyse": {
+      const n = (j.params as { chapters?: unknown[] } | undefined)?.chapters?.length ?? 0;
+      return n === 1 ? "Analyse a repertoire chapter" : `Analyse ${n} repertoire chapters`;
+    }
     default:                   return j.type;
   }
 }

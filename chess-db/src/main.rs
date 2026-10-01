@@ -24,6 +24,7 @@ mod reverse;
 mod progress;
 mod proxy;
 mod reporter;
+mod repertoire;
 mod scheduler;
 mod search;
 mod sources;

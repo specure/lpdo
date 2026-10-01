@@ -8,6 +8,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { clearCrashLog, formatCrashLog, readCrashLog, type CrashEntry } from "../lib/crashLog";
 import { listen } from "@tauri-apps/api/event";
 import { useJobProgress } from "../hooks/useJobProgress";
+import { getRepertoireSettings, putRepertoireSettings } from "../lib/repertoire";
 import SourcesPanel from "./SourcesPanel";
 import MergePlayersDialog from "./MergePlayersDialog";
 import { StatusInfo, ScheduleInfo } from "../types";
@@ -889,6 +890,60 @@ function LichessStats() {
 // How far into a game chessdb.cn and Lichess are asked. A lookup sends the
 // position there (and chessdb keeps what it is asked), so past the opening the
 // server keeps positions to itself; the local engine analyses those.
+/** The repertoire's settings (#327): which of one's own games count in a
+ *  chapter's practice figures. */
+function RepertoireSection() {
+  const [months, setMonths] = useState<number | null>(null);
+  const [value, setValue] = useState("");
+  const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    getRepertoireSettings()
+      .then((s) => { setMonths(s.own_games_months); setValue(String(s.own_games_months)); })
+      .catch((e) => setError(String(e)));
+  }, []);
+  const n = parseInt(value, 10);
+  async function save(m: number) {
+    setError(null);
+    setNote(null);
+    try {
+      const s = await putRepertoireSettings({ own_games_months: m });
+      setMonths(s.own_games_months);
+      setValue(String(s.own_games_months));
+      setNote("Saved.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+  const status = months == null ? undefined : months === 0 ? "all your games" : `last ${months} months`;
+  return (
+    <SectionCard title="Your games in practice" status={status}>
+      {months != null && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-body-sm text-on-surface flex-wrap">
+            <span>Count your games from the last</span>
+            <input
+              type="number" min={0} max={600} value={value} onChange={(e) => setValue(e.target.value)}
+              {...commitOn(() => { if (Number.isFinite(n) && n >= 0 && n !== months) void save(n); })}
+              className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums"
+            />
+            <span>months</span>
+            {months !== 0 && <button onClick={() => void save(0)} className="h-7 px-2 rounded-full text-label-md text-primary hover:bg-primary/8">All</button>}
+          </div>
+          <p className="text-label-sm text-on-surface-variant">
+            How you have done in a chapter's positions — your games, wins, draws and losses, and what you played —
+            counts your games with the book's colour from this period: a Black repertoire, your games as Black.
+            0 counts all of them; the default is 12. Your player is the one set on the Home page; your games are
+            looked up each time, so a game added counts at once.
+          </p>
+          {note && <p className="text-body-sm text-success">{note}</p>}
+        </div>
+      )}
+      {error && <p className="text-body-sm text-error">{error}</p>}
+    </SectionCard>
+  );
+}
+
 function CloudEnginesSection() {
   const [maxMove, setMaxMove] = useState<number | null>(null);
   // Each service on or off; an older server has no switches and asks both.
@@ -2157,6 +2212,7 @@ const TABS = [
   { id: "databases", label: "Database" },
   { id: "players", label: "Players" },
   { id: "engines", label: "Engines" },
+  { id: "repertoire", label: "Repertoire" },
   { id: "others", label: "Others" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
@@ -2308,6 +2364,16 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
               <Lc0Section />
               <CloudEnginesSection />
               <div className="md:col-span-2"><EngineResultsSection /></div>
+            </div>
+          </div>
+
+          <div className={tab === "repertoire" ? "space-y-4" : "hidden"}>
+            <TabLead>
+              The opening repertoire's practice: what a chapter's figures count. Chapters are analysed from the
+              Repertoire page.
+            </TabLead>
+            <div className={grid}>
+              <RepertoireSection />
             </div>
           </div>
 

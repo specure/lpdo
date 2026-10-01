@@ -21,6 +21,39 @@ export function loadMyPlayer(): PlayerInfo | null {
   }
 }
 
+/** Re-resolve a (possibly stale) player against the current DB by a STABLE key —
+ *  fide_id when known, else exact name. Recent players persist a surrogate `id`
+ *  that a purge+reimport invalidates (the same person gets a new id), so trusting
+ *  it would open a different player's games. Returns the current player row, or
+ *  null if that person is no longer in the database. */
+export async function resolveCurrentPlayer(p: PlayerInfo): Promise<PlayerInfo | null> {
+  try {
+    const url = p.fide_id != null
+      ? `/api/players?fide_id=${p.fide_id}`
+      : `/api/players?name=${encodeURIComponent(p.name)}`;
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    const list = (await resp.json()) as PlayerInfo[];
+    return p.fide_id != null
+      ? (list[0] ?? null)
+      : (list.find((x) => x.name === p.name) ?? null);
+  } catch {
+    return null;
+  }
+}
+
+/** The profile player as the database has it now: the stored one re-resolved
+ *  by FIDE id (else name) — its stored `id` can belong to someone else after
+ *  the players were renumbered (#249) — and kept, corrected, when it changed.
+ *  Null when none is set or the database no longer has that person. */
+export async function currentMyPlayer(): Promise<PlayerInfo | null> {
+  const stored = loadMyPlayer();
+  if (!stored) return null;
+  const fresh = await resolveCurrentPlayer(stored);
+  if (fresh && (fresh.id !== stored.id || fresh.game_count !== stored.game_count)) saveMyPlayer(fresh);
+  return fresh;
+}
+
 /** Persist the user's chosen player identity (shared by the Home widget and the
  *  setup wizard so both write the same `myPlayer` key). */
 export function saveMyPlayer(player: PlayerInfo): void {
@@ -454,6 +487,18 @@ interface MyStatsWidgetProps {
 
 export default function MyStatsWidget({ countStartDelayMs, status, dbReady = true, onPlayerChange }: MyStatsWidgetProps = {}) {
   const [myPlayer, setMyPlayer] = useState<PlayerInfo | null>(loadMyPlayer);
+  // The stored id is checked once against the database by FIDE id (else
+  // name) and corrected — a stale one shows someone else's games (#249).
+  useEffect(() => {
+    const stored = loadMyPlayer();
+    if (!stored) return;
+    let gone = false;
+    void currentMyPlayer().then((fresh) => {
+      if (!gone && fresh && fresh.id !== stored.id) { setMyPlayer(fresh); onPlayerChange?.(fresh); }
+    });
+    return () => { gone = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function save(player: PlayerInfo) {
     saveMyPlayer(player);
