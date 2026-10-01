@@ -184,10 +184,42 @@ offered on the phone as a ready session.
 ### Preparing a chapter: the analysis job
 
 What the phone gets is worked out beforehand, in a **background job** on
-the server — "Analyse chapter" (and for a whole book) — with its progress on
-the chapter, as the server's other jobs; it can run overnight. **Send to
-phone** then only reads what is stored: instant, and it says how complete
-the chapter is ("analysed: 110 of 110 positions").
+the server — **Analyse…** in a chapter's ⋯ menu, or a book's for all its
+chapters — with its progress on the chapter and a Cancel, as the server's
+other jobs. **Nothing runs by itself**: the analysis, and refreshing it
+later, are always started by hand — running it again fetches the figures
+anew and evaluates what is missing (or below stronger settings than before).
+**Send to phone** only reads what is stored: instant, and it says how
+complete the chapter is ("analysed: 110 of 110 positions").
+
+**What has been processed shows** in colour: in the Lines tab per line —
+not processed, figures only, figures and evaluations, changed since (moves
+added after the last run); in the chapter list per chapter ("analysed
+2 Oct", or partly); and in the move list, an evaluation beside a move that
+has one.
+
+**Settings** — a "Repertoire analysis" section on the Maintenance page:
+
+- **Sources**, in order, each on or off: the Lichess cloud evaluation (deep,
+  for positions popular there; rate-limited, with the rests after a 429 the
+  Engine panel already has), chessdb (fast, wide coverage of openings), then
+  the local engine for the rest — **Stockfish** (by depth, default 20), or
+  **Lc0** where installed (by nodes; on a CPU, slow). Default: both cloud
+  services, then Stockfish.
+- **Lines** for one's own moves: 2 (to find the best alternative).
+- **Which positions**: the **ends of lines**, always; **one's own moves** —
+  only where the repertoire's move is **not a main move** (outside the moves
+  making up 75% of the games there; the threshold adjustable) by default, or
+  all; **the opponent's moves** — none by default, or the popular ones (above
+  a share), to find their mistakes.
+
+Every evaluation keeps its source — engine, depth or nodes — and the
+trainer shows it ("+0.3, Stockfish d20"): different engines' numbers are not
+comparable, Lc0's least of all.
+
+The job and the **Engine panel** share the server's engine: while the panel
+is analysing, the job's engine work **pauses** (the cloud lookups go on) and
+resumes after — one's own analysis is never slowed.
 
 - **The database's figures** for every position (the stats above), kept
   per chapter and made again when the chapter changes or the database grows.
@@ -212,9 +244,10 @@ the chapter is ("analysed: 110 of 110 positions").
 
   Kept in the `engine_evals` table (so the Analysis page shows them too),
   with the engine, depth and multipv, so they are comparable and can be done
-  again stronger; after an edit only new positions are evaluated. A chapter
-  of 20 lines is ~110 positions — a few minutes at 1–2 s each; a book of 26
-  chapters, about an hour.
+  again stronger; a run after an edit evaluates only the new positions. All
+  of a 20-line chapter's own moves and line ends are ~110 positions — a few
+  minutes at 1–2 s each; with the default (own moves only off the main
+  moves) far fewer. A book of 26 chapters, all positions: about an hour.
 
 This is the engine pass phase 2 lists for flagging questionable moves (#309):
 one job for both — the desktop marks moves in the chapter, the package
