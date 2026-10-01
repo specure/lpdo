@@ -29,7 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   database's figures for every position, kept until analysed again; the
   chapter list and the Lines tab show what is analysed. Your own games
   through a chapter's positions are looked up live — with the book's colour,
-  from the last 12 months (Maintenance → Repertoire). Design in
+  from the last 12 months (Maintenance → Repertoire) — and **Your games**
+  above the chapter list shows, per chapter, how many of your games went
+  into it with your score and performance, and how many left the book, by
+  the move that left it. Design in
   `docs/design/opening-repertoire.md`. (#327, #329)
 
 ### Fixed

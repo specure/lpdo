@@ -102,6 +102,28 @@ export interface OwnGames {
 export const getOwnGames = (chapterId: number, playerId: number) =>
   apiGet<OwnGames>(`/repertoire/chapters/${chapterId}/mine?player_id=${playerId}`);
 
+/** A score over some of one's games; `perf` with three rated opponents or more. */
+export interface Score { games: number; w: number; d: number; l: number; perf: number | null }
+/** One's own games across a book (live, ~0.1 s): per chapter, the games that
+ *  reached one of its own positions by a move of one's own; the games in the
+ *  book's opening, and those that left it, by the move that left. With the
+ *  book's colour, from the period set on the Maintenance page. */
+export interface BookGames {
+  color: BookColor;
+  months: number;
+  since: string | null;
+  games: number;
+  in_book: Score;
+  left: Score;
+  left_by: [string, number][];
+  chapters: ({ id: number } & Score)[];
+  ms: number;
+}
+export const getBookGames = (bookId: number, playerId: number) =>
+  apiGet<BookGames>(`/repertoire/books/${bookId}/mine?player_id=${playerId}`);
+/** One's score as a percentage, "46%"; "–" without games. */
+export const scorePct = (s: Score) => (s.games ? `${Math.round(((s.w + s.d / 2) / s.games) * 100)}%` : "–");
+
 /** The repertoire's settings, on the Maintenance page. */
 export interface RepertoireSettings {
   /** One's own games count from this many months back; 0 = all. */

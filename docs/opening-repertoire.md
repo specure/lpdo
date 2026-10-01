@@ -111,6 +111,19 @@ book's colour (a Black repertoire, your games as Black), from the last 12
 months — the period is set on the Maintenance page, **Repertoire** tab
 (0 for all). Your player is the one set on the Home page.
 
+**Your games** — the switch above the chapters, beside **Lines** — shows
+how you have done in each chapter instead of its line count: how many of
+your games went into it, your score (green above 55%, red below 45%) and
+your performance rating (with three rated opponents or more); the tooltip
+has the wins, draws and losses. A game counts for a chapter when it reached
+a position only that chapter has, by a move of yours — so for the chapter
+you actually played, transpositions included. Above the list: how many of
+your games reached the book's opening, and how many **left the book** —
+reached none of its chapters — with the moves that left it ("3...Bb4 ×7"):
+where your practice and the book part ways. The same period and colour as
+everywhere: your games with the book's colour, from the last 12 months
+(Maintenance → Repertoire).
+
 A dot beside a chapter in the list shows it was analysed (its tooltip says
 when), in another colour when the chapter changed since. In the **Lines**
 tab, a filled dot marks the lines in the analysis, an empty one those that

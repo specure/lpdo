@@ -762,6 +762,188 @@ pub struct PositionMine {
     pub mine: Mine,
 }
 
+/// One of one's own games: the result for oneself, the opponent's rating.
+struct MyGame { score: f64, opp_elo: Option<i64> }
+
+/// One's games with `color`, from the period the settings give (games
+/// without a date left out when there is one): the months, the first day
+/// counted, the games by id.
+fn my_games(conn: &Connection, player: i64, color: &str) -> Result<(u32, Option<String>, std::collections::HashMap<i64, MyGame>)> {
+    let months = settings().own_games_months;
+    let since: Option<String> = if months == 0 { None } else {
+        Some(conn.query_row(
+            &format!("SELECT CAST(CAST(current_date - INTERVAL {months} MONTH AS DATE) AS VARCHAR)"), [], |r| r.get(0))?)
+    };
+    let (me, opp, win) = if color == "white" { ("white_id", "black_elo", "1-0") } else { ("black_id", "white_elo", "0-1") };
+    let mut games = std::collections::HashMap::new();
+    let mut st = conn.prepare(&format!(
+        "SELECT id, CASE result WHEN '{win}' THEN 1.0 WHEN '1/2-1/2' THEN 0.5 ELSE 0.0 END, {opp}
+         FROM games
+         WHERE {me} = ?1 AND result IN ('1-0', '0-1', '1/2-1/2') AND deleted_at IS NULL
+           AND (?2 IS NULL OR date >= ?2)"))?;
+    let mut rows = st.query(duckdb::params![player, since])?;
+    while let Some(r) = rows.next()? {
+        games.insert(r.get(0)?, MyGame { score: r.get(1)?, opp_elo: r.get::<_, Option<i64>>(2)?.filter(|e| *e > 0) });
+    }
+    Ok((months, since, games))
+}
+
+/// A score over some of one's games: wins, draws, losses, and a performance
+/// rating with three rated opponents or more.
+#[derive(Clone, Debug, Default, Serialize, PartialEq)]
+pub struct Score {
+    pub games: i64,
+    pub w: i64,
+    pub d: i64,
+    pub l: i64,
+    pub perf: Option<i32>,
+}
+
+fn score_of<'a>(games: impl Iterator<Item = &'a MyGame>) -> Score {
+    let mut s = Score::default();
+    let (mut sum, mut n) = (0.0, 0);
+    for g in games {
+        s.games += 1;
+        if g.score == 1.0 { s.w += 1 } else if g.score == 0.5 { s.d += 1 } else { s.l += 1 }
+        if let Some(e) = g.opp_elo { sum += e as f64 + 400.0 * (2.0 * g.score - 1.0); n += 1; }
+    }
+    s.perf = (n >= 3).then(|| (sum / n as f64).round() as i32);
+    s
+}
+
+/// One's own games across a book's chapters (see [`book_mine`]).
+#[derive(Clone, Debug, Serialize)]
+pub struct BookGames {
+    pub color: String,
+    pub months: u32,
+    pub since: Option<String>,
+    /// One's games with the book's colour in the period, all of them.
+    pub games: i64,
+    /// Those that reached the moves every chapter shares — the book's
+    /// opening — and their score.
+    pub in_book: Score,
+    /// Of those, the ones that reached no chapter's own position: where one
+    /// left the book, by the move that left it ("3...Bb4"), most first.
+    pub left: Score,
+    pub left_by: Vec<(String, i64)>,
+    pub chapters: Vec<ChapterGames>,
+    pub ms: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ChapterGames {
+    pub id: i64,
+    #[serde(flatten)]
+    pub score: Score,
+}
+
+/// One's own games across a book: for each chapter, the games that reached
+/// one of its own positions — those no other chapter of the book has, after
+/// a move of one's own — so a game counts for the chapter one played,
+/// transpositions included; and
+/// the book's games that went into none ("left the book"), by the move that
+/// left. With the book's colour, from the period the settings give; looked
+/// up live (~0.1 s).
+pub fn book_mine(conn: &Connection, book_id: i64, player: i64) -> Result<BookGames> {
+    let started = std::time::Instant::now();
+    let book = get_book(conn, book_id)?;
+    let mut st = conn.prepare("SELECT id, pgn FROM repertoire_chapters WHERE book_id = ? ORDER BY ord, id")?;
+    let chapters: Vec<(i64, String)> = st.query_map(duckdb::params![book_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<duckdb::Result<_>>()?;
+
+    // Each chapter's positions (the start left out: every game has it), in
+    // how many chapters each one is, and those one reaches with one's own
+    // move — the book's colour having just moved.
+    let start = Chess::default().zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64;
+    let mut sets: Vec<std::collections::HashSet<i64>> = Vec::new();
+    let mut mine_after: Vec<std::collections::HashSet<i64>> = Vec::new();
+    let mut count: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    for (_, pgn) in &chapters {
+        let w = walk(&movetext_of(pgn))?;
+        let mut set = std::collections::HashSet::new();
+        let mut after = std::collections::HashSet::new();
+        for r in &w.rows {
+            for z in [r.zobrist, r.after_zobrist] { if z != start { set.insert(z); } }
+            if r.mover == book.color { after.insert(r.after_zobrist); }
+        }
+        for z in &set { *count.entry(*z).or_default() += 1; }
+        sets.push(set);
+        mine_after.push(after);
+    }
+    let n = chapters.len();
+    // The book's opening: the positions every chapter has, reached by one's
+    // own move (after 1...e6 in a French book — not after 1.e4, which a
+    // Sicilian game reaches too); with none, any position one reaches by
+    // one's own move in some chapter.
+    let any_after: std::collections::HashSet<i64> = mine_after.iter().flatten().copied().collect();
+    let shared: std::collections::HashSet<i64> = count.iter()
+        .filter(|(z, c)| **c == n && any_after.contains(z))
+        .map(|(z, _)| *z).collect();
+    let shared = if shared.is_empty() { any_after } else { shared };
+    // A chapter's own positions: no other chapter has them, and one gets
+    // there by a move of one's own — so a game counts for a chapter only
+    // when one played its moves, not because the opponent went that way.
+    let own: Vec<std::collections::HashSet<i64>> = mine_after.iter()
+        .map(|after| after.iter().filter(|z| count[z] == 1).copied().collect())
+        .collect();
+
+    let (months, since, games) = my_games(conn, player, &book.color)?;
+    let mut out = BookGames {
+        color: book.color.clone(), months, since, games: games.len() as i64,
+        in_book: Score::default(), left: Score::default(), left_by: Vec::new(),
+        chapters: chapters.iter().map(|(id, _)| ChapterGames { id: *id, score: Score::default() }).collect(),
+        ms: 0,
+    };
+    if games.is_empty() || count.is_empty() {
+        out.ms = started.elapsed().as_millis() as i64;
+        return Ok(out);
+    }
+
+    // Where one's games went among the book's positions: per game, the
+    // positions it reached, and the deepest with the move played from it.
+    let ids = games.keys().map(|g| g.to_string()).collect::<Vec<_>>().join(",");
+    let hashes = count.keys().map(|z| z.to_string()).collect::<Vec<_>>().join(",");
+    let mut st = conn.prepare(&format!(
+        "SELECT game_id, zobrist_hash, move_number, next_move FROM positions
+         WHERE game_id IN ({ids}) AND zobrist_hash IN ({hashes})"))?;
+    let mut reached: std::collections::HashMap<i64, std::collections::HashSet<i64>> = std::collections::HashMap::new();
+    let mut deepest: std::collections::HashMap<i64, (i64, Option<String>)> = std::collections::HashMap::new();
+    let mut rows = st.query([])?;
+    while let Some(r) = rows.next()? {
+        let (g, z, ply, next): (i64, i64, i64, Option<String>) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
+        reached.entry(g).or_default().insert(z);
+        let d = deepest.entry(g).or_insert((-1, None));
+        if ply > d.0 { *d = (ply, next); }
+    }
+
+    let in_book: Vec<i64> = reached.iter()
+        .filter(|(_, zs)| zs.iter().any(|z| shared.contains(z)))
+        .map(|(g, _)| *g).collect();
+    out.in_book = score_of(in_book.iter().filter_map(|g| games.get(g)));
+    let mut placed: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    for (i, own) in own.iter().enumerate() {
+        let mine: Vec<i64> = reached.iter().filter(|(_, zs)| zs.iter().any(|z| own.contains(z))).map(|(g, _)| *g).collect();
+        placed.extend(mine.iter().copied());
+        out.chapters[i].score = score_of(mine.iter().filter_map(|g| games.get(g)));
+    }
+    let left: Vec<i64> = in_book.iter().copied().filter(|g| !placed.contains(g)).collect();
+    out.left = score_of(left.iter().filter_map(|g| games.get(g)));
+    let mut by: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+    for g in &left {
+        if let Some((ply, Some(san))) = deepest.get(g) {
+            // The move from the deepest book position the game reached:
+            // "3...Bb4" — the position at `ply` half-moves, so its move is
+            // number ply/2 + 1, Black's when ply is odd.
+            let label = format!("{}{}{}", ply / 2 + 1, if ply % 2 == 1 { "..." } else { "." }, strip_marks(san));
+            *by.entry(label).or_default() += 1;
+        }
+    }
+    let mut by: Vec<(String, i64)> = by.into_iter().collect();
+    by.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    out.left_by = by;
+    out.ms = started.elapsed().as_millis() as i64;
+    Ok(out)
+}
+
 /// One's own games through every position of a chapter, looked up live —
 /// they change every week, unlike the database's figures. Only the games
 /// played with the book's colour (a Black repertoire is about one's games as
@@ -778,26 +960,7 @@ pub fn chapter_mine(conn: &Connection, id: i64, player: i64) -> Result<OwnGames>
         keys.insert(r.after_zobrist, r.after_key.clone());
     }
     let color = detail.book.color.clone();
-    let months = settings().own_games_months;
-    let since: Option<String> = if months == 0 { None } else {
-        Some(conn.query_row(
-            &format!("SELECT CAST(CAST(current_date - INTERVAL {months} MONTH AS DATE) AS VARCHAR)"), [], |r| r.get(0))?)
-    };
-
-    // One's games with the book's colour: result for oneself, the opponent's
-    // rating. Games without a date are left out when a period is set.
-    struct Game { score: f64, opp_elo: Option<i64> }
-    let (me, opp, win) = if color == "white" { ("white_id", "black_elo", "1-0") } else { ("black_id", "white_elo", "0-1") };
-    let mut games: std::collections::HashMap<i64, Game> = std::collections::HashMap::new();
-    let mut st = conn.prepare(&format!(
-        "SELECT id, CASE result WHEN '{win}' THEN 1.0 WHEN '1/2-1/2' THEN 0.5 ELSE 0.0 END, {opp}
-         FROM games
-         WHERE {me} = ?1 AND result IN ('1-0', '0-1', '1/2-1/2') AND deleted_at IS NULL
-           AND (?2 IS NULL OR date >= ?2)"))?;
-    let mut rows = st.query(duckdb::params![player, since])?;
-    while let Some(r) = rows.next()? {
-        games.insert(r.get(0)?, Game { score: r.get(1)?, opp_elo: r.get::<_, Option<i64>>(2)?.filter(|e| *e > 0) });
-    }
+    let (months, since, games) = my_games(conn, player, &color)?;
     let mut out = OwnGames { color, months, since, games: games.len() as i64, ms: 0, positions: Vec::new() };
     if games.is_empty() || keys.is_empty() {
         out.ms = started.elapsed().as_millis() as i64;
@@ -1083,6 +1246,54 @@ mod tests {
         delete_chapter(&conn, ch.id).unwrap();
         let left: i64 = conn.query_row("SELECT COUNT(*) FROM repertoire_analysis", [], |r| r.get(0)).unwrap();
         assert_eq!(left, 0, "goes with its chapter");
+    }
+
+    #[test]
+    fn ones_own_games_across_a_book() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let book = create_book(&conn, "French", "black", None, None, None).unwrap();
+        let add = |name: &str, moves: &str| add_chapters(&conn, book.id, Some(name), Some(moves), None).unwrap().remove(0).id;
+        let advance = add("Advance", "1. e4 e6 2. d4 d5 3. e5 c5 *");
+        let steinitz = add("Steinitz", "1. e4 e6 2. d4 d5 3. Nc3 Nf6 *");
+        let kia = add("KIA", "1. e4 e6 2. d3 d5 *");
+
+        // Player 1's games as Black, this month: the Advance (won); the
+        // Steinitz by transposition (drawn); a Winawer, 3...Bb4 — out of the
+        // book (lost); the KIA (lost); a Sicilian — not the French at all.
+        let games: [(&str, &str); 5] = [
+            ("e4 e6 d4 d5 e5 c5", "0-1"),
+            ("e4 e6 Nc3 d5 d4 Nf6", "1/2-1/2"),
+            ("e4 e6 d4 d5 Nc3 Bb4", "1-0"),
+            ("e4 e6 d3 d5", "1-0"),
+            ("e4 c5 Nf3 d6", "0-1"),
+        ];
+        let mut sql = String::from("INSERT INTO players (id, name, name_normalized) VALUES (1, 'Me', 'me'), (2, 'O', 'o');");
+        for (i, (moves, result)) in games.iter().enumerate() {
+            let id = i + 1;
+            sql += &format!("INSERT INTO games (id, white_id, black_id, date, result, pgn) VALUES ({id}, 2, 1, CAST(current_date AS VARCHAR), '{result}', '');");
+            let mut pos = Chess::default();
+            for (ply, san) in moves.split(' ').enumerate() {
+                let z = pos.zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64;
+                sql += &format!("INSERT INTO positions (game_id, move_number, zobrist_hash, next_move) VALUES ({id}, {ply}, {z}, '{san}');");
+                let m = shakmaty::san::San::from_ascii(san.as_bytes()).unwrap().to_move(&pos).unwrap();
+                pos.play_unchecked(m);
+            }
+            // The index keeps the final position too, without a next move.
+            let (ply, z) = (moves.split(' ').count(), pos.zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64);
+            sql += &format!("INSERT INTO positions (game_id, move_number, zobrist_hash, next_move) VALUES ({id}, {ply}, {z}, NULL);");
+        }
+        conn.execute_batch(&sql).unwrap();
+
+        let b = book_mine(&conn, book.id, 1).unwrap();
+        assert_eq!(b.games, 5);
+        assert_eq!((b.in_book.games, b.in_book.w, b.in_book.d, b.in_book.l), (4, 1, 1, 2), "the Sicilian is not in the book");
+        let at = |id: i64| b.chapters.iter().find(|c| c.id == id).unwrap().score.clone();
+        assert_eq!((at(advance).games, at(advance).w), (1, 1));
+        assert_eq!((at(steinitz).games, at(steinitz).d), (1, 1), "by transposition");
+        assert_eq!((at(kia).games, at(kia).l), (1, 1));
+        assert_eq!((b.left.games, b.left.l), (1, 1), "the Winawer reached no chapter by a move of one's own");
+        assert_eq!(b.left_by, vec![("3...Bb4".to_string(), 1)]);
     }
 
     #[test]

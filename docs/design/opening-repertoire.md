@@ -254,6 +254,18 @@ resumes after — one's own analysis is never slowed.
   at the chapter's level — "your games in this chapter: 2 (1 by
   transposition)" — so a transposed game does not only show deep in a
   branch.
+- **A book's overview of one's games** — "Your games" in the chapter list,
+  `GET /repertoire/books/{id}/mine?player_id=`, live like the above: per
+  chapter, the games that reached one of **its own positions** — no other
+  chapter of the book has them, and one gets there **by a move of one's
+  own** (so a game counts for the chapter one played, not for where the
+  opponent went: a Winawer game does not count for a 3.Nc3 chapter) — with
+  the score and performance; the games in the book's opening (the
+  positions every chapter has, reached by one's own move — after 1...e6, so
+  not a Sicilian after 1.e4); and those that **left the book**, by the move
+  that left (the deepest book position's next move, "3...Bb4"). Where one's
+  practice and the book part ways, and which chapter one scores worst in —
+  the topics to train.
 - **Engine evaluations** (Stockfish, the server's own): the positions the
   database has no stored evaluation for — on three real chapters, none of
   their 176–669 positions had one; cloud evaluations are only kept where one

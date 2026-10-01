@@ -1383,6 +1383,11 @@ async fn repertoire_chapter_mine_handler(State(state): State<AppState>, AxumPath
     state.reads.run(move |conn| crate::repertoire::chapter_mine(conn, id, q.player_id).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
 }
 
+/// One's own games across a book's chapters, looked up live.
+async fn repertoire_book_mine_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<ChapterMineQuery>) -> ApiResult<crate::repertoire::BookGames> {
+    state.reads.run(move |conn| crate::repertoire::book_mine(conn, id, q.player_id).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
+}
+
 async fn repertoire_settings_handler() -> Json<crate::repertoire::RepertoireSettings> {
     Json(crate::repertoire::settings())
 }
@@ -2813,6 +2818,7 @@ pub async fn run(
         .route("/repertoire/chapters/{id}/pgn",        get(repertoire_chapter_pgn_handler))
         .route("/repertoire/chapters/{id}/stats",      get(repertoire_chapter_stats_handler))
         .route("/repertoire/chapters/{id}/mine",       get(repertoire_chapter_mine_handler))
+        .route("/repertoire/books/{id}/mine",          get(repertoire_book_mine_handler))
         .route("/repertoire/settings",                 get(repertoire_settings_handler).put(repertoire_settings_put_handler))
         .route("/sources",                             get(sources_handler))
         .route("/sources/{key}/enabled",               post(set_source_enabled_handler))
