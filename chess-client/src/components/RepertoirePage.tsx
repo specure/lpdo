@@ -988,7 +988,11 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
     <div
       draggable={arranging && !busy}
       {...(arranging ? drag : {})}
-      className={`flex items-center gap-1.5 px-3 py-1 ${current ? "bg-primary-container/40" : ""} ${c.active ? "" : "opacity-70"} ${arranging ? "cursor-grab" : ""} ${dropTarget ? "border-t-2 border-primary" : "border-t-2 border-transparent"}`}
+      // In merge mode the whole row ticks the chapter (Shift: a range), not
+      // only the checkbox; no text selected by a Shift-click.
+      onClick={selected !== undefined ? (e) => { if ((e.target as HTMLElement).tagName !== "INPUT") onSelect(!selected, e.shiftKey); } : undefined}
+      onMouseDown={selected !== undefined ? (e) => { if (e.shiftKey) e.preventDefault(); } : undefined}
+      className={`flex items-center gap-1.5 px-3 py-1 ${current ? "bg-primary-container/40" : ""} ${c.active ? "" : "opacity-70"} ${arranging ? "cursor-grab" : ""} ${selected !== undefined ? "cursor-pointer select-none hover:bg-on-surface/4" : ""} ${dropTarget ? "border-t-2 border-primary" : "border-t-2 border-transparent"}`}
     >
       {arranging
         ? <span className="shrink-0 text-on-surface-variant text-body-sm select-none" aria-hidden>⠿</span>
@@ -1003,7 +1007,7 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
           onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") { setName(c.name); onRename(c.name); } }}
           className={`${field} flex-1 min-w-0 h-7`} />
       ) : (
-        <button onClick={onPick} className={`flex-1 min-w-0 text-left text-body-sm truncate ${current ? "text-on-surface font-medium" : "text-on-surface hover:text-primary"}`} title={`${c.name} — ${counts}`}>
+        <button onClick={selected !== undefined ? undefined : onPick} className={`flex-1 min-w-0 text-left text-body-sm truncate ${current ? "text-on-surface font-medium" : "text-on-surface hover:text-primary"}`} title={`${c.name} — ${counts}`}>
           {c.name}
         </button>
       )}
