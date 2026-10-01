@@ -164,6 +164,8 @@ export interface BookGame {
   date: string | null;
   result: string | null;
   chapters: number[];
+  /** How far it followed its (first) chapter — as that chapter's list says. */
+  follow: Pick<ChapterGame, "followed" | "left_by" | "move" | "at_key" | "at_ply"> | null;
   left: string | null;
 }
 export interface BookGameList { color: BookColor; months: number; since: string | null; games: BookGame[]; ms: number }

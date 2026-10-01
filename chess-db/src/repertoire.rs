@@ -1004,6 +1004,8 @@ pub struct BookGame {
     pub date: Option<String>,
     pub result: Option<String>,
     pub chapters: Vec<i64>,
+    /// How far it followed its (first) chapter — as that chapter's list says.
+    pub follow: Option<Follow>,
     pub left: Option<String>,
 }
 
@@ -1022,6 +1024,20 @@ pub fn book_games(conn: &Connection, book_id: i64, player: i64) -> Result<BookGa
     let started = std::time::Instant::now();
     let p = place(conn, book_id, player)?;
     let mut out = BookGameList { color: p.color.clone(), months: p.months, since: p.since.clone(), games: Vec::new(), ms: 0 };
+    // How far each game followed its chapter — the first it counts for —
+    // the same as the chapter's own list.
+    let mut follow: std::collections::HashMap<i64, Follow> = std::collections::HashMap::new();
+    let mut st = conn.prepare("SELECT id, pgn FROM repertoire_chapters WHERE book_id = ?")?;
+    let pgns: std::collections::HashMap<i64, String> = st.query_map(duckdb::params![book_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<duckdb::Result<_>>()?;
+    let mut first: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
+    for g in &p.in_book {
+        if let Some(c) = p.chapters.iter().zip(&p.per_chapter).find(|(_, gs)| gs.contains(g)).map(|(c, _)| *c) {
+            first.entry(c).or_default().push(*g);
+        }
+    }
+    for (c, gs) in &first {
+        if let Some(pgn) = pgns.get(c) { follow.extend(follow_chapter(conn, pgn, gs, &p.color)?); }
+    }
     for row in game_rows(conn, &p.in_book)? {
         let chapters: Vec<i64> = p.chapters.iter().zip(&p.per_chapter)
             .filter(|(_, gs)| gs.contains(&row.id)).map(|(c, _)| *c).collect();
@@ -1030,7 +1046,7 @@ pub fn book_games(conn: &Connection, book_id: i64, player: i64) -> Result<BookGa
         } else { None };
         out.games.push(BookGame {
             id: row.id, white: row.white, black: row.black, white_elo: row.white_elo, black_elo: row.black_elo,
-            event: row.event, date: row.date, result: row.result, chapters, left,
+            event: row.event, date: row.date, result: row.result, chapters, follow: follow.remove(&row.id), left,
         });
     }
     out.ms = started.elapsed().as_millis() as i64;
@@ -1048,19 +1064,67 @@ pub struct ChapterGame {
     pub event: Option<String>,
     pub date: Option<String>,
     pub result: Option<String>,
-    /// How far it followed the chapter: "left" — a move the chapter does not
-    /// have, `left_by` (one's own or the opponent's), `move` ("8...b6");
-    /// "end" — to the end of one of its lines; "index" — as far as the
-    /// positions index goes (each game's first ~40 plies); "ended" — the
-    /// game ended in it.
+    #[serde(flatten)]
+    pub follow: Follow,
+}
+
+/// How far a game followed a chapter: "left" — a move the chapter does not
+/// have, `left_by` (one's own or the opponent's), `move` ("8...b6"); "end" —
+/// to the end of one of its lines; "index" — as far as the positions index
+/// goes (each game's first ~40 plies); "ended" — the game ended in it. And
+/// the deepest chapter position it reached, by its key — where to put the
+/// board — with its ply.
+#[derive(Clone, Debug, Serialize)]
+pub struct Follow {
     pub followed: &'static str,
     pub left_by: Option<&'static str>,
     #[serde(rename = "move")]
     pub mv: Option<String>,
-    /// The deepest chapter position the game reached, by its key — where to
-    /// put the board — and the move number there.
     pub at_key: String,
     pub at_ply: i64,
+}
+
+/// How far each of these games followed a chapter (`pgn`), one playing
+/// `color`.
+fn follow_chapter(conn: &Connection, pgn: &str, ids: &[i64], color: &str) -> Result<std::collections::HashMap<i64, Follow>> {
+    let mut out = std::collections::HashMap::new();
+    if ids.is_empty() { return Ok(out); }
+    // The chapter's positions: their keys and the chapter's moves from each.
+    let w = walk(&movetext_of(pgn))?;
+    let mut keys: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    let mut moves: std::collections::HashMap<i64, std::collections::HashSet<String>> = std::collections::HashMap::new();
+    for r in &w.rows {
+        keys.insert(r.zobrist, r.key.clone());
+        keys.insert(r.after_zobrist, r.after_key.clone());
+        moves.entry(r.zobrist).or_default().insert(strip_marks(&r.next_move).to_string());
+    }
+    if keys.is_empty() { return Ok(out); }
+
+    // Per game, the deepest chapter position it reached and the move played.
+    let list = ids.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(",");
+    let hashes = keys.keys().map(|z| z.to_string()).collect::<Vec<_>>().join(",");
+    let mut st = conn.prepare(&format!(
+        "SELECT game_id, zobrist_hash, move_number, next_move FROM positions
+         WHERE game_id IN ({list}) AND zobrist_hash IN ({hashes})"))?;
+    let mut deepest: std::collections::HashMap<i64, (i64, i64, Option<String>)> = std::collections::HashMap::new();
+    let mut rows = st.query([])?;
+    while let Some(r) = rows.next()? {
+        let (g, z, ply, next): (i64, i64, i64, Option<String>) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
+        let d = deepest.entry(g).or_insert((-1, 0, None));
+        if ply > d.0 { *d = (ply, z, next); }
+    }
+    for (g, (ply, z, next)) in deepest {
+        let ours = moves.get(&z);
+        let side_to_move = if ply % 2 == 0 { "white" } else { "black" };
+        let (followed, left_by, mv) = match next.as_deref().map(strip_marks) {
+            None => ("ended", None, None),
+            Some(san) if ours.is_some_and(|m| m.contains(san)) => ("index", None, None),
+            Some(_) if ours.is_none() => ("end", None, None),
+            Some(san) => ("left", Some(if side_to_move == color { "you" } else { "opponent" }), Some(move_label(ply, san))),
+        };
+        out.insert(g, Follow { followed, left_by, mv, at_key: keys.get(&z).cloned().unwrap_or_default(), at_ply: ply });
+    }
+    Ok(out)
 }
 
 /// One's games in a chapter (as [`book_mine`] counts them), newest first,
@@ -1086,45 +1150,12 @@ pub fn chapter_games(conn: &Connection, chapter_id: i64, player: i64) -> Result<
         return Ok(out);
     }
 
-    // The chapter's positions: their keys and the chapter's moves from each.
-    let w = walk(&movetext_of(&detail.pgn))?;
-    let mut keys: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
-    let mut moves: std::collections::HashMap<i64, std::collections::HashSet<String>> = std::collections::HashMap::new();
-    for r in &w.rows {
-        keys.insert(r.zobrist, r.key.clone());
-        keys.insert(r.after_zobrist, r.after_key.clone());
-        moves.entry(r.zobrist).or_default().insert(strip_marks(&r.next_move).to_string());
-    }
-
-    // Per game, the deepest chapter position it reached and the move played.
-    let list = ids.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(",");
-    let hashes = keys.keys().map(|z| z.to_string()).collect::<Vec<_>>().join(",");
-    let mut st = conn.prepare(&format!(
-        "SELECT game_id, zobrist_hash, move_number, next_move FROM positions
-         WHERE game_id IN ({list}) AND zobrist_hash IN ({hashes})"))?;
-    let mut deepest: std::collections::HashMap<i64, (i64, i64, Option<String>)> = std::collections::HashMap::new();
-    let mut rows = st.query([])?;
-    while let Some(r) = rows.next()? {
-        let (g, z, ply, next): (i64, i64, i64, Option<String>) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
-        let d = deepest.entry(g).or_insert((-1, 0, None));
-        if ply > d.0 { *d = (ply, z, next); }
-    }
-
+    let follow = follow_chapter(conn, &detail.pgn, &ids, &p.color)?;
     for row in game_rows(conn, &ids)? {
-        let id = row.id;
-        let Some((ply, z, next)) = deepest.get(&id).cloned() else { continue };
-        let ours = moves.get(&z);
-        let side_to_move = if ply % 2 == 0 { "white" } else { "black" };
-        let (followed, left_by, mv) = match next.as_deref().map(strip_marks) {
-            None => ("ended", None, None),
-            Some(san) if ours.is_some_and(|m| m.contains(san)) => ("index", None, None),
-            Some(_) if ours.is_none() => ("end", None, None),
-            Some(san) => ("left", Some(if side_to_move == p.color { "you" } else { "opponent" }), Some(move_label(ply, san))),
-        };
+        let Some(f) = follow.get(&row.id).cloned() else { continue };
         out.games.push(ChapterGame {
-            id, white: row.white, black: row.black, white_elo: row.white_elo, black_elo: row.black_elo,
-            event: row.event, date: row.date, result: row.result,
-            followed, left_by, mv, at_key: keys.get(&z).cloned().unwrap_or_default(), at_ply: ply,
+            id: row.id, white: row.white, black: row.black, white_elo: row.white_elo, black_elo: row.black_elo,
+            event: row.event, date: row.date, result: row.result, follow: f,
         });
     }
     out.ms = started.elapsed().as_millis() as i64;
@@ -1486,7 +1517,7 @@ mod tests {
         // game to the end of the line (the index has its last position).
         let adv = chapter_games(&conn, advance, 1).unwrap();
         assert_eq!(adv.games.len(), 1);
-        assert_eq!((adv.games[0].id, adv.games[0].followed), (1, "ended"));
+        assert_eq!((adv.games[0].id, adv.games[0].follow.followed), (1, "ended"));
         let st = chapter_games(&conn, steinitz, 1).unwrap();
         assert_eq!(st.games.iter().map(|g| g.id).collect::<Vec<_>>(), vec![2]);
 
@@ -1499,6 +1530,10 @@ mod tests {
             (1, vec![advance], None), (2, vec![steinitz], None),
             (3, vec![], Some("3...Bb4".to_string())), (4, vec![kia], None),
         ]);
+        // Each with how far it followed its chapter, as the chapter's list says.
+        let bg = book_games(&conn, book.id, 1).unwrap();
+        let adv_in_book = bg.games.iter().find(|g| g.id == 1).unwrap();
+        assert_eq!(adv_in_book.follow.as_ref().map(|f| f.followed), Some(adv.games[0].follow.followed));
     }
 
     #[test]

@@ -71,6 +71,15 @@ function GameRow({ g, meWhite, picked, how, title, onClick, onDoubleClick }: {
   );
 }
 
+/** How far a game followed its chapter — the same words in both lists. */
+function followed(f: Pick<ChapterGame, "followed" | "left_by" | "move" | "at_ply">): React.ReactNode {
+  return f.followed === "left"
+    ? <span className={f.left_by === "you" ? "text-error" : ""}>{f.left_by === "you" ? "you" : "your opponent"} deviated at {f.move}</span>
+    : f.followed === "end" ? "followed to the end of a line"
+    : f.followed === "index" ? `in the chapter beyond move ${Math.floor(f.at_ply / 2) + 1} (the index ends)`
+    : "the game ended in the chapter";
+}
+
 /** Who left the book, and where: the move's own number says whose it was
  *  ("3...Bb4": Black's). */
 function leftBook(move: string | null, meWhite: boolean) {
@@ -115,7 +124,7 @@ function BookGamesList({ book, reloadKey, onOpen, onPickChapter }: Props & { boo
           {list.games.map((g) => (
             <GameRow key={g.id} g={g} meWhite={meWhite} picked={picked === g.id}
               how={g.chapters.length
-                ? g.chapters.map(name).join(", ")
+                ? <>{g.chapters.map(name).join(", ")}{g.follow && <> · {followed(g.follow)}</>}</>
                 : leftBook(g.left, meWhite)}
               title={`${g.white} – ${g.black}, ${g.event ?? ""} ${g.date ?? ""}. Click: its chapter on the board; double-click: open the game.`}
               onClick={() => { setPicked(g.id); if (g.chapters[0] != null) onPickChapter?.(g.chapters[0]); }}
@@ -172,13 +181,8 @@ function ChapterGamesList({ chapterId, reloadKey, onPick, onOpen }: Props) {
       ) : (
         <div className="flex-1 overflow-y-auto py-1">
           {list.games.map((g) => {
-            const how = g.followed === "left"
-              ? <span className={g.left_by === "you" ? "text-error" : ""}>{g.left_by === "you" ? "you" : "your opponent"} deviated at {g.move}</span>
-              : g.followed === "end" ? "followed to the end of a line"
-              : g.followed === "index" ? `in the chapter beyond move ${Math.floor(g.at_ply / 2) + 1} (the index ends)`
-              : "the game ended in the chapter";
             return (
-              <GameRow key={g.id} g={g} meWhite={list.color === "white"} picked={picked === g.id} how={how}
+              <GameRow key={g.id} g={g} meWhite={list.color === "white"} picked={picked === g.id} how={followed(g)}
                 title={`${g.white} – ${g.black}, ${g.event ?? ""} ${g.date ?? ""}. Click: the board where it left the chapter; double-click: open the game.`}
                 onClick={() => pick(g)} onDoubleClick={() => onOpen(summary(g))} />
             );
