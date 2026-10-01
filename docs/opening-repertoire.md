@@ -122,8 +122,12 @@ months — the period is set on the Maintenance page, **Repertoire** tab
 Home page (otherwise its line count): how many of your games went into it,
 your score (green from 55%, red up to 45%) and your performance rating (with
 three rated opponents or more); a chapter's tooltip has its line count. A game counts for a chapter when it reached
-a position only that chapter has, by a move of yours — so for the chapter
-you actually played, transpositions included. Above the chapters, **The
+a position only that chapter has in the book, by any move order — in a Black
+book usually White's move that sets the chapter apart, 3.Nd2 for the
+Tarrasch — so your older games in the line count too, even when you
+deviated straight after (an earlier 3...c5 under a 3...a6 chapter: "you
+deviated at 3...c5"). A position several chapters share counts for none of
+them. Above the chapters, **The
 whole book** has the same columns for all your games in the book's opening
 (after 1...e6 in a French book); pick it, as a chapter, and the My games tab
 lists them all, each with the chapter it went into — or the move that left

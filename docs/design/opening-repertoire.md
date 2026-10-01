@@ -257,10 +257,16 @@ resumes after — one's own analysis is never slowed.
 - **A book's overview of one's games** — "Your games" in the chapter list,
   `GET /repertoire/books/{id}/mine?player_id=`, live like the above: per
   chapter, the games that reached one of **its own positions** — no other
-  chapter of the book has them, and one gets there **by a move of one's
-  own** (so a game counts for the chapter one played, not for where the
-  opponent went: a Winawer game does not count for a 3.Nc3 chapter) — with
-  the score and performance; the games in the book's opening (the
+  chapter of the book has them, after either side's move, by any move order
+  — with the score and performance. A chapter is what sets it apart from the
+  others, in a Black book mostly White's move (3.Nd2 for the Tarrasch): a
+  game that got there counts for it even when one deviated straight after —
+  one's older 3...c5 games under a 3...a6 chapter, "you deviated at 3...c5",
+  which is what to see when one has switched lines. (A first version
+  required one's own move into the chapter — so a game counted for the
+  chapter one played — and left those games out.) Positions several chapters
+  share count for none: a Winawer after a 3.Nc3 three chapters have counts
+  for none of them; the games in the book's opening (the
   positions every chapter has, reached by one's own move — after 1...e6, so
   not a Sicilian after 1.e4); and those that **left the book**, by the move
   that left (the deepest book position's next move, "3...Bb4"). Where one's

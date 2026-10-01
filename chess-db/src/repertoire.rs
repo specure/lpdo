@@ -846,8 +846,7 @@ pub struct ChapterGames {
 
 /// One's own games across a book: for each chapter, the games that reached
 /// one of its own positions — those no other chapter of the book has, after
-/// a move of one's own — so a game counts for the chapter one played,
-/// transpositions included; and
+/// either side's move — transpositions included; and
 /// the book's games that went into none ("left the book"), by the move that
 /// left. With the book's colour, from the period the settings give; looked
 /// up live (~0.1 s).
@@ -903,7 +902,7 @@ struct Placement {
 
 /// Which of one's games count for which of a book's chapters: those that
 /// reached one of a chapter's own positions — no other chapter of the book
-/// has them, and one gets there by a move of one's own.
+/// has them — by any move order.
 fn place(conn: &Connection, book_id: i64, player: i64) -> Result<Placement> {
     let book = get_book(conn, book_id)?;
     let mut st = conn.prepare("SELECT id, pgn FROM repertoire_chapters WHERE book_id = ? ORDER BY ord, id")?;
@@ -914,6 +913,7 @@ fn place(conn: &Connection, book_id: i64, player: i64) -> Result<Placement> {
     // move — the book's colour having just moved.
     let start = Chess::default().zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64;
     let mut mine_after: Vec<std::collections::HashSet<i64>> = Vec::new();
+    let mut sets: Vec<std::collections::HashSet<i64>> = Vec::new();
     let mut count: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
     for (_, pgn) in &chapters {
         let w = walk(&movetext_of(pgn))?;
@@ -924,6 +924,7 @@ fn place(conn: &Connection, book_id: i64, player: i64) -> Result<Placement> {
             if r.mover == book.color { after.insert(r.after_zobrist); }
         }
         for z in &set { *count.entry(*z).or_default() += 1; }
+        sets.push(set);
         mine_after.push(after);
     }
     let n = chapters.len();
@@ -936,11 +937,14 @@ fn place(conn: &Connection, book_id: i64, player: i64) -> Result<Placement> {
         .filter(|(z, c)| **c == n && any_after.contains(z))
         .map(|(z, _)| *z).collect();
     let shared = if shared.is_empty() { any_after } else { shared };
-    // A chapter's own positions: no other chapter has them, and one gets
-    // there by a move of one's own — so a game counts for a chapter only
-    // when one played its moves, not because the opponent went that way.
-    let own: Vec<std::collections::HashSet<i64>> = mine_after.iter()
-        .map(|after| after.iter().filter(|z| count[z] == 1).copied().collect())
+    // A chapter's own positions: those no other chapter of the book has,
+    // whoever moved last. A chapter is what parts it from the others — in a
+    // Black book mostly White's move (3.Nd2 for the Tarrasch) — so a game
+    // that got there counts for it even when one deviated straight after
+    // (an older 3...c5 under a 3...a6 chapter); positions several chapters
+    // share count for none of them.
+    let own: Vec<std::collections::HashSet<i64>> = sets.iter()
+        .map(|set| set.iter().filter(|z| count[z] == 1).copied().collect())
         .collect();
 
     let (months, since, games) = my_games(conn, player, &book.color)?;
@@ -1481,17 +1485,23 @@ mod tests {
         let add = |name: &str, moves: &str| add_chapters(&conn, book.id, Some(name), Some(moves), None).unwrap().remove(0).id;
         let advance = add("Advance", "1. e4 e6 2. d4 d5 3. e5 c5 *");
         let steinitz = add("Steinitz", "1. e4 e6 2. d4 d5 3. Nc3 Nf6 *");
+        // 3.Nc3 in two chapters: that position is neither's own.
+        let _fort_knox = add("Fort Knox", "1. e4 e6 2. d4 d5 3. Nc3 dxe4 *");
         let kia = add("KIA", "1. e4 e6 2. d3 d5 *");
+        let tarrasch = add("Tarrasch", "1. e4 e6 2. d4 d5 3. Nd2 a6 *");
 
         // Player 1's games as Black, this month: the Advance (won); the
-        // Steinitz by transposition (drawn); a Winawer, 3...Bb4 — out of the
-        // book (lost); the KIA (lost); a Sicilian — not the French at all.
-        let games: [(&str, &str); 5] = [
+        // Steinitz by transposition (drawn); a Winawer, 3...Bb4 — after a
+        // 3.Nc3 two chapters share: out of the book (lost); the KIA (lost); a
+        // Sicilian — not the French at all; an older 3...c5 against the
+        // Tarrasch — the chapter's own position after 3.Nd2 (won).
+        let games: [(&str, &str); 6] = [
             ("e4 e6 d4 d5 e5 c5", "0-1"),
             ("e4 e6 Nc3 d5 d4 Nf6", "1/2-1/2"),
             ("e4 e6 d4 d5 Nc3 Bb4", "1-0"),
             ("e4 e6 d3 d5", "1-0"),
             ("e4 c5 Nf3 d6", "0-1"),
+            ("e4 e6 d4 d5 Nd2 c5 exd5", "0-1"),
         ];
         let mut sql = String::from("INSERT INTO players (id, name, name_normalized) VALUES (1, 'Me', 'me'), (2, 'O', 'o');");
         for (i, (moves, result)) in games.iter().enumerate() {
@@ -1511,13 +1521,14 @@ mod tests {
         conn.execute_batch(&sql).unwrap();
 
         let b = book_mine(&conn, book.id, 1).unwrap();
-        assert_eq!(b.games, 5);
-        assert_eq!((b.in_book.games, b.in_book.w, b.in_book.d, b.in_book.l), (4, 1, 1, 2), "the Sicilian is not in the book");
+        assert_eq!(b.games, 6);
+        assert_eq!((b.in_book.games, b.in_book.w, b.in_book.d, b.in_book.l), (5, 2, 1, 2), "the Sicilian is not in the book");
         let at = |id: i64| b.chapters.iter().find(|c| c.id == id).unwrap().score.clone();
         assert_eq!((at(advance).games, at(advance).w), (1, 1));
         assert_eq!((at(steinitz).games, at(steinitz).d), (1, 1), "by transposition");
         assert_eq!((at(kia).games, at(kia).l), (1, 1));
-        assert_eq!((b.left.games, b.left.l), (1, 1), "the Winawer reached no chapter by a move of one's own");
+        assert_eq!((at(tarrasch).games, at(tarrasch).w), (1, 1), "3.Nd2 is the Tarrasch's own: the older 3...c5 counts");
+        assert_eq!((b.left.games, b.left.l), (1, 1), "the Winawer reached only positions two chapters share");
         assert_eq!(b.left_by, vec![("3...Bb4".to_string(), 1)]);
 
         // The games of a chapter, and how far each followed it: the Advance
@@ -1527,6 +1538,10 @@ mod tests {
         assert_eq!((adv.games[0].id, adv.games[0].follow.followed), (1, "ended"));
         let st = chapter_games(&conn, steinitz, 1).unwrap();
         assert_eq!(st.games.iter().map(|g| g.id).collect::<Vec<_>>(), vec![2]);
+        let ta = chapter_games(&conn, tarrasch, 1).unwrap();
+        assert_eq!(ta.games.len(), 1);
+        let f = &ta.games[0].follow;
+        assert_eq!((f.followed, f.left_by, f.mv.as_deref()), ("left", Some("you"), Some("3...c5")));
 
         // The book's games: each with its chapter, the Winawer with the move
         // that left; the Sicilian not at all.
@@ -1536,6 +1551,7 @@ mod tests {
         assert_eq!(by, vec![
             (1, vec![advance], None), (2, vec![steinitz], None),
             (3, vec![], Some("3...Bb4".to_string())), (4, vec![kia], None),
+            (6, vec![tarrasch], None),
         ]);
         // Each with how far it followed its chapter, as the chapter's list says.
         let bg = book_games(&conn, book.id, 1).unwrap();
