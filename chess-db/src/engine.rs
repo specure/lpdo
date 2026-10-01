@@ -263,6 +263,11 @@ pub struct Snapshot {
     /// a result of its own for the position.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub engine: Option<String>,
+    /// The search failed: the engine gave no answer, or exited — why, as
+    /// far as it said (its last error line). The panel shows it in place of
+    /// "Analysing…".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// What the stdout reader shares with the controller.
@@ -293,6 +298,11 @@ struct Search {
     /// (its time and nodes — what came before the freeze was not all read),
     /// not over the time it was frozen.
     resumed: Option<Option<(std::time::Instant, u64)>>,
+    /// When the search was sent, and whether the engine has answered it at
+    /// all — an engine that never does (Lc0 on a GPU that is not there) is
+    /// reported, not waited for for ever.
+    since: Option<std::time::Instant>,
+    answered: bool,
 }
 
 /// Stockfish on Unix is frozen at its target depth instead of stopped: a
@@ -455,7 +465,7 @@ fn kind_name(kind: Kind) -> &'static str {
 fn stored_snapshot(depth: i64, nodes: i64, lines: &str, engine: Option<String>) -> Option<Snapshot> {
     let lines: Vec<Line> = serde_json::from_str(lines).ok()?;
     if lines.is_empty() { return None; }
-    Some(Snapshot { gen: 0, depth: depth as u32, nodes: nodes as u64, nps: 0, lines, done: true, cached: true, engine })
+    Some(Snapshot { gen: 0, depth: depth as u32, nodes: nodes as u64, nps: 0, lines, done: true, cached: true, engine, error: None })
 }
 
 /// Where an engine's known identities are kept.
@@ -727,7 +737,7 @@ impl Engine {
             last_error: Mutex::new(None),
             search: Arc::new(std::sync::Mutex::new(Search {
                 gen: 0, key: String::new(), ident: String::new(), position: String::new(), white_to_move: true, searching: false, want: 1, depth: 0, nodes: 0, nps: 0,
-                lines: BTreeMap::new(), stop_at: None, frozen: false, resumed: None,
+                lines: BTreeMap::new(), stop_at: None, frozen: false, resumed: None, since: None, answered: false,
             })),
             idle: Arc::new(Notify::new()),
             tx,
@@ -1058,13 +1068,19 @@ impl Engine {
         if self.kind == Kind::Lc0 && settings.weights.is_none() {
             settings.weights = self.networks(Some(&path)).into_iter().next();
         }
-        match start(&path, &settings, self.kind).await {
-            Ok((child, stdin, stdout, name)) => {
+        match start_with(&path, &settings, self.kind, true).await {
+            Ok((mut child, stdin, stdout, name)) => {
                 let search = self.search.clone();
                 let idle = self.idle.clone();
                 let tx = self.tx.clone();
                 let remembered = self.remembered.clone();
-                tokio::spawn(read_engine(stdout, search, idle, tx, remembered, self.kind, child.id(), self.store.clone()));
+                // Its error output, a watch on searches it never answers, and
+                // its output — all three end with the process.
+                let errlog = ErrLog::default();
+                let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+                if let Some(stderr) = child.stderr.take() { tokio::spawn(read_stderr(stderr, errlog.clone())); }
+                tokio::spawn(watch_engine(search.clone(), tx.clone(), idle.clone(), self.kind, errlog.clone(), alive.clone()));
+                tokio::spawn(read_engine(stdout, search, idle, tx, remembered, self.kind, child.id(), self.store.clone(), errlog, alive));
                 // Lc0's results depend on its network as much as on its version.
                 let ident = match (self.kind, settings.weights.as_deref()) {
                     (Kind::Lc0, Some(w)) => format!("{name} · {}", network_name(w)),
@@ -1148,7 +1164,7 @@ impl Engine {
             if s.searching && s.key == key && s.want == want {
                 let snap = |s: &Search, done: bool| Snapshot {
                     gen: s.gen, depth: s.depth, nodes: s.nodes, nps: s.nps,
-                    lines: s.lines.values().cloned().collect(), done, cached: false, engine: None,
+                    lines: s.lines.values().cloned().collect(), done, cached: false, engine: None, error: None,
                 };
                 if s.frozen && depth_to <= s.depth {
                     // Already there: say so.
@@ -1201,6 +1217,8 @@ impl Engine {
                 stop_at: freeze.then_some(depth_to),
                 frozen: false,
                 resumed: None,
+                since: Some(std::time::Instant::now()),
+                answered: false,
             };
         }
         send(&mut r.stdin, &format!("setoption name MultiPV value {}", lines.clamp(1, 20))).await?;
@@ -1673,7 +1691,7 @@ impl Engine {
                     }
                     l
                 }).collect();
-                let snap = Snapshot { gen: 0, depth, nodes, nps: 0, lines, done: true, cached: true, engine: None };
+                let snap = Snapshot { gen: 0, depth, nodes, nps: 0, lines, done: true, cached: true, engine: None, error: None };
                 if let Some(ident) = self.running.lock().await.as_ref().map(|r| r.ident.clone()) {
                     let position = position_key(fen);
                     self.remembered.lock().unwrap().offer(&format!("{ident}|{position}"), &snap, self.kind);
@@ -1890,11 +1908,17 @@ fn helper_count(kind: Kind, s: &EngineSettings) -> usize {
 /// Spawn the engine and run the UCI handshake. Returns the process, its
 /// pipes and the name it reports.
 async fn start(path: &str, settings: &EngineSettings, kind: Kind) -> Result<(Child, ChildStdin, BufReader<ChildStdout>, String), String> {
+    start_with(path, settings, kind, false).await
+}
+
+/// `start`, the error output piped (`child.stderr`) when `stderr` — the main
+/// engine's, read into its error log; a helper's goes nowhere.
+async fn start_with(path: &str, settings: &EngineSettings, kind: Kind, stderr: bool) -> Result<(Child, ChildStdin, BufReader<ChildStdout>, String), String> {
     let mut command = Command::new(path);
     command
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(if stderr { std::process::Stdio::piped() } else { std::process::Stdio::null() })
         .kill_on_drop(true);
     // On Linux the engine ends with the server, however the server ends: a
     // frozen engine (see freeze) never reads the end of its input, and would
@@ -1969,6 +1993,70 @@ async fn start(path: &str, settings: &EngineSettings, kind: Kind) -> Result<(Chi
 
 /// Read the engine's output for as long as it runs, folding `info` lines
 /// into the current search and broadcasting a snapshot per update.
+/// The last lines an engine said of an error — on its error output, or as
+/// "error …" on its output — for the message when a search fails.
+#[derive(Clone, Default)]
+struct ErrLog(Arc<std::sync::Mutex<std::collections::VecDeque<String>>>);
+
+impl ErrLog {
+    fn push(&self, line: &str) {
+        let line = line.trim();
+        if line.is_empty() { return; }
+        let mut l = self.0.lock().unwrap();
+        if l.len() >= 5 { l.pop_front(); }
+        l.push_back(line.to_string());
+    }
+    /// "<what>: <its last error line>", or just `what`.
+    fn message(&self, what: &str) -> String {
+        match self.0.lock().unwrap().back() {
+            Some(last) => format!("{what}: {last}"),
+            None => format!("{what}."),
+        }
+    }
+}
+
+fn kind_label(kind: Kind) -> &'static str {
+    match kind { Kind::Stockfish => "Stockfish", Kind::Lc0 => "Lc0" }
+}
+
+/// How long an engine may take to answer a search at all — Lc0 loads its
+/// network onto the GPU first; past this it is reported as not answering.
+const FIRST_ANSWER: Duration = if cfg!(test) { Duration::from_secs(3) } else { Duration::from_secs(30) };
+
+/// Watch the engine's searches: one that has had no answer for
+/// `FIRST_ANSWER` ends with an error (the engine's last error line), rather
+/// than "Analysing…" for ever. Ends with the engine.
+async fn watch_engine(search: Arc<std::sync::Mutex<Search>>, tx: broadcast::Sender<Snapshot>, idle: Arc<Notify>, kind: Kind, errlog: ErrLog, alive: Arc<std::sync::atomic::AtomicBool>) {
+    while alive.load(std::sync::atomic::Ordering::Relaxed) {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let snap = {
+            let mut s = search.lock().unwrap();
+            if !(s.searching && !s.answered && s.since.is_some_and(|t| t.elapsed() >= FIRST_ANSWER)) { continue; }
+            s.searching = false;
+            Snapshot {
+                gen: s.gen, depth: 0, nodes: 0, nps: 0, lines: Vec::new(), done: true, cached: false, engine: None,
+                error: Some(errlog.message(&format!("{} gave no answer in {} s", kind_label(kind), FIRST_ANSWER.as_secs()))),
+            }
+        };
+        idle.notify_waiters();
+        let _ = tx.send(snap);
+    }
+}
+
+/// An engine's error output, kept line by line in `errlog` (not shown
+/// otherwise) until it closes.
+async fn read_stderr(stderr: tokio::process::ChildStderr, errlog: ErrLog) {
+    let mut lines = BufReader::new(stderr);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match lines.read_line(&mut line).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => errlog.push(&line),
+        }
+    }
+}
+
 async fn read_engine(
     mut stdout: BufReader<ChildStdout>,
     search: Arc<std::sync::Mutex<Search>>,
@@ -1978,6 +2066,8 @@ async fn read_engine(
     kind: Kind,
     pid: Option<u32>,
     store: Arc<std::sync::OnceLock<EvalStore>>,
+    errlog: ErrLog,
+    alive: Arc<std::sync::atomic::AtomicBool>,
 ) {
     let mut line = String::new();
     loop {
@@ -1995,6 +2085,7 @@ async fn read_engine(
                 s.frozen = false;
                 idle.notify_waiters();
             } else if let Some(info) = parse_info(t) {
+                s.answered = true;
                 // Frozen: what was already in the pipe is past the target.
                 if !s.searching || s.frozen { continue; }
                 if let Some(d) = info.depth { s.depth = s.depth.max(d); }
@@ -2025,6 +2116,12 @@ async fn read_engine(
                     None => continue, // speed-only updates are not worth a snapshot
                 }
             } else {
+                // An engine's own word of an error ("error …", "info string
+                // … error …"): kept, for the message if the search fails.
+                let lower = t.to_ascii_lowercase();
+                if lower.starts_with("error") || (lower.starts_with("info string") && lower.contains("error")) {
+                    errlog.push(t.trim_start_matches("info string").trim());
+                }
                 continue;
             }
             // At its target depth: freeze (the lines of that depth are complete).
@@ -2038,6 +2135,7 @@ async fn read_engine(
                 done: !s.searching || s.frozen,
                 cached: false,
                 engine: None,
+                error: None,
             };
             remembered.lock().unwrap().offer(&s.key, &snap, kind);
             // The search ended or is frozen: keep the furthest result for the
@@ -2051,11 +2149,16 @@ async fn read_engine(
         };
         let _ = tx.send(snapshot);
     }
-    // The engine is gone: end whatever was being watched.
+    // The engine is gone: end whatever was being watched — with why, when a
+    // search was going on.
+    alive.store(false, std::sync::atomic::Ordering::Relaxed);
+    // Its last words on the error output may still be on their way.
+    if search.lock().unwrap().searching { tokio::time::sleep(Duration::from_millis(300)).await; }
     let snapshot = {
         let mut s = search.lock().unwrap();
+        let error = s.searching.then(|| errlog.message(&format!("{} stopped", kind_label(kind))));
         s.searching = false;
-        Snapshot { gen: s.gen, depth: s.depth, nodes: s.nodes, nps: s.nps, lines: s.lines.values().cloned().collect(), done: true, cached: false, engine: None }
+        Snapshot { gen: s.gen, depth: s.depth, nodes: s.nodes, nps: s.nps, lines: s.lines.values().cloned().collect(), done: true, cached: false, engine: None, error }
     };
     idle.notify_waiters();
     let _ = tx.send(snapshot);
@@ -2255,7 +2358,7 @@ mod tests {
         crate::db::schema::init(&conn).unwrap();
         let store = EvalStore::new(crate::jobs::ReadPool::new(vec![conn]));
         let line = |cp| Line { multipv: 1, eval_cp: Some(cp), mate: None, pv_uci: vec!["e2e4".into()], wdl: None };
-        let snap = |depth, nodes, cp| Snapshot { gen: 1, depth, nodes, nps: 0, lines: vec![line(cp)], done: true, cached: false, engine: None };
+        let snap = |depth, nodes, cp| Snapshot { gen: 1, depth, nodes, nps: 0, lines: vec![line(cp)], done: true, cached: false, engine: None, error: None };
         let pos = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -";
         store.save(Kind::Stockfish, "Stockfish 19", pos, &snap(30, 1_000, 20));
         store.save(Kind::Stockfish, "Stockfish 19", pos, &snap(25, 9_000, 50)); // shallower: kept out
@@ -2418,6 +2521,47 @@ mod tests {
         engine.stop(gen).await;
         engine.shutdown().await;
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An engine that cannot search — Lc0 with its GPU gone: one that never
+    /// answers and one that exits, both saying why on their error output.
+    /// The search ends with that, not "Analysing…" for ever.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_engine_that_cannot_search_is_reported() {
+        use std::os::unix::fs::PermissionsExt;
+        for (case, on_go) in [
+            ("silent", r#"echo "CUDA error: no CUDA-capable device is detected" >&2"#),
+            ("exits", r#"echo "CUDA error: no CUDA-capable device is detected" >&2; exit 1"#),
+        ] {
+            let dir = std::env::temp_dir().join(format!("lpdo-engine-fail-{case}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let script = dir.join("fake-engine");
+            std::fs::write(&script, format!(r#"#!/bin/sh
+while read cmd rest; do
+  case "$cmd" in
+    uci) echo "id name FakeLc0 1"; echo "uciok";;
+    isready) echo "readyok";;
+    go) {on_go};;
+    quit) exit 0;;
+  esac
+done
+"#)).unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(dir.join("engine.json"), serde_json::json!({ "path": script }).to_string()).unwrap();
+            let engine = Engine::new(&dir);
+            let fen = clean_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").unwrap();
+            let (gen, _, mut rx) = engine.analyse(&fen, None, 1, None, false).await.unwrap();
+            let mut error = None;
+            while let Ok(Ok(s)) = tokio::time::timeout(FIRST_ANSWER + Duration::from_secs(5), rx.recv()).await {
+                if s.gen == gen && s.done { error = s.error; break; }
+            }
+            let error = error.unwrap_or_else(|| panic!("{case}: the search ends with an error"));
+            assert!(error.contains("no CUDA-capable device"), "{case}: {error}");
+            assert!(error.contains(if case == "silent" { "gave no answer" } else { "stopped" }), "{case}: {error}");
+            engine.shutdown().await;
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// A stand-in engine: a shell script that speaks just enough UCI.
