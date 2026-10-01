@@ -29,10 +29,10 @@ export interface ChapterSummary {
   lines: number;
   lines_off: number;
   updated_at: string | null;
-  /** When the chapter was last analysed for practice, and its `updated_at`
-   *  then — another one means changed since. */
+  /** When the chapter was last analysed for practice, and whether its
+   *  positions changed since (moves added or removed — not a comment). */
   analysed_at: string | null;
-  analysed_version: string | null;
+  analysis_stale: boolean | null;
 }
 
 export interface BookWithChapters extends Book {

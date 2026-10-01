@@ -234,6 +234,7 @@ pub fn init(conn: &Connection) -> Result<()> {
 
     init_collections(conn)?;
     init_repertoire(conn)?;
+    crate::repertoire::fill_positions_hashes(conn)?;
     init_schedule(conn)?;
 
     // Soft-delete column. NULL = alive. DuckDB ALTER ADD COLUMN is fast on
@@ -552,6 +553,11 @@ fn init_repertoire(conn: &Connection) -> Result<()> {
             analysed_at     TIMESTAMP NOT NULL,
             positions       VARCHAR NOT NULL
         );
+        -- A fingerprint of a chapter's set of positions — what its analysis
+        -- depends on — on the chapter and on its analysis: the analysis is
+        -- out of date when they differ, not on any save (comments, FENs).
+        ALTER TABLE repertoire_chapters ADD COLUMN IF NOT EXISTS positions_hash BIGINT;
+        ALTER TABLE repertoire_analysis ADD COLUMN IF NOT EXISTS positions_hash BIGINT;
         ALTER TABLE repertoire_books ADD COLUMN IF NOT EXISTS author VARCHAR;
         ALTER TABLE repertoire_books ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE;
         ",

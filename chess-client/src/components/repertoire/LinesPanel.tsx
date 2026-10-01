@@ -3,8 +3,8 @@
 // moves it shares with the line it branches off greyed, its own solid. Clicking a
 // line puts the board on its first own move; → at the end of a line goes on
 // to the next (the host asks `onLines` for the list). Off lines are greyed.
-// A dot marks whether a line is in the chapter's practice analysis — all its
-// positions analysed — or not (never analysed, or moves added since).
+// A line not in the chapter's practice analysis — never analysed, or moves
+// added since — is marked so; the header says how many are.
 
 import { useEffect, useState } from "react";
 import { parsePgnTree } from "../../lib/parsePgnTree";
@@ -104,12 +104,10 @@ export default function LinesPanel({ chapterId, reloadKey, analysedAt, cursor, o
               <span className="text-on-surface-variant tabular-nums w-6 shrink-0 text-right leading-6">{i + 1}.</span>
               <LineText before={l.before} own={l.line} />
               {l.off && <span className="shrink-0 leading-6 text-label-sm text-on-surface-variant">off</span>}
-              {/* In the analysis or not: a column of its own at the end,
-                  level with the line's first row. */}
-              <span className="shrink-0 w-2 h-6 flex items-center justify-center"
-                title={isAnalysed(l) ? "Analysed for practice" : analysed ? "Not in the analysis — moves added since; analyse again" : "Not analysed yet"}>
-                <span aria-hidden className={`w-1.5 h-1.5 rounded-full ${isAnalysed(l) ? "bg-primary" : "border border-outline"}`} />
-              </span>
+              {/* Only a line the analysis lacks is marked: usually all are in. */}
+              {analysed && !isAnalysed(l) && (
+                <span className="shrink-0 leading-6 text-label-sm text-tertiary" title="Moves added since the chapter was analysed — analyse it again">not analysed</span>
+              )}
             </button>
           );
         })}

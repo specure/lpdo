@@ -145,9 +145,10 @@ deviated at 5.Bf4"). A click puts the board on that position; a
 double-click opens the game.
 
 A dot beside a chapter in the list shows it was analysed (its tooltip says
-when), in another colour when the chapter changed since. In the **Lines**
-tab, a filled dot marks the lines in the analysis, an empty one those that
-are not — never analysed, or moves added since.
+when), in another colour when its positions changed since — moves added or
+removed; editing a comment, removing FENs or reordering variations does not
+count. In the **Lines** tab, a line the analysis lacks is marked "not
+analysed"; the header says how many are.
 
 ## What comes next
 

@@ -911,7 +911,7 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
   const counts = `${c.lines} ${c.lines === 1 ? "line" : "lines"}${c.lines_off ? `, ${c.lines_off} off` : ""}`;
   // Analysed for practice: as the chapter is now, or changed since.
   const analysedOn = c.analysed_at ? new Date(c.analysed_at.replace(" ", "T")).toLocaleDateString(undefined, { day: "numeric", month: "short" }) : null;
-  const stale = !!c.analysed_at && c.analysed_version !== c.updated_at;
+  const stale = !!c.analysed_at && c.analysis_stale === true;
   return (
     <div
       draggable={arranging && !busy}

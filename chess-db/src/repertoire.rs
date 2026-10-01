@@ -48,10 +48,10 @@ pub struct ChapterSummary {
     pub lines: i64,
     pub lines_off: i64,
     pub updated_at: Option<String>,
-    /// When the chapter was last analysed for practice, and the chapter's
-    /// `updated_at` then — a different one means changed since.
+    /// When the chapter was last analysed for practice, and whether its
+    /// positions changed since — moves added or removed; not a comment.
     pub analysed_at: Option<String>,
-    pub analysed_version: Option<String>,
+    pub analysis_stale: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -355,13 +355,13 @@ fn chapter_row(r: &duckdb::Row<'_>) -> duckdb::Result<ChapterSummary> {
     Ok(ChapterSummary {
         id: r.get(0)?, book_id: r.get(1)?, ord: r.get(2)?, name: r.get(3)?, active: r.get(4)?,
         lines: r.get(5)?, lines_off: r.get(6)?, updated_at: r.get(7)?,
-        analysed_at: r.get(8)?, analysed_version: r.get(9)?,
+        analysed_at: r.get(8)?, analysis_stale: r.get(9)?,
     })
 }
 
 const CHAPTER_COLS: &str = "id, book_id, ord, name, active, lines, lines_off, CAST(updated_at AS VARCHAR),
     (SELECT CAST(a.analysed_at AS VARCHAR) FROM repertoire_analysis a WHERE a.chapter_id = repertoire_chapters.id),
-    (SELECT CAST(a.chapter_updated AS VARCHAR) FROM repertoire_analysis a WHERE a.chapter_id = repertoire_chapters.id)";
+    (SELECT a.positions_hash IS DISTINCT FROM repertoire_chapters.positions_hash FROM repertoire_analysis a WHERE a.chapter_id = repertoire_chapters.id)";
 
 pub fn get_book(conn: &Connection, id: i64) -> Result<Book> {
     conn.query_row(&format!("SELECT {BOOK_COLS} FROM repertoire_books WHERE id = ?"), duckdb::params![id], book_row)
@@ -462,7 +462,47 @@ pub fn delete_book(conn: &Connection, id: i64) -> Result<()> {
 
 /// Index a chapter's positions; `active` is whether the chapter counts at
 /// all — it and its book on.
+/// A fingerprint of a set of positions (their hashes, in any order): FNV-1a
+/// over them sorted.
+fn fingerprint(zobrists: impl Iterator<Item = i64>) -> i64 {
+    let mut zs: Vec<i64> = zobrists.collect();
+    zs.sort_unstable();
+    zs.dedup();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for z in zs {
+        for b in z.to_le_bytes() { h ^= b as u64; h = h.wrapping_mul(0x0100_0000_01b3); }
+    }
+    h as i64
+}
+
+/// A chapter's set of positions — every one, before each move and after it —
+/// as a fingerprint: what its analysis depends on.
+fn positions_hash(walk: &Walk) -> i64 {
+    fingerprint(walk.rows.iter().flat_map(|r| [r.zobrist, r.after_zobrist]))
+}
+
+/// Fill in the fingerprints databases from before them lack: a chapter's
+/// from its moves, an analysis's from the positions it keeps.
+pub fn fill_positions_hashes(conn: &Connection) -> Result<()> {
+    let mut st = conn.prepare("SELECT id, pgn FROM repertoire_chapters WHERE positions_hash IS NULL")?;
+    let rows: Vec<(i64, String)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<duckdb::Result<_>>()?;
+    for (id, pgn) in rows {
+        if let Ok(w) = walk(&movetext_of(&pgn)) {
+            conn.execute("UPDATE repertoire_chapters SET positions_hash = ? WHERE id = ?", duckdb::params![positions_hash(&w), id])?;
+        }
+    }
+    let mut st = conn.prepare("SELECT chapter_id, positions FROM repertoire_analysis WHERE positions_hash IS NULL")?;
+    let rows: Vec<(i64, String)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<duckdb::Result<_>>()?;
+    for (id, json) in rows {
+        let Ok(positions) = serde_json::from_str::<Vec<PositionStat>>(&json) else { continue };
+        let h = fingerprint(positions.iter().filter_map(|p| u64::from_str_radix(&p.zobrist, 16).ok().map(|z| z as i64)));
+        conn.execute("UPDATE repertoire_analysis SET positions_hash = ? WHERE chapter_id = ?", duckdb::params![h, id])?;
+    }
+    Ok(())
+}
+
 fn reindex(conn: &Connection, chapter_id: i64, active: bool, walk: &Walk) -> Result<()> {
+    conn.execute("UPDATE repertoire_chapters SET positions_hash = ? WHERE id = ?", duckdb::params![positions_hash(walk), chapter_id])?;
     conn.execute("DELETE FROM repertoire_positions WHERE chapter_id = ?", duckdb::params![chapter_id])?;
     let mut st = conn.prepare(
         "INSERT INTO repertoire_positions (chapter_id, zobrist_hash, ply, next_move, mover, active) VALUES (?, ?, ?, ?, ?, ?)",
@@ -1281,10 +1321,11 @@ pub fn analyse_chapter(conn: &Connection, id: i64) -> Result<()> {
         "SELECT CAST(updated_at AS VARCHAR) FROM repertoire_chapters WHERE id = ?", duckdb::params![id], |r| r.get(0))
         .map_err(|_| anyhow!("chapter {id} not found"))?;
     let positions = chapter_stats(conn, id)?;
+    let hash: Option<i64> = conn.query_row("SELECT positions_hash FROM repertoire_chapters WHERE id = ?", duckdb::params![id], |r| r.get(0))?;
     conn.execute(
-        "INSERT OR REPLACE INTO repertoire_analysis (chapter_id, chapter_updated, player_id, analysed_at, positions)
-         VALUES (?, CAST(? AS TIMESTAMP), NULL, CAST(NOW() AS TIMESTAMP), ?)",
-        duckdb::params![id, updated, serde_json::to_string(&positions)?],
+        "INSERT OR REPLACE INTO repertoire_analysis (chapter_id, chapter_updated, player_id, analysed_at, positions, positions_hash)
+         VALUES (?, CAST(? AS TIMESTAMP), NULL, CAST(NOW() AS TIMESTAMP), ?, ?)",
+        duckdb::params![id, updated, serde_json::to_string(&positions)?, hash],
     )?;
     Ok(())
 }
@@ -1467,10 +1508,20 @@ mod tests {
         assert_eq!(a.positions.len(), 3);
         let s = get_chapter_summary(&conn, ch.id).unwrap();
         assert!(s.analysed_at.is_some());
-        assert_eq!(s.analysed_version, s.updated_at, "analysed as the chapter is now");
+        assert_eq!(s.analysis_stale, Some(false), "analysed as the chapter is now");
+        // Only a comment changes (a FEN removed, say): still up to date.
+        set_moves(&conn, ch.id, "1. e4 {A comment.} e6 *").unwrap();
+        assert_eq!(get_chapter_summary(&conn, ch.id).unwrap().analysis_stale, Some(false), "a comment is not a change of positions");
+        // A move changes: out of date.
         set_moves(&conn, ch.id, "1. e4 c5 *").unwrap();
-        let s = get_chapter_summary(&conn, ch.id).unwrap();
-        assert_ne!(s.analysed_version, s.updated_at, "changed since");
+        assert_eq!(get_chapter_summary(&conn, ch.id).unwrap().analysis_stale, Some(true), "changed since");
+        // A database from before the fingerprints: filled in from the
+        // chapter's moves and the analysis's positions — up to date again
+        // once analysed as it is.
+        analyse_chapter(&conn, ch.id).unwrap();
+        conn.execute_batch("UPDATE repertoire_chapters SET positions_hash = NULL; UPDATE repertoire_analysis SET positions_hash = NULL;").unwrap();
+        fill_positions_hashes(&conn).unwrap();
+        assert_eq!(get_chapter_summary(&conn, ch.id).unwrap().analysis_stale, Some(false), "filled in alike");
 
         delete_chapter(&conn, ch.id).unwrap();
         let left: i64 = conn.query_row("SELECT COUNT(*) FROM repertoire_analysis", [], |r| r.get(0)).unwrap();
