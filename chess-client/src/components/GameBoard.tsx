@@ -1942,8 +1942,10 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
         )}
 
         {/* Details panel — purely informational, collapsible. Renders the
-            soft-deleted banner, badges, and the full tag grid. */}
-        {detailsOpen && !movesEditor.active && (
+            soft-deleted banner, badges, and the full tag grid. A game's only:
+            "open" is remembered for every board, and a repertoire chapter's
+            headers are its own (no toggle there either). */}
+        {detailsOpen && !movesEditor.active && !chapter && (
           <DetailsPanel
             detail={detail}
             onClose={() => setDetailsOpen(false)}
