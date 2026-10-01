@@ -1,7 +1,6 @@
 // A chapter's lines (#327), listed in reading order: the main line, then the
 // variations that branch off it — each written out whole, from move 1: the
-// moves it shares with the line it branches off greyed, its own solid, the
-// move where it branches in bold. Clicking a
+// moves it shares with the line it branches off greyed, its own solid. Clicking a
 // line puts the board on its first own move; → at the end of a line goes on
 // to the next (the host asks `onLines` for the list). Off lines are greyed.
 // A dot marks whether a line is in the chapter's practice analysis — all its
@@ -31,16 +30,15 @@ interface Props {
 
 /** A line written out: White's moves numbered ("5.c3"), a Black move after
  *  nothing numbered too ("5...c5") — the shared moves greyed, the line's own
- *  solid, its first in bold. */
+ *  solid. */
 function LineText({ before, own }: { before: MoveNode[]; own: MoveNode[] }) {
   const moves = [...before.map((n) => ({ n, shared: true })), ...own.filter((n) => n.san).map((n) => ({ n, shared: false }))];
   return (
     <span className="min-w-0 flex-1 leading-6">
       {moves.map(({ n, shared }, i) => {
         const num = n.color === "w" ? `${getMoveNum(n)}.` : i === 0 ? `${getMoveNum(n)}...` : "";
-        const first = !shared && (i === 0 || moves[i - 1].shared);
         return (
-          <span key={i} className={shared ? "text-on-surface-variant/60" : first ? "font-semibold" : ""}>
+          <span key={i} className={shared ? "text-on-surface-variant/60" : ""}>
             {i > 0 ? " " : ""}<span className="whitespace-nowrap">{num}{n.san}</span>
           </span>
         );

@@ -91,8 +91,8 @@ alternatives branch off).
 
 The **Lines** tab lists the chapter's lines in reading order — the main
 line, then each variation — each written out whole, from move 1: the moves
-it shares with the line it branches off greyed, its own moves solid, the
-move where it branches in bold; off ones greyed, marked "off". Click a line and the board is on it; **→** steps through it and, at
+it shares with the line it branches off greyed, its own moves in black;
+off ones greyed, marked "off". Click a line and the board is on it; **→** steps through it and, at
 its end, goes on to the next line — the way to replay a chapter on a physical
 board.
 
