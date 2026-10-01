@@ -23,6 +23,17 @@ to reorder the books, **Export PGN…** for all its chapters as one file, and
 **Delete…** to delete it with its chapters. The author
 goes into the chapters' PGN as `[Annotator]`.
 
+**Import…** beside *Books* makes books again from a PGN LPDO exported — a
+book's (Export PGN…) or a backup of them all (Maintenance → Repertoire →
+Back up all books…): each as a new book, with its name, colour, author,
+link, notes and active switch, its chapters in their order with their
+names, lines, comments and switches — never added to the book that happens
+to be selected. A PGN from elsewhere becomes one new book named after the
+file (its colour from an `[Orientation]` tag, else White). Exported PGN
+carries the book in tags of LPDO's own (`[LpdoBook]`, `[LpdoBookColor]`,
+`[LpdoBookAuthor]`, `[LpdoBookUrl]`, `[LpdoBookNotes]`, `[LpdoChapter]`, …),
+which other programs ignore.
+
 A chapter is added to the selected book in one of three ways, from the
 same ⋯ menu:
 

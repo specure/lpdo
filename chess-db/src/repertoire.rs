@@ -279,11 +279,21 @@ pub fn tag(pgn: &str, name: &str) -> Option<String> {
     for line in pgn.lines() {
         let t = line.trim();
         if !t.starts_with('[') { if !t.is_empty() { break; } else { continue; } }
-        let inner = t.trim_start_matches('[').trim_end_matches(']');
+        let inner = t.strip_prefix('[').and_then(|t| t.strip_suffix(']')).unwrap_or(t);
         let (n, v) = inner.split_once(' ')?;
         if n == name {
-            let v = v.trim().trim_matches('"').replace("\\\"", "\"").replace("\\\\", "\\");
-            return Some(v);
+            // One quote off each end (not every quote — a value can end in an
+            // escaped one), then \" \\ and \n (a line break, in LPDO's own
+            // notes) unescaped in a single pass.
+            let v = v.trim();
+            let v = v.strip_prefix('"').and_then(|v| v.strip_suffix('"')).unwrap_or(v);
+            let mut out = String::with_capacity(v.len());
+            let mut chars = v.chars();
+            while let Some(c) = chars.next() {
+                if c == '\\' { if let Some(n) = chars.next() { out.push(if n == 'n' { '\n' } else { n }); continue; } }
+                out.push(c);
+            }
+            return Some(out);
         }
     }
     None
@@ -309,6 +319,7 @@ pub fn movetext_of(pgn: &str) -> String {
 /// `[ChapterName]`, the chapter part of its `[Event "Study: Chapter"]`, the
 /// players where they are names, else the event — or none.
 fn header_name(pgn: &str) -> Option<String> {
+    if let Some(c) = tag(pgn, "LpdoChapter").filter(|s| !s.trim().is_empty()) { return Some(c); }
     if let Some(c) = tag(pgn, "ChapterName").filter(|s| !s.trim().is_empty()) { return Some(c); }
     let event = tag(pgn, "Event").unwrap_or_default();
     if let Some((_, chapter)) = event.split_once(": ") {
@@ -504,12 +515,13 @@ pub fn fill_positions_hashes(conn: &Connection) -> Result<()> {
 fn reindex(conn: &Connection, chapter_id: i64, active: bool, walk: &Walk) -> Result<()> {
     conn.execute("UPDATE repertoire_chapters SET positions_hash = ? WHERE id = ?", duckdb::params![positions_hash(walk), chapter_id])?;
     conn.execute("DELETE FROM repertoire_positions WHERE chapter_id = ?", duckdb::params![chapter_id])?;
-    let mut st = conn.prepare(
-        "INSERT INTO repertoire_positions (chapter_id, zobrist_hash, ply, next_move, mover, active) VALUES (?, ?, ?, ?, ?, ?)",
-    )?;
+    // In bulk: one INSERT a position, each its own transaction, took a book
+    // of 25 chapters (6,000 positions) a minute on a large database.
+    let mut app = conn.appender("repertoire_positions")?;
     for r in &walk.rows {
-        st.execute(duckdb::params![chapter_id, r.zobrist, r.ply, r.next_move, r.mover, active && r.active])?;
+        app.append_row(duckdb::params![chapter_id, r.zobrist, r.ply, r.next_move, r.mover, active && r.active])?;
     }
+    app.flush()?;
     Ok(())
 }
 
@@ -528,33 +540,93 @@ pub fn add_chapters(conn: &Connection, book_id: i64, name: Option<&str>, pgn: Op
         None => vec![String::new()],
     };
     let single = games.len() == 1;
-    let mut out = Vec::new();
-    for (i, game) in games.iter().enumerate() {
-        let movetext = movetext_of(game);
-        let walk = walk(&movetext).with_context(|| format!("game {} of the PGN", i + 1))?;
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM repertoire_chapters WHERE book_id = ?", duckdb::params![book_id], |r| r.get(0))?;
-        let cname = match name.map(str::trim).filter(|n| !n.is_empty()) {
-            Some(n) if single => n.to_string(),
-            _ if game.trim().is_empty() => format!("Chapter {}", count + 1),
-            _ => match (header_name(game), file.map(str::trim).filter(|f| !f.is_empty())) {
-                (Some(h), _) => h,
-                (None, Some(f)) if single => f.to_string(),
-                (None, Some(f)) => format!("{f} {}", i + 1),
-                (None, None) => format!("Chapter {}", count + 1),
-            },
-        };
-        let ord: i64 = conn.query_row("SELECT COALESCE(MAX(ord), 0) + 1 FROM repertoire_chapters WHERE book_id = ?", duckdb::params![book_id], |r| r.get(0))?;
-        let id = crate::db::ids::next_id(conn, "repertoire_chapters")? as i64;
-        let full = compose_pgn(&book.name, book.author.as_deref(), ord, &cname, &book.color, &movetext);
-        conn.execute(
-            "INSERT INTO repertoire_chapters (id, book_id, ord, name, active, pgn, lines, lines_off, updated_at) VALUES (?, ?, ?, ?, TRUE, ?, ?, ?, CAST(NOW() AS TIMESTAMP))",
-            duckdb::params![id, book_id, ord, cname, full, walk.lines, walk.lines_off],
-        )?;
-        crate::db::ids::raise_high_water(conn, "repertoire_chapters", id as u32)?;
-        reindex(conn, id, book.active, &walk)?;
-        out.push(get_chapter_summary(conn, id)?);
+    // One transaction for the whole file: on a large database each statement
+    // committing on its own is what made a book slow; and a game that fails
+    // leaves nothing half imported.
+    crate::db::with_tx(conn, || {
+        let mut out = Vec::new();
+        for (i, game) in games.iter().enumerate() {
+            let movetext = movetext_of(game);
+            let walk = walk(&movetext).with_context(|| format!("game {} of the PGN", i + 1))?;
+            let count: i64 = conn.query_row("SELECT COUNT(*) FROM repertoire_chapters WHERE book_id = ?", duckdb::params![book_id], |r| r.get(0))?;
+            let cname = match name.map(str::trim).filter(|n| !n.is_empty()) {
+                Some(n) if single => n.to_string(),
+                _ if game.trim().is_empty() => format!("Chapter {}", count + 1),
+                _ => match (header_name(game), file.map(str::trim).filter(|f| !f.is_empty())) {
+                    (Some(h), _) => h,
+                    (None, Some(f)) if single => f.to_string(),
+                    (None, Some(f)) => format!("{f} {}", i + 1),
+                    (None, None) => format!("Chapter {}", count + 1),
+                },
+            };
+            let id = insert_chapter(conn, &book, &cname, &movetext, &walk, true)?;
+            out.push(get_chapter_summary(conn, id)?);
+        }
+        Ok(out)
+    })
+}
+
+/// A chapter added at the end of `book`, its positions indexed; its id.
+fn insert_chapter(conn: &Connection, book: &Book, name: &str, movetext: &str, walk: &Walk, active: bool) -> Result<i64> {
+    let ord: i64 = conn.query_row("SELECT COALESCE(MAX(ord), 0) + 1 FROM repertoire_chapters WHERE book_id = ?", duckdb::params![book.id], |r| r.get(0))?;
+    let id = crate::db::ids::next_id(conn, "repertoire_chapters")? as i64;
+    let full = compose_pgn(&book.name, book.author.as_deref(), ord, name, &book.color, movetext);
+    conn.execute(
+        "INSERT INTO repertoire_chapters (id, book_id, ord, name, active, pgn, lines, lines_off, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CAST(NOW() AS TIMESTAMP))",
+        duckdb::params![id, book.id, ord, name, active, full, walk.lines, walk.lines_off],
+    )?;
+    crate::db::ids::raise_high_water(conn, "repertoire_chapters", id as u32)?;
+    reindex(conn, id, book.active && active, walk)?;
+    Ok(id)
+}
+
+/// Books from a PGN exported by LPDO — a book, or a backup of them all —
+/// made again one to one: each with its name, colour, author, link, notes
+/// and active switch from the `LpdoBook…` tags, its chapters in order with
+/// their names and active switches. A PGN without those tags makes one book,
+/// named after `file`, its colour from `[Orientation]`. Never adds to an
+/// existing book; all or nothing.
+pub fn import_books(conn: &Connection, pgn: &str, file: Option<&str>) -> Result<Vec<Book>> {
+    let games = split_games(pgn.trim());
+    if games.is_empty() { bail!("no games in the PGN"); }
+    // The books in the order they first come, each with its games.
+    let mut groups: Vec<(Option<String>, Vec<&String>)> = Vec::new();
+    for g in &games {
+        let key = tag(g, "LpdoBook").filter(|n| !n.trim().is_empty());
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, gs)) => gs.push(g),
+            None => groups.push((key, vec![g])),
+        }
     }
-    Ok(out)
+    crate::db::with_tx(conn, || {
+        let mut books = Vec::new();
+        for (key, gs) in &groups {
+            let first = gs[0];
+            let name = key.clone()
+                .or_else(|| file.map(str::trim).filter(|f| !f.is_empty()).map(str::to_string))
+                .unwrap_or_else(|| "Imported book".to_string());
+            let color = tag(first, "LpdoBookColor").or_else(|| tag(first, "Orientation"))
+                .filter(|c| c == "white" || c == "black").unwrap_or_else(|| "white".to_string());
+            let nonempty = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
+            let author = if key.is_some() { nonempty(tag(first, "LpdoBookAuthor")) } else { nonempty(tag(first, "Annotator")) };
+            let notes = nonempty(tag(first, "LpdoBookNotes"));
+            let url = nonempty(tag(first, "LpdoBookUrl"));
+            let mut book = create_book(conn, &name, &color, author.as_deref(), notes.as_deref(), url.as_deref())?;
+            if tag(first, "LpdoBookActive").as_deref() == Some("false") {
+                conn.execute("UPDATE repertoire_books SET active = FALSE WHERE id = ?", duckdb::params![book.id])?;
+                book.active = false;
+            }
+            for (i, g) in gs.iter().enumerate() {
+                let movetext = movetext_of(g);
+                let walk = walk(&movetext).with_context(|| format!("“{name}”, chapter {}", i + 1))?;
+                let cname = header_name(g).unwrap_or_else(|| format!("Chapter {}", i + 1));
+                let active = tag(g, "LpdoChapterActive").as_deref() != Some("false");
+                insert_chapter(conn, &book, &cname, &movetext, &walk, active)?;
+            }
+            books.push(book);
+        }
+        Ok(books)
+    })
 }
 
 pub fn get_chapter(conn: &Connection, id: i64) -> Result<ChapterDetail> {
@@ -636,15 +708,49 @@ pub fn delete_chapter(conn: &Connection, id: i64) -> Result<()> {
 }
 
 /// A chapter's PGN, or a whole book's — its chapters in order.
+/// A chapter as exported: its headers made now (the book as it is now —
+/// renamed, say) with the book's own in `LpdoBook…` tags and the chapter's in
+/// `LpdoChapter…`, so that importing it makes the book again one to one
+/// ([`import_books`]); then its moves.
+fn export_chapter(book: &Book, ord: i64, name: &str, active: bool, pgn: &str) -> String {
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "");
+    let base = compose_pgn(&book.name, book.author.as_deref(), ord, name, &book.color, &movetext_of(pgn));
+    let mut tags = format!("[LpdoBook \"{}\"]\n[LpdoBookColor \"{}\"]\n", esc(&book.name), book.color);
+    for (t, v) in [("LpdoBookAuthor", &book.author), ("LpdoBookUrl", &book.url), ("LpdoBookNotes", &book.description)] {
+        if let Some(v) = v.as_deref().filter(|v| !v.trim().is_empty()) { tags += &format!("[{t} \"{}\"]\n", esc(v)); }
+    }
+    if !book.active { tags += "[LpdoBookActive \"false\"]\n"; }
+    tags += &format!("[LpdoChapter \"{}\"]\n", esc(name));
+    if !active { tags += "[LpdoChapterActive \"false\"]\n"; }
+    match base.split_once("\n\n") {
+        Some((head, body)) => format!("{head}\n{tags}\n{body}"),
+        None => base,
+    }
+}
+
+/// A book's chapters as exported, in order.
+fn export_book(conn: &Connection, book: &Book) -> Result<Vec<String>> {
+    let mut st = conn.prepare("SELECT ord, name, active, pgn FROM repertoire_chapters WHERE book_id = ? ORDER BY ord, id")?;
+    let rows: Vec<(i64, String, bool, String)> = st.query_map(duckdb::params![book.id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<duckdb::Result<_>>()?;
+    Ok(rows.iter().map(|(ord, name, active, pgn)| export_chapter(book, *ord, name, *active, pgn).trim().to_string()).collect())
+}
+
 pub fn chapter_pgn(conn: &Connection, id: i64) -> Result<String> {
-    Ok(get_chapter(conn, id)?.pgn)
+    let c = get_chapter(conn, id)?;
+    Ok(export_chapter(&c.book, c.summary.ord, &c.summary.name, c.summary.active, &c.pgn))
 }
 
 pub fn book_pgn(conn: &Connection, id: i64) -> Result<String> {
-    get_book(conn, id)?;
-    let mut st = conn.prepare("SELECT pgn FROM repertoire_chapters WHERE book_id = ? ORDER BY ord, id")?;
-    let pgns: Vec<String> = st.query_map(duckdb::params![id], |r| r.get(0))?.collect::<duckdb::Result<_>>()?;
-    Ok(pgns.iter().map(|p| p.trim().to_string()).collect::<Vec<_>>().join("\n\n") + "\n")
+    let book = get_book(conn, id)?;
+    Ok(export_book(conn, &book)?.join("\n\n") + "\n")
+}
+
+/// Every book, in order — the repertoire's backup; [`import_books`] makes it
+/// all again.
+pub fn all_books_pgn(conn: &Connection) -> Result<String> {
+    let mut out = Vec::new();
+    for b in list(conn)? { out.extend(export_book(conn, &b.book)?); }
+    Ok(out.join("\n\n") + "\n")
 }
 
 // ── The database's figures for a chapter (practice, #327) ───────────────────
@@ -1616,6 +1722,72 @@ mod tests {
         assert_eq!(since_months(0, d("2026-10-01")), None, "0: all of them");
         assert_eq!(since_months(12, d("2026-10-01")).as_deref(), Some("2025-10-01"));
         assert_eq!(since_months(1, d("2026-03-31")).as_deref(), Some("2026-02-28"), "the month's last day when it has fewer");
+    }
+
+    /// How long a whole book takes to import: `LPDO_BOOK_PGN=<file>`.
+    #[test]
+    #[ignore]
+    fn import_timing() {
+        let Ok(path) = std::env::var("LPDO_BOOK_PGN") else { return };
+        let text = std::fs::read_to_string(path).unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let book = create_book(&conn, "B", "white", None, None, None).unwrap();
+        let t = std::time::Instant::now();
+        let cs = add_chapters(&conn, book.id, None, Some(&text), Some("book")).unwrap();
+        let rows: i64 = conn.query_row("SELECT COUNT(*) FROM repertoire_positions", [], |r| r.get(0)).unwrap();
+        println!("{} chapters, {rows} positions indexed in {:.2?}", cs.len(), t.elapsed());
+    }
+
+    #[test]
+    fn a_book_exported_imports_one_to_one() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let fr = create_book(&conn, "French \"Classic\"", "black", Some("GM J."), Some("Line one\nLine two"), Some("chessable.com/x")).unwrap();
+        add_chapters(&conn, fr.id, None, Some("[Event \"A\"]\n\n1. e4 e6 2. d4 d5 3. e5 {Advance [%rep off]} c5 *\n\n[Event \"B\"]\n\n1. e4 e6 2. d4 d5 3. Nd2 *\n"), None).unwrap();
+        let chs = list(&conn).unwrap()[0].chapters.clone();
+        update_chapter(&conn, chs[1].id, ChapterPatch { active: Some(false), ..Default::default() }).unwrap();
+        update_chapter(&conn, chs[0].id, ChapterPatch { name: Some("Advance".into()), ..Default::default() }).unwrap();
+        let eng = create_book(&conn, "English", "white", None, None, None).unwrap();
+        add_chapters(&conn, eng.id, Some("1.c4"), Some("1. c4 e5 *"), None).unwrap();
+        update_book(&conn, eng.id, BookPatch { active: Some(false), ..Default::default() }).unwrap();
+
+        let backup = all_books_pgn(&conn).unwrap();
+        assert!(backup.contains("[LpdoBook \"English\"]"));
+
+        // Into an empty database: the same books, chapters, switches.
+        let empty = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&empty).unwrap();
+        let made = import_books(&empty, &backup, Some("backup")).unwrap();
+        assert_eq!(made.len(), 2);
+        let again = list(&empty).unwrap();
+        let (a, b) = (&again[0], &again[1]);
+        assert_eq!((a.book.name.as_str(), a.book.color.as_str(), a.book.author.as_deref(), a.book.url.as_deref()),
+                   ("French \"Classic\"", "black", Some("GM J."), Some("chessable.com/x")));
+        assert_eq!(a.book.description.as_deref(), Some("Line one\nLine two"), "notes over several lines");
+        assert_eq!(a.chapters.iter().map(|c| (c.name.as_str(), c.active)).collect::<Vec<_>>(), vec![("Advance", true), ("B", false)]);
+        assert_eq!(a.chapters[0].lines_off, 1, "the off switch, in the moves");
+        assert_eq!((b.book.name.as_str(), b.book.active, b.chapters.len()), ("English", false, 1));
+
+        // A PGN without the tags: one book, after the file, its colour from
+        // [Orientation].
+        let plain = "[Event \"X\"]\n[Orientation \"black\"]\n\n1. e4 c5 *\n";
+        let made = import_books(&empty, plain, Some("Najdorf")).unwrap();
+        assert_eq!((made[0].name.as_str(), made[0].color.as_str()), ("Najdorf", "black"));
+    }
+
+    #[test]
+    fn a_file_with_a_bad_game_imports_nothing() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let book = create_book(&conn, "B", "white", None, None, None).unwrap();
+        let text = "[Event \"One\"]\n\n1. e4 e5 *\n\n[Event \"Two\"]\n\n1. e4 e4 *\n";
+        assert!(add_chapters(&conn, book.id, None, Some(text), None).is_err());
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM repertoire_chapters", [], |r| r.get(0)).unwrap();
+        let p: i64 = conn.query_row("SELECT COUNT(*) FROM repertoire_positions", [], |r| r.get(0)).unwrap();
+        assert_eq!((n, p), (0, 0), "the good first game is rolled back with the bad second");
+        // And the connection is clean for the next import.
+        assert_eq!(add_chapters(&conn, book.id, None, Some("1. d4 *"), None).unwrap().len(), 1);
     }
 
     #[test]

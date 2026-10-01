@@ -8,7 +8,8 @@ import { getVersion } from "@tauri-apps/api/app";
 import { clearCrashLog, formatCrashLog, readCrashLog, type CrashEntry } from "../lib/crashLog";
 import { listen } from "@tauri-apps/api/event";
 import { useJobProgress } from "../hooks/useJobProgress";
-import { getRepertoireSettings, putRepertoireSettings } from "../lib/repertoire";
+import { allBooksPgnPath, getRepertoireSettings, putRepertoireSettings } from "../lib/repertoire";
+import { saveTextFile } from "../lib/exportPgn";
 import SourcesPanel from "./SourcesPanel";
 import MergePlayersDialog from "./MergePlayersDialog";
 import { StatusInfo, ScheduleInfo } from "../types";
@@ -940,6 +941,48 @@ function RepertoireSection() {
         </div>
       )}
       {error && <p className="text-body-sm text-error">{error}</p>}
+    </SectionCard>
+  );
+}
+
+/** The repertoire's backup: every book in one PGN, with each book's name,
+ *  colour, author, link, notes and switches — "Import…" in the Repertoire
+ *  page's Books panel makes them all again, on this server or another. */
+function RepertoireBackupSection() {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  async function backup() {
+    setBusy(true); setNote(null); setError(null);
+    try {
+      const r = await fetch(apiUrl(allBooksPgnPath));
+      if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
+      const text = await r.text();
+      const chapters = (text.match(/^\[LpdoChapter /gm) ?? []).length;
+      const books = new Set(text.match(/^\[LpdoBook "(.*)"\]$/gm) ?? []).size;
+      const day = new Date().toISOString().slice(0, 10);
+      if (await saveTextFile(`lpdo-repertoire-${day}.pgn`, text)) setNote(`Saved ${books} ${books === 1 ? "book" : "books"}, ${chapters} chapters.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <SectionCard title="Backup of the repertoire">
+      <div className="space-y-2">
+        <p className="text-body-sm text-on-surface-variant">
+          Every book in one PGN file — its name, colour, author, link and notes, its chapters with their lines, comments
+          and switches. To restore, on this server or another: Repertoire → Books → Import…, which makes each book again
+          as a new one.
+        </p>
+        <button onClick={() => void backup()} disabled={busy}
+          className="h-8 px-3 inline-flex items-center rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 disabled:opacity-50 transition-all duration-short3 ease-standard">
+          {busy ? "Saving…" : "Back up all books…"}
+        </button>
+        {note && <p className="text-body-sm text-success">{note}</p>}
+        {error && <p className="text-body-sm text-error">{error}</p>}
+      </div>
     </SectionCard>
   );
 }
@@ -2374,6 +2417,7 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
             </TabLead>
             <div className={grid}>
               <RepertoireSection />
+              <RepertoireBackupSection />
             </div>
           </div>
 

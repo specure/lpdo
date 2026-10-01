@@ -36,7 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   games** tab lists the chapter's games and
   where each left it — by you or your opponent — the board going there on a
   click. Remove FENs from comments (a chapter, or all of them) deletes the
-  FEN strings exported courses leave in the text. Design in
+  FEN strings exported courses leave in the text. Books exported (or backed up
+  together, Maintenance → Repertoire) carry their name, colour, author,
+  link and notes, and **Import…** beside Books makes them again one to one,
+  each a new book; importing shows its progress and takes about a second a
+  book. Design in
   `docs/design/opening-repertoire.md`. (#327, #329)
 
 ### Fixed
