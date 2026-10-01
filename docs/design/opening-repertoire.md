@@ -228,6 +228,14 @@ resumes after — one's own analysis is never slowed.
   Reference tab's own requests slow from ~1.7 s to 3–4 s meanwhile; not
   something to do while one waits, and once stored, never again for the same
   chapter.
+- **One's own games** in the same pass: for every position, how often one
+  reached it and with which colour, one's score from there (wins, draws,
+  losses, and a performance rating with enough rated opponents), and the
+  moves one played — "you reached this 7 times, +3 =2 −2, and played 9.d4
+  twice instead of 9.b3": where one leaves the repertoire in practice. One's
+  player is the one set on the Home page (kept in the client, so
+  **Analyse…** sends it); without one, this part is skipped. All one's games
+  in the database count, within the positions index's ~40 plies.
 - **Engine evaluations** (Stockfish, the server's own): the positions the
   database has no stored evaluation for — on three real chapters, none of
   their 176–669 positions had one; cloud evaluations are only kept where one
@@ -337,6 +345,7 @@ the phone trainer and any later app alike:
       "arrows": ["Gc4c5"], "circles": ["Rd4"], "off": true,   // only when there are any
       "stats": { "games": 889516, "moves": [["e5", 0.31, 0.47], ["Nf6", 0.29, 0.45]], "eval": { "cp": 12 } },
       "engine": { "eval": { "cp": 18 }, "best": ["d4", { "cp": 35 }], "depth": 24 },  // from the analysis job
+      "mine": { "white": 5, "black": 2, "w": 3, "d": 2, "l": 2, "perf": 2180, "moves": [["d4", 2], ["b3", 5]] },
       "children": [ … ] }            // in the chapter's order; the first is the main line
   ]
 }
@@ -356,6 +365,11 @@ the phone trainer and any later app alike:
   engine's best move in the position before it with its evaluation, when it
   is not the repertoire's; the depth reached. Optional: a package without it
   is complete.
+- `mine` — one's own games through the position after the move, from the
+  analysis job when one's player is known: how many as White and as Black,
+  wins, draws and losses from there, a performance rating when there are
+  enough rated opponents, and the moves one played next with how often.
+  Optional.
 - `card` keys are position plus move, so a card's history survives the
   chapter being edited and sent again, and results could later be synced
   back by key without changing the format.
