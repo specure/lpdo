@@ -10,7 +10,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { GameSummary } from "../types";
 import {
   addChapters, bookPgnPath, chapterPgnPath, createBook, deleteBook, deleteChapter, getChapter, listRepertoire,
-  saveChapterMoves, updateBook, updateChapter, documentOf, analyseChapters, getBookGames, scorePct, importBooks,
+  saveChapterMoves, updateBook, updateChapter, documentOf, analyseChapters, getBookGames, scorePct, importBooks, deleteChapters,
   type BookGames, type Score, type BookColor, type BookWithChapters, type ChapterSummary,
 } from "../lib/repertoire";
 import { saveTextFile } from "../lib/exportPgn";
@@ -295,7 +295,9 @@ export default function RepertoirePage({ onOpenGame }: Props) {
   const finishMerge = (choices: MergeChoices) => merging && run(async () => {
     const { target, others, result } = merging;
     await saveChapterMoves(target.id, resolveMerge(result, choices));
-    for (const o of others) await deleteChapter(o.id);
+    // All at once, in one transaction: one request a chapter, each renumbering
+    // the rest, made merging 50 chapters take minutes.
+    await deleteChapters(others.map((o) => o.id));
     setMerging(null);
     // The merged chapter on the board, read again.
     if (chapterId === target.id) { setTab(await loadTab(target.id)); setDocReload((v) => v + 1); }
