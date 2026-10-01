@@ -626,7 +626,7 @@ function GameActionsBar({
   const tonalBtn = "h-8 px-3 inline-flex items-center rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 active:brightness-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:brightness-100 transition-all duration-short3 ease-standard";
 
   return (
-    <div className="shrink-0 bg-surface-container rounded-lg p-3 space-y-3">
+    <div className={chapter ? "shrink-0" : "shrink-0 bg-surface-container rounded-lg p-3 space-y-3"}>
       {confirmingDelete && (
         <div className="bg-error-container text-on-error-container rounded-md p-3 text-body-sm space-y-2">
           <div>
@@ -1907,15 +1907,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
               <span className="ml-1 text-outline font-sans">[Tab]</span>
             </button>
           )}
-          {chapter ? (
-            <>
-              <div className="text-title-md text-on-surface">{chapter.chapterName}</div>
-              <div className="text-body-sm text-on-surface-variant mt-0.5 flex gap-2 items-center">
-                <span>{chapter.bookName}</span>
-                <span>· repertoire as {chapter.color === "white" ? "White" : "Black"}</span>
-              </div>
-            </>
-          ) : (
+          {chapter ? null /* in the banner below */ : (
             <>
               <div className="text-title-md text-on-surface">
                 {detail.white}{detail.white_elo ? ` (${detail.white_elo})` : ""}{" "}
@@ -1933,7 +1925,8 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
 
         {/* Action toolbar — always visible (when not in moves-editor mode), so
             the user doesn't need to expand Details to access game actions. */}
-        {!movesEditor.active && (
+        {(() => {
+          const bar = movesEditor.active ? null : (
           <GameActionsBar
             detail={detail}
             chapter={!!chapter}
@@ -1966,7 +1959,24 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             onToggleDetails={() => setDetailsOpen((o) => !o)}
             unsavedEdits={movesEditor.active && movesEditor.dirty}
           />
-        )}
+          );
+          if (!chapter) return bar;
+          // A repertoire chapter: one banner of at most two lines — its name
+          // and book, the actions and the arrows' switches — leaving the
+          // board and the comment under it the room.
+          return (
+            <div className="shrink-0 flex flex-wrap items-center gap-x-4 gap-y-1 bg-surface-container rounded-lg px-3 py-1.5">
+              <div className="min-w-0 flex-1">
+                <div className="text-title-sm text-on-surface truncate" title={chapter.chapterName}>{chapter.chapterName}</div>
+                <div className="text-label-sm text-on-surface-variant truncate">
+                  {chapter.bookName} · repertoire as {chapter.color === "white" ? "White" : "Black"}
+                </div>
+              </div>
+              {bar}
+              {arrowControls}
+            </div>
+          );
+        })()}
 
         {/* Details panel — purely informational, collapsible. Renders the
             soft-deleted banner, badges, and the full tag grid. A game's only:
@@ -2009,7 +2019,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
 
         {/* The arrows' checkboxes in a row above the board, as on the Games
             page; the board scales to fit what is left. */}
-        {arrowControls && <div className="shrink-0 px-2 pb-1">{arrowControls}</div>}
+        {arrowControls && !chapter && <div className="shrink-0 px-2 pb-1">{arrowControls}</div>}
 
         {/* Board */}
         <div ref={boardContainerRef} className="flex-1 min-h-0 min-w-0 overflow-hidden flex items-center justify-center relative">
@@ -2272,14 +2282,10 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
                 title="Drag to resize"
               />
               <div className="flex-1 overflow-y-auto px-3 pb-2 pt-2 text-body-md leading-relaxed text-on-surface">
-                {intro || comment ? (
-                  <>
-                    {intro && <p className="text-on-surface-variant">{intro}</p>}
-                    {comment && <p className={intro ? "mt-1" : ""}>{comment}</p>}
-                  </>
-                ) : (
-                  <p className="text-on-surface-variant/70 italic">{activeIndex === 0 ? "No comment at the start." : "No comment on this move."}</p>
-                )}
+                {/* Nothing without a comment — the panel keeps its height,
+                    so the board does not move. */}
+                {intro && <p className="text-on-surface-variant">{intro}</p>}
+                {comment && <p className={intro ? "mt-1" : ""}>{comment}</p>}
               </div>
             </div>
           );
