@@ -751,7 +751,9 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
 
   return (
     <div className="flex flex-col">
-      <div className="px-3 pt-2 pb-1 flex items-center gap-2">
+      {/* The book's row — its name, the ⋯, and Merge / Cancel or Done in
+          those modes — stays at the top while the chapters scroll under it. */}
+      <div className="sticky top-0 z-10 bg-surface-container-low px-3 pt-2 pb-1 flex items-center gap-2 border-b border-transparent">
         <ColorDot color={book.color} />
         <span className="flex-1 min-w-0 truncate text-title-sm text-on-surface" title={book.name}>{book.name}</span>
         {arranging ? (
