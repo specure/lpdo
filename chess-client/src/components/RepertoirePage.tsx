@@ -41,9 +41,45 @@ const CHAPTER_KEY = "repertoireChapter";
 const BOOKS_FOLDED_KEY = "repertoireBooksCollapsed";
 const CHAPTERS_FOLDED_KEY = "repertoireChaptersCollapsed";
 
-/** An Analysis tab for a chapter, fetched afresh. */
+/** Where the board was in each chapter — the position, the cursor in the
+ *  moves, which way up — so leaving the page (or the chapter) and coming
+ *  back finds it there. The 50 chapters looked at last. */
+const VIEWS_KEY = "repertoireChapterViews";
+type ChapterView = { fen: string | null; cursor: CursorPath | null; flipped: boolean };
+
+function readViews(): Record<string, ChapterView> {
+  try {
+    const v = JSON.parse(localStorage.getItem(VIEWS_KEY) ?? "{}");
+    return v && typeof v === "object" ? v : {};
+  } catch { return {}; }
+}
+
+function saveView(chapterId: number, view: ChapterView) {
+  try {
+    const all = readViews();
+    delete all[chapterId];
+    all[chapterId] = view;
+    const ids = Object.keys(all);
+    for (const id of ids.slice(0, Math.max(0, ids.length - 50))) delete all[id];
+    localStorage.setItem(VIEWS_KEY, JSON.stringify(all));
+  } catch { /* storage full or off: the view is simply not kept */ }
+}
+
+/** A cursor read back from storage, if it is one — the moves may have been
+ *  edited since; the board copes with a path that no longer fits. */
+function validCursor(raw: unknown): CursorPath | null {
+  if (!raw || typeof raw !== "object") return null;
+  const { steps, index } = raw as Partial<CursorPath>;
+  if (!Array.isArray(steps) || typeof index !== "number" || !Number.isFinite(index)) return null;
+  if (!steps.every((s) => s && typeof s.node === "number" && typeof s.varIdx === "number")) return null;
+  return { steps, index };
+}
+
+/** An Analysis tab for a chapter, fetched afresh — the board where it was
+ *  left in this chapter. */
 async function loadTab(chapterId: number): Promise<AnalysisTab> {
   const c = await getChapter(chapterId);
+  const view = readViews()[chapterId];
   const game: GameSummary = {
     id: -c.id, white: c.name, black: c.book.name, white_elo: null, black_elo: null,
     event: c.book.name, date: null, result: null, eco: null, move_count: null, opening_line: null,
@@ -51,7 +87,10 @@ async function loadTab(chapterId: number): Promise<AnalysisTab> {
   return {
     key: `c${c.id}`, game,
     loaded: { id: -c.id, white: c.name, black: c.book.name, result: null, date: null, event: c.book.name, pgn: c.pgn, gameUrl: null, ...buildPlayback(c.pgn) },
-    fen: null, cursor: null, flipped: c.book.color === "black", document: documentOf(c),
+    fen: typeof view?.fen === "string" ? view.fen : null,
+    cursor: validCursor(view?.cursor),
+    flipped: typeof view?.flipped === "boolean" ? view.flipped : c.book.color === "black",
+    document: documentOf(c),
   };
 }
 
@@ -139,6 +178,10 @@ export default function RepertoirePage({ onOpenGame }: Props) {
   const onTabState = useCallback((key: string, patch: { fen?: string; cursor?: CursorPath; flipped?: boolean }) => {
     setTab((t) => (t && t.key === key ? { ...t, ...patch } : t));
   }, []);
+  // Keep where the board is in the chapter, for coming back to it.
+  useEffect(() => {
+    if (tab?.document) saveView(tab.document.id, { fen: tab.fen, cursor: tab.cursor, flipped: tab.flipped });
+  }, [tab?.document?.id, tab?.fen, tab?.cursor, tab?.flipped]);
   function dropChapter() { setChapterId(null); localStorage.removeItem(CHAPTER_KEY); }
 
   const book = books?.find((b) => b.id === selectedBook) ?? null;
