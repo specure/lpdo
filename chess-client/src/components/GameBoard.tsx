@@ -934,7 +934,16 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   const [partialNodes, setPartialNodes] = useState<Set<string>>(new Set());
   // null = auto-fit the annotation content (default); a number (em) is an
   // explicit height set by dragging the divider.
-  const [annotationPanelHeight, setAnnotationPanelHeight] = useState<number | null>(null);
+  // The comment panel under the board (the editor's, and the current move's
+  // comment while viewing): its height in em, kept — in view mode a fixed
+  // height, so the board does not resize from move to move.
+  const [annotationPanelHeight, setAnnotationPanelHeight] = useState<number | null>(() => {
+    const v = Number(localStorage.getItem("boardCommentHeightEm"));
+    return Number.isFinite(v) && v >= 6 ? v : null;
+  });
+  useEffect(() => {
+    if (annotationPanelHeight != null) localStorage.setItem("boardCommentHeightEm", String(annotationPanelHeight));
+  }, [annotationPanelHeight]);
   const annotationPanelRef = useRef<HTMLDivElement>(null);
   const panelDragRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
@@ -1467,6 +1476,15 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     if (useAnnotated && activeIndex > 0) return activeLine[activeIndex - 1];
     return null;
   }, [useAnnotated, activeLine, activeIndex]);
+
+  // Whether the game has any comment at all: then the current move's comment
+  // shows under the board while viewing.
+  const hasComments = useMemo(() => {
+    if (!annotatedGame) return false;
+    if (annotatedGame.startComment) return true;
+    const any = (line: MoveNode[]): boolean => line.some((n) => !!n.annotations.comment || !!n.preComment || n.variations.some(any));
+    return any(annotatedGame.mainLine);
+  }, [annotatedGame]);
 
   const maxIndex = useAnnotated ? activeLine.length : fens.length - 1;
 
@@ -2235,8 +2253,39 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
           </div>
         )}
 
-        {/* Annotation editor — only while editing. In view mode comments are
-            read inline in the move list, so no separate panel is needed. */}
+        {/* The current move's comment while viewing — larger than in the move
+            list, for replaying a line on the board: a variation's intro, then
+            the move's comment; at the start, the game's own. Only for a game
+            with comments; a fixed height (dragged as the editor's). */}
+        {!movesEditor.active && useAnnotated && hasComments && (() => {
+          const intro = activeIndex === 0 ? annotatedGame?.startComment : currentMoveNode?.preComment;
+          const comment = activeIndex === 0 ? undefined : currentMoveNode?.annotations.comment;
+          return (
+            <div
+              ref={annotationPanelRef}
+              className="shrink-0 flex flex-col bg-surface-container-low rounded-md relative"
+              style={{ height: `${annotationPanelHeight ?? 7}em` }}
+            >
+              <div
+                onMouseDown={handlePanelDragStart}
+                className="absolute left-0 right-0 top-0 h-1 cursor-row-resize hover:bg-primary/40 z-10 transition-colors duration-short3 ease-standard"
+                title="Drag to resize"
+              />
+              <div className="flex-1 overflow-y-auto px-3 pb-2 pt-2 text-body-md leading-relaxed text-on-surface">
+                {intro || comment ? (
+                  <>
+                    {intro && <p className="text-on-surface-variant">{intro}</p>}
+                    {comment && <p className={intro ? "mt-1" : ""}>{comment}</p>}
+                  </>
+                ) : (
+                  <p className="text-on-surface-variant/70 italic">{activeIndex === 0 ? "No comment at the start." : "No comment on this move."}</p>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Annotation editor — only while editing. */}
         {movesEditor.active && (
           <div
             ref={annotationPanelRef}
