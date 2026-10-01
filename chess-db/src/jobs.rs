@@ -1496,18 +1496,17 @@ fn run_job(
             );
         }
         // A repertoire's chapters analysed for practice (#327): the database's
-        // figures and one's own games, kept per chapter.
+        // figures, kept per chapter (one's own games are looked up live).
         "repertoire_analyse" => {
             let ids: Vec<i64> = p.get("chapters").and_then(|v| v.as_array())
                 .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
                 .unwrap_or_default();
             if ids.is_empty() { return Err(anyhow!("repertoire_analyse: 'chapters' required")); }
-            let player = p.get("player_id").and_then(|v| v.as_i64());
             let n = ids.len() as u64;
             for (i, id) in ids.iter().enumerate() {
                 if reporter.is_cancelled() { return Ok(()); }
                 reporter.progress(i as u64, n, format!("Analysing chapter {} of {n}…", i + 1));
-                crate::repertoire::analyse_chapter(conn, *id, player)?;
+                crate::repertoire::analyse_chapter(conn, *id)?;
             }
             reporter.done(if n == 1 { "Chapter analysed.".to_string() } else { format!("{n} chapters analysed.") });
         }

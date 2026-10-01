@@ -14,7 +14,6 @@ import {
 } from "../lib/repertoire";
 import { saveTextFile } from "../lib/exportPgn";
 import { useJobProgress } from "../hooks/useJobProgress";
-import { currentMyPlayer } from "./MyStatsWidget";
 import { buildPlayback } from "../lib/useGamePgn";
 import { apiUrl } from "../api";
 import AnalysisPage, { type AnalysisTab } from "./AnalysisPage";
@@ -155,8 +154,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
   const analysing = analysis.running || analysis.queued;
   const startAnalysis = (ids: number[]) => {
     if (!ids.length || analysing) return;
-    // One's player re-resolved first: a stored id can be someone else's by now.
-    analysis.runJob(async () => analyseChapters(ids, (await currentMyPlayer())?.id ?? null));
+    analysis.runJob(() => analyseChapters(ids));
   };
   const wasAnalysing = useRef(false);
   useEffect(() => {

@@ -26,9 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where the comments differ you choose which stays. Chapters can be renamed
   together, by find and replace over their names, with a preview. Chapters
   are analysed for practice on request (Analyse chapter / all chapters): the
-  database's figures for every position and your own games through it,
-  kept until analysed again; the chapter list and the Lines tab show what
-  is analysed. Design in
+  database's figures for every position, kept until analysed again; the
+  chapter list and the Lines tab show what is analysed. Your own games
+  through a chapter's positions are looked up live — with the book's colour,
+  from the last 12 months (Maintenance → Repertoire). Design in
   `docs/design/opening-repertoire.md`. (#327, #329)
 
 ### Fixed

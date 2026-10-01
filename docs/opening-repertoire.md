@@ -98,13 +98,18 @@ chapter.
 **Analyse chapter** and **Analyse all chapters**, in the ⋯ above the
 chapters, prepare chapters for practice: for every position, how often the
 database's games reached it and the moves played there with their share and
-score, and — when your player is set on the Home page — your own games
-through it: how often, your wins, draws and losses from there, your
-performance, and the moves you played. It runs in the background on the
-server, with its progress and a Cancel above the chapters; a book of many
-chapters takes a few seconds each. Nothing is analysed by itself: run it
-again to bring a chapter up to date after editing it, or after new games
-came into the database.
+score. It runs in the background on the server, with its progress and a
+Cancel above the chapters; a chapter takes a few seconds. Nothing is
+analysed by itself: run it again to bring a chapter up to date after
+editing it, or after many new games came into the database.
+
+Your own games in a chapter's positions — how often, your wins, draws and
+losses from there, your performance, and the moves you played — are not
+part of the analysis: they are looked up each time (a fraction of a
+second), so a game you add counts at once. They count your games with the
+book's colour (a Black repertoire, your games as Black), from the last 12
+months — the period is set on the Maintenance page, **Repertoire** tab
+(0 for all). Your player is the one set on the Home page.
 
 A dot beside a chapter in the list shows it was analysed (its tooltip says
 when), in another colour when the chapter changed since. In the **Lines**

@@ -198,7 +198,11 @@ added after the last run); in the chapter list per chapter ("analysed
 2 Oct", or partly); and in the move list, an evaluation beside a move that
 has one.
 
-**Settings** — a "Repertoire analysis" section on the Maintenance page:
+**Settings** — a **Repertoire** tab on the Maintenance page, kept on the
+server (`repertoire.json`, `GET/PUT /repertoire/settings`):
+
+- **Your games**: how many months back one's own games count (default 12,
+  0 for all).
 
 - **Sources**, in order, each on or off: the Lichess cloud evaluation (deep,
   for positions popular there; rate-limited, with the rests after a 429 the
@@ -228,14 +232,28 @@ resumes after — one's own analysis is never slowed.
   Reference tab's own requests slow from ~1.7 s to 3–4 s meanwhile; not
   something to do while one waits, and once stored, never again for the same
   chapter.
-- **One's own games** in the same pass: for every position, how often one
-  reached it and with which colour, one's score from there (wins, draws,
-  losses, and a performance rating with enough rated opponents), and the
-  moves one played — "you reached this 7 times, +3 =2 −2, and played 9.d4
-  twice instead of 9.b3": where one leaves the repertoire in practice. One's
-  player is the one set on the Home page (kept in the client, so
-  **Analyse…** sends it); without one, this part is skipped. All one's games
-  in the database count, within the positions index's ~40 plies.
+- **One's own games** are **not** part of the analysis: they change every
+  week (2–3 games), so they are looked up **live** —
+  `GET /repertoire/chapters/{id}/mine?player_id=` — from one's games (the
+  players indexes) to their positions, never a scan of the whole index:
+  measured at 0.11–0.12 s a chapter (287 games), against 3–6 s for the
+  database's figures. For every position: how many of one's games went
+  through it, one's score from there (wins, draws, losses, and a performance
+  rating with three rated opponents or more), and the moves played — "you
+  reached this 7 times, +3 =2 −2, and played 9.d4 twice instead of 9.b3":
+  where one leaves the repertoire in practice. Only the games with **the
+  book's colour** count (a Black repertoire is about one's games as Black;
+  one's games as White against the same opening would mix in the
+  opponent's moves), from the **last 12 months** by default — a recent
+  switch of line then shows (setting below; 0 for all; games without a date
+  left out when a period is set). One's player is the one set on the Home
+  page, re-resolved by FIDE id — a stored player id goes stale when the
+  players are renumbered (#249). Matching is by position, not by move order, so a game
+  that transposes into a chapter is counted from where it joins it (and not
+  at the chapter's positions it skipped); the Train view should also say so
+  at the chapter's level — "your games in this chapter: 2 (1 by
+  transposition)" — so a transposed game does not only show deep in a
+  branch.
 - **Engine evaluations** (Stockfish, the server's own): the positions the
   database has no stored evaluation for — on three real chapters, none of
   their 176–669 positions had one; cloud evaluations are only kept where one
@@ -345,7 +363,7 @@ the phone trainer and any later app alike:
       "arrows": ["Gc4c5"], "circles": ["Rd4"], "off": true,   // only when there are any
       "stats": { "games": 889516, "moves": [["e5", 0.31, 0.47], ["Nf6", 0.29, 0.45]], "eval": { "cp": 12 } },
       "engine": { "eval": { "cp": 18 }, "best": ["d4", { "cp": 35 }], "depth": 24 },  // from the analysis job
-      "mine": { "white": 5, "black": 2, "w": 3, "d": 2, "l": 2, "perf": 2180, "moves": [["d4", 2], ["b3", 5]] },
+      "mine": { "games": 7, "w": 3, "d": 2, "l": 2, "perf": 2180, "moves": [["d4", 2], ["b3", 5]] },
       "children": [ … ] }            // in the chapter's order; the first is the main line
   ]
 }
@@ -365,11 +383,12 @@ the phone trainer and any later app alike:
   engine's best move in the position before it with its evaluation, when it
   is not the repertoire's; the depth reached. Optional: a package without it
   is complete.
-- `mine` — one's own games through the position after the move, from the
-  analysis job when one's player is known: how many as White and as Black,
-  wins, draws and losses from there, a performance rating when there are
-  enough rated opponents, and the moves one played next with how often.
-  Optional.
+- `mine` — one's own games through the position after the move (looked up
+  live when the package is made, one's player known): how many, wins, draws
+  and losses from there, a performance rating when there are enough rated
+  opponents, and the moves played next with how often. Which games: the
+  package's top-level `"mine": { "color", "since", "games" }` — the book's
+  colour, from `since` (null: all). Optional.
 - `card` keys are position plus move, so a card's history survives the
   chapter being edited and sent again, and results could later be synced
   back by key without changing the format.

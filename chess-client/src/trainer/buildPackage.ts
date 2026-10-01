@@ -15,13 +15,22 @@ export interface PositionStat {
   games: number;
   moves: { san: string; games: number; score: number }[];
   eval: { cp: number } | { mate: number } | null;
-  mine?: Mine;
+}
+
+/** One's own games, from the live lookup (GET /repertoire/chapters/{id}/mine). */
+export interface OwnGamesInput {
+  color: Side;
+  since: string | null;
+  games: number;
+  positions: { key: string; mine: Mine }[];
 }
 
 export interface PackageInput {
   chapter: { id: number; name: string; updated_at: string | null; pgn: string };
   book: { name: string; author: string | null; color: Side };
   stats: PositionStat[];
+  /** One's own games, when one's player is known. */
+  mine?: OwnGamesInput | null;
   focus?: string[] | null;
   /** Leave the comments out (a smaller package, for drilling only). */
   noComments?: boolean;
@@ -52,6 +61,7 @@ const round = (x: number) => Math.round(x * 1000) / 1000;
 export function buildPackage(input: PackageInput): LpdoChapter {
   const game = parsePgnTree(input.chapter.pgn);
   const byKey = new Map(input.stats.map((s) => [s.key, s]));
+  const mineByKey = new Map((input.mine?.positions ?? []).map((p) => [p.key, p.mine]));
   const color = input.book.color;
   const keep = (text: string | undefined) => (input.noComments ? undefined : text || undefined);
 
@@ -88,10 +98,10 @@ export function buildPackage(input: PackageInput): LpdoChapter {
     if (!input.noComments && a.arrows?.length) out.arrows = codes(encodeCal(a.arrows));
     if (!input.noComments && a.circles?.length) out.circles = codes(encodeCsl(a.circles));
     if (a.off) out.off = true;
-    const after = byKey.get(positionKey(n.fen));
-    const stats = toStats(after);
+    const stats = toStats(byKey.get(positionKey(n.fen)));
     if (stats) out.stats = stats;
-    if (after?.mine) out.mine = after.mine;
+    const mine = mineByKey.get(positionKey(n.fen));
+    if (mine) out.mine = mine;
     out.children = children(line, i + 1, n.fen);
     return out;
   }
@@ -99,10 +109,10 @@ export function buildPackage(input: PackageInput): LpdoChapter {
   const start: LpdoChapter["start"] = {};
   const intro = keep(game.startComment);
   if (intro) start.comment = intro;
-  const startStat = byKey.get(positionKey(START_FEN));
-  const startStats = toStats(startStat);
+  const startStats = toStats(byKey.get(positionKey(START_FEN)));
   if (startStats) start.stats = startStats;
-  if (startStat?.mine) start.mine = startStat.mine;
+  const startMine = mineByKey.get(positionKey(START_FEN));
+  if (startMine) start.mine = startMine;
 
   return {
     format: FORMAT,
@@ -112,6 +122,7 @@ export function buildPackage(input: PackageInput): LpdoChapter {
     book: input.book,
     name: input.chapter.name,
     focus: input.focus?.map(bareSan) ?? null,
+    ...(input.mine ? { mine: { color: input.mine.color, since: input.mine.since, games: input.mine.games } } : {}),
     start,
     tree: children(game.mainLine, 0, game.startFen),
   };

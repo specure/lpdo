@@ -641,26 +641,6 @@ pub struct PositionStat {
     /// played first.
     pub moves: Vec<MoveStat>,
     pub eval: Option<Eval>,
-    /// One's own games through the position, when one's player is known
-    /// and has any.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub mine: Option<Mine>,
-}
-
-/// One's own games through a position.
-#[derive(Clone, Debug, Serialize, serde::Deserialize, PartialEq)]
-pub struct Mine {
-    /// How many as White, as Black.
-    pub white: i64,
-    pub black: i64,
-    /// One's wins, draws, losses from there.
-    pub w: i64,
-    pub d: i64,
-    pub l: i64,
-    /// The performance rating, with at least three rated opponents.
-    pub perf: Option<i32>,
-    /// The moves played next in those games, with how often, most first.
-    pub moves: Vec<(String, i64)>,
 }
 
 /// A chapter's stored analysis (see [`analyse_chapter`]), or the figures
@@ -670,7 +650,6 @@ pub struct Analysis {
     pub analysed_at: Option<String>,
     /// The chapter's `updated_at` the analysis was made from.
     pub chapter_updated: Option<String>,
-    pub player_id: Option<i64>,
     pub positions: Vec<PositionStat>,
 }
 
@@ -679,9 +658,10 @@ const TOP_MOVES: usize = 8;
 
 /// The database's figures for every position of a chapter — the moves
 /// played from it (engine games left out, as the Reference tab does by
-/// default) and a stored evaluation — and, for `player`, one's own games
-/// through it. One query for the whole chapter.
-pub fn chapter_stats(conn: &Connection, id: i64, player: Option<i64>) -> Result<Vec<PositionStat>> {
+/// default) and a stored evaluation. One query for the whole chapter.
+/// One's own games are not here: they change every week, and are looked up
+/// live ([`chapter_mine`]).
+pub fn chapter_stats(conn: &Connection, id: i64) -> Result<Vec<PositionStat>> {
     let pgn = get_chapter(conn, id)?.pgn;
     let w = walk(&movetext_of(&pgn))?;
 
@@ -701,74 +681,32 @@ pub fn chapter_stats(conn: &Connection, id: i64, player: Option<i64>) -> Result<
     if order.is_empty() { return Ok(Vec::new()); }
     let list = order.iter().map(|z| z.to_string()).collect::<Vec<_>>().join(",");
 
-    // One's own games are counted in the same pass; without a player, -1
-    // matches none.
-    let me = player.unwrap_or(-1);
     let ceiling = crate::db::queries::HUMAN_ELO_CEILING;
     let sql = format!("
-        WITH pos AS (
-            SELECT p.zobrist_hash AS z,
-                   regexp_replace(p.next_move, '[+#!?]+$', '') AS san,
-                   CASE WHEN p.move_number % 2 = 0 THEN
+        SELECT p.zobrist_hash,
+               regexp_replace(p.next_move, '[+#!?]+$', '') AS san,
+               COUNT(*) AS games,
+               AVG(CASE WHEN p.move_number % 2 = 0 THEN
                         CASE g.result WHEN '1-0' THEN 1.0 WHEN '1/2-1/2' THEN 0.5 ELSE 0.0 END
-                   ELSE
+                    ELSE
                         CASE g.result WHEN '0-1' THEN 1.0 WHEN '1/2-1/2' THEN 0.5 ELSE 0.0 END
-                   END AS score,
-                   COALESCE(g.white_elo, 0) <= {ceiling} AND COALESCE(g.black_elo, 0) <= {ceiling}
-                       AND g.id NOT IN (SELECT game_id FROM engine_games) AS human,
-                   g.white_id = {me} AS me_white,
-                   g.black_id = {me} AS me_black,
-                   CASE WHEN g.white_id = {me} THEN
-                        CASE g.result WHEN '1-0' THEN 1.0 WHEN '1/2-1/2' THEN 0.5 ELSE 0.0 END
-                   ELSE
-                        CASE g.result WHEN '0-1' THEN 1.0 WHEN '1/2-1/2' THEN 0.5 ELSE 0.0 END
-                   END AS my_score,
-                   CASE WHEN g.white_id = {me} THEN g.black_elo ELSE g.white_elo END AS opp_elo
-            FROM positions p
-            JOIN games g ON p.game_id = g.id
-            WHERE p.zobrist_hash IN ({list})
-              AND p.next_move IS NOT NULL
-              AND g.result IN ('1-0', '0-1', '1/2-1/2')
-              AND g.deleted_at IS NULL
-        )
-        SELECT z, san,
-               COUNT(*) FILTER (WHERE human),
-               AVG(score) FILTER (WHERE human),
-               COUNT(*) FILTER (WHERE me_white),
-               COUNT(*) FILTER (WHERE me_black),
-               COUNT(*) FILTER (WHERE (me_white OR me_black) AND my_score = 1.0),
-               COUNT(*) FILTER (WHERE (me_white OR me_black) AND my_score = 0.5),
-               COUNT(*) FILTER (WHERE (me_white OR me_black) AND my_score = 0.0),
-               SUM(opp_elo + 400.0 * (2.0 * my_score - 1.0)) FILTER (WHERE (me_white OR me_black) AND opp_elo > 0),
-               COUNT(*) FILTER (WHERE (me_white OR me_black) AND opp_elo > 0)
-        FROM pos
+                    END) AS score
+        FROM positions p
+        JOIN games g ON p.game_id = g.id
+        WHERE p.zobrist_hash IN ({list})
+          AND p.next_move IS NOT NULL
+          AND g.result IN ('1-0', '0-1', '1/2-1/2')
+          AND g.deleted_at IS NULL
+          AND COALESCE(g.white_elo, 0) <= {ceiling}
+          AND COALESCE(g.black_elo, 0) <= {ceiling}
+          AND g.id NOT IN (SELECT game_id FROM engine_games)
         GROUP BY 1, 2");
-
-    #[derive(Default)]
-    struct MineSum { white: i64, black: i64, w: i64, d: i64, l: i64, perf_sum: f64, perf_n: i64, moves: Vec<(String, i64)> }
     let mut by_pos: std::collections::HashMap<i64, Vec<MoveStat>> = std::collections::HashMap::new();
-    let mut mine: std::collections::HashMap<i64, MineSum> = std::collections::HashMap::new();
     let mut stmt = conn.prepare(&sql)?;
-    let mut rows = stmt.query([])?;
-    while let Some(r) = rows.next()? {
-        let z: i64 = r.get(0)?;
-        let san: String = r.get(1)?;
-        let games: i64 = r.get(2)?;
-        if games > 0 {
-            by_pos.entry(z).or_default().push(MoveStat { san: san.clone(), games, score: r.get::<_, Option<f64>>(3)?.unwrap_or(0.0) });
-        }
-        let (white, black): (i64, i64) = (r.get(4)?, r.get(5)?);
-        if white + black > 0 {
-            let m = mine.entry(z).or_default();
-            m.white += white;
-            m.black += black;
-            m.w += r.get::<_, i64>(6)?;
-            m.d += r.get::<_, i64>(7)?;
-            m.l += r.get::<_, i64>(8)?;
-            m.perf_sum += r.get::<_, Option<f64>>(9)?.unwrap_or(0.0);
-            m.perf_n += r.get::<_, i64>(10)?;
-            m.moves.push((san, white + black));
-        }
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, MoveStat { san: r.get(1)?, games: r.get(2)?, score: r.get(3)? })))?;
+    for row in rows {
+        let (z, m) = row?;
+        by_pos.entry(z).or_default().push(m);
     }
 
     let evals = stored_evals(conn, &list, &black_to_move)?;
@@ -782,30 +720,179 @@ pub fn chapter_stats(conn: &Connection, id: i64, player: Option<i64>) -> Result<
             .filter(|(i, m)| *i < TOP_MOVES || ours.contains(&m.san))
             .map(|(_, m)| m)
             .collect();
-        let mine = mine.remove(&z).map(|mut m| {
-            m.moves.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            Mine {
-                white: m.white, black: m.black, w: m.w, d: m.d, l: m.l,
-                perf: (m.perf_n >= 3).then(|| (m.perf_sum / m.perf_n as f64).round() as i32),
-                moves: m.moves,
-            }
-        });
-        PositionStat { key: keys.remove(&z).unwrap_or_default(), zobrist: format!("{:016x}", z as u64), games, moves, eval: evals.get(&z).cloned(), mine }
+        PositionStat { key: keys.remove(&z).unwrap_or_default(), zobrist: format!("{:016x}", z as u64), games, moves, eval: evals.get(&z).cloned() }
     }).collect())
 }
 
+// ── One's own games, live ───────────────────────────────────────────────────
+
+/// One's own games through a position.
+#[derive(Clone, Debug, Serialize, serde::Deserialize, PartialEq)]
+pub struct Mine {
+    /// How many games went through it.
+    pub games: i64,
+    /// One's wins, draws, losses from there.
+    pub w: i64,
+    pub d: i64,
+    pub l: i64,
+    /// The performance rating, with at least three rated opponents.
+    pub perf: Option<i32>,
+    /// The moves played next in those games, with how often, most first.
+    pub moves: Vec<(String, i64)>,
+}
+
+/// One's own games through a chapter's positions (see [`chapter_mine`]).
+#[derive(Clone, Debug, Serialize)]
+pub struct OwnGames {
+    /// Which games count: those with the book's colour, from `since` on
+    /// (none: all of them) — `months` as set.
+    pub color: String,
+    pub months: u32,
+    pub since: Option<String>,
+    /// How many of one's games count.
+    pub games: i64,
+    /// How long the lookup took.
+    pub ms: i64,
+    pub positions: Vec<PositionMine>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PositionMine {
+    pub key: String,
+    pub mine: Mine,
+}
+
+/// One's own games through every position of a chapter, looked up live —
+/// they change every week, unlike the database's figures. Only the games
+/// played with the book's colour (a Black repertoire is about one's games as
+/// Black), from the last `own_games_months` of the settings. From one's games
+/// (the players indexes) to their positions — never a scan of the whole
+/// positions index: ~0.1 s.
+pub fn chapter_mine(conn: &Connection, id: i64, player: i64) -> Result<OwnGames> {
+    let started = std::time::Instant::now();
+    let detail = get_chapter(conn, id)?;
+    let w = walk(&movetext_of(&detail.pgn))?;
+    let mut keys: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    for r in &w.rows {
+        keys.insert(r.zobrist, r.key.clone());
+        keys.insert(r.after_zobrist, r.after_key.clone());
+    }
+    let color = detail.book.color.clone();
+    let months = settings().own_games_months;
+    let since: Option<String> = if months == 0 { None } else {
+        Some(conn.query_row(
+            &format!("SELECT CAST(CAST(current_date - INTERVAL {months} MONTH AS DATE) AS VARCHAR)"), [], |r| r.get(0))?)
+    };
+
+    // One's games with the book's colour: result for oneself, the opponent's
+    // rating. Games without a date are left out when a period is set.
+    struct Game { score: f64, opp_elo: Option<i64> }
+    let (me, opp, win) = if color == "white" { ("white_id", "black_elo", "1-0") } else { ("black_id", "white_elo", "0-1") };
+    let mut games: std::collections::HashMap<i64, Game> = std::collections::HashMap::new();
+    let mut st = conn.prepare(&format!(
+        "SELECT id, CASE result WHEN '{win}' THEN 1.0 WHEN '1/2-1/2' THEN 0.5 ELSE 0.0 END, {opp}
+         FROM games
+         WHERE {me} = ?1 AND result IN ('1-0', '0-1', '1/2-1/2') AND deleted_at IS NULL
+           AND (?2 IS NULL OR date >= ?2)"))?;
+    let mut rows = st.query(duckdb::params![player, since])?;
+    while let Some(r) = rows.next()? {
+        games.insert(r.get(0)?, Game { score: r.get(1)?, opp_elo: r.get::<_, Option<i64>>(2)?.filter(|e| *e > 0) });
+    }
+    let mut out = OwnGames { color, months, since, games: games.len() as i64, ms: 0, positions: Vec::new() };
+    if games.is_empty() || keys.is_empty() {
+        out.ms = started.elapsed().as_millis() as i64;
+        return Ok(out);
+    }
+
+    let ids = games.keys().map(|g| g.to_string()).collect::<Vec<_>>().join(",");
+    let hashes = keys.keys().map(|z| z.to_string()).collect::<Vec<_>>().join(",");
+    let mut st = conn.prepare(&format!(
+        "SELECT game_id, zobrist_hash, regexp_replace(next_move, '[+#!?]+$', '')
+         FROM positions
+         WHERE game_id IN ({ids}) AND zobrist_hash IN ({hashes}) AND next_move IS NOT NULL"))?;
+    #[derive(Default)]
+    struct Sum { games: i64, w: i64, d: i64, l: i64, perf_sum: f64, perf_n: i64, moves: std::collections::BTreeMap<String, i64> }
+    let mut by_pos: std::collections::HashMap<i64, Sum> = std::collections::HashMap::new();
+    let mut rows = st.query([])?;
+    while let Some(r) = rows.next()? {
+        let (g, z, san): (i64, i64, String) = (r.get(0)?, r.get(1)?, r.get(2)?);
+        let Some(game) = games.get(&g) else { continue };
+        let s = by_pos.entry(z).or_default();
+        s.games += 1;
+        if game.score == 1.0 { s.w += 1 } else if game.score == 0.5 { s.d += 1 } else { s.l += 1 }
+        if let Some(e) = game.opp_elo { s.perf_sum += e as f64 + 400.0 * (2.0 * game.score - 1.0); s.perf_n += 1; }
+        *s.moves.entry(san).or_default() += 1;
+    }
+    out.positions = by_pos.into_iter().filter_map(|(z, s)| {
+        let mut moves: Vec<(String, i64)> = s.moves.into_iter().collect();
+        moves.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        Some(PositionMine {
+            key: keys.get(&z)?.clone(),
+            mine: Mine {
+                games: s.games, w: s.w, d: s.d, l: s.l,
+                perf: (s.perf_n >= 3).then(|| (s.perf_sum / s.perf_n as f64).round() as i32),
+                moves,
+            },
+        })
+    }).collect();
+    out.ms = started.elapsed().as_millis() as i64;
+    Ok(out)
+}
+
+// ── Settings ─────────────────────────────────────────────────────────────────
+
+/// The repertoire's settings, on the Maintenance page; kept in
+/// repertoire.json in the data directory.
+#[derive(Clone, Copy, Debug, Serialize, serde::Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RepertoireSettings {
+    /// One's own games count from this many months back; 0 = all of them.
+    pub own_games_months: u32,
+}
+
+impl Default for RepertoireSettings {
+    fn default() -> Self { Self { own_games_months: 12 } }
+}
+
+static SETTINGS_FILE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+static SETTINGS: std::sync::RwLock<Option<RepertoireSettings>> = std::sync::RwLock::new(None);
+
+/// Where the settings live; read them. Called once when the server starts.
+pub fn init_settings(data_dir: &std::path::Path) {
+    let file = data_dir.join("repertoire.json");
+    let loaded = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let _ = SETTINGS_FILE.set(file);
+    *SETTINGS.write().unwrap() = Some(loaded);
+}
+
+pub fn settings() -> RepertoireSettings {
+    SETTINGS.read().unwrap().unwrap_or_default()
+}
+
+pub fn set_settings(mut new: RepertoireSettings) -> Result<RepertoireSettings, String> {
+    new.own_games_months = new.own_games_months.min(600);
+    if let Some(file) = SETTINGS_FILE.get() {
+        let json = serde_json::to_string_pretty(&new).map_err(|e| e.to_string())?;
+        std::fs::write(file, json).map_err(|e| format!("{}: {e}", file.display()))?;
+    }
+    *SETTINGS.write().unwrap() = Some(new);
+    Ok(new)
+}
+
+// ── Stored analyses ──────────────────────────────────────────────────────────
+
 /// Analyse a chapter for practice and keep the result: the figures of
-/// [`chapter_stats`] for `player`, from the chapter as it is now. Made again
-/// only when asked — never by itself.
-pub fn analyse_chapter(conn: &Connection, id: i64, player: Option<i64>) -> Result<()> {
+/// [`chapter_stats`], from the chapter as it is now. Made again only when
+/// asked — never by itself.
+pub fn analyse_chapter(conn: &Connection, id: i64) -> Result<()> {
     let updated: String = conn.query_row(
         "SELECT CAST(updated_at AS VARCHAR) FROM repertoire_chapters WHERE id = ?", duckdb::params![id], |r| r.get(0))
         .map_err(|_| anyhow!("chapter {id} not found"))?;
-    let positions = chapter_stats(conn, id, player)?;
+    let positions = chapter_stats(conn, id)?;
     conn.execute(
         "INSERT OR REPLACE INTO repertoire_analysis (chapter_id, chapter_updated, player_id, analysed_at, positions)
-         VALUES (?, CAST(? AS TIMESTAMP), ?, CAST(NOW() AS TIMESTAMP), ?)",
-        duckdb::params![id, updated, player, serde_json::to_string(&positions)?],
+         VALUES (?, CAST(? AS TIMESTAMP), NULL, CAST(NOW() AS TIMESTAMP), ?)",
+        duckdb::params![id, updated, serde_json::to_string(&positions)?],
     )?;
     Ok(())
 }
@@ -813,13 +900,13 @@ pub fn analyse_chapter(conn: &Connection, id: i64, player: Option<i64>) -> Resul
 /// A chapter's stored analysis, if it has one.
 pub fn stored_analysis(conn: &Connection, id: i64) -> Result<Option<Analysis>> {
     let row = conn.query_row(
-        "SELECT CAST(analysed_at AS VARCHAR), CAST(chapter_updated AS VARCHAR), player_id, positions FROM repertoire_analysis WHERE chapter_id = ?",
+        "SELECT CAST(analysed_at AS VARCHAR), CAST(chapter_updated AS VARCHAR), positions FROM repertoire_analysis WHERE chapter_id = ?",
         duckdb::params![id],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, String>(3)?)),
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
     );
     match row {
-        Ok((at, version, player, json)) => Ok(Some(Analysis {
-            analysed_at: Some(at), chapter_updated: Some(version), player_id: player,
+        Ok((at, version, json)) => Ok(Some(Analysis {
+            analysed_at: Some(at), chapter_updated: Some(version),
             positions: serde_json::from_str(&json).context("reading a stored analysis")?,
         })),
         Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
@@ -911,7 +998,7 @@ mod tests {
               ('lichess', {z1}, '{{\"status\":\"ok\",\"depth\":40,\"knodes\":1,\"lines\":[{{\"evalCp\":25,\"mate\":null,\"pvUci\":[]}}]}}', 0);
         ")).unwrap();
 
-        let stats = chapter_stats(&conn, ch.id, None).unwrap();
+        let stats = chapter_stats(&conn, ch.id).unwrap();
         let at = |key: &str| stats.iter().find(|s| s.key == key).unwrap_or_else(|| panic!("{key} in {stats:?}"));
         let s0 = at("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq");
         assert_eq!(s0.games, 3, "the engine game is left out");
@@ -931,40 +1018,61 @@ mod tests {
     }
 
     #[test]
-    fn ones_own_games_and_a_stored_analysis() {
+    fn ones_own_games_live_and_a_stored_analysis() {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::init(&conn).unwrap();
-        let book = create_book(&conn, "B", "white", None, None, None).unwrap();
-        let ch = add_chapters(&conn, book.id, Some("Ch"), Some("1. e4 e5 *"), None).unwrap().remove(0);
-        let z0 = Chess::default().zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64;
-        // Player 1 is White in games 1–3 (a win with e4, a draw with e4, a
-        // loss with d4) and Black in game 4 (a win; rated opponents only in
-        // 1, 3 and 4). Game 5 is someone else's.
+        let book = create_book(&conn, "B", "black", None, None, None).unwrap();
+        let ch = add_chapters(&conn, book.id, Some("Ch"), Some("1. e4 e6 *"), None).unwrap().remove(0);
+        let start = Chess::default();
+        let z0 = start.zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64;
+        let mut after = start.clone();
+        after.play_unchecked(shakmaty::san::San::from_ascii(b"e4").unwrap().to_move(&after).unwrap());
+        let z1 = after.zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64;
+        // Player 1 as Black: a win (e6) and a loss (c5) this month, a draw
+        // (e6) years ago; as White, a game that does not count for a Black
+        // book.
         conn.execute_batch(&format!("
-            INSERT INTO players (id, name, name_normalized) VALUES (1, 'Me', 'me'), (2, 'B', 'b'), (3, 'C', 'c');
-            INSERT INTO games (id, white_id, black_id, white_elo, black_elo, result, pgn) VALUES
-              (1, 1, 2, 2000, 2100, '1-0', ''), (2, 1, 2, NULL, NULL, '1/2-1/2', ''), (3, 1, 2, 2000, 1900, '0-1', ''),
-              (4, 2, 1, 2200, 2000, '0-1', ''), (5, 2, 3, NULL, NULL, '1-0', '');
+            INSERT INTO players (id, name, name_normalized) VALUES (1, 'Me', 'me'), (2, 'B', 'b');
+            INSERT INTO games (id, white_id, black_id, white_elo, black_elo, date, result, pgn) VALUES
+              (1, 2, 1, 2000, 1900, CAST(current_date AS VARCHAR), '0-1', ''),
+              (2, 2, 1, 2100, 1900, CAST(current_date AS VARCHAR), '1-0', ''),
+              (3, 2, 1, 2200, 1900, '1993-05-01', '1/2-1/2', ''),
+              (4, 1, 2, NULL, NULL, CAST(current_date AS VARCHAR), '1-0', '');
             INSERT INTO positions (game_id, move_number, zobrist_hash, next_move) VALUES
-              (1, 0, {z0}, 'e4'), (2, 0, {z0}, 'e4'), (3, 0, {z0}, 'd4'), (4, 0, {z0}, 'c4'), (5, 0, {z0}, 'e4');
+              (1, 0, {z0}, 'e4'), (1, 1, {z1}, 'e6'),
+              (2, 0, {z0}, 'e4'), (2, 1, {z1}, 'c5+'),
+              (3, 0, {z0}, 'e4'), (3, 1, {z1}, 'e6'),
+              (4, 0, {z0}, 'e4'), (4, 1, {z1}, 'e5');
         ")).unwrap();
 
-        let start = |stats: &[PositionStat]| stats.iter().find(|s| s.key.starts_with("rnbqkbnr/pppppppp/8/8/8/8/")).unwrap().clone();
-        assert_eq!(start(&chapter_stats(&conn, ch.id, None).unwrap()).mine, None, "no player, no own games");
-        let mine = start(&chapter_stats(&conn, ch.id, Some(1)).unwrap()).mine.unwrap();
-        assert_eq!((mine.white, mine.black, mine.w, mine.d, mine.l), (3, 1, 2, 1, 1));
-        assert_eq!(mine.moves, vec![("e4".to_string(), 2), ("c4".to_string(), 1), ("d4".to_string(), 1)]);
-        // (2100+400) + (1900-400) + (2200+400) over three rated opponents.
-        assert_eq!(mine.perf, Some(2200));
+        // The last 12 months (the default): games 1 and 2.
+        let live = chapter_mine(&conn, ch.id, 1).unwrap();
+        assert_eq!((live.color.as_str(), live.months, live.games), ("black", 12, 2));
+        assert!(live.since.is_some());
+        let after_e4 = live.positions.iter().find(|p| p.key.ends_with(" b KQkq")).unwrap();
+        assert_eq!(after_e4.mine, Mine {
+            games: 2, w: 1, d: 0, l: 1,
+            perf: None, // two rated opponents: too few
+            moves: vec![("c5".to_string(), 1), ("e6".to_string(), 1)],
+        });
 
-        // Nothing stored until asked; then the list shows when, and from
-        // which version of the chapter.
+        // All of them: the old draw too, never the game as White.
+        set_settings(RepertoireSettings { own_games_months: 0 }).unwrap();
+        let all = chapter_mine(&conn, ch.id, 1).unwrap();
+        set_settings(RepertoireSettings::default()).unwrap();
+        assert_eq!((all.games, all.since.clone()), (3, None));
+        let m = &all.positions.iter().find(|p| p.key.ends_with(" b KQkq")).unwrap().mine;
+        assert_eq!((m.games, m.w, m.d, m.l), (3, 1, 1, 1));
+        assert_eq!(m.perf, Some(2100), "(2000+400) + (2100-400) + 2200, over three");
+        assert!(!m.moves.iter().any(|(san, _)| san == "e5"), "the game as White does not count");
+
+        // The stored analysis: nothing until asked; then the list shows when,
+        // and from which version of the chapter.
         assert!(stored_analysis(&conn, ch.id).unwrap().is_none());
         assert_eq!(get_chapter_summary(&conn, ch.id).unwrap().analysed_at, None);
-        analyse_chapter(&conn, ch.id, Some(1)).unwrap();
+        analyse_chapter(&conn, ch.id).unwrap();
         let a = stored_analysis(&conn, ch.id).unwrap().unwrap();
-        assert_eq!(a.player_id, Some(1));
-        assert_eq!(start(&a.positions).mine.unwrap().w, 2, "kept with one's own games");
+        assert_eq!(a.positions.len(), 3);
         let s = get_chapter_summary(&conn, ch.id).unwrap();
         assert!(s.analysed_at.is_some());
         assert_eq!(s.analysed_version, s.updated_at, "analysed as the chapter is now");

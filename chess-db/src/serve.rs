@@ -1364,14 +1364,31 @@ struct ChapterStatsQuery {
 
 /// A chapter's analysis for practice — the database's figures for every
 /// position (docs/design/opening-repertoire.md, Practice): the stored one,
-/// else worked out now (without one's own games).
+/// else worked out now.
 async fn repertoire_chapter_stats_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<ChapterStatsQuery>) -> ApiResult<crate::repertoire::Analysis> {
     state.reads.run(move |conn| {
         let err = |e: anyhow::Error| (StatusCode::NOT_FOUND, format!("{e:#}"));
         if let Some(a) = crate::repertoire::stored_analysis(conn, id).map_err(err)? { return Ok(Json(a)); }
-        let positions = if q.stored.unwrap_or(false) { Vec::new() } else { crate::repertoire::chapter_stats(conn, id, None).map_err(err)? };
-        Ok(Json(crate::repertoire::Analysis { analysed_at: None, chapter_updated: None, player_id: None, positions }))
+        let positions = if q.stored.unwrap_or(false) { Vec::new() } else { crate::repertoire::chapter_stats(conn, id).map_err(err)? };
+        Ok(Json(crate::repertoire::Analysis { analysed_at: None, chapter_updated: None, positions }))
     }).await
+}
+
+#[derive(Deserialize)]
+struct ChapterMineQuery { player_id: i64 }
+
+/// One's own games through a chapter's positions, looked up live: with the
+/// book's colour, from the period the settings give.
+async fn repertoire_chapter_mine_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<ChapterMineQuery>) -> ApiResult<crate::repertoire::OwnGames> {
+    state.reads.run(move |conn| crate::repertoire::chapter_mine(conn, id, q.player_id).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
+}
+
+async fn repertoire_settings_handler() -> Json<crate::repertoire::RepertoireSettings> {
+    Json(crate::repertoire::settings())
+}
+
+async fn repertoire_settings_put_handler(Json(body): Json<crate::repertoire::RepertoireSettings>) -> ApiResult<crate::repertoire::RepertoireSettings> {
+    crate::repertoire::set_settings(body).map(Json).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
 }
 
 async fn repertoire_chapter_pgn_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>) -> std::result::Result<String, (StatusCode, String)> {
@@ -2763,6 +2780,7 @@ pub async fn run(
     let setup = Arc::new(std::sync::Mutex::new(SetupPhase::Idle));
     let engine = crate::engine::Engine::new(db_path.parent().unwrap_or(std::path::Path::new(".")));
     crate::cloud_eval::init_settings(db_path.parent().unwrap_or(std::path::Path::new(".")));
+    crate::repertoire::init_settings(db_path.parent().unwrap_or(std::path::Path::new(".")));
     let lc0 = crate::engine::Engine::new_kind(db_path.parent().unwrap_or(std::path::Path::new(".")), crate::engine::Kind::Lc0);
     // The engines keep their results in the database (engine_evals).
     engine.set_store(crate::engine::EvalStore::new(reads.clone()));
@@ -2794,6 +2812,8 @@ pub async fn run(
         .route("/repertoire/chapters/{id}/moves",      put(repertoire_chapter_moves_handler))
         .route("/repertoire/chapters/{id}/pgn",        get(repertoire_chapter_pgn_handler))
         .route("/repertoire/chapters/{id}/stats",      get(repertoire_chapter_stats_handler))
+        .route("/repertoire/chapters/{id}/mine",       get(repertoire_chapter_mine_handler))
+        .route("/repertoire/settings",                 get(repertoire_settings_handler).put(repertoire_settings_put_handler))
         .route("/sources",                             get(sources_handler))
         .route("/sources/{key}/enabled",               post(set_source_enabled_handler))
         .route("/schedule",                            get(get_schedule_handler).post(set_schedule_handler))

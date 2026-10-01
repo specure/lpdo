@@ -23,12 +23,12 @@ export interface Stats {
   eval?: Eval;
 }
 
-/** One's own games through a position: how many as White and Black, one's
- *  wins, draws, losses from there, a performance rating (with three rated
- *  opponents or more), and the moves played next with how often. */
+/** One's own games through a position — with the book's colour, from the
+ *  period the package's `mine` says: how many, one's wins, draws, losses
+ *  from there, a performance rating (with three rated opponents or more),
+ *  and the moves played next with how often. */
 export interface Mine {
-  white: number;
-  black: number;
+  games: number;
   w: number;
   d: number;
   l: number;
@@ -69,6 +69,10 @@ export interface LpdoChapter {
   name: string;
   /** A branch to start from, as the SAN path to it; null for none. */
   focus: string[] | null;
+  /** Which of one's own games the `mine` figures count: with `color`, from
+   *  `since` (null: all) — `games` of them; absent when one's player is not
+   *  known. */
+  mine?: { color: Side; since: string | null; games: number };
   /** The start position: the chapter's intro and the database's figures. */
   start: { comment?: string; stats?: Stats; mine?: Mine };
   /** The moves from the start position. */
