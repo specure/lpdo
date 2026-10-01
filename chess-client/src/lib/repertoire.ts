@@ -121,6 +121,55 @@ export interface BookGames {
 }
 export const getBookGames = (bookId: number, playerId: number) =>
   apiGet<BookGames>(`/repertoire/books/${bookId}/mine?player_id=${playerId}`);
+/** One of one's games in a chapter, with how far it followed it: "left" (a
+ *  move the chapter does not have — `left_by` you or the opponent, `move`
+ *  "8...b6"), "end" (to the end of a line), "index" (as far as the positions
+ *  index goes, each game's first ~40 plies), "ended" (the game ended in it).
+ *  `at_key`: the deepest chapter position it reached. */
+export interface ChapterGame {
+  id: number;
+  white: string;
+  black: string;
+  white_elo: number | null;
+  black_elo: number | null;
+  event: string | null;
+  date: string | null;
+  result: string | null;
+  followed: "left" | "end" | "index" | "ended";
+  left_by: "you" | "opponent" | null;
+  move: string | null;
+  at_key: string;
+  at_ply: number;
+}
+export interface ChapterGameList {
+  color: BookColor;
+  months: number;
+  since: string | null;
+  games: ChapterGame[];
+  ms: number;
+}
+/** One's games in a chapter (as "Your games" counts them), newest first. */
+export const getChapterGames = (chapterId: number, playerId: number) =>
+  apiGet<ChapterGameList>(`/repertoire/chapters/${chapterId}/games?player_id=${playerId}`);
+
+/** One of one's games in a book's opening: the chapters it counts for, or
+ *  (none) the move that left the book. */
+export interface BookGame {
+  id: number;
+  white: string;
+  black: string;
+  white_elo: number | null;
+  black_elo: number | null;
+  event: string | null;
+  date: string | null;
+  result: string | null;
+  chapters: number[];
+  left: string | null;
+}
+export interface BookGameList { color: BookColor; months: number; since: string | null; games: BookGame[]; ms: number }
+export const getBookGameList = (bookId: number, playerId: number) =>
+  apiGet<BookGameList>(`/repertoire/books/${bookId}/games?player_id=${playerId}`);
+
 /** One's score as a percentage, "46%"; "–" without games. */
 export const scorePct = (s: Score) => (s.games ? `${Math.round(((s.w + s.d / 2) / s.games) * 100)}%` : "–");
 

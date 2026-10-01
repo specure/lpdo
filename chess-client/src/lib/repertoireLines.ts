@@ -70,3 +70,21 @@ export function isOffAt(game: AnnotatedGame, steps: PathStep[], line: MoveNode[]
   for (let i = 0; i < index && i < line.length; i++) if (line[i].annotations.off) return true;
   return false;
 }
+
+/** Where in the chapter's tree a position is — the cursor to put the board
+ *  on it — found by its key (`keyOf` a node's FEN); the main line first, then
+ *  the variations in reading order. The start position: index 0. */
+export function cursorAtPosition(game: AnnotatedGame, key: string, keyOf: (fen: string) => string): { steps: PathStep[]; index: number } | null {
+  if (keyOf(game.startFen) === key) return { steps: [], index: 0 };
+  function find(line: MoveNode[], steps: PathStep[]): { steps: PathStep[]; index: number } | null {
+    for (let i = 0; i < line.length; i++) if (line[i].san && keyOf(line[i].fen) === key) return { steps, index: i + 1 };
+    for (let i = 0; i < line.length; i++) {
+      for (let v = 0; v < line[i].variations.length; v++) {
+        const hit = find(line[i].variations[v], [...steps, { node: i, varIdx: v }]);
+        if (hit) return hit;
+      }
+    }
+    return null;
+  }
+  return find(game.mainLine, []);
+}

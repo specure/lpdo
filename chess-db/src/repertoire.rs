@@ -846,6 +846,58 @@ pub struct ChapterGames {
 /// up live (~0.1 s).
 pub fn book_mine(conn: &Connection, book_id: i64, player: i64) -> Result<BookGames> {
     let started = std::time::Instant::now();
+    let p = place(conn, book_id, player)?;
+    let mut out = BookGames {
+        color: p.color.clone(), months: p.months, since: p.since.clone(), games: p.games.len() as i64,
+        in_book: score_of(p.in_book.iter().filter_map(|g| p.games.get(g))),
+        left: score_of(p.left.iter().filter_map(|g| p.games.get(g))),
+        left_by: Vec::new(),
+        chapters: p.chapters.iter().zip(&p.per_chapter)
+            .map(|(id, gs)| ChapterGames { id: *id, score: score_of(gs.iter().filter_map(|g| p.games.get(g))) })
+            .collect(),
+        ms: 0,
+    };
+    let mut by: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+    for g in &p.left {
+        if let Some((ply, Some(san))) = p.deepest.get(g) {
+            // The move from the deepest book position the game reached.
+            *by.entry(move_label(*ply, san)).or_default() += 1;
+        }
+    }
+    let mut by: Vec<(String, i64)> = by.into_iter().collect();
+    by.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    out.left_by = by;
+    out.ms = started.elapsed().as_millis() as i64;
+    Ok(out)
+}
+
+/// "3...Bb4": the move played from the position after `ply` half-moves.
+fn move_label(ply: i64, san: &str) -> String {
+    format!("{}{}{}", ply / 2 + 1, if ply % 2 == 1 { "..." } else { "." }, strip_marks(san))
+}
+
+/// Where one's games went in a book (see [`book_mine`]).
+struct Placement {
+    color: String,
+    months: u32,
+    since: Option<String>,
+    games: std::collections::HashMap<i64, MyGame>,
+    /// The book's chapters, in order, and the games that count for each.
+    chapters: Vec<i64>,
+    per_chapter: Vec<Vec<i64>>,
+    /// The games in the book's opening, and those of them that went into no
+    /// chapter.
+    in_book: Vec<i64>,
+    left: Vec<i64>,
+    /// Per game, the deepest book position it reached (its ply) and the
+    /// move played from it.
+    deepest: std::collections::HashMap<i64, (i64, Option<String>)>,
+}
+
+/// Which of one's games count for which of a book's chapters: those that
+/// reached one of a chapter's own positions — no other chapter of the book
+/// has them, and one gets there by a move of one's own.
+fn place(conn: &Connection, book_id: i64, player: i64) -> Result<Placement> {
     let book = get_book(conn, book_id)?;
     let mut st = conn.prepare("SELECT id, pgn FROM repertoire_chapters WHERE book_id = ? ORDER BY ord, id")?;
     let chapters: Vec<(i64, String)> = st.query_map(duckdb::params![book_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<duckdb::Result<_>>()?;
@@ -854,7 +906,6 @@ pub fn book_mine(conn: &Connection, book_id: i64, player: i64) -> Result<BookGam
     // how many chapters each one is, and those one reaches with one's own
     // move — the book's colour having just moved.
     let start = Chess::default().zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64;
-    let mut sets: Vec<std::collections::HashSet<i64>> = Vec::new();
     let mut mine_after: Vec<std::collections::HashSet<i64>> = Vec::new();
     let mut count: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
     for (_, pgn) in &chapters {
@@ -866,7 +917,6 @@ pub fn book_mine(conn: &Connection, book_id: i64, player: i64) -> Result<BookGam
             if r.mover == book.color { after.insert(r.after_zobrist); }
         }
         for z in &set { *count.entry(*z).or_default() += 1; }
-        sets.push(set);
         mine_after.push(after);
     }
     let n = chapters.len();
@@ -887,59 +937,196 @@ pub fn book_mine(conn: &Connection, book_id: i64, player: i64) -> Result<BookGam
         .collect();
 
     let (months, since, games) = my_games(conn, player, &book.color)?;
-    let mut out = BookGames {
-        color: book.color.clone(), months, since, games: games.len() as i64,
-        in_book: Score::default(), left: Score::default(), left_by: Vec::new(),
-        chapters: chapters.iter().map(|(id, _)| ChapterGames { id: *id, score: Score::default() }).collect(),
-        ms: 0,
+    let mut out = Placement {
+        color: book.color.clone(), months, since, games,
+        chapters: chapters.iter().map(|(id, _)| *id).collect(),
+        per_chapter: vec![Vec::new(); n],
+        in_book: Vec::new(), left: Vec::new(), deepest: std::collections::HashMap::new(),
     };
-    if games.is_empty() || count.is_empty() {
-        out.ms = started.elapsed().as_millis() as i64;
-        return Ok(out);
-    }
+    if out.games.is_empty() || count.is_empty() { return Ok(out); }
 
     // Where one's games went among the book's positions: per game, the
     // positions it reached, and the deepest with the move played from it.
-    let ids = games.keys().map(|g| g.to_string()).collect::<Vec<_>>().join(",");
+    let ids = out.games.keys().map(|g| g.to_string()).collect::<Vec<_>>().join(",");
     let hashes = count.keys().map(|z| z.to_string()).collect::<Vec<_>>().join(",");
     let mut st = conn.prepare(&format!(
         "SELECT game_id, zobrist_hash, move_number, next_move FROM positions
          WHERE game_id IN ({ids}) AND zobrist_hash IN ({hashes})"))?;
     let mut reached: std::collections::HashMap<i64, std::collections::HashSet<i64>> = std::collections::HashMap::new();
-    let mut deepest: std::collections::HashMap<i64, (i64, Option<String>)> = std::collections::HashMap::new();
     let mut rows = st.query([])?;
     while let Some(r) = rows.next()? {
         let (g, z, ply, next): (i64, i64, i64, Option<String>) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
         reached.entry(g).or_default().insert(z);
-        let d = deepest.entry(g).or_insert((-1, None));
+        let d = out.deepest.entry(g).or_insert((-1, None));
         if ply > d.0 { *d = (ply, next); }
     }
 
-    let in_book: Vec<i64> = reached.iter()
-        .filter(|(_, zs)| zs.iter().any(|z| shared.contains(z)))
-        .map(|(g, _)| *g).collect();
-    out.in_book = score_of(in_book.iter().filter_map(|g| games.get(g)));
+    out.in_book = reached.iter().filter(|(_, zs)| zs.iter().any(|z| shared.contains(z))).map(|(g, _)| *g).collect();
     let mut placed: std::collections::HashSet<i64> = std::collections::HashSet::new();
     for (i, own) in own.iter().enumerate() {
-        let mine: Vec<i64> = reached.iter().filter(|(_, zs)| zs.iter().any(|z| own.contains(z))).map(|(g, _)| *g).collect();
-        placed.extend(mine.iter().copied());
-        out.chapters[i].score = score_of(mine.iter().filter_map(|g| games.get(g)));
+        let gs: Vec<i64> = reached.iter().filter(|(_, zs)| zs.iter().any(|z| own.contains(z))).map(|(g, _)| *g).collect();
+        placed.extend(gs.iter().copied());
+        out.per_chapter[i] = gs;
     }
-    let left: Vec<i64> = in_book.iter().copied().filter(|g| !placed.contains(g)).collect();
-    out.left = score_of(left.iter().filter_map(|g| games.get(g)));
-    let mut by: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
-    for g in &left {
-        if let Some((ply, Some(san))) = deepest.get(g) {
-            // The move from the deepest book position the game reached:
-            // "3...Bb4" — the position at `ply` half-moves, so its move is
-            // number ply/2 + 1, Black's when ply is odd.
-            let label = format!("{}{}{}", ply / 2 + 1, if ply % 2 == 1 { "..." } else { "." }, strip_marks(san));
-            *by.entry(label).or_default() += 1;
-        }
+    out.left = out.in_book.iter().copied().filter(|g| !placed.contains(g)).collect();
+    Ok(out)
+}
+
+/// A game as the lists show it.
+struct GameRow { id: i64, white: String, black: String, white_elo: Option<i64>, black_elo: Option<i64>, event: Option<String>, date: Option<String>, result: Option<String> }
+
+/// These games, newest first.
+fn game_rows(conn: &Connection, ids: &[i64]) -> Result<Vec<GameRow>> {
+    if ids.is_empty() { return Ok(Vec::new()); }
+    let list = ids.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(",");
+    let mut st = conn.prepare(&format!(
+        "SELECT g.id, pw.name, pb.name, g.white_elo, g.black_elo, g.event, g.date, g.result
+         FROM games g JOIN players pw ON g.white_id = pw.id JOIN players pb ON g.black_id = pb.id
+         WHERE g.id IN ({list})
+         ORDER BY g.date DESC NULLS LAST, g.id DESC"))?;
+    let rows = st.query_map([], |r| Ok(GameRow {
+        id: r.get(0)?, white: r.get(1)?, black: r.get(2)?, white_elo: r.get(3)?, black_elo: r.get(4)?,
+        event: r.get(5)?, date: r.get(6)?, result: r.get(7)?,
+    }))?;
+    Ok(rows.collect::<duckdb::Result<_>>()?)
+}
+
+/// One of one's games in a book's opening (see [`book_games`]): the chapters
+/// it counts for, or — none — the move that left the book.
+#[derive(Clone, Debug, Serialize)]
+pub struct BookGame {
+    pub id: i64,
+    pub white: String,
+    pub black: String,
+    pub white_elo: Option<i64>,
+    pub black_elo: Option<i64>,
+    pub event: Option<String>,
+    pub date: Option<String>,
+    pub result: Option<String>,
+    pub chapters: Vec<i64>,
+    pub left: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct BookGameList {
+    pub color: String,
+    pub months: u32,
+    pub since: Option<String>,
+    pub games: Vec<BookGame>,
+    pub ms: i64,
+}
+
+/// One's games in a book's opening, newest first, each with the chapters it
+/// counts for — or the move that left the book.
+pub fn book_games(conn: &Connection, book_id: i64, player: i64) -> Result<BookGameList> {
+    let started = std::time::Instant::now();
+    let p = place(conn, book_id, player)?;
+    let mut out = BookGameList { color: p.color.clone(), months: p.months, since: p.since.clone(), games: Vec::new(), ms: 0 };
+    for row in game_rows(conn, &p.in_book)? {
+        let chapters: Vec<i64> = p.chapters.iter().zip(&p.per_chapter)
+            .filter(|(_, gs)| gs.contains(&row.id)).map(|(c, _)| *c).collect();
+        let left = if chapters.is_empty() {
+            p.deepest.get(&row.id).and_then(|(ply, san)| san.as_deref().map(|s| move_label(*ply, s)))
+        } else { None };
+        out.games.push(BookGame {
+            id: row.id, white: row.white, black: row.black, white_elo: row.white_elo, black_elo: row.black_elo,
+            event: row.event, date: row.date, result: row.result, chapters, left,
+        });
     }
-    let mut by: Vec<(String, i64)> = by.into_iter().collect();
-    by.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    out.left_by = by;
+    out.ms = started.elapsed().as_millis() as i64;
+    Ok(out)
+}
+
+/// One of one's games in a chapter (see [`chapter_games`]).
+#[derive(Clone, Debug, Serialize)]
+pub struct ChapterGame {
+    pub id: i64,
+    pub white: String,
+    pub black: String,
+    pub white_elo: Option<i64>,
+    pub black_elo: Option<i64>,
+    pub event: Option<String>,
+    pub date: Option<String>,
+    pub result: Option<String>,
+    /// How far it followed the chapter: "left" — a move the chapter does not
+    /// have, `left_by` (one's own or the opponent's), `move` ("8...b6");
+    /// "end" — to the end of one of its lines; "index" — as far as the
+    /// positions index goes (each game's first ~40 plies); "ended" — the
+    /// game ended in it.
+    pub followed: &'static str,
+    pub left_by: Option<&'static str>,
+    #[serde(rename = "move")]
+    pub mv: Option<String>,
+    /// The deepest chapter position the game reached, by its key — where to
+    /// put the board — and the move number there.
+    pub at_key: String,
+    pub at_ply: i64,
+}
+
+/// One's games in a chapter (as [`book_mine`] counts them), newest first,
+/// each with how far it followed the chapter and who left it.
+#[derive(Clone, Debug, Serialize)]
+pub struct ChapterGameList {
+    pub color: String,
+    pub months: u32,
+    pub since: Option<String>,
+    pub games: Vec<ChapterGame>,
+    pub ms: i64,
+}
+
+pub fn chapter_games(conn: &Connection, chapter_id: i64, player: i64) -> Result<ChapterGameList> {
+    let started = std::time::Instant::now();
+    let detail = get_chapter(conn, chapter_id)?;
+    let p = place(conn, detail.summary.book_id, player)?;
+    let ids: Vec<i64> = p.chapters.iter().position(|c| *c == chapter_id)
+        .map(|i| p.per_chapter[i].clone()).unwrap_or_default();
+    let mut out = ChapterGameList { color: p.color.clone(), months: p.months, since: p.since.clone(), games: Vec::new(), ms: 0 };
+    if ids.is_empty() {
+        out.ms = started.elapsed().as_millis() as i64;
+        return Ok(out);
+    }
+
+    // The chapter's positions: their keys and the chapter's moves from each.
+    let w = walk(&movetext_of(&detail.pgn))?;
+    let mut keys: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    let mut moves: std::collections::HashMap<i64, std::collections::HashSet<String>> = std::collections::HashMap::new();
+    for r in &w.rows {
+        keys.insert(r.zobrist, r.key.clone());
+        keys.insert(r.after_zobrist, r.after_key.clone());
+        moves.entry(r.zobrist).or_default().insert(strip_marks(&r.next_move).to_string());
+    }
+
+    // Per game, the deepest chapter position it reached and the move played.
+    let list = ids.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(",");
+    let hashes = keys.keys().map(|z| z.to_string()).collect::<Vec<_>>().join(",");
+    let mut st = conn.prepare(&format!(
+        "SELECT game_id, zobrist_hash, move_number, next_move FROM positions
+         WHERE game_id IN ({list}) AND zobrist_hash IN ({hashes})"))?;
+    let mut deepest: std::collections::HashMap<i64, (i64, i64, Option<String>)> = std::collections::HashMap::new();
+    let mut rows = st.query([])?;
+    while let Some(r) = rows.next()? {
+        let (g, z, ply, next): (i64, i64, i64, Option<String>) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
+        let d = deepest.entry(g).or_insert((-1, 0, None));
+        if ply > d.0 { *d = (ply, z, next); }
+    }
+
+    for row in game_rows(conn, &ids)? {
+        let id = row.id;
+        let Some((ply, z, next)) = deepest.get(&id).cloned() else { continue };
+        let ours = moves.get(&z);
+        let side_to_move = if ply % 2 == 0 { "white" } else { "black" };
+        let (followed, left_by, mv) = match next.as_deref().map(strip_marks) {
+            None => ("ended", None, None),
+            Some(san) if ours.is_some_and(|m| m.contains(san)) => ("index", None, None),
+            Some(_) if ours.is_none() => ("end", None, None),
+            Some(san) => ("left", Some(if side_to_move == p.color { "you" } else { "opponent" }), Some(move_label(ply, san))),
+        };
+        out.games.push(ChapterGame {
+            id, white: row.white, black: row.black, white_elo: row.white_elo, black_elo: row.black_elo,
+            event: row.event, date: row.date, result: row.result,
+            followed, left_by, mv, at_key: keys.get(&z).cloned().unwrap_or_default(), at_ply: ply,
+        });
+    }
     out.ms = started.elapsed().as_millis() as i64;
     Ok(out)
 }
@@ -1294,6 +1481,24 @@ mod tests {
         assert_eq!((at(kia).games, at(kia).l), (1, 1));
         assert_eq!((b.left.games, b.left.l), (1, 1), "the Winawer reached no chapter by a move of one's own");
         assert_eq!(b.left_by, vec![("3...Bb4".to_string(), 1)]);
+
+        // The games of a chapter, and how far each followed it: the Advance
+        // game to the end of the line (the index has its last position).
+        let adv = chapter_games(&conn, advance, 1).unwrap();
+        assert_eq!(adv.games.len(), 1);
+        assert_eq!((adv.games[0].id, adv.games[0].followed), (1, "ended"));
+        let st = chapter_games(&conn, steinitz, 1).unwrap();
+        assert_eq!(st.games.iter().map(|g| g.id).collect::<Vec<_>>(), vec![2]);
+
+        // The book's games: each with its chapter, the Winawer with the move
+        // that left; the Sicilian not at all.
+        let bg = book_games(&conn, book.id, 1).unwrap();
+        let mut by: Vec<(i64, Vec<i64>, Option<String>)> = bg.games.into_iter().map(|g| (g.id, g.chapters, g.left)).collect();
+        by.sort();
+        assert_eq!(by, vec![
+            (1, vec![advance], None), (2, vec![steinitz], None),
+            (3, vec![], Some("3...Bb4".to_string())), (4, vec![kia], None),
+        ]);
     }
 
     #[test]

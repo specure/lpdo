@@ -78,6 +78,10 @@ export default function RepertoirePage({ onOpenGame }: Props) {
     return Number.isFinite(v) && v > 0 ? v : null;
   });
   const [selectedBook, setSelectedBook] = useState<number | null>(null);
+  // "Your games": the book's line picked instead of a chapter — My games then
+  // lists the whole book's games (the chapter stays on the board).
+  const [bookPicked, setBookPicked] = useState(false);
+  useEffect(() => setBookPicked(false), [selectedBook]);
   // Chapters being merged: the lines already merged, the conflicts to choose.
   const [merging, setMerging] = useState<{
     target: ChapterSummary; others: ChapterSummary[]; labels: string[]; result: ReturnType<typeof mergeChapters>;
@@ -237,7 +241,8 @@ export default function RepertoirePage({ onOpenGame }: Props) {
         {book ? (
           <ChaptersList
             book={book} busy={busy} current={chapterId}
-            onPick={setChapterId}
+            onPick={(id) => { setChapterId(id); setBookPicked(false); }}
+            bookPicked={bookPicked} onPickBook={setBookPicked}
             onMerge={startMerge}
             onAnalyse={startAnalysis} analysing={analysing}
             onRenameMany={(changes) => run(async () => { for (const c of changes) await updateChapter(c.id, { name: c.name }); })}
@@ -274,6 +279,8 @@ export default function RepertoirePage({ onOpenGame }: Props) {
       onOpenGame={onOpenGame}
       onTabState={onTabState}
       onGameMutated={() => void load()}
+      myGamesBook={bookPicked && book ? { id: book.id, chapters: book.chapters.map((c) => ({ id: c.id, name: c.name })) } : null}
+      onPickChapter={(id) => { setChapterId(id); setBookPicked(false); }}
       leadingPanels={[
         booksFolded ? { id: "books", node: booksPanel, size: "3", strip: true } : { id: "books", node: booksPanel, size: "14", min: "9", max: "30" },
         chaptersFolded ? { id: "chapters", node: chaptersPanel, size: "3", strip: true } : { id: "chapters", node: chaptersPanel, size: "16", min: "10", max: "34" },
@@ -534,12 +541,15 @@ function Menu({ entries, title, up = false }: {
 
 /** The book's chapters, with one menu for the chapter on the board and a
  *  mode for putting them in order. */
-function ChaptersList({ book, busy, current, onPick, onMerge, onAnalyse, analysing, onRenameMany, onChapter, onDeleteChapter }: {
+function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRenameMany, onChapter, onDeleteChapter }: {
   book: BookWithChapters; busy: boolean; current: number | null;
   onPick: (id: number) => void;
   onMerge: (ids: number[]) => void;
   /** Analyse chapters for practice; `analysing`: a run is going on. */
   onAnalyse: (ids: number[]) => void;
+  /** "Your games": the book's line picked, and picking it (or not). */
+  bookPicked: boolean;
+  onPickBook: (on: boolean) => void;
   analysing: boolean;
   onRenameMany: (changes: { id: number; name: string }[]) => Promise<void>;
   onChapter: (id: number, patch: { name?: string; ord?: number; active?: boolean }) => void;
@@ -556,7 +566,7 @@ function ChaptersList({ book, busy, current, onPick, onMerge, onAnalyse, analysi
   // What the column on the right shows: the chapters' lines, or one's own
   // games in them (looked up live for the whole book).
   const [show, setShow] = useState<"lines" | "games">(() => (localStorage.getItem(CHAPTERS_SHOW_KEY) === "games" ? "games" : "lines"));
-  useEffect(() => { localStorage.setItem(CHAPTERS_SHOW_KEY, show); }, [show]);
+  useEffect(() => { localStorage.setItem(CHAPTERS_SHOW_KEY, show); if (show !== "games") onPickBook(false); }, [show]);
   const [games, setGames] = useState<BookGames | null>(null);
   const [gamesNote, setGamesNote] = useState<string | null>(null);
   // Read again when the book's chapters change (an edit, a merge, a move).
@@ -625,7 +635,9 @@ function ChaptersList({ book, busy, current, onPick, onMerge, onAnalyse, analysi
           ))}
         </div>
       )}
-      {show === "games" && !arranging && !selecting && <BookGamesSummary games={games} note={gamesNote} />}
+      {show === "games" && !arranging && !selecting && (
+        <BookGamesSummary games={games} note={gamesNote} picked={bookPicked} onPick={() => onPickBook(true)} />
+      )}
       {arranging && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Drag a chapter to its place, or move it with ▲ ▼.</div>}
       {selecting && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Tick the chapters to merge. The topmost keeps its name, place and main line; the others' lines and comments go into it, and they are deleted.</div>}
       {confirmDelete && chapter && (
@@ -637,7 +649,7 @@ function ChaptersList({ book, busy, current, onPick, onMerge, onAnalyse, analysi
       {!book.active && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">The book is off: these chapters are out of the repertoire whatever their switches say.</div>}
       <div className={`flex flex-col py-1 ${book.active ? "" : "opacity-70"}`}>
         {book.chapters.map((c, i) => (
-          <ChapterRow key={c.id} chapter={c} busy={busy} current={c.id === current}
+          <ChapterRow key={c.id} chapter={c} busy={busy} current={c.id === current && !bookPicked}
             renaming={renaming === c.id} arranging={arranging} first={i === 0} last={i === book.chapters.length - 1}
             dropTarget={arranging && over === c.id && dragged !== c.id}
             selected={selecting ? selecting.includes(c.id) : undefined}
@@ -666,25 +678,32 @@ function ChaptersList({ book, busy, current, onPick, onMerge, onAnalyse, analysi
   );
 }
 
-/** The book's line in "Your games": which games count, how many went into
- *  the book's opening, and where the others left it. */
-function BookGamesSummary({ games, note }: { games: BookGames | null; note: string | null }) {
+/** The book's line in "Your games": which games count, and — a row like a
+ *  chapter's, with the same columns — those in the book's opening. Picked,
+ *  My games lists them all. */
+function BookGamesSummary({ games, note, picked, onPick }: { games: BookGames | null; note: string | null; picked: boolean; onPick: () => void }) {
   if (note) return <div className="px-3 pb-1 text-label-sm text-on-surface-variant">{note}</div>;
   if (!games) return <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Looking up your games…</div>;
   const colour = games.color === "white" ? "White" : "Black";
-  const period = games.months ? `last ${games.months} months` : "all of them";
+  const period = games.months ? `the last ${games.months} months` : "all your games";
   const b = games.in_book;
   return (
-    <div className="px-3 pb-1 text-label-sm text-on-surface-variant flex flex-col gap-0.5">
-      <span title="The period is set on the Maintenance page, Repertoire tab.">Your games as {colour}, {period}: {games.games}</span>
-      <span title={`+${b.w} =${b.d} −${b.l}${b.perf ? ` · performance ${b.perf}` : ""}`}>
-        In this opening: {b.games}{b.games ? ` (${scorePct(b)})` : ""}
-        {games.left.games > 0 && (
-          <> · left the book: {games.left.games}
-            {games.left_by.length > 0 && <> — {games.left_by.slice(0, 3).map(([m, n]) => `${m} ×${n}`).join(", ")}</>}</>
-        )}
-      </span>
-    </div>
+    <>
+      <div className="px-3 pb-1 text-label-sm text-on-surface-variant" title="The period is set on the Maintenance page, Repertoire tab.">
+        Your games as {colour}, {period}
+      </div>
+      <button onClick={onPick}
+        className={`flex items-center gap-1.5 px-3 py-1 text-left border-t-2 border-transparent ${picked ? "bg-primary-container/40" : "hover:bg-on-surface/4"}`}
+        title={`Your games in this book's opening: ${b.games} · +${b.w} =${b.d} −${b.l}${b.perf ? ` · performance ${b.perf}` : ""}. Click: list them under My games.`}>
+        <span className={`flex-1 min-w-0 truncate text-body-sm ${picked ? "text-on-surface font-medium" : "text-on-surface"}`}>The whole book</span>
+        <span className="flex items-center gap-1 shrink-0">
+          <span className="w-6 text-right text-label-sm text-on-surface-variant tabular-nums">{b.games || "–"}</span>
+          <ScoreCell s={b} />
+          <span className="w-10 text-right text-label-sm text-on-surface-variant tabular-nums">{b.perf ?? ""}</span>
+        </span>
+        <span className="shrink-0 w-2" />
+      </button>
+    </>
   );
 }
 

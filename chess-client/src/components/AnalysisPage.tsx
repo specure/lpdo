@@ -18,6 +18,7 @@ import { useShowEngineGames, engineParam as engineParamFor } from "../lib/engine
 import { ArrowToggles, dbArrows, engineArrows, useArrowToggles, type CombinedMove } from "./HintArrows";
 import { saveChapterMoves, type ChapterDocument } from "../lib/repertoire";
 import LinesPanel from "./repertoire/LinesPanel";
+import MyGamesPanel from "./repertoire/MyGamesPanel";
 import type { ChapterLine } from "../lib/repertoireLines";
 
 // The Analysis board (#220): the editable, multi-game workbench. Several games
@@ -65,6 +66,11 @@ interface Props {
   layoutId?: string;
   /** What to show with nothing open. */
   emptyState?: ReactNode;
+  /** The Repertoire page's whole book picked in "Your games": My games lists
+   *  the book's games (with its chapters' names), and a game's chapter is
+   *  put on the board with `onPickChapter`. */
+  myGamesBook?: { id: number; chapters: { id: number; name: string }[] } | null;
+  onPickChapter?: (id: number) => void;
   /** Open a related game as a new tab. Resolves to 0, or to how many did not
    *  fit (the rail is full) — then it stayed closed. */
   onOpenGame: (games: GameSummary[]) => Promise<number>;
@@ -78,7 +84,7 @@ const vHandle = "w-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-st
 const hHandle = "h-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-state=drag]:bg-primary/50 transition-colors";
 const STARTPOS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-type RightTab = "reference" | "related" | "lines";
+type RightTab = "reference" | "related" | "lines" | "mine";
 const TAB_KEY = "analysisRightTab";
 
 /** A panel of the host's, left of the board, in the rail's place. */
@@ -95,7 +101,7 @@ export interface LeadingPanel {
 
 export default function AnalysisPage({
   tabs, activeKey, onActivate, onClose, onCloseMany, onMove, capacity, onOpenGame, onTabState, onGameMutated,
-  leadingPanels, layoutId = "analysis-main", emptyState,
+  leadingPanels, layoutId = "analysis-main", emptyState, myGamesBook, onPickChapter,
 }: Props) {
   const lead = leadingPanels && leadingPanels.length > 0 ? leadingPanels : null;
   const leadIds = lead ? lead.map((p) => p.id) : ["rail"];
@@ -231,11 +237,15 @@ export default function AnalysisPage({
   // was a third tab; it now has the panel below, always shown.)
   const [tab, setTab] = useState<RightTab>(() => {
     const saved = localStorage.getItem(TAB_KEY);
-    return saved === "related" || saved === "lines" ? saved : "reference";
+    return saved === "related" || saved === "lines" || saved === "mine" ? saved : "reference";
   });
   useEffect(() => { localStorage.setItem(TAB_KEY, tab); }, [tab]);
   // The Lines tab belongs to a chapter (#327): on a game it falls back.
-  const shownTab: RightTab = tab === "lines" && !active?.document ? "reference" : tab;
+  // The whole book picked on the Repertoire page: its games, under My games.
+  const bookId = myGamesBook?.id ?? null;
+  useEffect(() => { if (bookId != null) setTab("mine"); }, [bookId]);
+  // Lines and My games are a repertoire chapter's: elsewhere, Reference.
+  const shownTab: RightTab = (tab === "lines" || tab === "mine") && !active?.document ? "reference" : tab;
 
   // A repertoire chapter (#327): its lines, the cursor asked for when one is
   // picked, and "→ at the end of a line goes on to the next".
@@ -473,7 +483,7 @@ export default function AnalysisPage({
                     // sit together; the cloud engine is a different question.
                     { key: "reference", label: "Reference" },
                     { key: "related", label: `Games${relatedTotal != null ? ` · ${relatedTotal.toLocaleString()}` : ""}` },
-                    ...(active?.document ? [{ key: "lines" as RightTab, label: "Lines" }] : []),
+                    ...(active?.document ? [{ key: "lines" as RightTab, label: "Lines" }, { key: "mine" as RightTab, label: "My games" }] : []),
                   ] as { key: RightTab; label: string }[]).map((t) => (
                     <button
                       key={t.key}
@@ -498,7 +508,16 @@ export default function AnalysisPage({
                   </button>
                 </div>
 
-                {shownTab === "lines" && active?.document ? (
+                {shownTab === "mine" && active?.document ? (
+                  <MyGamesPanel
+                    chapterId={active.document.id}
+                    book={myGamesBook ?? null}
+                    onPickChapter={onPickChapter}
+                    reloadKey={chapterVersion}
+                    onPick={requestCursor}
+                    onOpen={(g) => void openRelated(g)}
+                  />
+                ) : shownTab === "lines" && active?.document ? (
                   <LinesPanel
                     chapterId={active.document.id}
                     reloadKey={chapterVersion}

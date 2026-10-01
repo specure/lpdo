@@ -31,8 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through a chapter's positions are looked up live — with the book's colour,
   from the last 12 months (Maintenance → Repertoire) — and **Your games**
   above the chapter list shows, per chapter, how many of your games went
-  into it with your score and performance, and how many left the book, by
-  the move that left it. Design in
+  into it with your score and performance, and for the whole book — picked,
+  its games are listed under My games, each with its chapter; the **My
+  games** tab lists the chapter's games and
+  where each left it — by you or your opponent — the board going there on a
+  click. Design in
   `docs/design/opening-repertoire.md`. (#327, #329)
 
 ### Fixed

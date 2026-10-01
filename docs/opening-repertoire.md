@@ -117,12 +117,21 @@ your games went into it, your score (green above 55%, red below 45%) and
 your performance rating (with three rated opponents or more); the tooltip
 has the wins, draws and losses. A game counts for a chapter when it reached
 a position only that chapter has, by a move of yours — so for the chapter
-you actually played, transpositions included. Above the list: how many of
-your games reached the book's opening, and how many **left the book** —
-reached none of its chapters — with the moves that left it ("3...Bb4 ×7"):
-where your practice and the book part ways. The same period and colour as
-everywhere: your games with the book's colour, from the last 12 months
-(Maintenance → Repertoire).
+you actually played, transpositions included. Above the chapters, **The
+whole book** has the same columns for all your games in the book's opening
+(after 1...e6 in a French book); pick it, as a chapter, and the My games tab
+lists them all, each with the chapter it went into — or the move that left
+the book — a click putting that chapter on the board. The same period and
+colour as everywhere: your games with the book's colour, from the last 12
+months (Maintenance → Repertoire).
+
+The **My games** tab, beside Lines when a chapter is on the board, lists
+those games for the chapter — newest first, both players and the result
+(green when you won, red when you lost), the event and the date — and how
+far each followed it: to the end of a line, or where it left the chapter
+and who left it ("you deviated at 8...b6", in red, or "your opponent
+deviated at 5.Bf4"). A click puts the board on that position; a
+double-click opens the game.
 
 A dot beside a chapter in the list shows it was analysed (its tooltip says
 when), in another colour when the chapter changed since. In the **Lines**

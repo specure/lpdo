@@ -265,7 +265,11 @@ resumes after — one's own analysis is never slowed.
   not a Sicilian after 1.e4); and those that **left the book**, by the move
   that left (the deepest book position's next move, "3...Bb4"). Where one's
   practice and the book part ways, and which chapter one scores worst in —
-  the topics to train.
+  the topics to train. The **My games** tab (a chapter's games,
+  `GET /repertoire/chapters/{id}/games?player_id=`) lists them with how far
+  each followed the chapter: to the end of a line, as far as the index
+  goes, or where it left — the move, and whether one left it oneself or the
+  opponent did; a click puts the board there.
 - **Engine evaluations** (Stockfish, the server's own): the positions the
   database has no stored evaluation for — on three real chapters, none of
   their 176–669 positions had one; cloud evaluations are only kept where one
