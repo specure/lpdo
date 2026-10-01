@@ -1,0 +1,74 @@
+// The practice package (#327): a chapter enriched with the database's
+// figures, as it goes to the phone — `lpdo-chapter`, version 1. See
+// docs/design/opening-repertoire.md, "The chapter format".
+//
+// Everything under src/trainer/ works on this format alone — no server
+// calls, no app state — so the phone trainer can share it as it is.
+
+export const FORMAT = "lpdo-chapter";
+export const VERSION = 1;
+
+export type Side = "white" | "black";
+
+/** A stored engine evaluation, from White's side. */
+export type Eval = { cp: number } | { mate: number };
+
+/** What the database knows of a position (the one after a node's move, or
+ *  the start position). `moves`: [SAN, share of the games, score for the
+ *  side playing it] — the most played moves and every move the chapter has
+ *  here, most played first. */
+export interface Stats {
+  games: number;
+  moves: [string, number, number][];
+  eval?: Eval;
+}
+
+export interface PNode {
+  san: string;
+  uci: string;
+  /** Own moves only (the book's colour): the position's hash + the move in
+   *  UCI — the key a card's history is kept under. */
+  card?: string;
+  /** Comment after the move; `pre`: before it (a variation's intro). */
+  comment?: string;
+  pre?: string;
+  nags?: number[];
+  /** Arrows and circles as PGN codes: "Gc4c5", "Rd4". */
+  arrows?: string[];
+  circles?: string[];
+  /** Switched off: not in the repertoire from here (the node and below). */
+  off?: true;
+  /** The position after the move. */
+  stats?: Stats;
+  /** The moves from the position after this one, in the chapter's order —
+   *  the first is the main line. */
+  children: PNode[];
+}
+
+export interface LpdoChapter {
+  format: typeof FORMAT;
+  version: typeof VERSION;
+  chapter: { id: number; updated: string | null };
+  sent: string;
+  book: { name: string; author: string | null; color: Side };
+  name: string;
+  /** A branch to start from, as the SAN path to it; null for none. */
+  focus: string[] | null;
+  /** The start position: the chapter's intro and the database's figures. */
+  start: { comment?: string; stats?: Stats };
+  /** The moves from the start position. */
+  tree: PNode[];
+}
+
+/** SAN without check marks or annotation glyphs — how moves are compared. */
+export const bareSan = (san: string) => san.replace(/[+#!?]+$/, "");
+
+/** A package's problems, or none — for one read from a file or a scan. */
+export function validate(x: unknown): string | null {
+  const c = x as Partial<LpdoChapter> | null;
+  if (!c || typeof c !== "object") return "not a chapter";
+  if (c.format !== FORMAT) return "not an LPDO chapter";
+  if (typeof c.version !== "number" || c.version > VERSION) return `version ${c.version} is newer than this trainer reads (${VERSION})`;
+  if (!Array.isArray(c.tree) || !c.book || !c.chapter) return "an incomplete chapter";
+  return null;
+}

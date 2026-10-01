@@ -15,6 +15,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use duckdb::Connection;
 use pgn_reader::{Nag, Outcome, RawComment, RawTag, Reader, SanPlus, Skip, Visitor};
 use serde::Serialize;
+use shakmaty::fen::Fen;
 use shakmaty::san::SanPlus as ShakmatySanPlus;
 use shakmaty::zobrist::Zobrist64;
 use shakmaty::{Chess, Color, EnPassantMode, Position};
@@ -98,6 +99,12 @@ pub struct PositionRow {
     pub ply: i16,
     pub next_move: String,
     pub mover: &'static str,
+    /// The position's key for the client ([`position_key`]), and the
+    /// position after the move with its own — for the figures of a chapter's
+    /// every position, the ends of its lines included.
+    pub key: String,
+    pub after_zobrist: i64,
+    pub after_key: String,
     /// No move switched off on the way here (the chapter's own switch is
     /// applied on top).
     pub active: bool,
@@ -167,7 +174,11 @@ impl Visitor for Walker {
         let mover = if f.pos.turn() == Color::White { "white" } else { "black" };
         let canonical = ShakmatySanPlus::from_move_and_play_unchecked(&mut f.pos, mv).to_string();
         let zobrist = before.zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64;
-        self.rows.push(PositionRow { zobrist, ply: f.ply, next_move: canonical, mover, active: !f.off });
+        let after_zobrist = f.pos.zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64;
+        self.rows.push(PositionRow {
+            zobrist, ply: f.ply, next_move: canonical, mover, active: !f.off,
+            key: position_key(&before), after_zobrist, after_key: position_key(&f.pos),
+        });
         f.prev = Some(before);
         f.prev_off = f.off;
         f.ply += 1;
@@ -207,6 +218,14 @@ impl Visitor for Walker {
     fn end_game(&mut self, _m: ()) {
         while !self.frames.is_empty() { self.close_frame(); }
     }
+}
+
+/// A position as the client names it: the FEN's board, side to move and
+/// castling rights — no en passant square (chess.js and shakmaty set it under
+/// different rules), no move counters.
+pub fn position_key(pos: &Chess) -> String {
+    let fen = Fen::from_position(pos, EnPassantMode::Legal).to_string();
+    fen.split(' ').take(3).collect::<Vec<_>>().join(" ")
 }
 
 fn contains(hay: &[u8], needle: &[u8]) -> bool {
@@ -579,6 +598,146 @@ pub fn book_pgn(conn: &Connection, id: i64) -> Result<String> {
     Ok(pgns.iter().map(|p| p.trim().to_string()).collect::<Vec<_>>().join("\n\n") + "\n")
 }
 
+// ── The database's figures for a chapter (practice, #327) ───────────────────
+
+/// A move from a position, as the database's games played it.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct MoveStat {
+    /// SAN without check marks — the source PGNs are not consistent about them.
+    pub san: String,
+    pub games: i64,
+    /// The average result for the side playing the move (1 win, ½ draw).
+    pub score: f64,
+}
+
+/// A stored engine evaluation, from White's side.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(untagged)]
+pub enum Eval {
+    Cp { cp: i32 },
+    Mate { mate: i32 },
+}
+
+/// One position of a chapter with what the database knows of it.
+#[derive(Clone, Debug, Serialize)]
+pub struct PositionStat {
+    /// [`position_key`]: how the client finds the position.
+    pub key: String,
+    /// The position's hash as 16 hex digits: part of a card's key.
+    pub zobrist: String,
+    /// Games that reached the position and went on (the positions index
+    /// covers each game's first ~40 plies).
+    pub games: i64,
+    /// The most played moves, and every move the chapter has here, most
+    /// played first.
+    pub moves: Vec<MoveStat>,
+    pub eval: Option<Eval>,
+}
+
+/// How many of the database's moves a position keeps besides the chapter's.
+const TOP_MOVES: usize = 8;
+
+/// The database's figures for every position of a chapter — the moves
+/// played from it (engine games left out, as the Reference tab does by
+/// default) and a stored evaluation — for its practice package. One query
+/// for the whole chapter.
+pub fn chapter_stats(conn: &Connection, id: i64) -> Result<Vec<PositionStat>> {
+    let pgn = get_chapter(conn, id)?.pgn;
+    let w = walk(&movetext_of(&pgn))?;
+
+    // Every position, before each move and after it; the chapter's own moves
+    // from each.
+    let mut order: Vec<i64> = Vec::new();
+    let mut keys: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    let mut chapter_moves: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+    let mut black_to_move: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    for r in &w.rows {
+        for (z, k, black) in [(r.zobrist, &r.key, r.mover == "black"), (r.after_zobrist, &r.after_key, r.mover == "white")] {
+            if keys.insert(z, k.clone()).is_none() { order.push(z); }
+            if black { black_to_move.insert(z); }
+        }
+        chapter_moves.entry(r.zobrist).or_default().push(strip_marks(&r.next_move).to_string());
+    }
+    if order.is_empty() { return Ok(Vec::new()); }
+    let list = order.iter().map(|z| z.to_string()).collect::<Vec<_>>().join(",");
+
+    let ceiling = crate::db::queries::HUMAN_ELO_CEILING;
+    let sql = format!("
+        SELECT p.zobrist_hash,
+               regexp_replace(p.next_move, '[+#!?]+$', '') AS san,
+               COUNT(*) AS games,
+               AVG(CASE WHEN p.move_number % 2 = 0 THEN
+                        CASE g.result WHEN '1-0' THEN 1.0 WHEN '1/2-1/2' THEN 0.5 ELSE 0.0 END
+                    ELSE
+                        CASE g.result WHEN '0-1' THEN 1.0 WHEN '1/2-1/2' THEN 0.5 ELSE 0.0 END
+                    END) AS score
+        FROM positions p
+        JOIN games g ON p.game_id = g.id
+        WHERE p.zobrist_hash IN ({list})
+          AND p.next_move IS NOT NULL
+          AND g.result IN ('1-0', '0-1', '1/2-1/2')
+          AND g.deleted_at IS NULL
+          AND COALESCE(g.white_elo, 0) <= {ceiling}
+          AND COALESCE(g.black_elo, 0) <= {ceiling}
+          AND g.id NOT IN (SELECT game_id FROM engine_games)
+        GROUP BY 1, 2");
+    let mut by_pos: std::collections::HashMap<i64, Vec<MoveStat>> = std::collections::HashMap::new();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, MoveStat { san: r.get(1)?, games: r.get(2)?, score: r.get(3)? })))?;
+    for row in rows {
+        let (z, m) = row?;
+        by_pos.entry(z).or_default().push(m);
+    }
+
+    let evals = stored_evals(conn, &list, &black_to_move)?;
+
+    Ok(order.into_iter().map(|z| {
+        let mut moves = by_pos.remove(&z).unwrap_or_default();
+        moves.sort_by(|a, b| b.games.cmp(&a.games).then_with(|| a.san.cmp(&b.san)));
+        let games = moves.iter().map(|m| m.games).sum();
+        let mine = chapter_moves.get(&z).cloned().unwrap_or_default();
+        let moves = moves.into_iter().enumerate()
+            .filter(|(i, m)| *i < TOP_MOVES || mine.contains(&m.san))
+            .map(|(_, m)| m)
+            .collect();
+        PositionStat { key: keys.remove(&z).unwrap_or_default(), zobrist: format!("{:016x}", z as u64), games, moves, eval: evals.get(&z).cloned() }
+    }).collect())
+}
+
+fn strip_marks(san: &str) -> &str {
+    san.trim_end_matches(|c| matches!(c, '+' | '#' | '!' | '?'))
+}
+
+/// The cloud evaluations kept in the database for these positions (a list of
+/// hashes, as SQL): Lichess's first line where there is one, else chessdb's
+/// best move — both turned to White's side.
+fn stored_evals(conn: &Connection, list: &str, black_to_move: &std::collections::HashSet<i64>) -> Result<std::collections::HashMap<i64, Eval>> {
+    use crate::cloud_eval::{CloudEval, LichessEval};
+    let mut out = std::collections::HashMap::new();
+    let mut stmt = conn.prepare(&format!(
+        "SELECT service, zobrist, body FROM cloud_evals WHERE service IN ('lichess', 'chessdb') AND zobrist IN ({list}) ORDER BY service DESC"))?;
+    // 'lichess' sorts after 'chessdb': DESC puts it first, and the first kept wins.
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))?;
+    for row in rows {
+        let (service, z, body) = row?;
+        if out.contains_key(&z) { continue; }
+        let eval = if service == "lichess" {
+            serde_json::from_str::<LichessEval>(&body).ok()
+                .filter(|e| e.status == "ok")
+                .and_then(|e| e.lines.into_iter().next())
+                .and_then(|l| l.mate.map(|mate| Eval::Mate { mate }).or(l.eval_cp.map(|cp| Eval::Cp { cp })))
+        } else {
+            let sign = if black_to_move.contains(&z) { -1 } else { 1 };
+            serde_json::from_str::<CloudEval>(&body).ok()
+                .filter(|e| e.status == "ok")
+                .and_then(|e| e.moves.into_iter().next())
+                .map(|m| match m.mate { Some(mate) => Eval::Mate { mate: sign * mate }, None => Eval::Cp { cp: sign * m.score_cp } })
+        };
+        if let Some(e) = eval { out.insert(z, e); }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,6 +757,54 @@ mod tests {
         assert!(by_move.contains(&(2, "Nc3", true)));
         assert!(by_move.contains(&(3, "Nf6", true)));
         assert_eq!(w.rows[0].mover, "white");
+    }
+
+    #[test]
+    fn a_chapters_figures_come_from_the_games() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let book = create_book(&conn, "B", "white", None, None, None).unwrap();
+        let ch = add_chapters(&conn, book.id, Some("Ch"), Some("1. e4 e5 (1... c5) *"), None).unwrap().remove(0);
+
+        let start = Chess::default();
+        let z0 = start.zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64;
+        let mut after_e4 = start.clone();
+        let e4 = shakmaty::san::San::from_ascii(b"e4").unwrap().to_move(&after_e4).unwrap();
+        after_e4.play_unchecked(e4);
+        let z1 = after_e4.zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64;
+
+        // Three games from the start: e4 won and drew, d4 lost; after 1.e4, c5
+        // (written with a check mark by its source) and e5. Game 9 is an
+        // engine game: left out.
+        conn.execute_batch(&format!("
+            INSERT INTO players (id, name, name_normalized) VALUES (1, 'A', 'a'), (2, 'B', 'b');
+            INSERT INTO games (id, white_id, black_id, result, pgn) VALUES
+              (1, 1, 2, '1-0', ''), (2, 1, 2, '1/2-1/2', ''), (3, 1, 2, '0-1', ''), (9, 1, 2, '1-0', '');
+            INSERT INTO engine_games (game_id) VALUES (9);
+            INSERT INTO positions (game_id, move_number, zobrist_hash, next_move) VALUES
+              (1, 0, {z0}, 'e4'), (2, 0, {z0}, 'e4'), (3, 0, {z0}, 'd4'), (9, 0, {z0}, 'd4'),
+              (1, 1, {z1}, 'c5+'), (2, 1, {z1}, 'e5');
+            INSERT INTO cloud_evals (service, zobrist, body, fetched) VALUES
+              ('lichess', {z1}, '{{\"status\":\"ok\",\"depth\":40,\"knodes\":1,\"lines\":[{{\"evalCp\":25,\"mate\":null,\"pvUci\":[]}}]}}', 0);
+        ")).unwrap();
+
+        let stats = chapter_stats(&conn, ch.id).unwrap();
+        let at = |key: &str| stats.iter().find(|s| s.key == key).unwrap_or_else(|| panic!("{key} in {stats:?}"));
+        let s0 = at("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq");
+        assert_eq!(s0.games, 3, "the engine game is left out");
+        assert_eq!(s0.moves, vec![
+            MoveStat { san: "e4".into(), games: 2, score: 0.75 },
+            MoveStat { san: "d4".into(), games: 1, score: 0.0 },
+        ]);
+        assert_eq!(s0.zobrist, format!("{:016x}", z0 as u64));
+        assert_eq!(s0.eval, None);
+        let s1 = at("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq");
+        assert_eq!(s1.moves.iter().map(|m| m.san.as_str()).collect::<Vec<_>>(), vec!["c5", "e5"], "check marks stripped");
+        assert_eq!(s1.moves[0].score, 0.0, "c5 lost: scored for Black");
+        assert_eq!(s1.eval, Some(Eval::Cp { cp: 25 }));
+        // The ends of the lines are there too, without games.
+        assert_eq!(stats.len(), 4);
+        assert!(stats.iter().any(|s| s.key.ends_with(" w KQkq") && s.key.contains("2p5") && s.games == 0));
     }
 
     #[test]

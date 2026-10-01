@@ -1355,6 +1355,12 @@ async fn repertoire_book_pgn_handler(State(state): State<AppState>, AxumPath(id)
     state.reads.run(move |conn| crate::repertoire::book_pgn(conn, id).map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))).await
 }
 
+/// The database's figures for every position of a chapter — for its practice
+/// package (docs/design/opening-repertoire.md, Practice).
+async fn repertoire_chapter_stats_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>) -> ApiResult<Vec<crate::repertoire::PositionStat>> {
+    state.reads.run(move |conn| crate::repertoire::chapter_stats(conn, id).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
+}
+
 async fn repertoire_chapter_pgn_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>) -> std::result::Result<String, (StatusCode, String)> {
     state.reads.run(move |conn| crate::repertoire::chapter_pgn(conn, id).map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))).await
 }
@@ -2774,6 +2780,7 @@ pub async fn run(
         .route("/repertoire/chapters/{id}",            get(repertoire_chapter_handler).put(repertoire_chapter_update_handler).delete(repertoire_chapter_delete_handler))
         .route("/repertoire/chapters/{id}/moves",      put(repertoire_chapter_moves_handler))
         .route("/repertoire/chapters/{id}/pgn",        get(repertoire_chapter_pgn_handler))
+        .route("/repertoire/chapters/{id}/stats",      get(repertoire_chapter_stats_handler))
         .route("/sources",                             get(sources_handler))
         .route("/sources/{key}/enabled",               post(set_source_enabled_handler))
         .route("/schedule",                            get(get_schedule_handler).post(set_schedule_handler))

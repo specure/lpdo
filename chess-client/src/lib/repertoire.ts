@@ -64,6 +64,9 @@ export const updateChapter = (id: number, patch: { name?: string; ord?: number; 
 export const saveChapterMoves = (id: number, moves: string) =>
   putJson<ChapterSummary>(`/repertoire/chapters/${id}/moves`, { moves });
 export const deleteChapter = (id: number) => apiDelete(`/repertoire/chapters/${id}`);
+/** The database's figures for every position of a chapter — for its
+ *  practice package (src/trainer/buildPackage.ts). */
+export const getChapterStats = (id: number) => apiGet<import("../trainer/buildPackage").PositionStat[]>(`/repertoire/chapters/${id}/stats`);
 /** Where a book's or a chapter's PGN is served (for exporting). */
 export const bookPgnPath = (id: number) => `/repertoire/books/${id}/pgn`;
 export const chapterPgnPath = (id: number) => `/repertoire/chapters/${id}/pgn`;

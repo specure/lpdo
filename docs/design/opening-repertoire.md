@@ -181,21 +181,76 @@ sent again. The one thing the desktop can add is a **focus**: sent with the
 chapter, a branch to start from ("prepare the 5...Nb6 line for Saturday"),
 offered on the phone as a ready session.
 
+### Preparing a chapter: the analysis job
+
+What the phone gets is worked out beforehand, in a **background job** on
+the server — "Analyse chapter" (and for a whole book) — with its progress on
+the chapter, as the server's other jobs; it can run overnight. **Send to
+phone** then only reads what is stored: instant, and it says how complete
+the chapter is ("analysed: 110 of 110 positions").
+
+- **The database's figures** for every position (the stats above), kept
+  per chapter and made again when the chapter changes or the database grows.
+  Measured on the real database (13.9 M games): 3–6 s a chapter, about the
+  same for 20 lines as for 45 — a pass over the positions index — and the
+  Reference tab's own requests slow from ~1.7 s to 3–4 s meanwhile; not
+  something to do while one waits, and once stored, never again for the same
+  chapter.
+- **Engine evaluations** (Stockfish, the server's own): the positions the
+  database has no stored evaluation for — on three real chapters, none of
+  their 176–669 positions had one; cloud evaluations are only kept where one
+  has looked. In order of use:
+  1. **the end of every line** — where the line leaves one ("+0.4, a
+     comfortable position");
+  2. **one's own moves** — the engine's best move and its evaluation in the
+     position, beside the repertoire's move: the cost of the choice ("the
+     engine prefers 9.d4, +0.2"), which is where a line's objective strength
+     shows — and where a deliberately second-best move should be known as
+     such;
+  3. optionally, **the opponent's popular moves** — where the most played
+     one is a mistake: where to punish it.
+
+  Kept in the `engine_evals` table (so the Analysis page shows them too),
+  with the engine, depth and multipv, so they are comparable and can be done
+  again stronger; after an edit only new positions are evaluated. A chapter
+  of 20 lines is ~110 positions — a few minutes at 1–2 s each; a book of 26
+  chapters, about an hour.
+
+This is the engine pass phase 2 lists for flagging questionable moves (#309):
+one job for both — the desktop marks moves in the chapter, the package
+carries the numbers. At opening depths a cost under ~0.3 is noise, and
+courses choose practical moves on purpose: the trainer says what the engine
+prefers and by how much, flags only clear drops, and never calls the
+repertoire's move "wrong".
+
 ### A session: choosing the lines
 
 Only the opponent's moves are a matter of chance — one's own are the
-repertoire's. A line's **likelihood** is the product, over the opponent's
-moves in it, of the move's share of the games from its position (the
-Reference tab's figures, from the positions index, shipped in the
-chapter); a move not in the database counts as rare, not impossible. Lines
-switched off are left out.
+repertoire's. Lines are compared from the chapter's **trunk**: the moves
+down to where the chapter first branches (or the focus, if deeper) — every
+line shares them, and counted from move 1 every line of "21 3...Nc6" is
+under 1% of the games. From there, at each opponent move:
+
+- a line's **weight** takes the move's share **among the chapter's moves
+  there** (the Reference tab's figures, shipped in the chapter; a move the
+  database does not have counts as rare, not impossible). The weights of a
+  chapter's lines add up to 100% — "of the games that stay in the
+  chapter, this line takes 23%" — and a line is not favoured for ending
+  early. This is what lines are ranked and covered by.
+- a line's **likelihood** takes the move's share among all the moves
+  played there: how many games follow it to its end. Shown as information,
+  with the chapter's **reach** — how many games from the trunk stay in it to
+  the end of a line.
+
+One's own alternatives (a second move of one's own at a branch) rank after
+the main repertoire. Lines switched off are left out.
 
 A session starts from a chapter (several, or a branch — the focus, or one
-picked in the tree) and takes its lines in order of likelihood until they
-reach a target, set one of two ways, the other shown alongside:
+picked in the tree) and takes its lines in order of weight until they reach
+a target, set one of two ways, the other shown alongside:
 
-- **Coverage** — the share of the games reaching the start that stay within
-  the lines chosen ("12 of 20 lines, 75% of games"); the default, 75%.
+- **Coverage** — the share of the chapter's games the lines chosen take
+  in ("3 of 20 lines, 78%"); the default, 75% — always reachable.
 - **Time** — "20 minutes": lines are added while the estimate stays under
   it.
 
@@ -236,31 +291,44 @@ the phone trainer and any later app alike:
 ```jsonc
 {
   "format": "lpdo-chapter", "version": 1,
-  "chapter": { "id": 65, "updated": "2026-10-02T09:12:00Z" },  // which chapter, which version
-  "server": "7c1e…",                 // the LPDO database it came from (ids are per database)
+  "chapter": { "id": 65, "updated": "2026-10-02 09:12:00" },  // which chapter, which version
   "sent": "2026-10-02T09:30:00Z",
-  "book": { "name": "Classical English", "author": "…", "color": "white" },  // the side trained
+  "book": { "name": "Classical English", "author": null, "color": "white" },  // the side trained
   "name": "21 3...Nc6",
-  "focus": null,                     // or the path to a branch: ["c4", "e5", "g3", "Nf6", …]
-  "tree": [                          // from the initial position
-    { "san": "c4",
+  "focus": null,                     // or the SAN path to a branch: ["c4", "e5", "g3", "Nf6", …]
+  "start": { "comment": "…", "stats": { … } },   // the initial position
+  "tree": [                          // the moves from it
+    { "san": "c4", "uci": "c2c4",
       "card": "a1b2c3d4e5f60718:c2c4",  // own moves: position hash + UCI move
-      "comment": "…", "nags": [1], "off": false,
-      "stats": { "games": 889516, "moves": [["e5", 0.31, 0.47], ["Nf6", 0.29, 0.45]], "eval": 12 },
+      "comment": "…", "pre": "…", "nags": [1],
+      "arrows": ["Gc4c5"], "circles": ["Rd4"], "off": true,   // only when there are any
+      "stats": { "games": 889516, "moves": [["e5", 0.31, 0.47], ["Nf6", 0.29, 0.45]], "eval": { "cp": 12 } },
+      "engine": { "eval": { "cp": 18 }, "best": ["d4", { "cp": 35 }], "depth": 24 },  // from the analysis job
       "children": [ … ] }            // in the chapter's order; the first is the main line
   ]
 }
 ```
 
-- `stats` is the position after the move: games reaching it, the database's
-  most played moves from it (SAN, share, score for the side to move — the
-  chapter's moves and the others, up to a handful), and a stored evaluation
-  in centipawns when there is one.
+- `stats` is the position after the move (`start.stats`: the initial
+  position): games that reached it and went on, the moves from it — SAN,
+  share of those games, score for the side playing it; the database's most
+  played (up to eight) and every move the chapter has there — and a stored
+  evaluation from White's side, `{ "cp": n }` or `{ "mate": n }` (Lichess's
+  cloud evaluation where kept, else chessdb's), when there is one. Engine
+  games are left out, as the Reference tab does by default. Served by
+  `GET /repertoire/chapters/{id}/stats`; the desktop puts the package
+  together (`chess-client/src/trainer/`).
+- `engine` — from the analysis job, when it has run: the evaluation of the
+  position after the move (White's side), and for one's own moves the
+  engine's best move in the position before it with its evaluation, when it
+  is not the repertoire's; the depth reached. Optional: a package without it
+  is complete.
 - `card` keys are position plus move, so a card's history survives the
   chapter being edited and sent again, and results could later be synced
   back by key without changing the format.
-- A chapter is identified by `server` and `chapter.id`; a newer
-  `chapter.updated` replaces the copy on the phone.
+- A chapter is identified by its id — within one LPDO database; an
+  identity for the database itself, for phones fed from more than one, is
+  left for later. A newer `chapter.updated` replaces the copy on the phone.
 - A **book** is a file of its chapters (`"format": "lpdo-book"`, the
   chapters in order) — for the file route only, see below.
 - An option leaves the comments out, roughly halving the size, for a
@@ -287,10 +355,11 @@ back:
   loop of QR codes; the trainer scans it with the camera. Fountain coding
   (BC-UR, as crypto wallets use to pass transactions between devices) lets
   the phone pick up frames in any order and miss some. No network is
-  involved. A real chapter's PGN is 10.7 KB, 4.6 KB compressed; with the
-  statistics of every position an enriched chapter is estimated at 10–15 KB
-  compressed — about 30 frames, 5–10 s at the steady setting below (to be
-  measured once the format exists).
+  involved. Measured on real chapters: "21 3...Nc6" (20 lines, 176
+  positions) is 9.7 KB compressed — ~35 frames, about 5 s at the steady
+  setting below; the largest, 43–45 lines and ~600 positions, 41 KB —
+  ~145 frames, 15–20 s; without comments half that. Worth trimming later
+  (fewer moves a position) if the large ones are sent often.
 - **A file** — a chapter or a whole book (a book of 26 chapters is a few
   hundred KB: minutes of scanning, so books go this way only), and for
   sending a chapter to someone: the desktop saves `<name>.lpdo.json`; the
@@ -349,9 +418,11 @@ pace.
    the opponent left the book); the opponent's games against your active lines
    on the Prep page; an engine pass over a chapter flagging moves it marks "?"
    (the queued analysis left open in #309).
-3. **Practice** — see [Practice](#practice): (a) the enriched chapter format,
-   and training on the desktop — sessions, study and drill — in the code the
-   phone will share; (b) the phone trainer, chapters sent by animated QR code
+3. **Practice** — see [Practice](#practice): (a) the enriched chapter format
+   and the database's figures (done: `GET /repertoire/chapters/{id}/stats`,
+   `chess-client/src/trainer/`); the analysis job — figures stored, Stockfish
+   at the ends of lines and on one's own moves; training on the desktop —
+   sessions, study and drill — in the code the phone will share; (b) the phone trainer, chapters sent by animated QR code
    or file, with an optional focus; (c) later, with a native app, results
    synced back and sessions suggested from them.
 
