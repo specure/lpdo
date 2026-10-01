@@ -1348,7 +1348,7 @@ pub fn stored_analysis(conn: &Connection, id: i64) -> Result<Option<Analysis>> {
 }
 
 fn strip_marks(san: &str) -> &str {
-    san.trim_end_matches(|c| matches!(c, '+' | '#' | '!' | '?'))
+    san.trim_end_matches(['+', '#', '!', '?'])
 }
 
 /// The cloud evaluations kept in the database for these positions (a list of
