@@ -22,6 +22,9 @@ import AnalysisPage, { type AnalysisTab } from "./AnalysisPage";
 import MergeChaptersDialog from "./repertoire/MergeChaptersDialog";
 import RenameChaptersDialog from "./repertoire/RenameChaptersDialog";
 import { mergeChapters, resolveMerge, type MergeChoices } from "../lib/mergeChapters";
+import { parsePgnTree } from "../lib/parsePgnTree";
+import { serializeMovetext } from "../lib/serializeMovetext";
+import { stripFens } from "../lib/stripFens";
 import type { CursorPath } from "../lib/moveTreeNav";
 
 interface Props {
@@ -37,7 +40,6 @@ const box = "h-full overflow-hidden flex flex-col bg-surface-container-low borde
 const CHAPTER_KEY = "repertoireChapter";
 const BOOKS_FOLDED_KEY = "repertoireBooksCollapsed";
 const CHAPTERS_FOLDED_KEY = "repertoireChaptersCollapsed";
-const CHAPTERS_SHOW_KEY = "repertoireChaptersShow";
 
 /** An Analysis tab for a chapter, fetched afresh. */
 async function loadTab(chapterId: number): Promise<AnalysisTab> {
@@ -186,6 +188,24 @@ export default function RepertoirePage({ onOpenGame }: Props) {
     const result = mergeChapters({ name: labels[0], pgn: first.pgn }, rest.map((c, i) => ({ name: labels[i + 1], pgn: c.pgn })));
     setMerging({ target: cs[0], others: cs.slice(1), labels, result });
   });
+  // FEN strings left in the comments (exports from other tools): removed,
+  // the chapters saved; how many were removed.
+  const removeFens = async (ids: number[]): Promise<number> => {
+    let total = 0;
+    await run(async () => {
+      for (const id of ids) {
+        const c = await getChapter(id);
+        const tree = parsePgnTree(c.pgn);
+        const n = stripFens(tree);
+        if (n === 0) continue;
+        await saveChapterMoves(id, serializeMovetext(tree));
+        total += n;
+      }
+      if (total && chapterId != null && ids.includes(chapterId)) setTab(await loadTab(chapterId));
+    });
+    return total;
+  };
+
   const finishMerge = (choices: MergeChoices) => merging && run(async () => {
     const { target, others, result } = merging;
     await saveChapterMoves(target.id, resolveMerge(result, choices));
@@ -245,6 +265,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
             bookPicked={bookPicked} onPickBook={setBookPicked}
             onMerge={startMerge}
             onAnalyse={startAnalysis} analysing={analysing}
+            onRemoveFens={removeFens}
             onRenameMany={(changes) => run(async () => { for (const c of changes) await updateChapter(c.id, { name: c.name }); })}
             onChapter={(id, patch) => run(() => updateChapter(id, patch))}
             onDeleteChapter={(id) => run(async () => { await deleteChapter(id); if (id === chapterId) dropChapter(); })}
@@ -541,12 +562,14 @@ function Menu({ entries, title, up = false }: {
 
 /** The book's chapters, with one menu for the chapter on the board and a
  *  mode for putting them in order. */
-function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRenameMany, onChapter, onDeleteChapter }: {
+function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onRenameMany, onChapter, onDeleteChapter }: {
   book: BookWithChapters; busy: boolean; current: number | null;
   onPick: (id: number) => void;
   onMerge: (ids: number[]) => void;
   /** Analyse chapters for practice; `analysing`: a run is going on. */
   onAnalyse: (ids: number[]) => void;
+  /** Remove the FENs left in chapters' comments; resolves to how many. */
+  onRemoveFens: (ids: number[]) => Promise<number>;
   /** "Your games": the book's line picked, and picking it (or not). */
   bookPicked: boolean;
   onPickBook: (on: boolean) => void;
@@ -565,33 +588,30 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
   const [selecting, setSelecting] = useState<number[] | null>(null);
   // What the column on the right shows: the chapters' lines, or one's own
   // games in them (looked up live for the whole book).
-  const [show, setShow] = useState<"lines" | "games">(() => (localStorage.getItem(CHAPTERS_SHOW_KEY) === "games" ? "games" : "lines"));
-  useEffect(() => { localStorage.setItem(CHAPTERS_SHOW_KEY, show); if (show !== "games") onPickBook(false); }, [show]);
   const [games, setGames] = useState<BookGames | null>(null);
   const [gamesNote, setGamesNote] = useState<string | null>(null);
   // Read again when the book's chapters change (an edit, a merge, a move).
   const chaptersKey = book.chapters.map((c) => `${c.id}:${c.updated_at}`).join(",");
   useEffect(() => {
-    if (show !== "games") return;
     let gone = false;
     setGamesNote(null);
     void (async () => {
       const me = await currentMyPlayer();
       if (gone) return;
-      if (!me) { setGames(null); setGamesNote("Set your player on the Home page to see your games here."); return; }
+      if (!me) { setGames(null); setGamesNote("Set your player on the Home page to see your games per chapter."); return; }
       try {
         const g = await getBookGames(book.id, me.id);
         if (!gone) setGames(g);
       } catch (e) { if (!gone) { setGames(null); setGamesNote(String(e)); } }
     })();
     return () => { gone = true; };
-  }, [show, book.id, chaptersKey]);
+  }, [book.id, chaptersKey]);
   // Which games count — for the tooltips: "Your games as Black, the last 12
   // months (set on the Maintenance page, Repertoire tab)".
   const gamesScope = games
     ? `Your games as ${games.color === "white" ? "White" : "Black"}, ${games.months ? `the last ${games.months} months` : "all of them"} (the period is set on the Maintenance page, Repertoire tab)`
     : null;
-  const gamesFor = (id: number): Score | null => (show === "games" && games ? games.chapters.find((c) => c.id === id) ?? null : null);
+  const gamesFor = (id: number): Score | null => (games ? games.chapters.find((c) => c.id === id) ?? null : null);
   const [renamingAll, setRenamingAll] = useState(false);
   useEffect(() => setSelecting(null), [book.id]);
   const chapter = book.chapters.find((c) => c.id === current) ?? null;
@@ -622,6 +642,10 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
             { label: "Merge chapters…", onClick: () => { setSelecting(current != null && chapter ? [current] : []); setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
             { label: "Analyse chapter", onClick: () => chapter && onAnalyse([chapter.id]), disabled: none || analysing, separated: true },
             { label: "Analyse all chapters", onClick: () => onAnalyse(book.chapters.map((c) => c.id)), disabled: busy || analysing || book.chapters.length === 0 },
+            { label: "Remove FENs from comments", separated: true, disabled: none,
+              onClick: () => chapter && void onRemoveFens([chapter.id]).then((n) => setNote(n ? `Removed ${n} FEN${n === 1 ? "" : "s"} from “${chapter.name}”.` : `No FENs in “${chapter.name}”.`)) },
+            { label: "Remove FENs in all chapters", disabled: busy || book.chapters.length === 0,
+              onClick: () => void onRemoveFens(book.chapters.map((c) => c.id)).then((n) => setNote(n ? `Removed ${n} FEN${n === 1 ? "" : "s"} from the book's comments.` : "No FENs in the book's comments.")) },
           ]} />
         )}
       </div>
@@ -630,31 +654,21 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
           onRename={(changes) => void onRenameMany(changes).then(() => setRenamingAll(false))}
           onCancel={() => setRenamingAll(false)} />
       )}
-      {!arranging && !selecting && (
-        <div className="px-3 pb-1 flex items-center gap-1.5">
-          <span className="flex-1 min-w-0 flex items-center gap-1">
-            {(["lines", "games"] as const).map((v) => (
-              <button key={v} onClick={() => setShow(v)}
-                title={v === "games" ? gamesScope ?? "Your games in each chapter" : "The chapters' lines"}
-                className={`h-6 px-2 rounded-full text-label-sm transition-colors duration-short3 ${show === v ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8"}`}>
-                {v === "lines" ? "Lines" : "Your games"}
-              </button>
-            ))}
+      {/* One's own games in the book and each chapter (the line counts are
+          in the chapters' tooltips, and the Lines tab): the columns' names,
+          then the whole book's row. */}
+      {!arranging && !selecting && games && (
+        <div className="px-3 flex items-center gap-1.5 text-label-sm text-on-surface-variant whitespace-nowrap">
+          <span className="flex-1" />
+          <span className="flex items-center gap-1 shrink-0" title={gamesScope ?? undefined}>
+            <span className="w-9 text-right">games</span>
+            <span className="w-10 text-right">score</span>
+            <span className="w-10 text-right" title="Your performance rating, with three rated opponents or more">perf</span>
           </span>
-          {/* The columns' names, over the book's row and every chapter's. */}
-          {show === "games" && (
-            <>
-              <span className="flex items-center gap-1 shrink-0 text-label-sm text-on-surface-variant" title={gamesScope ?? undefined}>
-                <span className="w-6 text-right">games</span>
-                <span className="w-10 text-right">score</span>
-                <span className="w-10 text-right" title="Your performance rating, with three rated opponents or more">perf</span>
-              </span>
-              <span className="shrink-0 w-2" />
-            </>
-          )}
+          <span className="shrink-0 w-2" />
         </div>
       )}
-      {show === "games" && !arranging && !selecting && (
+      {!arranging && !selecting && (
         <BookGamesSummary games={games} note={gamesNote} picked={bookPicked} onPick={() => onPickBook(true)} />
       )}
       {arranging && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Drag a chapter to its place, or move it with ▲ ▼.</div>}
@@ -672,7 +686,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
             renaming={renaming === c.id} arranging={arranging} first={i === 0} last={i === book.chapters.length - 1}
             dropTarget={arranging && over === c.id && dragged !== c.id}
             selected={selecting ? selecting.includes(c.id) : undefined}
-            mine={show === "games" && !arranging && !selecting ? (gamesFor(c.id) ?? { games: 0, w: 0, d: 0, l: 0, perf: null }) : undefined}
+            mine={games && !arranging && !selecting ? (gamesFor(c.id) ?? { games: 0, w: 0, d: 0, l: 0, perf: null }) : undefined}
             onSelect={(on) => setSelecting((s) => s && (on ? [...s, c.id] : s.filter((x) => x !== c.id)))}
             onPick={() => onPick(c.id)}
             onActive={(active) => onChapter(c.id, { active })}
@@ -716,7 +730,7 @@ function BookGamesSummary({ games, note, picked, onPick }: { games: BookGames | 
           {b.games > 0 && <span className="text-label-sm text-on-surface-variant tabular-nums">+{b.w} ={b.d} −{b.l}</span>}
         </span>
         <span className="flex items-center gap-1 shrink-0">
-          <span className="w-6 text-right text-label-sm text-on-surface-variant tabular-nums">{b.games || "–"}</span>
+          <span className="w-9 text-right text-label-sm text-on-surface-variant tabular-nums">{b.games || "–"}</span>
           <ScoreCell s={b} />
           <span className="w-10 text-right text-label-sm text-on-surface-variant tabular-nums">{b.perf ?? ""}</span>
         </span>
@@ -780,7 +794,7 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
           {mine ? (
             <span className="flex items-center gap-1 shrink-0"
               title={mine.games ? `Your games in this chapter: ${mine.games} · +${mine.w} =${mine.d} −${mine.l}${mine.perf ? ` · performance ${mine.perf}` : ""}` : "None of your games went into this chapter"}>
-              <span className="w-6 text-right text-label-sm text-on-surface-variant tabular-nums">{mine.games || "–"}</span>
+              <span className="w-9 text-right text-label-sm text-on-surface-variant tabular-nums">{mine.games || "–"}</span>
               <ScoreCell s={mine} />
               <span className="w-10 text-right text-label-sm text-on-surface-variant tabular-nums">{mine.perf ?? ""}</span>
             </span>

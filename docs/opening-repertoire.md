@@ -47,6 +47,12 @@ anything changes; the spaces, dashes and colons a removal leaves at either
 end are trimmed, and *Regular expression* allows patterns (`^\d+\s*` for a
 leading number).
 
+**Remove FENs from comments** there (or **in all chapters**) deletes the
+FEN strings courses exported from other tools leave in the text
+("…reminiscent of the King's Indian rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR
+w KQkq - 0 1 1.d4 Nf6…"); the rest of each comment stays as written, and it
+says how many it removed.
+
 **Merge chapters…** there folds several chapters into one — the same
 section imported twice, or split over several files. Tick the chapters and
 **Merge**: the topmost keeps its name, its place and its main line, and
@@ -112,11 +118,10 @@ book's colour (a Black repertoire, your games as Black), from the last 12
 months — the period is set on the Maintenance page, **Repertoire** tab
 (0 for all). Your player is the one set on the Home page.
 
-**Your games** — the switch above the chapters, beside **Lines** — shows
-how you have done in each chapter instead of its line count: how many of
-your games went into it, your score (green above 55%, red below 45%) and
-your performance rating (with three rated opponents or more); the tooltip
-has the wins, draws and losses. A game counts for a chapter when it reached
+**Your games** show beside each chapter — when your player is set on the
+Home page (otherwise its line count): how many of your games went into it,
+your score (green from 55%, red up to 45%) and your performance rating (with
+three rated opponents or more); a chapter's tooltip has its line count. A game counts for a chapter when it reached
 a position only that chapter has, by a move of yours — so for the chapter
 you actually played, transpositions included. Above the chapters, **The
 whole book** has the same columns for all your games in the book's opening

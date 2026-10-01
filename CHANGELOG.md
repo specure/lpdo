@@ -29,13 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   database's figures for every position, kept until analysed again; the
   chapter list and the Lines tab show what is analysed. Your own games
   through a chapter's positions are looked up live — with the book's colour,
-  from the last 12 months (Maintenance → Repertoire) — and **Your games**
-  above the chapter list shows, per chapter, how many of your games went
+  from the last 12 months (Maintenance → Repertoire) — and the chapter list
+  shows, per chapter, how many of your games went
   into it with your score and performance, and for the whole book — picked,
   its games are listed under My games, each with its chapter; the **My
   games** tab lists the chapter's games and
   where each left it — by you or your opponent — the board going there on a
-  click. Design in
+  click. Remove FENs from comments (a chapter, or all of them) deletes the
+  FEN strings exported courses leave in the text. Design in
   `docs/design/opening-repertoire.md`. (#327, #329)
 
 ### Fixed
