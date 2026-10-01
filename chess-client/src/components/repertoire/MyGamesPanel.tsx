@@ -21,6 +21,8 @@ interface Props {
   reloadKey: number;
   onPick: (cursor: CursorPath) => void;
   onOpen: (game: GameSummary) => void;
+  /** Preview a game under the list, at a move (`ply`: half-moves played). */
+  onPreview?: (game: GameSummary, ply: number) => void;
   /** The whole book instead of the chapter, and putting a chapter on the board. */
   book?: { id: number; chapters: { id: number; name: string }[] } | null;
   onPickChapter?: (id: number) => void;
@@ -137,7 +139,7 @@ function BookGamesList({ book, reloadKey, onOpen, onPickChapter }: Props & { boo
 }
 
 /** The chapter's games, each with how far it followed the chapter. */
-function ChapterGamesList({ chapterId, reloadKey, onPick, onOpen }: Props) {
+function ChapterGamesList({ chapterId, reloadKey, onPick, onOpen, onPreview }: Props) {
   const [list, setList] = useState<ChapterGameList | null>(null);
   const [tree, setTree] = useState<AnnotatedGame | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -163,10 +165,13 @@ function ChapterGamesList({ chapterId, reloadKey, onPick, onOpen }: Props) {
   if (!list) return <div className="p-3 text-center text-on-surface-variant text-body-sm">Looking up your games…</div>;
   const colour = list.color === "white" ? "White" : "Black";
   const period = list.months ? `the last ${list.months} months` : "all your games";
+  // The board where the game left the chapter, and the game previewed
+  // there — the deviating move just played.
   const pick = (g: ChapterGame) => {
     setPicked(g.id);
     const at = tree && cursorAtPosition(tree, g.at_key, positionKey);
     if (at) onPick(at);
+    onPreview?.(summary(g), g.followed === "left" ? g.at_ply + 1 : g.at_ply);
   };
 
   return (
@@ -174,7 +179,7 @@ function ChapterGamesList({ chapterId, reloadKey, onPick, onOpen }: Props) {
       <div className="px-3 py-1 shrink-0 text-label-sm text-on-surface-variant border-b border-outline/40"
         title="The period is set on the Maintenance page, Repertoire tab.">
         {list.games.length} {list.games.length === 1 ? "game" : "games"} as {colour} · {period}
-        <span className="ml-2 text-outline">click: where it left · double-click: open</span>
+        <span className="ml-2 text-outline">click: where it left, and the game below · double-click: open</span>
       </div>
       {list.games.length === 0 ? (
         <div className="p-3 text-center text-on-surface-variant text-body-sm">None of your games as {colour} went into this chapter in {period}.</div>

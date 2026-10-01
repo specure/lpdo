@@ -182,6 +182,11 @@ export interface RepertoireSettings {
 }
 export const getRepertoireSettings = () => apiGet<RepertoireSettings>("/repertoire/settings");
 export const putRepertoireSettings = (s: RepertoireSettings) => putJson<RepertoireSettings>("/repertoire/settings", s);
+/** Books from a PGN exported by LPDO (a book, or a backup of them all), made
+ *  again one to one; a PGN without LPDO's tags makes one book after `file`. */
+export const importBooks = (pgn: string, file?: string) => postJson<Book[]>("/repertoire/import", { pgn, file });
+/** Every book as one PGN: the repertoire's backup. */
+export const allBooksPgnPath = "/repertoire/pgn";
 /** Where a book's or a chapter's PGN is served (for exporting). */
 export const bookPgnPath = (id: number) => `/repertoire/books/${id}/pgn`;
 export const chapterPgnPath = (id: number) => `/repertoire/chapters/${id}/pgn`;

@@ -44,6 +44,8 @@ interface Snapshot {
   /** Computed by another version of the engine (an older Stockfish, Lc0 with
    *  another network): shown, labelled, until this one has its own. */
   engine?: string;
+  /** The search failed: the engine gave no answer, or exited — why. */
+  error?: string;
 }
 
 export default function LocalEngine({
@@ -163,6 +165,7 @@ export default function LocalEngine({
         // A remembered result stays until the new search goes further (or
         // it is the same search, continued).
         setSnap((prev) => (prev?.cached && !s.cached && !deeper(kind, s, prev) && !(s.depth === prev.depth && s.nodes === prev.nodes) ? prev : s));
+        if (s.error) setStreamError(s.error);
         if (s.done && !s.cached) { es.close(); setRunning(false); }
       };
       es.onerror = () => {

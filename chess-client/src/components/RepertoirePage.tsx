@@ -10,7 +10,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { GameSummary } from "../types";
 import {
   addChapters, bookPgnPath, chapterPgnPath, createBook, deleteBook, deleteChapter, getChapter, listRepertoire,
-  saveChapterMoves, updateBook, updateChapter, documentOf, analyseChapters, getBookGames, scorePct,
+  saveChapterMoves, updateBook, updateChapter, documentOf, analyseChapters, getBookGames, scorePct, importBooks,
   type BookGames, type Score, type BookColor, type BookWithChapters, type ChapterSummary,
 } from "../lib/repertoire";
 import { saveTextFile } from "../lib/exportPgn";
@@ -191,13 +191,37 @@ export default function RepertoirePage({ onOpenGame }: Props) {
 
   const addEmpty = (bookId: number, name: string) =>
     run(async () => { const [c] = await addChapters(bookId, { name }); if (c) setChapterId(c.id); });
+  // Books from LPDO's own export (a book, or a backup): made again, each a
+  // new book — never added to the one selected.
+  const importBookFiles = (items: { pgn: string; file?: string }[]) => run(async () => {
+    let first: number | null = null;
+    try {
+      for (const [i, it] of items.entries()) {
+        setImporting({ i: i + 1, n: items.length, file: it.file ?? null });
+        const made = await importBooks(it.pgn, it.file).catch((e) => { throw new Error(it.file ? `${it.file}: ${String(e)}` : String(e)); });
+        first ??= made[0]?.id ?? null;
+      }
+    } finally {
+      setImporting(null);
+    }
+    if (first != null) setSelectedBook(first);
+  });
+
+  // An import going on: which file of how many — shown above the chapters,
+  // so a long one is not taken for nothing happening.
+  const [importing, setImporting] = useState<{ i: number; n: number; file: string | null } | null>(null);
   const importPgn = (bookId: number, items: { pgn: string; file?: string }[]) => run(async () => {
     // One file at a time, in the order picked: each adds its chapters at the
     // end. A file that fails stops the rest.
     let first: number | null = null;
-    for (const it of items) {
-      const cs = await addChapters(bookId, it).catch((e) => { throw new Error(it.file ? `${it.file}: ${String(e)}` : String(e)); });
-      first ??= cs[0]?.id ?? null;
+    try {
+      for (const [i, it] of items.entries()) {
+        setImporting({ i: i + 1, n: items.length, file: it.file ?? null });
+        const cs = await addChapters(bookId, it).catch((e) => { throw new Error(it.file ? `${it.file}: ${String(e)}` : String(e)); });
+        first ??= cs[0]?.id ?? null;
+      }
+    } finally {
+      setImporting(null);
     }
     if (first != null && chapterId == null) setChapterId(first);
   });
@@ -285,7 +309,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
         onSelect={setSelectedBook} onFold={() => setBooksFolded(true)}
         onCreate={(b) => run(async () => { const nb = await createBook(b); setSelectedBook(nb.id); })}
         onUpdate={(id, patch) => run(() => updateBook(id, patch))}
-        onAddEmpty={addEmpty} onImport={importPgn}
+        onAddEmpty={addEmpty} onImport={importPgn} onImportBooks={importBookFiles}
         onDelete={(b) => run(async () => {
           await deleteBook(b.id);
           if (b.chapters.some((c) => c.id === chapterId)) dropChapter();
@@ -300,6 +324,16 @@ export default function RepertoirePage({ onOpenGame }: Props) {
         <span className="flex-1 min-w-0 truncate text-label-md text-on-surface-variant uppercase tracking-wider" title={book?.name}>Chapters</span>
         <button onClick={() => setChaptersFolded(true)} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide the chapters">«</button>
       </div>
+      {importing && (
+        <div className="px-3 py-2 shrink-0 border-b border-outline/40 flex flex-col gap-1">
+          <span className="text-label-sm text-on-surface-variant truncate">
+            Importing{importing.file ? ` “${importing.file}”` : " the PGN"}{importing.n > 1 ? ` (${importing.i} of ${importing.n})` : ""}…
+          </span>
+          <div className="h-1 rounded-full bg-on-surface/10 overflow-hidden">
+            <div className="h-full bg-primary transition-all duration-medium2" style={{ width: `${Math.round(((importing.i - 0.5) / importing.n) * 100)}%` }} />
+          </div>
+        </div>
+      )}
       {(analysing || analysis.error || analysis.done) && (
         <div className="px-3 py-2 shrink-0 border-b border-outline/40 flex flex-col gap-1">
           <div className="flex items-center gap-2 text-label-sm text-on-surface-variant">
@@ -420,16 +454,25 @@ async function exportPgn(path: string, filename: string): Promise<string | null>
 
 type ImportItem = { pgn: string; file?: string };
 
-function BooksPanel({ books, selected, busy, error, onSelect, onFold, onCreate, onUpdate, onAddEmpty, onImport, onDelete }: {
+function BooksPanel({ books, selected, busy, error, onSelect, onFold, onCreate, onUpdate, onAddEmpty, onImport, onImportBooks, onDelete }: {
   books: BookWithChapters[] | null; selected: number | null; busy: boolean; error: string | null;
   onSelect: (id: number) => void; onFold: () => void;
   onCreate: (b: { name: string; author: string | null; color: BookColor }) => void;
   onUpdate: (id: number, patch: BookPatch) => void;
   onAddEmpty: (bookId: number, name: string) => void;
   onImport: (bookId: number, items: ImportItem[]) => void;
+  /** Books from LPDO's own PGN (a book exported, or a backup). */
+  onImportBooks: (items: ImportItem[]) => void;
   onDelete: (b: BookWithChapters) => void;
 }) {
   const [adding, setAdding] = useState(false);
+  const booksFileRef = useRef<HTMLInputElement>(null);
+  async function pickBookFiles(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = [...(e.target.files ?? [])];
+    e.target.value = "";
+    if (files.length === 0) return;
+    onImportBooks(await Promise.all(files.map(async (f) => ({ pgn: await f.text(), file: f.name.replace(/\.[^.]+$/, "") }))));
+  }
   const [name, setName] = useState("");
   const [author, setAuthor] = useState("");
   const [color, setColor] = useState<BookColor>("white");
@@ -438,6 +481,9 @@ function BooksPanel({ books, selected, busy, error, onSelect, onFold, onCreate, 
     <>
       <div className="px-3 py-2 flex items-center gap-1 border-b border-outline/40 shrink-0">
         <span className="flex-1 text-label-md text-on-surface-variant uppercase tracking-wider">Books</span>
+        <button onClick={() => booksFileRef.current?.click()} disabled={busy} className={plain}
+          title="Books exported from LPDO — one, or a backup of them all — made again as they were: name, colour, author, link, notes and chapters. Each becomes a new book.">Import…</button>
+        <input ref={booksFileRef} type="file" multiple accept=".pgn,text/plain" className="hidden" onChange={(e) => void pickBookFiles(e)} />
         <button onClick={() => setAdding((a) => !a)} className={plain}>{adding ? "Cancel" : "+ New"}</button>
         <button onClick={onFold} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide the books">«</button>
       </div>

@@ -1398,6 +1398,20 @@ async fn repertoire_book_games_handler(State(state): State<AppState>, AxumPath(i
     state.reads.run(move |conn| crate::repertoire::book_games(conn, id, q.player_id).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
 }
 
+#[derive(Deserialize)]
+struct BooksImportBody { pgn: String, file: Option<String> }
+
+/// Books from a PGN exported by LPDO (a book, or a backup of them all), made
+/// again one to one.
+async fn repertoire_import_handler(State(state): State<AppState>, Json(b): Json<BooksImportBody>) -> ApiResult<Vec<crate::repertoire::Book>> {
+    state.writer.run(move |conn| crate::repertoire::import_books(conn, &b.pgn, b.file.as_deref()).map(Json).map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))).await
+}
+
+/// Every book as one PGN — the repertoire's backup.
+async fn repertoire_all_pgn_handler(State(state): State<AppState>) -> std::result::Result<String, (StatusCode, String)> {
+    state.reads.run(move |conn| crate::repertoire::all_books_pgn(conn).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))).await
+}
+
 async fn repertoire_settings_handler() -> Json<crate::repertoire::RepertoireSettings> {
     Json(crate::repertoire::settings())
 }
@@ -2831,6 +2845,8 @@ pub async fn run(
         .route("/repertoire/books/{id}/mine",          get(repertoire_book_mine_handler))
         .route("/repertoire/chapters/{id}/games",      get(repertoire_chapter_games_handler))
         .route("/repertoire/books/{id}/games",         get(repertoire_book_games_handler))
+        .route("/repertoire/import",                   post(repertoire_import_handler))
+        .route("/repertoire/pgn",                      get(repertoire_all_pgn_handler))
         .route("/repertoire/settings",                 get(repertoire_settings_handler).put(repertoire_settings_put_handler))
         .route("/sources",                             get(sources_handler))
         .route("/sources/{key}/enabled",               post(set_source_enabled_handler))
