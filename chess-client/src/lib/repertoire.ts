@@ -2,7 +2,8 @@
 // chapter a PGN game studied in the Analysis page. See
 // docs/design/opening-repertoire.md.
 
-import { apiDelete, apiGet, postJson, putJson } from "../api";
+import { apiDelete, apiGet, postJson, putJson, submitJob } from "../api";
+import type { PositionStat } from "../trainer/buildPackage";
 
 export type BookColor = "white" | "black";
 
@@ -27,6 +28,10 @@ export interface ChapterSummary {
   lines: number;
   lines_off: number;
   updated_at: string | null;
+  /** When the chapter was last analysed for practice, and its `updated_at`
+   *  then — another one means changed since. */
+  analysed_at: string | null;
+  analysed_version: string | null;
 }
 
 export interface BookWithChapters extends Book {
@@ -46,6 +51,8 @@ export interface ChapterDocument {
   bookName: string;
   chapterName: string;
   color: BookColor;
+  /** When the chapter was last analysed — read again when it changes. */
+  analysedAt?: string | null;
 }
 
 export const listRepertoire = () => apiGet<BookWithChapters[]>("/repertoire");
@@ -64,13 +71,26 @@ export const updateChapter = (id: number, patch: { name?: string; ord?: number; 
 export const saveChapterMoves = (id: number, moves: string) =>
   putJson<ChapterSummary>(`/repertoire/chapters/${id}/moves`, { moves });
 export const deleteChapter = (id: number) => apiDelete(`/repertoire/chapters/${id}`);
-/** The database's figures for every position of a chapter — for its
- *  practice package (src/trainer/buildPackage.ts). */
-export const getChapterStats = (id: number) => apiGet<import("../trainer/buildPackage").PositionStat[]>(`/repertoire/chapters/${id}/stats`);
+/** A chapter's analysis for practice: the database's figures for every
+ *  position (and one's own games), as stored, or worked out on the spot when
+ *  there is none (3–6 s; `analysed_at` null). */
+export interface ChapterAnalysis {
+  analysed_at: string | null;
+  chapter_updated: string | null;
+  player_id: number | null;
+  positions: PositionStat[];
+}
+export const getChapterStats = (id: number) => apiGet<ChapterAnalysis>(`/repertoire/chapters/${id}/stats`);
+/** Only what is stored — no positions when the chapter has not been analysed. */
+export const getStoredAnalysis = (id: number) => apiGet<ChapterAnalysis>(`/repertoire/chapters/${id}/stats?stored=true`);
+/** Analyse chapters for practice, in the background (job `repertoire_analyse`):
+ *  the database's figures, and `playerId`'s own games. */
+export const analyseChapters = (chapters: number[], playerId: number | null) =>
+  submitJob({ type: "repertoire_analyse", params: { chapters, player_id: playerId } });
 /** Where a book's or a chapter's PGN is served (for exporting). */
 export const bookPgnPath = (id: number) => `/repertoire/books/${id}/pgn`;
 export const chapterPgnPath = (id: number) => `/repertoire/chapters/${id}/pgn`;
 
 export function documentOf(c: ChapterDetail): ChapterDocument {
-  return { kind: "chapter", id: c.id, bookName: c.book.name, chapterName: c.name, color: c.book.color };
+  return { kind: "chapter", id: c.id, bookName: c.book.name, chapterName: c.name, color: c.book.color, analysedAt: c.analysed_at };
 }

@@ -6,7 +6,7 @@
 import { Chess } from "chess.js";
 import { parsePgnTree, type MoveNode } from "../lib/parsePgnTree";
 import { encodeCal, encodeCsl } from "../lib/parseAnnotations";
-import { FORMAT, VERSION, bareSan, type LpdoChapter, type PNode, type Side, type Stats } from "./format";
+import { FORMAT, VERSION, bareSan, type LpdoChapter, type Mine, type PNode, type Side, type Stats } from "./format";
 
 /** The server's figures for one position (see chess-db repertoire.rs). */
 export interface PositionStat {
@@ -15,6 +15,7 @@ export interface PositionStat {
   games: number;
   moves: { san: string; games: number; score: number }[];
   eval: { cp: number } | { mate: number } | null;
+  mine?: Mine;
 }
 
 export interface PackageInput {
@@ -87,8 +88,10 @@ export function buildPackage(input: PackageInput): LpdoChapter {
     if (!input.noComments && a.arrows?.length) out.arrows = codes(encodeCal(a.arrows));
     if (!input.noComments && a.circles?.length) out.circles = codes(encodeCsl(a.circles));
     if (a.off) out.off = true;
-    const stats = toStats(byKey.get(positionKey(n.fen)));
+    const after = byKey.get(positionKey(n.fen));
+    const stats = toStats(after);
     if (stats) out.stats = stats;
+    if (after?.mine) out.mine = after.mine;
     out.children = children(line, i + 1, n.fen);
     return out;
   }
@@ -96,8 +99,10 @@ export function buildPackage(input: PackageInput): LpdoChapter {
   const start: LpdoChapter["start"] = {};
   const intro = keep(game.startComment);
   if (intro) start.comment = intro;
-  const startStats = toStats(byKey.get(positionKey(START_FEN)));
+  const startStat = byKey.get(positionKey(START_FEN));
+  const startStats = toStats(startStat);
   if (startStats) start.stats = startStats;
+  if (startStat?.mine) start.mine = startStat.mine;
 
   return {
     format: FORMAT,

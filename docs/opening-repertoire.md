@@ -93,6 +93,24 @@ asks whether it is a variation or the new main line), add comments and marks,
 promote or demote variations, delete from a move on. **Done** saves the
 chapter.
 
+## Analysing chapters for practice
+
+**Analyse chapter** and **Analyse all chapters**, in the ⋯ above the
+chapters, prepare chapters for practice: for every position, how often the
+database's games reached it and the moves played there with their share and
+score, and — when your player is set on the Home page — your own games
+through it: how often, your wins, draws and losses from there, your
+performance, and the moves you played. It runs in the background on the
+server, with its progress and a Cancel above the chapters; a book of many
+chapters takes a few seconds each. Nothing is analysed by itself: run it
+again to bring a chapter up to date after editing it, or after new games
+came into the database.
+
+A dot beside a chapter in the list shows it was analysed (its tooltip says
+when), in another colour when the chapter changed since. In the **Lines**
+tab, a filled dot marks the lines in the analysis, an empty one those that
+are not — never analysed, or moves added since.
+
 ## What comes next
 
 Marks in the Reference tab and the opening tree for moves in the active

@@ -24,7 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   merged — the same course imported twice, or a section split over several
   files: new moves become variations, missing comments are taken over, and
   where the comments differ you choose which stays. Chapters can be renamed
-  together, by find and replace over their names, with a preview. Design in
+  together, by find and replace over their names, with a preview. Chapters
+  are analysed for practice on request (Analyse chapter / all chapters): the
+  database's figures for every position and your own games through it,
+  kept until analysed again; the chapter list and the Lines tab show what
+  is analysed. Design in
   `docs/design/opening-repertoire.md`. (#327, #329)
 
 ## [0.21.0] - 2026-09-27

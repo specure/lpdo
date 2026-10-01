@@ -23,6 +23,19 @@ export interface Stats {
   eval?: Eval;
 }
 
+/** One's own games through a position: how many as White and Black, one's
+ *  wins, draws, losses from there, a performance rating (with three rated
+ *  opponents or more), and the moves played next with how often. */
+export interface Mine {
+  white: number;
+  black: number;
+  w: number;
+  d: number;
+  l: number;
+  perf: number | null;
+  moves: [string, number][];
+}
+
 export interface PNode {
   san: string;
   uci: string;
@@ -40,6 +53,8 @@ export interface PNode {
   off?: true;
   /** The position after the move. */
   stats?: Stats;
+  /** One's own games through the position after the move. */
+  mine?: Mine;
   /** The moves from the position after this one, in the chapter's order —
    *  the first is the main line. */
   children: PNode[];
@@ -55,7 +70,7 @@ export interface LpdoChapter {
   /** A branch to start from, as the SAN path to it; null for none. */
   focus: string[] | null;
   /** The start position: the chapter's intro and the database's figures. */
-  start: { comment?: string; stats?: Stats };
+  start: { comment?: string; stats?: Stats; mine?: Mine };
   /** The moves from the start position. */
   tree: PNode[];
 }

@@ -551,6 +551,7 @@ fn is_cancellable(job_type: &str) -> bool {
         job_type,
         "import" | "import_pgn" | "sources_sync" | "sources_download" | "sources_import"
             | "update" | "download" | "index_positions" | "dedup_games" | "dedup_players"
+            | "repertoire_analyse"
     )
 }
 
@@ -597,7 +598,9 @@ fn blocks_maintenance(job_type: &str) -> bool {
 /// PGN file). They run on the read pool so they don't queue behind a long write
 /// like an index rebuild.
 fn is_read_only(job_type: &str) -> bool {
-    matches!(job_type, "backup" | "players_export" | "resolve_export")
+    // repertoire_analyse reads for minutes and writes one small row a
+    // chapter: on a reader, so it never holds up the app's other writes.
+    matches!(job_type, "backup" | "players_export" | "resolve_export" | "repertoire_analyse")
 }
 
 impl JobManager {
@@ -1491,6 +1494,22 @@ fn run_job(
                 format!("Exported {} player(s) to {}", n, path.display()),
                 path.display(),
             );
+        }
+        // A repertoire's chapters analysed for practice (#327): the database's
+        // figures and one's own games, kept per chapter.
+        "repertoire_analyse" => {
+            let ids: Vec<i64> = p.get("chapters").and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
+                .unwrap_or_default();
+            if ids.is_empty() { return Err(anyhow!("repertoire_analyse: 'chapters' required")); }
+            let player = p.get("player_id").and_then(|v| v.as_i64());
+            let n = ids.len() as u64;
+            for (i, id) in ids.iter().enumerate() {
+                if reporter.is_cancelled() { return Ok(()); }
+                reporter.progress(i as u64, n, format!("Analysing chapter {} of {n}…", i + 1));
+                crate::repertoire::analyse_chapter(conn, *id, player)?;
+            }
+            reporter.done(if n == 1 { "Chapter analysed.".to_string() } else { format!("{n} chapters analysed.") });
         }
         "backup" => {
             let collection = p.get("collection").and_then(|v| v.as_str())

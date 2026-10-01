@@ -1355,10 +1355,23 @@ async fn repertoire_book_pgn_handler(State(state): State<AppState>, AxumPath(id)
     state.reads.run(move |conn| crate::repertoire::book_pgn(conn, id).map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))).await
 }
 
-/// The database's figures for every position of a chapter — for its practice
-/// package (docs/design/opening-repertoire.md, Practice).
-async fn repertoire_chapter_stats_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>) -> ApiResult<Vec<crate::repertoire::PositionStat>> {
-    state.reads.run(move |conn| crate::repertoire::chapter_stats(conn, id).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
+#[derive(Deserialize)]
+struct ChapterStatsQuery {
+    /// Only what is stored: an empty analysis when the chapter has none,
+    /// never worked out on the spot (3–6 s).
+    stored: Option<bool>,
+}
+
+/// A chapter's analysis for practice — the database's figures for every
+/// position (docs/design/opening-repertoire.md, Practice): the stored one,
+/// else worked out now (without one's own games).
+async fn repertoire_chapter_stats_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<ChapterStatsQuery>) -> ApiResult<crate::repertoire::Analysis> {
+    state.reads.run(move |conn| {
+        let err = |e: anyhow::Error| (StatusCode::NOT_FOUND, format!("{e:#}"));
+        if let Some(a) = crate::repertoire::stored_analysis(conn, id).map_err(err)? { return Ok(Json(a)); }
+        let positions = if q.stored.unwrap_or(false) { Vec::new() } else { crate::repertoire::chapter_stats(conn, id, None).map_err(err)? };
+        Ok(Json(crate::repertoire::Analysis { analysed_at: None, chapter_updated: None, player_id: None, positions }))
+    }).await
 }
 
 async fn repertoire_chapter_pgn_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>) -> std::result::Result<String, (StatusCode, String)> {

@@ -10,9 +10,11 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { GameSummary } from "../types";
 import {
   addChapters, bookPgnPath, chapterPgnPath, createBook, deleteBook, deleteChapter, getChapter, listRepertoire,
-  saveChapterMoves, updateBook, updateChapter, documentOf, type BookColor, type BookWithChapters, type ChapterSummary,
+  saveChapterMoves, updateBook, updateChapter, documentOf, analyseChapters, type BookColor, type BookWithChapters, type ChapterSummary,
 } from "../lib/repertoire";
 import { saveTextFile } from "../lib/exportPgn";
+import { useJobProgress } from "../hooks/useJobProgress";
+import { loadMyPlayer } from "./MyStatsWidget";
 import { buildPlayback } from "../lib/useGamePgn";
 import { apiUrl } from "../api";
 import AnalysisPage, { type AnalysisTab } from "./AnalysisPage";
@@ -115,8 +117,8 @@ export default function RepertoirePage({ onOpenGame }: Props) {
     const owner = books.find((b) => b.chapters.some((c) => c.id === tab.document?.id));
     const c = owner?.chapters.find((x) => x.id === tab.document?.id);
     if (!owner || !c || !tab.document) return;
-    if (c.name !== tab.document.chapterName || owner.name !== tab.document.bookName || owner.color !== tab.document.color) {
-      setTab({ ...tab, game: { ...tab.game, white: c.name, black: owner.name, event: owner.name }, document: { ...tab.document, chapterName: c.name, bookName: owner.name, color: owner.color } });
+    if (c.name !== tab.document.chapterName || owner.name !== tab.document.bookName || owner.color !== tab.document.color || c.analysed_at !== (tab.document.analysedAt ?? null)) {
+      setTab({ ...tab, game: { ...tab.game, white: c.name, black: owner.name, event: owner.name }, document: { ...tab.document, chapterName: c.name, bookName: owner.name, color: owner.color, analysedAt: c.analysed_at } });
     }
   }, [books, tab]);
 
@@ -145,6 +147,21 @@ export default function RepertoirePage({ onOpenGame }: Props) {
     }
     if (first != null && chapterId == null) setChapterId(first);
   });
+
+  // Analysing chapters for practice (#327): a background job on the server,
+  // started only from here; the list is read again when it ends (a cancelled
+  // run keeps the chapters it finished).
+  const analysis = useJobProgress("repertoire-analyse");
+  const analysing = analysis.running || analysis.queued;
+  const startAnalysis = (ids: number[]) => {
+    if (!ids.length || analysing) return;
+    analysis.runJob(() => analyseChapters(ids, loadMyPlayer()?.id ?? null));
+  };
+  const wasAnalysing = useRef(false);
+  useEffect(() => {
+    if (wasAnalysing.current && !analysing) void load();
+    wasAnalysing.current = analysing;
+  }, [analysing, load]);
 
   // Merge the chapters into the topmost of them: its tree gains the others'
   // lines and comments, then they are deleted.
@@ -195,12 +212,32 @@ export default function RepertoirePage({ onOpenGame }: Props) {
         <span className="flex-1 min-w-0 truncate text-label-md text-on-surface-variant uppercase tracking-wider" title={book?.name}>Chapters</span>
         <button onClick={() => setChaptersFolded(true)} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide the chapters">«</button>
       </div>
+      {(analysing || analysis.error || analysis.done) && (
+        <div className="px-3 py-2 shrink-0 border-b border-outline/40 flex flex-col gap-1">
+          <div className="flex items-center gap-2 text-label-sm text-on-surface-variant">
+            <span className="flex-1 min-w-0 truncate">
+              {analysis.error ? <span className="text-error">{analysis.error}</span>
+                : analysing ? (analysis.queued ? "Analysis waiting for its turn…" : analysis.message || "Analysing…")
+                : analysis.doneMessage || "Analysed."}
+            </span>
+            {analysing
+              ? <button onClick={analysis.cancel} className={plain}>Cancel</button>
+              : <button onClick={analysis.reset} className={plain} title="Dismiss">×</button>}
+          </div>
+          {analysing && (
+            <div className="h-1 rounded-full bg-on-surface/10 overflow-hidden">
+              <div className="h-full bg-primary transition-all duration-medium2" style={{ width: `${analysis.percent}%` }} />
+            </div>
+          )}
+        </div>
+      )}
       <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
         {book ? (
           <ChaptersList
             book={book} busy={busy} current={chapterId}
             onPick={setChapterId}
             onMerge={startMerge}
+            onAnalyse={startAnalysis} analysing={analysing}
             onRenameMany={(changes) => run(async () => { for (const c of changes) await updateChapter(c.id, { name: c.name }); })}
             onChapter={(id, patch) => run(() => updateChapter(id, patch))}
             onDeleteChapter={(id) => run(async () => { await deleteChapter(id); if (id === chapterId) dropChapter(); })}
@@ -495,10 +532,13 @@ function Menu({ entries, title, up = false }: {
 
 /** The book's chapters, with one menu for the chapter on the board and a
  *  mode for putting them in order. */
-function ChaptersList({ book, busy, current, onPick, onMerge, onRenameMany, onChapter, onDeleteChapter }: {
+function ChaptersList({ book, busy, current, onPick, onMerge, onAnalyse, analysing, onRenameMany, onChapter, onDeleteChapter }: {
   book: BookWithChapters; busy: boolean; current: number | null;
   onPick: (id: number) => void;
   onMerge: (ids: number[]) => void;
+  /** Analyse chapters for practice; `analysing`: a run is going on. */
+  onAnalyse: (ids: number[]) => void;
+  analysing: boolean;
   onRenameMany: (changes: { id: number; name: string }[]) => Promise<void>;
   onChapter: (id: number, patch: { name?: string; ord?: number; active?: boolean }) => void;
   onDeleteChapter: (id: number) => void;
@@ -539,6 +579,8 @@ function ChaptersList({ book, busy, current, onPick, onMerge, onRenameMany, onCh
             { label: "Rename chapters…", onClick: () => { setRenamingAll(true); setRenaming(null); }, disabled: busy || book.chapters.length === 0, separated: true },
             { label: "Rearrange chapters", onClick: () => { setArranging(true); setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
             { label: "Merge chapters…", onClick: () => { setSelecting(current != null && chapter ? [current] : []); setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
+            { label: "Analyse chapter", onClick: () => chapter && onAnalyse([chapter.id]), disabled: none || analysing, separated: true },
+            { label: "Analyse all chapters", onClick: () => onAnalyse(book.chapters.map((c) => c.id)), disabled: busy || analysing || book.chapters.length === 0 },
           ]} />
         )}
       </div>
@@ -597,6 +639,9 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
   const [name, setName] = useState(c.name);
   useEffect(() => setName(c.name), [c.name, renaming]);
   const counts = `${c.lines} ${c.lines === 1 ? "line" : "lines"}${c.lines_off ? `, ${c.lines_off} off` : ""}`;
+  // Analysed for practice: as the chapter is now, or changed since.
+  const analysedOn = c.analysed_at ? new Date(c.analysed_at.replace(" ", "T")).toLocaleDateString(undefined, { day: "numeric", month: "short" }) : null;
+  const stale = !!c.analysed_at && c.analysed_version !== c.updated_at;
   return (
     <div
       draggable={arranging && !busy}
@@ -624,7 +669,14 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
           <button onClick={() => onMove(1)} disabled={busy || last} className={nav} title="Move down">▼</button>
         </>
       ) : (
-        <span className="text-label-sm text-on-surface-variant tabular-nums shrink-0" title={counts}>{c.lines}{c.lines_off ? `−${c.lines_off}` : ""}</span>
+        <>
+          {analysedOn && (
+            <span aria-label={stale ? "changed since analysed" : "analysed"}
+              className={`shrink-0 w-1.5 h-1.5 rounded-full ${stale ? "bg-tertiary" : "bg-primary"}`}
+              title={stale ? `Changed since the analysis of ${analysedOn} — analyse again for the new moves` : `Analysed ${analysedOn}`} />
+          )}
+          <span className="text-label-sm text-on-surface-variant tabular-nums shrink-0" title={counts}>{c.lines}{c.lines_off ? `−${c.lines_off}` : ""}</span>
+        </>
       )}
     </div>
   );

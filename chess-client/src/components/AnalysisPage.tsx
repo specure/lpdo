@@ -502,6 +502,7 @@ export default function AnalysisPage({
                   <LinesPanel
                     chapterId={active.document.id}
                     reloadKey={chapterVersion}
+                    analysedAt={active.document.analysedAt}
                     cursor={active.cursor}
                     onPick={requestCursor}
                     onLines={(ls) => { linesRef.current = ls; }}

@@ -542,6 +542,16 @@ fn init_repertoire(conn: &Connection) -> Result<()> {
             mover        VARCHAR NOT NULL,
             active       BOOLEAN NOT NULL
         );
+        -- A chapter's analysis for practice: the database's figures (and one's
+        -- own games) for every position, as JSON, from the chapter as it was
+        -- (`chapter_updated`); made again only when asked.
+        CREATE TABLE IF NOT EXISTS repertoire_analysis (
+            chapter_id      INTEGER PRIMARY KEY,
+            chapter_updated TIMESTAMP NOT NULL,
+            player_id       INTEGER,
+            analysed_at     TIMESTAMP NOT NULL,
+            positions       VARCHAR NOT NULL
+        );
         ALTER TABLE repertoire_books ADD COLUMN IF NOT EXISTS author VARCHAR;
         ALTER TABLE repertoire_books ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE;
         ",
