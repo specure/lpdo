@@ -765,15 +765,22 @@ pub struct PositionMine {
 /// One of one's own games: the result for oneself, the opponent's rating.
 struct MyGame { score: f64, opp_elo: Option<i64> }
 
+/// The first day of the last `months` months before `today`, as games
+/// store dates ("2025-10-01"); none for 0 (all of them). Worked out here,
+/// not in SQL: `current_date - INTERVAL n MONTH` sometimes bound to `age()`
+/// on one of the server's connections and failed.
+fn since_months(months: u32, today: chrono::NaiveDate) -> Option<String> {
+    if months == 0 { return None; }
+    let day = today.checked_sub_months(chrono::Months::new(months)).unwrap_or(chrono::NaiveDate::MIN);
+    Some(day.format("%Y-%m-%d").to_string())
+}
+
 /// One's games with `color`, from the period the settings give (games
 /// without a date left out when there is one): the months, the first day
 /// counted, the games by id.
 fn my_games(conn: &Connection, player: i64, color: &str) -> Result<(u32, Option<String>, std::collections::HashMap<i64, MyGame>)> {
     let months = settings().own_games_months;
-    let since: Option<String> = if months == 0 { None } else {
-        Some(conn.query_row(
-            &format!("SELECT CAST(CAST(current_date - INTERVAL {months} MONTH AS DATE) AS VARCHAR)"), [], |r| r.get(0))?)
-    };
+    let since = since_months(months, chrono::Local::now().date_naive());
     let (me, opp, win) = if color == "white" { ("white_id", "black_elo", "1-0") } else { ("black_id", "white_elo", "0-1") };
     let mut games = std::collections::HashMap::new();
     let mut st = conn.prepare(&format!(
@@ -1534,6 +1541,14 @@ mod tests {
         let bg = book_games(&conn, book.id, 1).unwrap();
         let adv_in_book = bg.games.iter().find(|g| g.id == 1).unwrap();
         assert_eq!(adv_in_book.follow.as_ref().map(|f| f.followed), Some(adv.games[0].follow.followed));
+    }
+
+    #[test]
+    fn the_period_of_ones_own_games() {
+        let d = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        assert_eq!(since_months(0, d("2026-10-01")), None, "0: all of them");
+        assert_eq!(since_months(12, d("2026-10-01")).as_deref(), Some("2025-10-01"));
+        assert_eq!(since_months(1, d("2026-03-31")).as_deref(), Some("2026-02-28"), "the month's last day when it has fewer");
     }
 
     #[test]
