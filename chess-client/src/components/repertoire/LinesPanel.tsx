@@ -1,5 +1,7 @@
 // A chapter's lines (#327), listed in reading order: the main line, then the
-// variations that branch off it, named by their branching move. Clicking a
+// variations that branch off it — each written out whole, from move 1: the
+// moves it shares with the line it branches off greyed, its own solid, the
+// move where it branches in bold. Clicking a
 // line puts the board on its first own move; → at the end of a line goes on
 // to the next (the host asks `onLines` for the list). Off lines are greyed.
 // A dot marks whether a line is in the chapter's practice analysis — all its
@@ -8,6 +10,8 @@
 import { useEffect, useState } from "react";
 import { parsePgnTree } from "../../lib/parsePgnTree";
 import { chapterLines, type ChapterLine } from "../../lib/repertoireLines";
+import { getMoveNum } from "../../lib/moveTreeNav";
+import type { MoveNode } from "../../lib/parsePgnTree";
 import { getChapter, getStoredAnalysis } from "../../lib/repertoire";
 import { positionKey } from "../../trainer/buildPackage";
 import type { CursorPath } from "../../lib/moveTreeNav";
@@ -23,6 +27,26 @@ interface Props {
   cursor: CursorPath | null;
   onPick: (cursor: CursorPath) => void;
   onLines?: (lines: ChapterLine[]) => void;
+}
+
+/** A line written out: White's moves numbered ("5.c3"), a Black move after
+ *  nothing numbered too ("5...c5") — the shared moves greyed, the line's own
+ *  solid, its first in bold. */
+function LineText({ before, own }: { before: MoveNode[]; own: MoveNode[] }) {
+  const moves = [...before.map((n) => ({ n, shared: true })), ...own.filter((n) => n.san).map((n) => ({ n, shared: false }))];
+  return (
+    <span className="min-w-0 flex-1 leading-6">
+      {moves.map(({ n, shared }, i) => {
+        const num = n.color === "w" ? `${getMoveNum(n)}.` : i === 0 ? `${getMoveNum(n)}...` : "";
+        const first = !shared && (i === 0 || moves[i - 1].shared);
+        return (
+          <span key={i} className={shared ? "text-on-surface-variant/60" : first ? "font-semibold" : ""}>
+            {i > 0 ? " " : ""}<span className="whitespace-nowrap">{num}{n.san}</span>
+          </span>
+        );
+      })}
+    </span>
+  );
 }
 
 export default function LinesPanel({ chapterId, reloadKey, analysedAt, cursor, onPick, onLines }: Props) {
@@ -67,25 +91,24 @@ export default function LinesPanel({ chapterId, reloadKey, analysedAt, cursor, o
         {" · "}{analysed ? (done === lines.length ? "all analysed" : `${done} analysed`) : "not analysed"}
         <span className="ml-2 text-outline">→ at the end of a line goes on to the next</span>
       </div>
-      <div className="flex-1 overflow-y-auto py-1">
+      <div className="flex-1 overflow-y-auto">
         {lines.map((l, i) => {
           const on = cursorKey === JSON.stringify(l.steps);
           return (
             <button
               key={i}
               onClick={() => onPick({ steps: l.steps, index: l.branchIndex })}
-              className={`w-full flex items-baseline gap-2 px-3 py-1 text-left text-body-sm rounded-sm transition-colors duration-short3 ease-standard ${
+              className={`w-full flex items-start gap-2 px-3 py-2 text-left text-body-sm border-b border-outline/20 transition-colors duration-short3 ease-standard ${
                 on ? "bg-primary-container text-on-primary-container" : "text-on-surface hover:bg-on-surface/8"
               } ${l.off ? "opacity-50" : ""}`}
-              style={{ paddingLeft: `${12 + l.depth * 14}px` }}
-              title={l.off ? "Switched off — not in the active repertoire" : undefined}
+              title={`${l.name}${l.off ? " — switched off, not in the active repertoire" : ""}`}
             >
-              <span className="text-on-surface-variant tabular-nums w-6 shrink-0">{i + 1}.</span>
-              <span className="font-mono">{l.name}</span>
-              <span className="ml-auto text-label-sm text-on-surface-variant tabular-nums">{l.length} {l.length === 1 ? "move" : "moves"}{l.off ? " · off" : ""}</span>
-              {/* In the analysis or not: a column of its own at the end, the
-                  same for every line whatever its depth. */}
-              <span className="self-center shrink-0 w-2 flex justify-center"
+              <span className="text-on-surface-variant tabular-nums w-6 shrink-0 text-right leading-6">{i + 1}.</span>
+              <LineText before={l.before} own={l.line} />
+              {l.off && <span className="shrink-0 leading-6 text-label-sm text-on-surface-variant">off</span>}
+              {/* In the analysis or not: a column of its own at the end,
+                  level with the line's first row. */}
+              <span className="shrink-0 w-2 h-6 flex items-center justify-center"
                 title={isAnalysed(l) ? "Analysed for practice" : analysed ? "Not in the analysis — moves added since; analyse again" : "Not analysed yet"}>
                 <span aria-hidden className={`w-1.5 h-1.5 rounded-full ${isAnalysed(l) ? "bg-primary" : "border border-outline"}`} />
               </span>

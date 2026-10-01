@@ -21,6 +21,10 @@ export interface ChapterLine {
   off: boolean;
   /** How deep the line is nested (0: the main line). */
   depth: number;
+  /** The moves before the line's own: those it shares with the line it
+   *  branches off (and that one's), from move 1 — the whole line is
+   *  `before` then `line`. */
+  before: MoveNode[];
 }
 
 function moveLabel(node: MoveNode): string {
@@ -32,14 +36,14 @@ function moveLabel(node: MoveNode): string {
  *  variations that branch off it, each with its own variations. */
 export function chapterLines(game: AnnotatedGame): ChapterLine[] {
   const out: ChapterLine[] = [];
-  function walk(line: MoveNode[], steps: PathStep[], inheritedOff: boolean, depth: number, name: string) {
+  function walk(line: MoveNode[], steps: PathStep[], inheritedOff: boolean, depth: number, name: string, before: MoveNode[]) {
     const real = line.filter((n) => n.san);
     if (real.length === 0) return;
     // The line itself, first; its off state is that of its last move.
     let off = inheritedOff;
     for (const n of line) if (n.annotations.off) off = true;
     // The main line is read from the start; a variation from its first move.
-    out.push({ steps, line, name, branchIndex: depth === 0 ? 0 : 1, length: real.length, off, depth });
+    out.push({ steps, line, name, branchIndex: depth === 0 ? 0 : 1, length: real.length, off, depth, before });
     // Then its variations, in move order, each inheriting the off state as it
     // was before the move they replace.
     let offBefore = inheritedOff;
@@ -47,12 +51,13 @@ export function chapterLines(game: AnnotatedGame): ChapterLine[] {
       node.variations.forEach((v, varIdx) => {
         const first = v.find((n) => n.san);
         if (!first) return;
-        walk(v, [...steps, { node: i, varIdx }], offBefore, depth + 1, moveLabel(first));
+        // A variation replaces the move at `i`: the moves before it are shared.
+        walk(v, [...steps, { node: i, varIdx }], offBefore, depth + 1, moveLabel(first), [...before, ...line.slice(0, i).filter((n) => n.san)]);
       });
       if (node.annotations.off) offBefore = true;
     });
   }
-  walk(game.mainLine, [], false, 0, "Main line");
+  walk(game.mainLine, [], false, 0, "Main line", []);
   return out;
 }
 
