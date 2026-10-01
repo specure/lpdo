@@ -1412,6 +1412,17 @@ async fn repertoire_all_pgn_handler(State(state): State<AppState>) -> std::resul
     state.reads.run(move |conn| crate::repertoire::all_books_pgn(conn).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))).await
 }
 
+#[derive(Deserialize)]
+struct ChaptersDeleteBody { ids: Vec<i64> }
+
+/// Delete chapters at once (those merged into another), in one transaction.
+async fn repertoire_chapters_delete_handler(State(state): State<AppState>, Json(b): Json<ChaptersDeleteBody>) -> ApiResult<serde_json::Value> {
+    state.writer.run(move |conn| {
+        crate::repertoire::delete_chapters(conn, &b.ids).map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+        Ok(Json(serde_json::json!({ "deleted": b.ids.len() })))
+    }).await
+}
+
 async fn repertoire_settings_handler() -> Json<crate::repertoire::RepertoireSettings> {
     Json(crate::repertoire::settings())
 }
@@ -2846,6 +2857,7 @@ pub async fn run(
         .route("/repertoire/chapters/{id}/games",      get(repertoire_chapter_games_handler))
         .route("/repertoire/books/{id}/games",         get(repertoire_book_games_handler))
         .route("/repertoire/import",                   post(repertoire_import_handler))
+        .route("/repertoire/chapters/delete",          post(repertoire_chapters_delete_handler))
         .route("/repertoire/pgn",                      get(repertoire_all_pgn_handler))
         .route("/repertoire/settings",                 get(repertoire_settings_handler).put(repertoire_settings_put_handler))
         .route("/sources",                             get(sources_handler))

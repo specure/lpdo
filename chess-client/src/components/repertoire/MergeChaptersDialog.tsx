@@ -34,6 +34,8 @@ export default function MergeChaptersDialog({ target, others, added, takenOver, 
     return next;
   });
   const allBoth = () => setChoices(new Map(conflicts.map((c) => [c.id, "all" as const])));
+  // The chapters that have a version in some place that differs, in order.
+  const involved = chapters.filter((n) => conflicts.some((c) => c.options.some((o) => o.chapter.split(", ").includes(n))));
 
   const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
   return (
@@ -43,7 +45,9 @@ export default function MergeChaptersDialog({ target, others, added, takenOver, 
           <h2 className="text-title-md text-on-surface">Merge chapters</h2>
           <p className="mt-1 text-body-sm text-on-surface-variant">
             Into <span className="text-on-surface">“{target}”</span>, which keeps its name, its place and its main line;{" "}
-            {others.map((o, i) => <span key={i}>{i ? ", " : ""}<span className="text-on-surface">“{o}”</span></span>)}{" "}
+            {others.length <= 5
+              ? others.map((o, i) => <span key={i}>{i ? ", " : ""}<span className="text-on-surface">“{o}”</span></span>)
+              : <span className="text-on-surface underline decoration-dotted underline-offset-2 cursor-help" title={others.join("\n")}>the {others.length} other chapters</span>}{" "}
             {others.length === 1 ? "is" : "are"} deleted after the merge.
           </p>
           <p className="mt-1 text-body-sm text-on-surface-variant">
@@ -53,7 +57,18 @@ export default function MergeChaptersDialog({ target, others, added, takenOver, 
           {conflicts.length > 1 && (
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
               <span className="text-label-md text-on-surface-variant">Everywhere:</span>
-              {chapters.map((n, i) => <button key={i} onClick={() => allFrom(n)} className={chip} title={`Take “${n}”'s version wherever it has one`}>{n}</button>)}
+              {/* Only the chapters with a version in the places that differ —
+                  of 50 merged, a handful; past six, a list to pick from. */}
+              {involved.length <= 6
+                ? involved.map((n, i) => <button key={i} onClick={() => allFrom(n)} className={chip} title={`Take “${n}”'s version wherever it has one`}>{n}</button>)
+                : (
+                  <select value="" onChange={(e) => { if (e.target.value) allFrom(e.target.value); }}
+                    className="h-7 px-2 rounded-full border border-outline/40 bg-surface-container text-label-md text-on-surface-variant max-w-full"
+                    title="Take this chapter's version wherever it has one">
+                    <option value="">a chapter's version…</option>
+                    {involved.map((n, i) => <option key={i} value={n}>{n}</option>)}
+                  </select>
+                )}
               <button onClick={allBoth} className={chip} title="Keep every version, one after the other">Both</button>
             </div>
           )}

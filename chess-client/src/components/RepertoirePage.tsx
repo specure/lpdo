@@ -10,7 +10,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { GameSummary } from "../types";
 import {
   addChapters, bookPgnPath, chapterPgnPath, createBook, deleteBook, deleteChapter, getChapter, listRepertoire,
-  saveChapterMoves, updateBook, updateChapter, documentOf, analyseChapters, getBookGames, scorePct, importBooks,
+  saveChapterMoves, updateBook, updateChapter, documentOf, analyseChapters, getBookGames, scorePct, importBooks, deleteChapters,
   type BookGames, type Score, type BookColor, type BookWithChapters, type ChapterSummary,
 } from "../lib/repertoire";
 import { saveTextFile } from "../lib/exportPgn";
@@ -295,7 +295,9 @@ export default function RepertoirePage({ onOpenGame }: Props) {
   const finishMerge = (choices: MergeChoices) => merging && run(async () => {
     const { target, others, result } = merging;
     await saveChapterMoves(target.id, resolveMerge(result, choices));
-    for (const o of others) await deleteChapter(o.id);
+    // All at once, in one transaction: one request a chapter, each renumbering
+    // the rest, made merging 50 chapters take minutes.
+    await deleteChapters(others.map((o) => o.id));
     setMerging(null);
     // The merged chapter on the board, read again.
     if (chapterId === target.id) { setTab(await loadTab(target.id)); setDocReload((v) => v + 1); }
@@ -698,6 +700,8 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
   const [over, setOver] = useState<number | null>(null);
   // Merge mode: the chapters ticked for merging.
   const [selecting, setSelecting] = useState<number[] | null>(null);
+  // The chapter clicked last in merge mode: where a Shift-click's range starts.
+  const anchor = useRef<number | null>(null);
   // What the column on the right shows: the chapters' lines, or one's own
   // games in them (looked up live for the whole book).
   const [games, setGames] = useState<BookGames | null>(null);
@@ -731,10 +735,25 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
   const chapter = book.chapters.find((c) => c.id === current) ?? null;
   useEffect(() => setConfirmDelete(false), [current]);
   const none = !chapter || busy;
+  // F2 renames the chapter on the board, as in a file manager — not while
+  // typing somewhere, ordering or ticking chapters.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "F2" || !chapter || busy || arranging || selecting) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      e.preventDefault();
+      setRenaming(chapter.id);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [chapter, busy, arranging, selecting]);
 
   return (
     <div className="flex flex-col">
-      <div className="px-3 pt-2 pb-1 flex items-center gap-2">
+      {/* The book's row — its name, the ⋯, and Merge / Cancel or Done in
+          those modes — stays at the top while the chapters scroll under it. */}
+      <div className="sticky top-0 z-10 bg-surface-container-low px-3 pt-2 pb-1 flex items-center gap-2 border-b border-transparent">
         <ColorDot color={book.color} />
         <span className="flex-1 min-w-0 truncate text-title-sm text-on-surface" title={book.name}>{book.name}</span>
         {arranging ? (
@@ -748,12 +767,12 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
           </>
         ) : (
           <Menu title={chapter ? `The chapter on the board — ${chapter.name}` : "Rearrange the chapters; choose one for the rest"} entries={[
-            { label: "Rename chapter…", onClick: () => chapter && setRenaming(chapter.id), disabled: none },
+            { label: "Rename chapter… (F2)", onClick: () => chapter && setRenaming(chapter.id), disabled: none },
             { label: "Export chapter PGN…", onClick: () => chapter && void exportPgn(chapterPgnPath(chapter.id), `${book.name}-${chapter.name}`).then(setNote), disabled: none },
             { label: "Delete chapter…", onClick: () => setConfirmDelete(true), disabled: none },
             { label: "Rename chapters…", onClick: () => { setRenamingAll(true); setRenaming(null); }, disabled: busy || book.chapters.length === 0, separated: true },
             { label: "Rearrange chapters", onClick: () => { setArranging(true); setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
-            { label: "Merge chapters…", onClick: () => { setSelecting(current != null && chapter ? [current] : []); setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
+            { label: "Merge chapters…", onClick: () => { setSelecting(current != null && chapter ? [current] : []); anchor.current = chapter ? current : null; setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
             { label: "Analyse chapter", onClick: () => chapter && onAnalyse([chapter.id]), disabled: none || analysing, separated: true },
             { label: "Analyse all chapters", onClick: () => onAnalyse(book.chapters.map((c) => c.id)), disabled: busy || analysing || book.chapters.length === 0 },
             { label: "Remove FENs from comments…", separated: true, disabled: none,
@@ -798,7 +817,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
         <BookGamesSummary games={games} note={gamesNote} picked={bookPicked} onPick={() => onPickBook(true)} />
       )}
       {arranging && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Drag a chapter to its place, or move it with ▲ ▼.</div>}
-      {selecting && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Tick the chapters to merge. The topmost keeps its name, place and main line; the others' lines and comments go into it, and they are deleted.</div>}
+      {selecting && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Tick the chapters to merge — Shift-click ticks all from the one clicked last. The topmost keeps its name, place and main line; the others' lines and comments go into it, and they are deleted.</div>}
       {confirmDelete && chapter && (
         <div className="px-3 pb-1 flex items-center gap-1 flex-wrap">
           <button onClick={() => { setConfirmDelete(false); onDeleteChapter(chapter.id); }} disabled={busy} className="h-7 px-2 rounded-full text-label-md text-error hover:bg-error/8 truncate max-w-full">Delete “{chapter.name}”</button>
@@ -813,7 +832,16 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
             dropTarget={arranging && over === c.id && dragged !== c.id}
             selected={selecting ? selecting.includes(c.id) : undefined}
             mine={games && !arranging && !selecting ? (gamesFor(c.id) ?? { games: 0, w: 0, d: 0, l: 0, perf: null }) : undefined}
-            onSelect={(on) => setSelecting((s) => s && (on ? [...s, c.id] : s.filter((x) => x !== c.id)))}
+            onSelect={(on, range) => {
+              // Shift-click: every chapter from the one clicked last to this
+              // one, ticked (or unticked) alike.
+              const from = range && anchor.current != null ? book.chapters.findIndex((x) => x.id === anchor.current) : -1;
+              const ids = from >= 0
+                ? book.chapters.slice(Math.min(from, i), Math.max(from, i) + 1).map((x) => x.id)
+                : [c.id];
+              anchor.current = c.id;
+              setSelecting((s) => s && (on ? [...s, ...ids.filter((x) => !s.includes(x))] : s.filter((x) => !ids.includes(x))));
+            }}
             onPick={() => onPick(c.id)}
             onActive={(active) => onChapter(c.id, { active })}
             onRename={(n) => { setRenaming(null); if (n && n !== c.name) onChapter(c.id, { name: n }); }}
@@ -946,7 +974,7 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
   chapter: ChapterSummary; busy: boolean; current: boolean; renaming: boolean; arranging: boolean;
   first: boolean; last: boolean; dropTarget: boolean;
   /** In merge mode: ticked for merging (undefined outside it). */
-  selected?: boolean; onSelect: (on: boolean) => void;
+  selected?: boolean; onSelect: (on: boolean, range: boolean) => void;
   /** "Your games": one's games in the chapter, shown instead of the lines. */
   mine?: Score;
   onPick: () => void; onActive: (a: boolean) => void; onRename: (n: string) => void; onMove: (delta: -1 | 1) => void;
@@ -962,12 +990,18 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
     <div
       draggable={arranging && !busy}
       {...(arranging ? drag : {})}
-      className={`flex items-center gap-1.5 px-3 py-1 ${current ? "bg-primary-container/40" : ""} ${c.active ? "" : "opacity-70"} ${arranging ? "cursor-grab" : ""} ${dropTarget ? "border-t-2 border-primary" : "border-t-2 border-transparent"}`}
+      // In merge mode the whole row ticks the chapter (Shift: a range), not
+      // only the checkbox; no text selected by a Shift-click.
+      onClick={selected !== undefined ? (e) => { if ((e.target as HTMLElement).tagName !== "INPUT") onSelect(!selected, e.shiftKey); } : undefined}
+      onMouseDown={selected !== undefined ? (e) => { if (e.shiftKey) e.preventDefault(); } : undefined}
+      className={`flex items-center gap-1.5 px-3 py-1 ${current ? "bg-primary-container/40" : ""} ${c.active ? "" : "opacity-70"} ${arranging ? "cursor-grab" : ""} ${selected !== undefined ? "cursor-pointer select-none hover:bg-on-surface/4" : ""} ${dropTarget ? "border-t-2 border-primary" : "border-t-2 border-transparent"}`}
     >
       {arranging
         ? <span className="shrink-0 text-on-surface-variant text-body-sm select-none" aria-hidden>⠿</span>
         : selected !== undefined
-        ? <input type="checkbox" checked={selected} disabled={busy} onChange={(e) => onSelect(e.target.checked)} className="accent-tertiary shrink-0" title="Merge this chapter" />
+        ? <input type="checkbox" checked={selected} disabled={busy} readOnly
+            onClick={(e) => onSelect(!selected, e.shiftKey)}
+            className="accent-tertiary shrink-0" title="Merge this chapter — Shift-click: all from the one clicked last" />
         : <input type="checkbox" checked={c.active} disabled={busy} onChange={(e) => onActive(e.target.checked)} className="accent-primary shrink-0" title="Active: part of the repertoire you are playing now" />}
       {renaming ? (
         <input autoFocus value={name} onChange={(e) => setName(e.target.value)}
@@ -975,7 +1009,7 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
           onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") { setName(c.name); onRename(c.name); } }}
           className={`${field} flex-1 min-w-0 h-7`} />
       ) : (
-        <button onClick={onPick} className={`flex-1 min-w-0 text-left text-body-sm truncate ${current ? "text-on-surface font-medium" : "text-on-surface hover:text-primary"}`} title={`${c.name} — ${counts}`}>
+        <button onClick={selected !== undefined ? undefined : onPick} className={`flex-1 min-w-0 text-left text-body-sm truncate ${current ? "text-on-surface font-medium" : "text-on-surface hover:text-primary"}`} title={`${c.name} — ${counts}`}>
           {c.name}
         </button>
       )}

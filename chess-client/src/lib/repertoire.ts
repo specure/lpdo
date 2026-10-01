@@ -72,6 +72,8 @@ export const updateChapter = (id: number, patch: { name?: string; ord?: number; 
 export const saveChapterMoves = (id: number, moves: string) =>
   putJson<ChapterSummary>(`/repertoire/chapters/${id}/moves`, { moves });
 export const deleteChapter = (id: number) => apiDelete(`/repertoire/chapters/${id}`);
+/** Delete chapters at once — those merged into another — in one transaction. */
+export const deleteChapters = (ids: number[]) => postJson<{ deleted: number }>("/repertoire/chapters/delete", { ids });
 /** A chapter's analysis for practice: the database's figures for every
  *  position, as stored, or worked out on the spot when
  *  there is none (3–6 s; `analysed_at` null). */

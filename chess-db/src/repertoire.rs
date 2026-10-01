@@ -419,9 +419,19 @@ fn place_book(conn: &Connection, moved: Option<(i64, i64)>) -> Result<()> {
         let at = ((to.max(1) - 1) as usize).min(ids.len());
         ids.insert(at, id);
     }
-    for (i, bid) in ids.iter().enumerate() {
-        conn.execute("UPDATE repertoire_books SET ord = ? WHERE id = ?", duckdb::params![i as i64 + 1, bid])?;
-    }
+    renumber(conn, "repertoire_books", &ids)
+}
+
+/// `ids` numbered 1.. in this order (their `ord`), in one statement — one
+/// UPDATE a row, each committing on its own, made deleting 49 chapters of a
+/// book (each renumbering the rest) take minutes.
+fn renumber(conn: &Connection, table: &str, ids: &[i64]) -> Result<()> {
+    if ids.is_empty() { return Ok(()); }
+    let values = ids.iter().enumerate().map(|(i, id)| format!("({id}, {})", i + 1)).collect::<Vec<_>>().join(", ");
+    conn.execute(
+        &format!("UPDATE {table} SET ord = v.o FROM (VALUES {values}) AS v(id, o) WHERE {table}.id = v.id AND {table}.ord IS DISTINCT FROM v.o"),
+        [],
+    )?;
     Ok(())
 }
 
@@ -646,10 +656,7 @@ fn place_chapter(conn: &Connection, book_id: i64, moved: Option<(i64, i64)>) -> 
         let at = ((to.max(1) - 1) as usize).min(ids.len());
         ids.insert(at, id);
     }
-    for (i, cid) in ids.iter().enumerate() {
-        conn.execute("UPDATE repertoire_chapters SET ord = ? WHERE id = ?", duckdb::params![i as i64 + 1, cid])?;
-    }
-    Ok(())
+    renumber(conn, "repertoire_chapters", &ids)
 }
 
 pub fn update_chapter(conn: &Connection, id: i64, patch: ChapterPatch) -> Result<ChapterSummary> {
@@ -700,11 +707,26 @@ pub fn set_moves(conn: &Connection, id: i64, movetext: &str) -> Result<ChapterSu
 }
 
 pub fn delete_chapter(conn: &Connection, id: i64) -> Result<()> {
-    let c = get_chapter_summary(conn, id)?;
-    conn.execute("DELETE FROM repertoire_positions WHERE chapter_id = ?", duckdb::params![id])?;
-    conn.execute("DELETE FROM repertoire_analysis WHERE chapter_id = ?", duckdb::params![id])?;
-    conn.execute("DELETE FROM repertoire_chapters WHERE id = ?", duckdb::params![id])?;
-    place_chapter(conn, c.book_id, None)
+    delete_chapters(conn, &[id])
+}
+
+/// Delete chapters — the ones merged into another, say — all in one
+/// transaction, their books renumbered once.
+pub fn delete_chapters(conn: &Connection, ids: &[i64]) -> Result<()> {
+    if ids.is_empty() { return Ok(()); }
+    let mut books: Vec<i64> = Vec::new();
+    for id in ids {
+        let b = get_chapter_summary(conn, *id)?.book_id;
+        if !books.contains(&b) { books.push(b); }
+    }
+    let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    crate::db::with_tx(conn, || {
+        conn.execute(&format!("DELETE FROM repertoire_positions WHERE chapter_id IN ({list})"), [])?;
+        conn.execute(&format!("DELETE FROM repertoire_analysis WHERE chapter_id IN ({list})"), [])?;
+        conn.execute(&format!("DELETE FROM repertoire_chapters WHERE id IN ({list})"), [])?;
+        for b in &books { place_chapter(conn, *b, None)?; }
+        Ok(())
+    })
 }
 
 /// A chapter's PGN, or a whole book's — its chapters in order.
@@ -1774,6 +1796,30 @@ mod tests {
         let plain = "[Event \"X\"]\n[Orientation \"black\"]\n\n1. e4 c5 *\n";
         let made = import_books(&empty, plain, Some("Najdorf")).unwrap();
         assert_eq!((made[0].name.as_str(), made[0].color.as_str()), ("Najdorf", "black"));
+    }
+
+    #[test]
+    fn deleting_many_chapters_renumbers_the_rest_once() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let book = create_book(&conn, "B", "white", None, None, None).unwrap();
+        let text: String = (1..=60).map(|i| format!("[Event \"C{i}\"]\n\n1. e4 e5 {i}. Nf3 *\n\n")).collect();
+        let cs = add_chapters(&conn, book.id, None, Some(&text), None).unwrap();
+        assert_eq!(cs.len(), 60);
+        let gone: Vec<i64> = cs.iter().skip(1).step_by(2).take(25).map(|c| c.id).collect();
+        let t = std::time::Instant::now();
+        delete_chapters(&conn, &gone).unwrap();
+        println!("25 chapters deleted in {:.2?}", t.elapsed());
+        let left = &list(&conn).unwrap()[0].chapters;
+        assert_eq!(left.len(), 35);
+        assert_eq!(left.iter().map(|c| c.ord).collect::<Vec<_>>(), (1..=35).collect::<Vec<_>>(), "numbered 1.. again");
+        assert_eq!(left[0].name, "C1");
+        assert_eq!(left[1].name, "C3");
+        let pos: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM repertoire_positions WHERE chapter_id IN ({})", gone.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",")), [], |r| r.get(0)).unwrap();
+        assert_eq!(pos, 0);
+        // A move still lands where it is put.
+        update_chapter(&conn, left[34].id, ChapterPatch { ord: Some(1), ..Default::default() }).unwrap();
+        assert_eq!(list(&conn).unwrap()[0].chapters[0].id, left[34].id);
     }
 
     #[test]

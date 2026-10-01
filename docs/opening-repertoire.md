@@ -45,7 +45,8 @@ same ⋯ menu:
   becomes a chapter (or a chapter per game, for a file of several), named
   from its headers or else after the file.
 
-The ⋯ above the chapters works on the chapter on the board: rename it,
+The ⋯ above the chapters works on the chapter on the board: rename it
+(or press **F2**),
 export it as PGN, delete it. **Rearrange chapters** there puts the list in
 a mode for ordering: drag a chapter to its place, or move it with ▲ ▼, and
 **Done** when it is right. Every chapter
@@ -66,8 +67,8 @@ counts them first — "25 FEN codes will be removed", per chapter — and
 removes them when you say so; "No FEN codes found" otherwise.
 
 **Merge chapters…** there folds several chapters into one — the same
-section imported twice, or split over several files. Tick the chapters and
-**Merge**: the topmost keeps its name, its place and its main line, and
+section imported twice, or split over several files. Tick the chapters
+(Shift-click ticks every chapter from the one clicked last) and **Merge**: the topmost keeps its name, its place and its main line, and
 takes in the others' lines and comments; they are deleted after. A move it
 lacks is added as a variation where it branches off; a comment, line intro
 or move mark (!, ?, …) it lacks is taken over, arrows and circles are
