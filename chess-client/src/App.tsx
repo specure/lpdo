@@ -50,7 +50,7 @@ import UpdateBanner, { EngineUpdateBanner } from "./components/UpdateBanner";
  *  not a database. */
 export const ANALYSIS_TAB_CAP = 20;
 import ActivityIndicator from "./components/ActivityIndicator";
-import { loadMyPlayer } from "./components/MyStatsWidget";
+import { loadMyPlayer, resolveCurrentPlayer } from "./components/MyStatsWidget";
 import { useUpdateCheck } from "./hooks/useUpdateCheck";
 import { GameSummary, LocalGame, PlayerInfo, PrepContext, StatusInfo } from "./types";
 import { isDefaultServer, serverUrl } from "./api";
@@ -286,27 +286,6 @@ function useRecentPlayers() {
   }, []);
 
   return { recent, add, remove, reconcile };
-}
-
-/** Re-resolve a (possibly stale) player against the current DB by a STABLE key —
- *  fide_id when known, else exact name. Recent players persist a surrogate `id`
- *  that a purge+reimport invalidates (the same person gets a new id), so trusting
- *  it would open a different player's games. Returns the current player row, or
- *  null if that person is no longer in the database. */
-async function resolveCurrentPlayer(p: PlayerInfo): Promise<PlayerInfo | null> {
-  try {
-    const url = p.fide_id != null
-      ? `/api/players?fide_id=${p.fide_id}`
-      : `/api/players?name=${encodeURIComponent(p.name)}`;
-    const resp = await fetch(url);
-    if (!resp.ok) return null;
-    const list = (await resp.json()) as PlayerInfo[];
-    return p.fide_id != null
-      ? (list[0] ?? null)
-      : (list.find((x) => x.name === p.name) ?? null);
-  } catch {
-    return null;
-  }
 }
 
 // ── Analysis tab cursors ─────────────────────────────────────────────────────

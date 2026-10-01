@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is analysed. Design in
   `docs/design/opening-repertoire.md`. (#327, #329)
 
+### Fixed
+- **Home: your profile showing another player's games** — the profile kept
+  the player's database id, which changes when the players are renumbered;
+  the card then showed the statistics of whoever has that id now. The
+  profile is now looked up by FIDE id (or name) and its stored id corrected
+  (as "My games" already did, #249).
+
 ## [0.21.0] - 2026-09-27
 
 ### Added
