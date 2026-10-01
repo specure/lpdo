@@ -144,8 +144,9 @@ those games for the chapter — newest first, both players and the result
 (green when you won, red when you lost), the event and the date — and how
 far each followed it: to the end of a line, or where it left the chapter
 and who left it ("you deviated at 8...b6", in red, or "your opponent
-deviated at 5.Bf4"). A click puts the board on that position; a
-double-click opens the game.
+deviated at 5.Bf4"). A click puts the board on that position and previews
+the game under the list — at the move that left the chapter — as the Games
+tab does; a double-click opens the game.
 
 A dot beside a chapter in the list shows it was analysed (its tooltip says
 when), in another colour when its positions changed since — moves added or
