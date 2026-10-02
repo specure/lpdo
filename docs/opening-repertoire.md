@@ -18,8 +18,9 @@ is used.
 **+ New** beside *Books* asks for a name, the author (optional) and the
 colour. Under the list, the selected book's details: its author, colour,
 chapter and line counts, the link to the course (a click opens it) and your
-notes. Its ⋯ menu has **Edit…** to change them, **Move up** / **Move down**
-to reorder the books, **Export PGN…** for all its chapters as one file, and
+notes. Its ⋯ menu has **Edit…** to change them, **Rearrange books** to put
+the books in order (drag one to its place, ▲ ▼, or ↑ ↓ for the one selected;
+**Done** or Esc when it is right), **Export PGN…** for all its chapters as one file, and
 **Delete…** to delete it with its chapters. The author
 goes into the chapters' PGN as `[Annotator]`.
 
