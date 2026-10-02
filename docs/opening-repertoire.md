@@ -34,8 +34,8 @@ carries the book in tags of LPDO's own (`[LpdoBook]`, `[LpdoBookColor]`,
 `[LpdoBookAuthor]`, `[LpdoBookUrl]`, `[LpdoBookNotes]`, `[LpdoChapter]`, …),
 which other programs ignore.
 
-A chapter is added to the selected book in one of three ways, from the
-same ⋯ menu:
+A chapter is added to the selected book in one of three ways, from the ⋯
+above its chapters:
 
 - **New empty chapter**, then play the lines in with *Edit lines…*;
 - **Paste PGN…** — a PGN with several games becomes several chapters, named
@@ -45,11 +45,11 @@ same ⋯ menu:
   becomes a chapter (or a chapter per game, for a file of several), named
   from its headers or else after the file.
 
-The ⋯ above the chapters works on the chapter on the board: rename it
+The rest of that ⋯ works on the chapter on the board: rename it
 (or press **F2**),
 export it as PGN, delete it. **Rearrange chapters** there puts the list in
-a mode for ordering: drag a chapter to its place, or move it with ▲ ▼, and
-**Done** when it is right. Every chapter
+a mode for ordering: drag a chapter to its place, or move it with ▲ ▼ (or
+**↑** / **↓** for the chapter on the board), and **Done** when it is right. Every chapter
 starts from the initial position.
 
 **Rename chapters…** there renames many at once, by find and replace over

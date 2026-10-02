@@ -311,7 +311,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
         onSelect={setSelectedBook} onFold={() => setBooksFolded(true)}
         onCreate={(b) => run(async () => { const nb = await createBook(b); setSelectedBook(nb.id); })}
         onUpdate={(id, patch) => run(() => updateBook(id, patch))}
-        onAddEmpty={addEmpty} onImport={importPgn} onImportBooks={importBookFiles}
+        onImportBooks={importBookFiles}
         onDelete={(b) => run(async () => {
           await deleteBook(b.id);
           if (b.chapters.some((c) => c.id === chapterId)) dropChapter();
@@ -367,6 +367,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
             onRenameMany={(changes) => run(async () => { for (const c of changes) await updateChapter(c.id, { name: c.name }); })}
             onChapter={(id, patch) => run(() => updateChapter(id, patch))}
             onDeleteChapter={(id) => run(async () => { await deleteChapter(id); if (id === chapterId) dropChapter(); })}
+            onAddEmpty={(name) => addEmpty(book.id, name)} onImport={(items) => importPgn(book.id, items)}
             onDeleteChapters={(ids) => run(async () => { await deleteChapters(ids); if (chapterId != null && ids.includes(chapterId)) dropChapter(); })}
           />
         ) : (
@@ -457,13 +458,11 @@ async function exportPgn(path: string, filename: string): Promise<string | null>
 
 type ImportItem = { pgn: string; file?: string };
 
-function BooksPanel({ books, selected, busy, error, onSelect, onFold, onCreate, onUpdate, onAddEmpty, onImport, onImportBooks, onDelete }: {
+function BooksPanel({ books, selected, busy, error, onSelect, onFold, onCreate, onUpdate, onImportBooks, onDelete }: {
   books: BookWithChapters[] | null; selected: number | null; busy: boolean; error: string | null;
   onSelect: (id: number) => void; onFold: () => void;
   onCreate: (b: { name: string; author: string | null; color: BookColor }) => void;
   onUpdate: (id: number, patch: BookPatch) => void;
-  onAddEmpty: (bookId: number, name: string) => void;
-  onImport: (bookId: number, items: ImportItem[]) => void;
   /** Books from LPDO's own PGN (a book exported, or a backup). */
   onImportBooks: (items: ImportItem[]) => void;
   onDelete: (b: BookWithChapters) => void;
@@ -530,7 +529,7 @@ function BooksPanel({ books, selected, busy, error, onSelect, onFold, onCreate, 
         {book && books && (
           <BookDetails key={book.id} book={book} busy={busy} first={book.id === books[0]?.id} last={book.id === books[books.length - 1]?.id}
             onUpdate={(patch) => onUpdate(book.id, patch)} onDelete={() => onDelete(book)}
-            onAddEmpty={(name) => onAddEmpty(book.id, name)} onImport={(items) => onImport(book.id, items)} />
+          />
         )}
       </div>
     </>
@@ -538,20 +537,10 @@ function BooksPanel({ books, selected, busy, error, onSelect, onFold, onCreate, 
 }
 
 /** The selected book: what it is, and its settings. */
-function BookDetails({ book, busy, first, last, onUpdate, onDelete, onAddEmpty, onImport }: {
+function BookDetails({ book, busy, first, last, onUpdate, onDelete }: {
   book: BookWithChapters; busy: boolean; first: boolean; last: boolean;
   onUpdate: (patch: BookPatch) => void; onDelete: () => void;
-  onAddEmpty: (name: string) => void; onImport: (items: ImportItem[]) => void;
 }) {
-  const [pasting, setPasting] = useState(false);
-  const [pasted, setPasted] = useState("");
-  const fileRef = useRef<HTMLInputElement>(null);
-  async function pickFiles(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = [...(e.target.files ?? [])];
-    e.target.value = "";
-    if (files.length === 0) return;
-    onImport(await Promise.all(files.map(async (f) => ({ pgn: await f.text(), file: f.name.replace(/\.[^.]+$/, "") }))));
-  }
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(book.name);
   const [author, setAuthor] = useState(book.author ?? "");
@@ -583,11 +572,8 @@ function BookDetails({ book, busy, first, last, onUpdate, onDelete, onAddEmpty, 
           <div className="text-title-sm text-on-surface break-words">{book.name}</div>
           {book.author && <div className="text-label-md text-on-surface-variant break-words">by {book.author}</div>}
         </div>
-        <Menu up title="The book: add chapters, edit, reorder, export, delete" entries={[
-          { label: "New empty chapter", onClick: () => onAddEmpty(`Chapter ${book.chapters.length + 1}`), disabled: busy },
-          { label: "Paste PGN…", onClick: () => setPasting(true) },
-          { label: "Import PGN files…", onClick: () => fileRef.current?.click(), disabled: busy },
-          { label: editing ? "Done editing" : "Edit…", onClick: () => setEditing((e) => !e), separated: true },
+        <Menu up title="The book: edit, reorder, export, delete" entries={[
+          { label: editing ? "Done editing" : "Edit…", onClick: () => setEditing((e) => !e) },
           { label: "Move up", onClick: () => onUpdate({ ord: book.ord - 1 }), disabled: busy || first },
           { label: "Move down", onClick: () => onUpdate({ ord: book.ord + 1 }), disabled: busy || last },
           { label: "Export PGN…", onClick: () => void exportPgn(bookPgnPath(book.id), book.name).then(setNote), disabled: busy || book.chapters.length === 0 },
@@ -604,17 +590,6 @@ function BookDetails({ book, busy, first, last, onUpdate, onDelete, onAddEmpty, 
         </button>
       )}
       {book.description && <div className="text-body-sm text-on-surface-variant whitespace-pre-wrap break-words">{book.description}</div>}
-      <input ref={fileRef} type="file" multiple accept=".pgn,text/plain" className="hidden" onChange={(e) => void pickFiles(e)} />
-      {pasting && (
-        <div className="flex flex-col gap-1.5">
-          <textarea autoFocus value={pasted} onChange={(e) => setPasted(e.target.value)} rows={6} placeholder={"[Event \"Najdorf: 6.Bg5\"]\n\n1. e4 c5 2. Nf3 d6 ..."} className="w-full font-mono text-body-sm p-2 rounded-sm bg-surface-container border border-outline/40 text-on-surface" />
-          <span className="text-label-sm text-on-surface-variant">Several games become several chapters, named from their headers.</span>
-          <div className="flex items-center gap-1 justify-end">
-            <button onClick={() => { setPasting(false); setPasted(""); }} className={plain}>Cancel</button>
-            <button onClick={() => { onImport([{ pgn: pasted }]); setPasted(""); setPasting(false); }} disabled={busy || !pasted.trim()} className={tonal}>Add as chapters</button>
-          </div>
-        </div>
-      )}
       {confirmDelete && (
         <div className="flex items-center gap-1 flex-wrap">
           <button onClick={() => { setConfirmDelete(false); onDelete(); }} disabled={busy} className="h-7 px-2 rounded-full text-label-md text-error hover:bg-error/8">Delete it and its {plural(book.chapters.length, "chapter")}</button>
@@ -674,7 +649,7 @@ function Menu({ entries, title, up = false }: {
 
 /** The book's chapters, with one menu for the chapter on the board and a
  *  mode for putting them in order. */
-function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onCountFens, onRenameMany, onChapter, onDeleteChapter, onDeleteChapters }: {
+function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onCountFens, onRenameMany, onChapter, onDeleteChapter, onDeleteChapters, onAddEmpty, onImport }: {
   book: BookWithChapters; busy: boolean; current: number | null;
   onPick: (id: number) => void;
   onMerge: (ids: number[]) => void;
@@ -693,15 +668,39 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
   onChapter: (id: number, patch: { name?: string; ord?: number; active?: boolean }) => void;
   onDeleteChapter: (id: number) => void;
   onDeleteChapters: (ids: number[]) => void;
+  /** Adding chapters: an empty one, or from PGN (pasted, or files). */
+  onAddEmpty: (name: string) => void;
+  onImport: (items: ImportItem[]) => void;
 }) {
   const [note, setNote] = useState<string | null>(null);
+  const [pasting, setPasting] = useState(false);
+  const [pasted, setPasted] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+  async function pickFiles(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = [...(e.target.files ?? [])];
+    e.target.value = "";
+    if (files.length === 0) return;
+    onImport(await Promise.all(files.map(async (f) => ({ pgn: await f.text(), file: f.name.replace(/\.[^.]+$/, "") }))));
+  }
   const [renaming, setRenaming] = useState<number | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   // Deleting the chapters selected: asked in the selection's bar.
   const [confirmDeleteMany, setConfirmDeleteMany] = useState(false);
   const [arranging, setArranging] = useState(false);
+  // Rearranging by dragging — with the mouse, not HTML drag and drop, which
+  // the app's window does not pass on to the page.
   const [dragged, setDragged] = useState<number | null>(null);
   const [over, setOver] = useState<number | null>(null);
+  useEffect(() => {
+    if (dragged == null) return;
+    const drop = () => {
+      const to = book.chapters.find((c) => c.id === over);
+      if (to && over !== dragged) onChapter(dragged, { ord: to.ord });
+      setDragged(null); setOver(null);
+    };
+    window.addEventListener("mouseup", drop);
+    return () => window.removeEventListener("mouseup", drop);
+  }, [dragged, over, book.chapters, onChapter]);
   // Merge mode: the chapters ticked for merging.
   const [selecting, setSelecting] = useState<number[] | null>(null);
   // The chapter clicked last in merge mode: where a Shift-click's range starts.
@@ -768,9 +767,19 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
   // of several. Not while typing somewhere, ordering or ticking chapters.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (busy || arranging || selecting) return;
+      if (busy || selecting) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      // Rearranging: ↑ ↓ move the chapter on the board.
+      if (arranging) {
+        if (!chapter || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+        // Not also a step along the board's lines.
+        e.preventDefault(); e.stopPropagation();
+        const i = book.chapters.findIndex((c) => c.id === chapter.id);
+        const delta = e.key === "ArrowUp" ? -1 : 1;
+        if (i + delta >= 0 && i + delta < book.chapters.length) onChapter(chapter.id, { ord: chapter.ord + delta });
+        return;
+      }
       if (e.key === "Escape" && several) { setConfirmDeleteMany(false); setPicked(current != null ? [current] : []); return; }
       if (e.key !== "F2") return;
       if (several) { e.preventDefault(); setRenamingAll(multi); return; }
@@ -778,9 +787,10 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
       e.preventDefault();
       setRenaming(chapter.id);
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [chapter, busy, arranging, selecting, several, multi.join(","), current]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Capturing: ahead of the board's own keys.
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [chapter, busy, arranging, selecting, several, multi.join(","), current, book.chapters]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="flex flex-col">
@@ -800,8 +810,11 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
             </button>
           </>
         ) : (
-          <Menu title={chapter ? `The chapter on the board — ${chapter.name}` : "Rearrange the chapters; choose one for the rest"} entries={[
-            { label: "Rename chapter… (F2)", onClick: () => chapter && setRenaming(chapter.id), disabled: none },
+          <Menu title={chapter ? `Add chapters; the chapter on the board — ${chapter.name}` : "Add chapters, rearrange them; choose one for the rest"} entries={[
+            { label: "New empty chapter", onClick: () => onAddEmpty(`Chapter ${book.chapters.length + 1}`), disabled: busy },
+            { label: "Paste PGN…", onClick: () => setPasting(true), disabled: busy },
+            { label: "Import PGN files…", onClick: () => fileRef.current?.click(), disabled: busy },
+            { label: "Rename chapter… (F2)", separated: true, onClick: () => chapter && setRenaming(chapter.id), disabled: none },
             { label: "Export chapter PGN…", onClick: () => chapter && void exportPgn(chapterPgnPath(chapter.id), `${book.name}-${chapter.name}`).then(setNote), disabled: none },
             several
               ? { label: `Delete ${multi.length} chapters…`, onClick: () => setConfirmDeleteMany(true), disabled: busy }
@@ -854,6 +867,17 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
           <button onClick={() => setNote(null)} className="shrink-0 leading-none px-1 hover:opacity-70" title="Dismiss" aria-label="Dismiss">×</button>
         </div>
       )}
+      <input ref={fileRef} type="file" multiple accept=".pgn,text/plain" className="hidden" onChange={(e) => void pickFiles(e)} />
+      {pasting && (
+        <div className="px-3 pb-2 flex flex-col gap-1.5">
+          <textarea autoFocus value={pasted} onChange={(e) => setPasted(e.target.value)} rows={6} placeholder={"[Event \"Najdorf: 6.Bg5\"]\n\n1. e4 c5 2. Nf3 d6 ..."} className="w-full font-mono text-body-sm p-2 rounded-sm bg-surface-container border border-outline/40 text-on-surface" />
+          <span className="text-label-sm text-on-surface-variant">Several games become several chapters, named from their headers.</span>
+          <div className="flex items-center gap-1 justify-end">
+            <button onClick={() => { setPasting(false); setPasted(""); }} className={plain}>Cancel</button>
+            <button onClick={() => { onImport([{ pgn: pasted }]); setPasted(""); setPasting(false); }} disabled={busy || !pasted.trim()} className={tonal}>Add as chapters</button>
+          </div>
+        </div>
+      )}
       {fens && (
         <RemoveFensDialog what={fens.what} busy={busy} count={() => onCountFens(fens.ids)}
           onRemove={() => onRemoveFens(fens.ids)} onClose={() => setFens(null)} />
@@ -880,7 +904,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
       {!arranging && !selecting && (
         <BookGamesSummary games={games} note={gamesNote} picked={bookPicked} onPick={() => onPickBook(true)} />
       )}
-      {arranging && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Drag a chapter to its place, or move it with ▲ ▼.</div>}
+      {arranging && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Drag a chapter to its place, or move it with ▲ ▼ — or ↑ ↓ for the one on the board.</div>}
       {selecting && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Tick the chapters to merge — Shift-click ticks all from the one clicked last. The topmost keeps its name, place and main line; the others' lines and comments go into it, and they are deleted.</div>}
       {confirmDelete && chapter && (
         <div className="px-3 pb-1 flex items-center gap-1 flex-wrap">
@@ -893,7 +917,9 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
         {book.chapters.map((c, i) => (
           <ChapterRow key={c.id} chapter={c} busy={busy} current={c.id === current && !bookPicked}
             renaming={renaming === c.id} arranging={arranging} first={i === 0} last={i === book.chapters.length - 1}
-            dropTarget={arranging && over === c.id && dragged !== c.id}
+            dropTarget={!arranging || dragged == null || over !== c.id || over === dragged ? null
+              : book.chapters.findIndex((x) => x.id === dragged) > i ? "above" : "below"}
+            dragging={dragged === c.id}
             selected={selecting ? selecting.includes(c.id) : undefined}
             mine={games && !arranging && !selecting ? (gamesFor(c.id) ?? { games: 0, w: 0, d: 0, l: 0, perf: null }) : undefined}
             onSelect={(on, range) => {
@@ -912,18 +938,16 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
             onRename={(n) => { setRenaming(null); if (n && n !== c.name) onChapter(c.id, { name: n }); }}
             onMove={(delta) => onChapter(c.id, { ord: c.ord + delta })}
             drag={{
-              onDragStart: () => setDragged(c.id),
-              onDragOver: (e) => { if (dragged != null) { e.preventDefault(); setOver(c.id); } },
-              onDragLeave: () => setOver((o) => (o === c.id ? null : o)),
-              onDrop: (e) => {
+              // Not from ▲ ▼; no text selected while dragging.
+              onMouseDown: (e) => {
+                if (e.button !== 0 || busy || (e.target as HTMLElement).closest("[data-nodrag]")) return;
                 e.preventDefault();
-                if (dragged != null && dragged !== c.id) onChapter(dragged, { ord: c.ord });
-                setDragged(null); setOver(null);
+                setDragged(c.id); setOver(c.id);
               },
-              onDragEnd: () => { setDragged(null); setOver(null); },
+              onMouseEnter: () => { if (dragged != null) setOver(c.id); },
             }} />
         ))}
-        {book.chapters.length === 0 && <div className="px-3 py-1 text-label-sm text-on-surface-variant">No chapters yet — the book's ⋯ adds one: empty, pasted PGN, or PGN files.</div>}
+        {book.chapters.length === 0 && <div className="px-3 py-1 text-label-sm text-on-surface-variant">No chapters yet — the ⋯ above adds one: empty, pasted PGN, or PGN files.</div>}
       </div>
 
     </div>
@@ -1035,9 +1059,11 @@ function ScoreCell({ s }: { s: Score }) {
   return <span className={`w-10 text-right text-label-sm tabular-nums shrink-0 ${tone}`}>{scorePct(s)}</span>;
 }
 
-function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, last, dropTarget, selected, onSelect, mine, picked = false, onPick, onActive, onRename, onMove, drag }: {
+function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, last, dropTarget, dragging = false, selected, onSelect, mine, picked = false, onPick, onActive, onRename, onMove, drag }: {
   chapter: ChapterSummary; busy: boolean; current: boolean; renaming: boolean; arranging: boolean;
-  first: boolean; last: boolean; dropTarget: boolean;
+  first: boolean; last: boolean;
+  /** Rearranging: the dragged chapter goes in above or below this one. */
+  dropTarget: "above" | "below" | null; dragging?: boolean;
   /** In merge mode: ticked for merging (undefined outside it). */
   selected?: boolean; onSelect: (on: boolean, range: boolean) => void;
   /** "Your games": one's games in the chapter, shown instead of the lines. */
@@ -1045,7 +1071,7 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
   onPick: (e: React.MouseEvent) => void; onActive: (a: boolean) => void; onRename: (n: string) => void; onMove: (delta: -1 | 1) => void;
   /** One of several chapters selected (for Merge, Rename). */
   picked?: boolean;
-  drag: Pick<React.HTMLAttributes<HTMLDivElement>, "onDragStart" | "onDragOver" | "onDragLeave" | "onDrop" | "onDragEnd">;
+  drag: Pick<React.HTMLAttributes<HTMLDivElement>, "onMouseDown" | "onMouseEnter">;
 }) {
   const [name, setName] = useState(c.name);
   useEffect(() => setName(c.name), [c.name, renaming]);
@@ -1055,13 +1081,12 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
   const stale = !!c.analysed_at && c.analysis_stale === true;
   return (
     <div
-      draggable={arranging && !busy}
-      {...(arranging ? drag : {})}
       // In merge mode the whole row ticks the chapter (Shift: a range), not
       // only the checkbox; no text selected by a Shift-click.
       onClick={selected !== undefined ? (e) => { if ((e.target as HTMLElement).tagName !== "INPUT") onSelect(!selected, e.shiftKey); } : undefined}
       onMouseDown={selected !== undefined ? (e) => { if (e.shiftKey) e.preventDefault(); } : undefined}
-      className={`flex items-center gap-1.5 px-3 py-1 ${current ? "bg-primary-container/40" : picked ? "bg-primary-container/20" : ""} ${c.active ? "" : "opacity-70"} ${arranging ? "cursor-grab" : ""} ${selected !== undefined ? "cursor-pointer select-none hover:bg-on-surface/4" : ""} ${dropTarget ? "border-t-2 border-primary" : "border-t-2 border-transparent"}`}
+      {...(arranging ? drag : {})}
+      className={`flex items-center gap-1.5 px-3 py-1 ${current ? "bg-primary-container/40" : picked ? "bg-primary-container/20" : ""} ${c.active ? "" : "opacity-70"} ${arranging ? (dragging ? "cursor-grabbing opacity-50" : "cursor-grab") : ""} ${selected !== undefined ? "cursor-pointer select-none hover:bg-on-surface/4" : ""} border-y-2 ${dropTarget === "above" ? "border-t-primary border-b-transparent" : dropTarget === "below" ? "border-b-primary border-t-transparent" : "border-transparent"}`}
     >
       {arranging
         ? <span className="shrink-0 text-on-surface-variant text-body-sm select-none" aria-hidden>⠿</span>
@@ -1084,8 +1109,8 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
       )}
       {arranging ? (
         <>
-          <button onClick={() => onMove(-1)} disabled={busy || first} className={nav} title="Move up">▲</button>
-          <button onClick={() => onMove(1)} disabled={busy || last} className={nav} title="Move down">▼</button>
+          <button data-nodrag onClick={() => onMove(-1)} disabled={busy || first} className={nav} title="Move up (↑)">▲</button>
+          <button data-nodrag onClick={() => onMove(1)} disabled={busy || last} className={nav} title="Move down (↓)">▼</button>
         </>
       ) : (
         <>
