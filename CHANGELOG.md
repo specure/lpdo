@@ -7,12 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-10-02
+
 ### Added
 - **Reference games apart from model games** — a book's games without
   comments of their own (courses call them reference games) are listed
   under **Reference games**, the annotated ones under **Model games**;
   decided from the games themselves, a game moving between the two as
   comments are added or taken out.
+
+### Fixed
+- **macOS** — the macOS app is built again; 0.22.0 shipped for Linux and
+  Windows only, its notarization refused by Apple.
 
 ## [0.22.0] - 2026-10-02
 
@@ -1333,7 +1339,8 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.22.1...HEAD
+[0.22.1]: https://github.com/specure/lpdo/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/specure/lpdo/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/specure/lpdo/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/specure/lpdo/compare/v0.19.0...v0.20.0
