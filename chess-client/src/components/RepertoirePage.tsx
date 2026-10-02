@@ -308,10 +308,14 @@ export default function RepertoirePage({ onOpenGame }: Props) {
     else setChapterId(target.id);
   });
 
+  // F2 edits the book when the books were clicked last, else renames the
+  // chapter(s) — as in a file manager, the keys go where one is working.
+  const keysFor = useRef<"books" | "chapters">("chapters");
+  const f2Books = useCallback(() => keysFor.current === "books", []);
   const booksPanel = booksFolded ? <Strip label="Books" onOpen={() => setBooksFolded(false)} /> : (
-    <div className={box}>
+    <div className={box} onMouseDownCapture={() => { keysFor.current = "books"; }}>
       <BooksPanel
-        books={books} selected={selectedBook} busy={busy} error={error}
+        books={books} selected={selectedBook} busy={busy} error={error} f2Here={f2Books}
         onSelect={setSelectedBook} onFold={() => setBooksFolded(true)}
         onCreate={(b) => run(async () => { const nb = await createBook(b); setSelectedBook(nb.id); })}
         onUpdate={(id, patch) => run(() => updateBook(id, patch))}
@@ -325,7 +329,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
     </div>
   );
   const chaptersPanel = chaptersFolded ? <Strip label={book ? book.name : "Chapters"} onOpen={() => setChaptersFolded(false)} /> : (
-    <div className={box}>
+    <div className={box} onMouseDownCapture={() => { keysFor.current = "chapters"; }}>
       <div className="px-3 py-2 flex items-center gap-2 border-b border-outline/40 shrink-0">
         <span className="flex-1 min-w-0 truncate text-label-md text-on-surface-variant uppercase tracking-wider" title={book?.name}>Chapters</span>
         <button onClick={() => setChaptersFolded(true)} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide the chapters">«</button>
@@ -361,7 +365,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
       )}
       <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
         {book ? (
-          <ChaptersList
+          <ChaptersList f2Here={() => !f2Books()}
             book={book} busy={busy} current={chapterId}
             onPick={(id) => { setChapterId(id); setBookPicked(false); }}
             bookPicked={bookPicked} onPickBook={setBookPicked}
@@ -462,8 +466,10 @@ async function exportPgn(path: string, filename: string): Promise<string | null>
 
 type ImportItem = { pgn: string; file?: string };
 
-function BooksPanel({ books, selected, busy, error, onSelect, onFold, onCreate, onUpdate, onImportBooks, onDelete }: {
+function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, onCreate, onUpdate, onImportBooks, onDelete }: {
   books: BookWithChapters[] | null; selected: number | null; busy: boolean; error: string | null;
+  /** Whether F2 is the books' (they were clicked last): Edit… the selected one. */
+  f2Here: () => boolean;
   onSelect: (id: number) => void; onFold: () => void;
   onCreate: (b: { name: string; author: string | null; color: BookColor }) => void;
   onUpdate: (id: number, patch: BookPatch) => void;
@@ -591,7 +597,7 @@ function BooksPanel({ books, selected, busy, error, onSelect, onFold, onCreate, 
           {books && books.length === 0 && !adding && <div className="px-3 py-1 text-label-sm text-on-surface-variant">None yet — + New adds one.</div>}
         </div>
         {book && books && (
-          <BookDetails key={book.id} book={book} busy={busy} canArrange={books.length > 1} onArrange={() => setArranging(true)}
+          <BookDetails key={book.id} book={book} busy={busy} canArrange={books.length > 1} onArrange={() => setArranging(true)} f2Here={f2Here}
             onUpdate={(patch) => onUpdate(book.id, patch)} onDelete={() => onDelete(book)}
           />
         )}
@@ -601,13 +607,30 @@ function BooksPanel({ books, selected, busy, error, onSelect, onFold, onCreate, 
 }
 
 /** The selected book: what it is, and its settings. */
-function BookDetails({ book, busy, canArrange, onArrange, onUpdate, onDelete }: {
-  book: BookWithChapters; busy: boolean;
+function BookDetails({ book, busy, canArrange, onArrange, f2Here, onUpdate, onDelete }: {
+  book: BookWithChapters; busy: boolean; f2Here: () => boolean;
   /** Rearranging the books: the list's mode for it. */
   canArrange: boolean; onArrange: () => void;
   onUpdate: (patch: BookPatch) => void; onDelete: () => void;
 }) {
   const [editing, setEditing] = useState(false);
+  // F2 — the books clicked last — opens Edit…, the name ready to change.
+  const nameRef = useRef<HTMLInputElement>(null);
+  const [focusName, setFocusName] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "F2" || !f2Here()) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      e.preventDefault();
+      setEditing(true); setFocusName(true);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [f2Here]);
+  useEffect(() => {
+    if (editing && focusName) { nameRef.current?.focus(); nameRef.current?.select(); setFocusName(false); }
+  }, [editing, focusName]);
   const [name, setName] = useState(book.name);
   const [author, setAuthor] = useState(book.author ?? "");
   const [url, setUrl] = useState(book.url ?? "");
@@ -639,7 +662,7 @@ function BookDetails({ book, busy, canArrange, onArrange, onUpdate, onDelete }: 
           {book.author && <div className="text-label-md text-on-surface-variant break-words">by {book.author}</div>}
         </div>
         <Menu up title="The book: edit, export, delete; rearrange the books" entries={[
-          { label: editing ? "Done editing" : "Edit…", onClick: () => setEditing((e) => !e) },
+          { label: editing ? "Done editing" : "Edit… (F2)", onClick: () => setEditing((e) => !e) },
           { label: "Rearrange books", onClick: onArrange, disabled: busy || !canArrange },
           { label: "Export PGN…", onClick: () => void exportPgn(bookPgnPath(book.id), book.name).then(setNote), disabled: busy || book.chapters.length === 0 },
           { label: "Delete…", onClick: () => setConfirmDelete(true), disabled: busy, separated: true },
@@ -663,7 +686,7 @@ function BookDetails({ book, busy, canArrange, onArrange, onUpdate, onDelete }: 
       )}
       {editing && (
         <div className="flex flex-col gap-1.5">
-          <input value={name} onChange={(e) => setName(e.target.value)} onBlur={() => { if (name.trim() && name.trim() !== book.name) onUpdate({ name: name.trim() }); }}
+          <input ref={nameRef} value={name} onChange={(e) => setName(e.target.value)} onBlur={() => { if (name.trim() && name.trim() !== book.name) onUpdate({ name: name.trim() }); }}
             onKeyDown={enter} className={field} title="Name" placeholder="Name" />
           <input value={author} onChange={(e) => setAuthor(e.target.value)} onBlur={() => commit("author", author, book.author)}
             onKeyDown={enter} className={field} placeholder="Author (optional)" />
@@ -714,7 +737,7 @@ function Menu({ entries, title, up = false }: {
 
 /** The book's chapters, with one menu for the chapter on the board and a
  *  mode for putting them in order. */
-function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onCountFens, onRenameMany, onChapter, onDeleteChapter, onDeleteChapters, onAddEmpty, onImport }: {
+function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onCountFens, onRenameMany, onChapter, onDeleteChapter, onDeleteChapters, onAddEmpty, onImport, f2Here }: {
   book: BookWithChapters; busy: boolean; current: number | null;
   onPick: (id: number) => void;
   onMerge: (ids: number[]) => void;
@@ -736,6 +759,8 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
   /** Adding chapters: an empty one, or from PGN (pasted, or files). */
   onAddEmpty: (name: string) => void;
   onImport: (items: ImportItem[]) => void;
+  /** Whether F2 is the chapters' (the books were not clicked last). */
+  f2Here: () => boolean;
 }) {
   const [note, setNote] = useState<string | null>(null);
   const [pasting, setPasting] = useState(false);
@@ -846,7 +871,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
         return;
       }
       if (e.key === "Escape" && several) { setConfirmDeleteMany(false); setPicked(current != null ? [current] : []); return; }
-      if (e.key !== "F2") return;
+      if (e.key !== "F2" || !f2Here()) return;
       if (several) { e.preventDefault(); setRenamingAll(multi); return; }
       if (!chapter) return;
       e.preventDefault();
