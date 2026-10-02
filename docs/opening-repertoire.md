@@ -18,8 +18,10 @@ is used.
 **+ New** beside *Books* asks for a name, the author (optional) and the
 colour. Under the list, the selected book's details: its author, colour,
 chapter and line counts, the link to the course (a click opens it) and your
-notes. Its ⋯ menu has **Edit…** to change them, **Move up** / **Move down**
-to reorder the books, **Export PGN…** for all its chapters as one file, and
+notes. Its ⋯ menu has **Edit…** to change them (or **F2**, when the books
+were clicked last — after a click among the chapters, F2 renames a chapter), **Rearrange books** (or **M**) to put
+the books in order (drag one to its place, ▲ ▼, or ↑ ↓ for the one selected;
+**Done**, Enter or Esc when it is right), **Export PGN…** for all its chapters as one file, and
 **Delete…** to delete it with its chapters. The author
 goes into the chapters' PGN as `[Annotator]`.
 
@@ -47,9 +49,9 @@ above its chapters:
 
 The rest of that ⋯ works on the chapter on the board: rename it
 (or press **F2**),
-export it as PGN, delete it. **Rearrange chapters** there puts the list in
+export it as PGN, delete it. **Rearrange chapters** there (or **M**, after a click among the chapters) puts the list in
 a mode for ordering: drag a chapter to its place, or move it with ▲ ▼ (or
-**↑** / **↓** for the chapter on the board), and **Done** when it is right. Every chapter
+**↑** / **↓** for the chapter on the board), and **Done** (or Enter, Esc) when it is right. Every chapter
 starts from the initial position.
 
 **Rename chapters…** there renames many at once, by find and replace over
@@ -67,7 +69,10 @@ counts them first — "25 FEN codes will be removed", per chapter — and
 removes them when you say so; "No FEN codes found" otherwise.
 
 Chapters can be **selected** as in a file manager: a click selects one (and
-puts it on the board), **Shift-click** the range from the one clicked last,
+puts it on the board; then **↑** / **↓** put the chapter before or after it
+there — the books' list likewise, after a click among the books; a click on
+the board gives the arrows back to its lines), **Shift-click** the range
+from the one clicked last,
 **Ctrl-click** one more or one less. With several selected, a bar under the
 book's name — it stays in view while the list scrolls — offers **Merge…**,
 **Rename…** (or F2) and **Delete…** for just those (the ⋯ has them too);
