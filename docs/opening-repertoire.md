@@ -85,12 +85,16 @@ again. The checkbox on a book does the same for the whole book: off, none of
 its chapters count, whatever their own checkboxes say, and they keep them for
 when the book is switched on again.
 
-Within a chapter, any move can be switched **off**: "not in my repertoire from
-here". Open the chapter, put the cursor on the move, and click **Off** in
-the toolbar under the move list, beside All+ / All− (and **On** to undo). The move and
-everything below it stay in the chapter, greyed, and count as inactive — for
-an alternative you are not following for now, or a variation you play
-differently from another book. The switch is kept in the chapter's PGN (a
+Within a chapter, a line can be switched **off**: "not in my repertoire from
+here". In the **Lines** tab each line has an **off** button at its end (and
+**on** to undo), which switches it off at the move where it branches. **Off:
+my sidelines** above the lines does it for all your second choices at once:
+wherever you have more than one move in the chapter (11.Nxf4, and 11.gxf4?!
+as a variation), the first stays on and the others are switched off — your
+opponent's alternatives stay on, as they are what you need to know. **All
+on** switches every line back on. The move and everything below it stay in
+the chapter, greyed, and count as inactive — for an alternative you are not
+following for now, or a variation you play differently from another book. The switch is kept in the chapter's PGN (a
 `[%rep off]` tag in the move's comment), so it survives export and import.
 
 ## Studying a chapter

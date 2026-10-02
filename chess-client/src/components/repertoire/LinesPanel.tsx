@@ -5,12 +5,18 @@
 // to the next (the host asks `onLines` for the list). Off lines are greyed.
 // A line not in the chapter's practice analysis — never analysed, or moves
 // added since — is marked so; the header says how many are.
+//
+// The repertoire's off-switch lives here: each line on or off at its
+// branching move, and in the header "Off: my sidelines" — one's own second
+// choices switched off wherever the chapter has more than one — and "All
+// on". Each saves the chapter.
 
 import { useEffect, useState } from "react";
-import { parsePgnTree } from "../../lib/parsePgnTree";
-import { chapterLines, type ChapterLine } from "../../lib/repertoireLines";
+import { parsePgnTree, type AnnotatedGame } from "../../lib/parsePgnTree";
+import { serializeMovetext } from "../../lib/serializeMovetext";
+import { chapterLines, switchAllOn, switchOffSidelines, type ChapterLine } from "../../lib/repertoireLines";
 import { getMoveNum } from "../../lib/moveTreeNav";
-import { getChapter, getStoredAnalysis } from "../../lib/repertoire";
+import { getChapter, getStoredAnalysis, saveChapterMoves, type BookColor } from "../../lib/repertoire";
 import { positionKey } from "../../trainer/buildPackage";
 import type { CursorPath } from "../../lib/moveTreeNav";
 
@@ -25,6 +31,10 @@ interface Props {
   cursor: CursorPath | null;
   onPick: (cursor: CursorPath) => void;
   onLines?: (lines: ChapterLine[]) => void;
+  /** The book's colour: whose sidelines "Off: my sidelines" switches off. */
+  color: BookColor;
+  /** The chapter was saved here (lines switched on or off). */
+  onSaved?: () => void;
 }
 
 /** A line written out: White's moves numbered ("5.c3"), a Black move after
@@ -54,9 +64,33 @@ function LineText({ line, onMove }: { line: ChapterLine; onMove: (cursor: Cursor
   );
 }
 
-export default function LinesPanel({ chapterId, reloadKey, analysedAt, cursor, onPick, onLines }: Props) {
+export default function LinesPanel({ chapterId, reloadKey, analysedAt, cursor, onPick, onLines, color, onSaved }: Props) {
   const [lines, setLines] = useState<ChapterLine[] | null>(null);
+  const [tree, setTree] = useState<AnnotatedGame | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  useEffect(() => setNote(null), [chapterId]);
+
+  /** Change the switches (on the tree the lines come from), save, read the
+   *  chapter again everywhere. */
+  async function change(f: (t: AnnotatedGame) => string | void) {
+    if (!tree || saving) return;
+    const said = f(tree);
+    setSaving(true);
+    try {
+      await saveChapterMoves(chapterId, serializeMovetext(tree));
+      setNote(said || null);
+      onSaved?.();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+  const mine = color === "white" ? "w" : "b";
+  // How many own sidelines are on — counted on a copy, nothing changed.
+  const sidelines = tree ? switchOffSidelines(structuredClone(tree), mine) : 0;
   // The positions of the stored analysis; null while there is none.
   const [analysed, setAnalysed] = useState<Set<string> | null>(null);
   useEffect(() => {
@@ -72,7 +106,9 @@ export default function LinesPanel({ chapterId, reloadKey, analysedAt, cursor, o
     getChapter(chapterId)
       .then((c) => {
         if (gone) return;
-        const ls = chapterLines(parsePgnTree(c.pgn));
+        const t = parsePgnTree(c.pgn);
+        const ls = chapterLines(t);
+        setTree(t);
         setLines(ls);
         setError(null);
         onLines?.(ls);
@@ -96,6 +132,19 @@ export default function LinesPanel({ chapterId, reloadKey, analysedAt, cursor, o
         {" · "}{analysed ? (done === lines.length ? "all analysed" : `${done} analysed`) : "not analysed"}
         <span className="ml-2 text-outline">click a move: the board there · ↑ ↓ previous / next line · End: the end of the line</span>
       </div>
+      <div className="px-3 py-1 shrink-0 flex items-center gap-1.5 flex-wrap border-b border-outline/40 text-label-sm">
+        <button disabled={saving || sidelines === 0}
+          onClick={() => void change((t) => { const n = switchOffSidelines(t, mine); return `Switched off ${n} ${n === 1 ? "sideline" : "sidelines"} of yours.`; })}
+          className="h-6 px-2 rounded-full border border-outline/40 text-on-surface-variant hover:bg-on-surface/8 disabled:opacity-40"
+          title={`Wherever you have more than one move (as ${color === "white" ? "White" : "Black"}), keep the first and switch the others off — with everything below them. The opponent's alternatives stay on.`}>
+          Off: my sidelines{sidelines ? ` (${sidelines})` : ""}
+        </button>
+        <button disabled={saving || off === 0}
+          onClick={() => void change((t) => { const n = switchAllOn(t); return `Switched ${n} ${n === 1 ? "move" : "moves"} back on.`; })}
+          className="h-6 px-2 rounded-full border border-outline/40 text-on-surface-variant hover:bg-on-surface/8 disabled:opacity-40"
+          title="Switch every line of the chapter back on">All on</button>
+        {saving ? <span className="text-on-surface-variant">Saving…</span> : note && <span className="text-on-surface-variant">{note}</span>}
+      </div>
       <div className="flex-1 overflow-y-auto">
         {lines.map((l, i) => {
           const on = cursorKey === JSON.stringify(l.steps);
@@ -110,7 +159,25 @@ export default function LinesPanel({ chapterId, reloadKey, analysedAt, cursor, o
             >
               <span className="text-on-surface-variant tabular-nums w-6 shrink-0 text-right leading-6">{i + 1}.</span>
               <LineText line={l} onMove={onPick} />
-              {l.off && <span className="shrink-0 leading-6 text-label-sm text-on-surface-variant">off</span>}
+              {/* On or off at the line's branching move (the main line has
+                  none of its own); off through a line above, it is switched
+                  on there. */}
+              {l.depth > 0 && (() => {
+                const own = !!l.line[0]?.annotations.off;
+                const inherited = l.off && !own;
+                return inherited
+                  ? <span className="shrink-0 leading-6 text-label-sm text-on-surface-variant" title="Off through a line above — switch that one on">off</span>
+                  : (
+                    <span role="button" tabIndex={-1}
+                      onClick={(e) => { e.stopPropagation(); if (!saving) void change(() => { l.line[0].annotations.off = own ? undefined : true; }); }}
+                      className={`shrink-0 self-start mt-0.5 h-5 px-1.5 inline-flex items-center rounded-full border text-[11px] leading-none cursor-pointer ${
+                        own ? "border-primary text-primary hover:bg-primary/8" : "border-outline/50 text-on-surface-variant hover:bg-on-surface/8"
+                      }`}
+                      title={own ? "Switched off — click to switch it on" : "Switch this line off: not in my repertoire from its branching move"}>
+                      {own ? "on" : "off"}
+                    </span>
+                  );
+              })()}
               {/* Only a line the analysis lacks is marked: usually all are in. */}
               {analysed && !isAnalysed(l) && (
                 <span className="shrink-0 leading-6 text-label-sm text-tertiary" title="Moves added since the chapter was analysed — analyse it again">not analysed</span>

@@ -253,6 +253,9 @@ export default function AnalysisPage({
   // A repertoire chapter (#327): its lines, the cursor asked for when one is
   // picked, and "→ at the end of a line goes on to the next".
   const [chapterVersion, setChapterVersion] = useState(0);
+  // Bumped when the Lines tab saved the chapter (lines switched on or off):
+  // the board reads it again.
+  const [linesSaved, setLinesSaved] = useState(0);
   const linesRef = useRef<ChapterLine[]>([]);
   const [cursorRequest, setCursorRequest] = useState<{ cursor: CursorPath; seq: number } | null>(null);
   const requestCursor = useCallback((cursor: CursorPath) => setCursorRequest((r) => ({ cursor, seq: (r?.seq ?? 0) + 1 })), []);
@@ -508,7 +511,7 @@ export default function AnalysisPage({
                 chapter={chapterDoc}
                 cursorRequest={active.document ? cursorRequest : null}
                 onLineStep={active.document ? lineStep : undefined}
-                reloadKey={active.document ? documentReload : undefined}
+                reloadKey={active.document ? documentReload + linesSaved : undefined}
               />
             )}
           </div>
@@ -588,6 +591,8 @@ export default function AnalysisPage({
                     cursor={active.cursor}
                     onPick={requestCursor}
                     onLines={(ls) => { linesRef.current = ls; }}
+                    color={active.document.color}
+                    onSaved={() => { setLinesSaved((v) => v + 1); onChapterMutated(); }}
                   />
                 ) : shownTab === "reference" ? (
                   refLoading ? (
