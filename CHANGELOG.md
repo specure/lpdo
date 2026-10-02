@@ -26,7 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where the comments differ you choose which stays, the differences marked
   in yellow; each line's chapter can be noted at its end. Chapters are
   selected as in a file manager (click, Shift-click, Ctrl-click) for Merge,
-  Rename (F2) and Delete, and rearranged by dragging or ↑ ↓. **Off: my
+  Rename (F2) and Delete, and rearranged by dragging or ↑ ↓; books are
+  rearranged the same way, and the keys go to the panel clicked last —
+  ↑ ↓ step through the books or chapters, F2 edits the book or renames the
+  chapter, M rearranges, Enter ends. **Off: my
   sidelines** in the Lines tab switches off every alternative to your own
   moves at once. Chapters can be renamed
   together, by find and replace over their names, with a preview. Chapters
