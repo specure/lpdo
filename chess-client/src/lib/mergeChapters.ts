@@ -29,7 +29,11 @@ export interface MergeResult {
   conflicts: MergeConflict[];
   /** Moves added from the other chapters. */
   added: number;
-  /** Comments, intros and NAGs taken over where the target had none. */
+  /** What those added moves bring along: comments and line intros, and marks
+   *  (NAGs, arrows, circles). */
+  carried: { comments: number; marks: number };
+  /** Comments, intros, NAGs, arrows and circles added to moves the target
+   *  already had (where it had none, or lacked that arrow or circle). */
   takenOver: number;
 }
 
@@ -61,6 +65,17 @@ function countMoves(line: MoveNode[]): number {
   return line.reduce((sum, n) => sum + 1 + n.variations.reduce((s, v) => s + countMoves(v), 0), 0);
 }
 
+/** The comments and marks on a line and its variations, added to `into`. */
+function countNotes(line: MoveNode[], into: { comments: number; marks: number }) {
+  for (const n of line) {
+    const a = n.annotations;
+    if (norm(a.comment)) into.comments++;
+    if (norm(n.preComment)) into.comments++;
+    into.marks += (a.nags?.length ?? 0) + (a.arrows?.length ?? 0) + (a.circles?.length ?? 0);
+    for (const v of n.variations) countNotes(v, into);
+  }
+}
+
 /** A move from a position: the node at `line[i]` and the rest of `line` after it. */
 interface At { line: MoveNode[]; i: number }
 
@@ -78,6 +93,7 @@ class Merger {
   keys = new WeakMap<object, number>();
   nextKey = 0;
   added = 0;
+  carried = { comments: 0, marks: 0 };
   takenOver = 0;
 
   constructor(private chapters: string[]) {}
@@ -132,12 +148,12 @@ class Merger {
     if (sa.arrows?.length) {
       const have = new Set((ta.arrows ?? []).map((a) => `${a.from}${a.to}`));
       const extra = sa.arrows.filter((a) => !have.has(`${a.from}${a.to}`));
-      if (extra.length) ta.arrows = [...(ta.arrows ?? []), ...extra];
+      if (extra.length) { ta.arrows = [...(ta.arrows ?? []), ...extra]; this.takenOver += extra.length; }
     }
     if (sa.circles?.length) {
       const have = new Set((ta.circles ?? []).map((c) => c.square));
       const extra = sa.circles.filter((c) => !have.has(c.square));
-      if (extra.length) ta.circles = [...(ta.circles ?? []), ...extra];
+      if (extra.length) { ta.circles = [...(ta.circles ?? []), ...extra]; this.takenOver += extra.length; }
     }
     if (sa.off) ta.off = true;
   }
@@ -160,6 +176,7 @@ class Merger {
       // The target's line ends here: the rest of the source's continues it.
       const rest = structuredClone(sline.slice(si));
       this.added += countMoves(rest);
+      countNotes(rest, this.carried);
       line.push(...rest);
       return;
     }
@@ -177,6 +194,7 @@ class Merger {
         const v = structuredClone(alt.line.slice(alt.i));
         v[0].variations = [];
         this.added += countMoves(v);
+        countNotes(v, this.carried);
         line[i].variations.push(v);
         mine.push({ line: v, i: 0 });
       }
@@ -199,18 +217,57 @@ function show(v: string | number[]): string {
   return typeof v === "string" ? v : nagsToString(v);
 }
 
-/** Merge `sources` into `target`, in order. The conflicts are left as the
- *  target has them until `resolveMerge`. */
-export function mergeChapters(target: MergeChapter, sources: MergeChapter[]): MergeResult & { pending: Pending[] } {
-  const game = parsePgnTree(target.pgn);
-  const m = new Merger([target.name, ...sources.map((s) => s.name)]);
-  sources.forEach((s, k) => m.merge(game, parsePgnTree(s.pgn), k + 1));
-  const pending = [...m.pending.values()];
-  return { game, conflicts: pending.map((p) => p.conflict), added: m.added, takenOver: m.takenOver, pending };
+/** The moves (as SANs from the start) of every line's last move: the main
+ *  line's and each variation's, theirs too. */
+function lineEnds(line: MoveNode[], before: string[] = [], out: string[][] = []): string[][] {
+  line.forEach((n, i) => {
+    for (const v of n.variations) lineEnds(v, [...before, ...line.slice(0, i).map((m) => m.san)], out);
+  });
+  if (line.length) out.push([...before, ...line.map((m) => m.san)]);
+  return out;
 }
 
-/** Apply the choices and give the merged chapter's movetext. */
-export function resolveMerge(result: ReturnType<typeof mergeChapters>, choices: MergeChoices): string {
+/** The node the moves lead to in `line`, wherever among the variations. */
+function follow(line: MoveNode[], sans: string[]): MoveNode | null {
+  let at: At = { line, i: 0 };
+  let node: MoveNode | null = null;
+  for (const san of sans) {
+    const m = alternatives(at.line, at.i).find((a) => a.line[a.i].san === san);
+    if (!m) return null;
+    node = m.line[m.i];
+    at = { line: m.line, i: m.i + 1 };
+  }
+  return node;
+}
+
+/** Merge `sources` into `target`, in order. The conflicts are left as the
+ *  target has them until `resolveMerge`. */
+export function mergeChapters(target: MergeChapter, sources: MergeChapter[]): MergeResult & { pending: Pending[]; endings: Map<MoveNode, string[]> } {
+  const game = parsePgnTree(target.pgn);
+  const m = new Merger([target.name, ...sources.map((s) => s.name)]);
+  // Where each chapter's lines end, for noting their names there.
+  const ends: { name: string; sans: string[] }[] = lineEnds(game.mainLine).map((sans) => ({ name: target.name, sans }));
+  sources.forEach((s, k) => {
+    const g = parsePgnTree(s.pgn);
+    for (const sans of lineEnds(g.mainLine)) ends.push({ name: s.name, sans });
+    m.merge(game, g, k + 1);
+  });
+  const endings = new Map<MoveNode, string[]>();
+  for (const e of ends) {
+    const node = follow(game.mainLine, e.sans);
+    if (!node) continue;
+    const names = endings.get(node) ?? [];
+    if (!names.includes(e.name)) names.push(e.name);
+    endings.set(node, names);
+  }
+  const pending = [...m.pending.values()];
+  return { game, conflicts: pending.map((p) => p.conflict), added: m.added, carried: m.carried, takenOver: m.takenOver, pending, endings };
+}
+
+/** Apply the choices and give the merged chapter's movetext. `noteChapters`:
+ *  each line's last move gets the chapter it came from in its comment,
+ *  "… (Theory 3D: #24)" — several where their lines end on the same move. */
+export function resolveMerge(result: ReturnType<typeof mergeChapters>, choices: MergeChoices, noteChapters = false): string {
   for (const p of result.pending) {
     const c = choices.get(p.conflict.id);
     if (c == null || c === 0) continue;
@@ -224,6 +281,13 @@ export function resolveMerge(result: ReturnType<typeof mergeChapters>, choices: 
       }
     } else {
       p.set(p.values[c]);
+    }
+  }
+  if (noteChapters) {
+    for (const [node, names] of result.endings) {
+      const note = `(${names.join(", ")})`;
+      const c = (node.annotations.comment ?? "").trim();
+      if (!c.endsWith(note)) node.annotations.comment = c ? `${c} ${note}` : note;
     }
   }
   return serializeMovetext(result.game);

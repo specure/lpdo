@@ -1361,21 +1361,6 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     onGameMutated?.();
   }, [scratch, annotatedGame, game.id, cursor, onGameMutated, saveMoves]);
 
-  /** The repertoire's off-switch (#327) on a move of the chapter, in view
-   *  mode: flip it and save, staying where the cursor is. */
-  const toggleOff = useCallback(async (line: MoveNode[], index: number, off: boolean) => {
-    if (!annotatedGame || !chapter) return;
-    const node = line[index - 1];
-    if (!node) return;
-    node.annotations.off = off || undefined;
-    setAnnotatedGame({ ...annotatedGame });
-    const result = await saveMoves(game.id, serializeMovetext(clearScratchMarks(annotatedGame)));
-    if (!result.ok) { setError(`Couldn't save the switch: ${result.error}`); return; }
-    pendingCursorRef.current = cursor;
-    setDetailReloadKey((k) => k + 1);
-    onGameMutated?.();
-  }, [annotatedGame, chapter, game.id, cursor, onGameMutated, saveMoves]);
-
   // A cursor the host asks for (a line picked in the Lines panel).
   useEffect(() => {
     if (!cursorRequest || !annotatedGame || movesEditor.active) return;
@@ -2359,7 +2344,6 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             onCollapseSubVariations={handleCollapseSubVariations}
             onToggleAnnotations={() => setShowAnnotations((v) => !v)}
                       offAware={!!chapter}
-            onToggleOff={chapter && !scratch ? (line, index, off) => void toggleOff(line, index, off) : undefined}
           />
         ) : fens.length > 0 ? (
           <MoveList moves={moves} currentIndex={currentIndex} onSelect={goTo} />

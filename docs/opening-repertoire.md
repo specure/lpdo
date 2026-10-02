@@ -34,8 +34,8 @@ carries the book in tags of LPDO's own (`[LpdoBook]`, `[LpdoBookColor]`,
 `[LpdoBookAuthor]`, `[LpdoBookUrl]`, `[LpdoBookNotes]`, `[LpdoChapter]`, …),
 which other programs ignore.
 
-A chapter is added to the selected book in one of three ways, from the
-same ⋯ menu:
+A chapter is added to the selected book in one of three ways, from the ⋯
+above its chapters:
 
 - **New empty chapter**, then play the lines in with *Edit lines…*;
 - **Paste PGN…** — a PGN with several games becomes several chapters, named
@@ -45,11 +45,11 @@ same ⋯ menu:
   becomes a chapter (or a chapter per game, for a file of several), named
   from its headers or else after the file.
 
-The ⋯ above the chapters works on the chapter on the board: rename it
+The rest of that ⋯ works on the chapter on the board: rename it
 (or press **F2**),
 export it as PGN, delete it. **Rearrange chapters** there puts the list in
-a mode for ordering: drag a chapter to its place, or move it with ▲ ▼, and
-**Done** when it is right. Every chapter
+a mode for ordering: drag a chapter to its place, or move it with ▲ ▼ (or
+**↑** / **↓** for the chapter on the board), and **Done** when it is right. Every chapter
 starts from the initial position.
 
 **Rename chapters…** there renames many at once, by find and replace over
@@ -66,6 +66,13 @@ w KQkq - 0 1 1.d4 Nf6…"); the rest of each comment stays as written. It
 counts them first — "25 FEN codes will be removed", per chapter — and
 removes them when you say so; "No FEN codes found" otherwise.
 
+Chapters can be **selected** as in a file manager: a click selects one (and
+puts it on the board), **Shift-click** the range from the one clicked last,
+**Ctrl-click** one more or one less. With several selected, a bar under the
+book's name — it stays in view while the list scrolls — offers **Merge…**,
+**Rename…** (or F2) and **Delete…** for just those (the ⋯ has them too);
+**×** or **Esc** drops the selection.
+
 **Merge chapters…** there folds several chapters into one — the same
 section imported twice, or split over several files. Tick the chapters
 (Shift-click ticks every chapter from the one clicked last) and **Merge**: the topmost keeps its name, its place and its main line, and
@@ -77,6 +84,12 @@ comment and they differ, a window lists each such place with the versions
 side by side: keep one, or both one after the other — or pick a chapter's
 version for all of them at once.
 
+**Note each line's chapter at its end**, ticked in the merge window, adds
+the chapter a line came from to its last move's comment — "… (Theory 3D:
+#24)" — the topmost chapter's lines included. Where a line of one chapter
+is continued by another's, the first name stays where its line ended; where
+several end on the same move, they are listed together, "(A, B)".
+
 ## Active books and chapters, and switching lines off
 
 The checkbox on a chapter marks it **active** — part of the repertoire you are
@@ -85,12 +98,16 @@ again. The checkbox on a book does the same for the whole book: off, none of
 its chapters count, whatever their own checkboxes say, and they keep them for
 when the book is switched on again.
 
-Within a chapter, any move can be switched **off**: "not in my repertoire from
-here". Open the chapter, put the cursor on the move, and click **Off** in
-the toolbar under the move list, beside All+ / All− (and **On** to undo). The move and
-everything below it stay in the chapter, greyed, and count as inactive — for
-an alternative you are not following for now, or a variation you play
-differently from another book. The switch is kept in the chapter's PGN (a
+Within a chapter, a line can be switched **off**: "not in my repertoire from
+here". In the **Lines** tab each line has an **off** button at its end (and
+**on** to undo), which switches it off at the move where it branches. **Off:
+my sidelines** above the lines does it for all your second choices at once:
+wherever you have more than one move in the chapter (11.Nxf4, and 11.gxf4?!
+as a variation), the first stays on and the others are switched off — your
+opponent's alternatives stay on, as they are what you need to know. **All
+on** switches every line back on. The move and everything below it stay in
+the chapter, greyed, and count as inactive — for an alternative you are not
+following for now, or a variation you play differently from another book. The switch is kept in the chapter's PGN (a
 `[%rep off]` tag in the move's comment), so it survives export and import.
 
 ## Studying a chapter

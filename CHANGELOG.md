@@ -23,7 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with everything below it, the switch kept in the PGN. Chapters can be
   merged — the same course imported twice, or a section split over several
   files: new moves become variations, missing comments are taken over, and
-  where the comments differ you choose which stays. Chapters can be renamed
+  where the comments differ you choose which stays, the differences marked
+  in yellow; each line's chapter can be noted at its end. Chapters are
+  selected as in a file manager (click, Shift-click, Ctrl-click) for Merge,
+  Rename (F2) and Delete, and rearranged by dragging or ↑ ↓. **Off: my
+  sidelines** in the Lines tab switches off every alternative to your own
+  moves at once. Chapters can be renamed
   together, by find and replace over their names, with a preview. Chapters
   are analysed for practice on request (Analyse chapter / all chapters): the
   database's figures for every position, kept until analysed again; the
@@ -41,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   link and notes, and **Import…** beside Books makes them again one to one,
   each a new book; importing shows its progress and takes about a second a
   book. Design in
-  `docs/design/opening-repertoire.md`. (#327, #329)
+  `docs/design/opening-repertoire.md`. (#327, #329, #333, #334)
 
 ### Fixed
 - **Home: your profile showing another player's games** — the profile kept

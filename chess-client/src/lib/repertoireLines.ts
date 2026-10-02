@@ -96,3 +96,39 @@ export function cursorAtPosition(game: AnnotatedGame, key: string, keyOf: (fen: 
   }
   return find(game.mainLine, []);
 }
+
+/** Switch off one's own second choices: wherever a move of `color` has
+ *  alternatives in the chapter (11.Nxf4, and 11.gxf4?! as a variation), the
+ *  first stays and the others are switched off — with everything below
+ *  them. The opponent's alternatives stay: they are what to know. Changes
+ *  `game`; gives how many were switched off. */
+export function switchOffSidelines(game: AnnotatedGame, color: "w" | "b"): number {
+  let n = 0;
+  const walk = (line: MoveNode[], off: boolean) => {
+    for (const node of line) {
+      if (node.annotations.off) off = true;
+      for (const v of node.variations) {
+        const first = v.find((m) => m.san);
+        if (!first) continue;
+        if (node.color === color && !off && !first.annotations.off) { first.annotations.off = true; n++; }
+        walk(v, off || !!first.annotations.off);
+      }
+    }
+  };
+  walk(game.mainLine, false);
+  return n;
+}
+
+/** Switch every move of the chapter back on. Changes `game`; gives how many
+ *  were off. */
+export function switchAllOn(game: AnnotatedGame): number {
+  let n = 0;
+  const walk = (line: MoveNode[]) => {
+    for (const node of line) {
+      if (node.annotations.off) { node.annotations.off = undefined; n++; }
+      for (const v of node.variations) walk(v);
+    }
+  };
+  walk(game.mainLine);
+  return n;
+}
