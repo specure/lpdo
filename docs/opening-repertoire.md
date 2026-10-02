@@ -84,6 +84,12 @@ comment and they differ, a window lists each such place with the versions
 side by side: keep one, or both one after the other — or pick a chapter's
 version for all of them at once.
 
+**Note each line's chapter at its end**, ticked in the merge window, adds
+the chapter a line came from to its last move's comment — "… (Theory 3D:
+#24)" — the topmost chapter's lines included. Where a line of one chapter
+is continued by another's, the first name stays where its line ended; where
+several end on the same move, they are listed together, "(A, B)".
+
 ## Active books and chapters, and switching lines off
 
 The checkbox on a chapter marks it **active** — part of the repertoire you are

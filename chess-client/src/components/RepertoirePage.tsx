@@ -292,9 +292,9 @@ export default function RepertoirePage({ onOpenGame }: Props) {
     return done ? total : null;
   };
 
-  const finishMerge = (choices: MergeChoices) => merging && run(async () => {
+  const finishMerge = (choices: MergeChoices, noteChapters: boolean) => merging && run(async () => {
     const { target, others, result } = merging;
-    await saveChapterMoves(target.id, resolveMerge(result, choices));
+    await saveChapterMoves(target.id, resolveMerge(result, choices, noteChapters));
     // All at once, in one transaction: one request a chapter, each renumbering
     // the rest, made merging 50 chapters take minutes.
     await deleteChapters(others.map((o) => o.id));

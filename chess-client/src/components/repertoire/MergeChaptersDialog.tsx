@@ -13,7 +13,8 @@ interface Props {
   takenOver: number;
   conflicts: MergeConflict[];
   busy: boolean;
-  onMerge: (choices: MergeChoices) => void;
+  /** `noteChapters`: each line's chapter noted in its last move's comment. */
+  onMerge: (choices: MergeChoices, noteChapters: boolean) => void;
   onCancel: () => void;
 }
 
@@ -32,6 +33,7 @@ function carryText({ comments, marks }: { comments: number; marks: number }): st
 
 export default function MergeChaptersDialog({ target, others, added, carried, takenOver, conflicts, busy, onMerge, onCancel }: Props) {
   const [choices, setChoices] = useState<MergeChoices>(() => new Map());
+  const [noteChapters, setNoteChapters] = useState(false);
   const pick = (id: number, c: number | "all") => setChoices((m) => new Map(m).set(id, c));
   const chapters = [target, ...others];
   const allFrom = (name: string) => setChoices((m) => {
@@ -108,8 +110,13 @@ export default function MergeChaptersDialog({ target, others, added, carried, ta
           </div>
         )}
         <div className="px-6 py-4 shrink-0 flex items-center justify-end gap-2">
+          <label className="mr-auto flex items-center gap-2 text-body-sm text-on-surface-variant cursor-pointer"
+            title="Each line's last move gets the chapter it came from at the end of its comment, e.g. “… (Theory 3D: #24)”">
+            <input type="checkbox" checked={noteChapters} onChange={(e) => setNoteChapters(e.target.checked)} className="accent-primary" />
+            Note each line's chapter at its end
+          </label>
           <button onClick={onCancel} disabled={busy} className={plain}>Cancel</button>
-          <button onClick={() => onMerge(choices)} disabled={busy}
+          <button onClick={() => onMerge(choices, noteChapters)} disabled={busy}
             className="h-9 px-4 inline-flex items-center rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 disabled:opacity-50 transition-all duration-short3 ease-standard">
             {busy ? "Merging…" : "Merge"}
           </button>
