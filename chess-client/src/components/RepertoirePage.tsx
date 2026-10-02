@@ -10,7 +10,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { GameSummary } from "../types";
 import {
   addChapters, bookPgnPath, chapterPgnPath, createBook, deleteBook, deleteChapter, getChapter, listRepertoire,
-  saveChapterMoves, updateBook, updateChapter, documentOf, analyseChapters, getBookGames, scorePct, importBooks, deleteChapters,
+  saveChapterMoves, updateBook, updateChapter, documentOf, analyseChapters, getBookGames, scorePct, importBooks, deleteChapters, orderChapters,
   type BookGames, type Score, type BookColor, type BookWithChapters, type ChapterSummary, type GameResult, GAME_RESULTS,
 } from "../lib/repertoire";
 import { saveTextFile } from "../lib/exportPgn";
@@ -217,7 +217,10 @@ export default function RepertoirePage({ onOpenGame }: Props) {
   const [importing, setImporting] = useState<{ i: number; n: number; file: string | null } | null>(null);
   /** Chapters made model games, or model games chapters again. */
   const convert = (ids: number[], model: boolean) => run(async () => {
-    for (const id of ids) await updateChapter(id, { model });
+    for (const id of ids) {
+      const c = await updateChapter(id, { model });
+      if (c.model !== model) throw new Error("The server does not know model games yet. Update the server (lpdo-server 0.21.42 or later).");
+    }
   });
   /** `model`: the games are model games of the book. */
   const importPgn = (bookId: number, items: { pgn: string; file?: string }[], model = false) => run(async () => {
@@ -228,6 +231,10 @@ export default function RepertoirePage({ onOpenGame }: Props) {
       for (const [i, it] of items.entries()) {
         setImporting({ i: i + 1, n: items.length, file: it.file ?? null });
         const cs = await addChapters(bookId, { ...it, model }).catch((e) => { throw new Error(it.file ? `${it.file}: ${String(e)}` : String(e)); });
+        // A server from before model games takes them for chapters, silently.
+        if (model && cs.some((c) => c.model !== true)) {
+          throw new Error("The server does not know model games yet — they were added as chapters. Update the server (lpdo-server 0.21.42 or later), then select them and use “Make N model games”.");
+        }
         first ??= cs[0]?.id ?? null;
       }
     } finally {
@@ -413,6 +420,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
                 onAddEmpty={() => {}} onImport={() => {}}
                 onImportModels={(items) => importPgn(book.id, items, true)}
                 onConvert={(ids) => convert(ids, false)}
+                onOrder={(ids) => run(() => orderChapters(ids))}
                 onDeleteChapters={(ids) => run(async () => { await deleteChapters(ids); if (chapterId != null && ids.includes(chapterId)) dropChapter(); })}
               />
             </div>
@@ -789,7 +797,7 @@ function Menu({ entries, title, up = false }: {
 
 /** The book's chapters, with one menu for the chapter on the board and a
  *  mode for putting them in order. */
-function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onCountFens, onRenameMany, onChapter, onDeleteChapter, onDeleteChapters, onAddEmpty, onImport, f2Here, arrowsHere, kind = "chapters", onImportModels, onConvert }: {
+function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onCountFens, onRenameMany, onChapter, onDeleteChapter, onDeleteChapters, onAddEmpty, onImport, f2Here, arrowsHere, kind = "chapters", onImportModels, onConvert, onOrder }: {
   /** Which list: the chapters, or — with their own heading and commands —
    *  the model games (`book.chapters` holds the one or the other). */
   kind?: "chapters" | "models";
@@ -815,6 +823,8 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
   onImportModels: (items: ImportItem[]) => void;
   /** Chapters made model games — or, in the model games' list, chapters again. */
   onConvert: (ids: number[]) => void;
+  /** The list put in this order (the model games reversed). */
+  onOrder?: (ids: number[]) => void;
   /** Adding chapters: an empty one, or from PGN (pasted, or files). */
   onAddEmpty: (name: string) => void;
   onImport: (items: ImportItem[]) => void;
@@ -1026,6 +1036,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
               ? { label: `Rename ${multi.length} ${many}… (F2)`, onClick: () => { setRenamingAll(multi); setRenaming(null); }, disabled: busy, separated: true }
               : { label: `Rename ${many}…`, onClick: () => { setRenamingAll(book.chapters.map((c) => c.id)); setRenaming(null); }, disabled: busy || book.chapters.length === 0, separated: true },
             { label: `Rearrange ${many} (M)`, onClick: () => { setArranging(true); setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
+            ...(models && onOrder ? [{ label: "Reverse the order", onClick: () => onOrder(book.chapters.map((c) => c.id).reverse()), disabled: busy || book.chapters.length < 2 }] : []),
             ...(models ? [] : [
             several
               ? { label: `Merge ${multi.length} chapters…`, onClick: () => { onMerge(multi); setPicked([]); setRenaming(null); }, disabled: busy }

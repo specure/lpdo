@@ -1427,6 +1427,14 @@ async fn repertoire_chapters_delete_handler(State(state): State<AppState>, Json(
     }).await
 }
 
+/// Chapters of one book put in the given order, in the places they hold.
+async fn repertoire_chapters_order_handler(State(state): State<AppState>, Json(b): Json<ChaptersDeleteBody>) -> ApiResult<serde_json::Value> {
+    state.writer.run(move |conn| {
+        crate::repertoire::order_chapters(conn, &b.ids).map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+        Ok(Json(serde_json::json!({ "ordered": b.ids.len() })))
+    }).await
+}
+
 async fn repertoire_settings_handler() -> Json<crate::repertoire::RepertoireSettings> {
     Json(crate::repertoire::settings())
 }
@@ -2862,6 +2870,7 @@ pub async fn run(
         .route("/repertoire/books/{id}/games",         get(repertoire_book_games_handler))
         .route("/repertoire/import",                   post(repertoire_import_handler))
         .route("/repertoire/chapters/delete",          post(repertoire_chapters_delete_handler))
+        .route("/repertoire/chapters/order",           post(repertoire_chapters_order_handler))
         .route("/repertoire/pgn",                      get(repertoire_all_pgn_handler))
         .route("/repertoire/settings",                 get(repertoire_settings_handler).put(repertoire_settings_put_handler))
         .route("/sources",                             get(sources_handler))

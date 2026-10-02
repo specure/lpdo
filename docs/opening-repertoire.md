@@ -111,7 +111,8 @@ the game in `[White]`: "Kasparov – Short, Linares 1990"). A chapter imported
 by mistake is made a model game with **Make it a model game** (or, several
 selected, **Make N model games**); the model games' own ⋯ makes one a chapter
 again. They are opened, renamed (F2), deleted, rearranged (M) and selected
-(↑ ↓, Shift-click) as the chapters are.
+(↑ ↓, Shift-click) as the chapters are; **Reverse the order** turns the list
+round at once (courses often list the newest game first).
 
 Each model game shows its **result** at the right of its row — Chessable's
 exports leave it out, `*` — and a click there sets it: 1-0, 0-1, ½–½ or `*`.

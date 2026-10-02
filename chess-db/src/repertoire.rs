@@ -728,6 +728,23 @@ fn place_chapter(conn: &Connection, book_id: i64, moved: Option<(i64, i64)>) -> 
     renumber(conn, "repertoire_chapters", &ids)
 }
 
+/// Put `ids` — chapters of one book — in this order, in the places they
+/// hold now, the book's other chapters staying where they are: the model
+/// games reversed, say.
+pub fn order_chapters(conn: &Connection, ids: &[i64]) -> Result<()> {
+    let Some(first) = ids.first() else { return Ok(()) };
+    let book_id = get_chapter_summary(conn, *first)?.book_id;
+    let mut st = conn.prepare("SELECT id FROM repertoire_chapters WHERE book_id = ? ORDER BY ord, id")?;
+    let all: Vec<i64> = st.query_map(duckdb::params![book_id], |r| r.get(0))?.collect::<duckdb::Result<_>>()?;
+    for (i, id) in ids.iter().enumerate() {
+        if !all.contains(id) { bail!("chapter {id} is not in the same book"); }
+        if ids[..i].contains(id) { bail!("chapter {id} is given twice"); }
+    }
+    let mut next = ids.iter();
+    let order: Vec<i64> = all.iter().map(|id| if ids.contains(id) { *next.next().unwrap_or(id) } else { *id }).collect();
+    crate::db::with_tx(conn, || renumber(conn, "repertoire_chapters", &order))
+}
+
 pub fn update_chapter(conn: &Connection, id: i64, patch: ChapterPatch) -> Result<ChapterSummary> {
     let before = get_chapter_summary(conn, id)?;
     if let Some(n) = &patch.name { if n.trim().is_empty() { bail!("the chapter needs a name"); } }
@@ -1996,5 +2013,18 @@ mod tests {
         assert_eq!((back.model, back.result.as_str()), (false, "*"));
         let n: i64 = empty.query_row("SELECT COUNT(*) FROM repertoire_positions WHERE chapter_id = ?", [theory], |r| r.get(0)).unwrap();
         assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn chapters_are_ordered_within_their_places() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let book = create_book(&conn, "B", "white", None, None, None).unwrap();
+        let cs = add_chapters(&conn, book.id, None, Some("[Event \"A\"]\n\n1. e4 *\n\n[Event \"M1\"]\n\n1. d4 *\n\n[Event \"B\"]\n\n1. c4 *\n\n[Event \"M2\"]\n\n1. Nf3 *\n\n[Event \"M3\"]\n\n1. g3 *\n"), None).unwrap();
+        // The model games M1, M2, M3 reversed: A and B keep their places.
+        order_chapters(&conn, &[cs[4].id, cs[3].id, cs[1].id]).unwrap();
+        let names: Vec<String> = list(&conn).unwrap()[0].chapters.iter().map(|c| c.name.clone()).collect();
+        assert_eq!(names, vec!["A", "M3", "B", "M2", "M1"]);
+        assert!(order_chapters(&conn, &[cs[0].id, cs[0].id]).is_err());
     }
 }
