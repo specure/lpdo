@@ -324,7 +324,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
   // The keys go where one is working, as in a file manager: the panel
   // clicked last. ↑ ↓ step through its books or chapters (elsewhere, the
   // board's lines); F2 edits the book, else renames the chapter(s).
-  const keysFor = useRef<"books" | "chapters" | "models" | "board">("board");
+  const keysFor = useRef<"books" | "chapters" | "models" | "reference" | "board">("board");
   useEffect(() => {
     // Ahead of the panels' own (capturing) handlers, which then claim it.
     const away = () => { keysFor.current = "board"; };
@@ -336,6 +336,8 @@ export default function RepertoirePage({ onOpenGame }: Props) {
   const arrowsChapters = useCallback(() => keysFor.current === "chapters", []);
   const f2Models = useCallback(() => keysFor.current === "models" || keysFor.current === "board", []);
   const arrowsModels = useCallback(() => keysFor.current === "models", []);
+  const f2Reference = useCallback(() => keysFor.current === "reference" || keysFor.current === "board", []);
+  const arrowsReference = useCallback(() => keysFor.current === "reference", []);
   const booksPanel = booksFolded ? <Strip label="Books" onOpen={() => setBooksFolded(false)} /> : (
     <div className={box} onMouseDownCapture={() => { keysFor.current = "books"; }}>
       <BooksPanel
@@ -404,12 +406,13 @@ export default function RepertoirePage({ onOpenGame }: Props) {
             onAddEmpty={(name) => addEmpty(book.id, name)} onImport={(items) => importPgn(book.id, items)}
             onDeleteChapters={(ids) => run(async () => { await deleteChapters(ids); if (chapterId != null && ids.includes(chapterId)) dropChapter(); })}
           />
-          {/* The book's model games: complete annotated games showing its
-              ideas — the same list, apart from the repertoire. */}
-          {modelsOf(book).length > 0 && (
-            <div onMouseDownCapture={() => { keysFor.current = "models"; }}>
-              <ChaptersList kind="models" f2Here={f2Models} arrowsHere={arrowsModels}
-                book={{ ...book, chapters: modelsOf(book) }} busy={busy} current={chapterId}
+          {/* The book's games, apart from the repertoire: model games —
+              annotated, showing its ideas — and reference games, without
+              comments; the same list, twice. */}
+          {([["models", modelsOf(book), f2Models, arrowsModels], ["reference", referencesOf(book), f2Reference, arrowsReference]] as const).map(([kind, games, f2, arrows]) => games.length > 0 && (
+            <div key={kind} onMouseDownCapture={() => { keysFor.current = kind; }}>
+              <ChaptersList kind={kind} f2Here={f2} arrowsHere={arrows}
+                book={{ ...book, chapters: [...games] }} busy={busy} current={chapterId}
                 onPick={(id) => { setChapterId(id); setBookPicked(false); }}
                 bookPicked={false} onPickBook={() => {}}
                 onMerge={() => {}} onAnalyse={() => {}} analysing={false}
@@ -424,7 +427,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
                 onDeleteChapters={(ids) => run(async () => { await deleteChapters(ids); if (chapterId != null && ids.includes(chapterId)) dropChapter(); })}
               />
             </div>
-          )}
+          ))}
         </>) : (
           <div className="px-3 py-2 text-label-sm text-on-surface-variant">{books && books.length === 0 ? "Add a book first." : "Choose a book."}</div>
         )}
@@ -515,7 +518,12 @@ type ImportItem = { pgn: string; file?: string };
 
 /** A book's chapters — its repertoire — and its model games, apart. */
 const chaptersOf = (b: BookWithChapters) => b.chapters.filter((c) => !c.model);
-const modelsOf = (b: BookWithChapters) => b.chapters.filter((c) => c.model);
+/** The games kept apart: all of them, those with comments (model games),
+ *  and those without (reference games). */
+const gamesOf = (b: BookWithChapters) => b.chapters.filter((c) => c.model);
+// (A server from before the split says nothing: model games, then.)
+const modelsOf = (b: BookWithChapters) => b.chapters.filter((c) => c.model && c.annotated !== false);
+const referencesOf = (b: BookWithChapters) => b.chapters.filter((c) => c.model && c.annotated === false);
 
 function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, onCreate, onUpdate, onImportBooks, onDelete }: {
   books: BookWithChapters[] | null; selected: number | null; busy: boolean; error: string | null;
@@ -703,6 +711,8 @@ function BookDetails({ book, busy, canArrange, onArrange, f2Here, onUpdate, onDe
   const [note, setNote] = useState<string | null>(null);
   const chapters = chaptersOf(book);
   const models = modelsOf(book).length;
+  const references = referencesOf(book).length;
+  const games = gamesOf(book).length;
   const active = chapters.filter((c) => c.active);
   const lines = chapters.reduce((n, c) => n + c.lines, 0);
   const off = chapters.reduce((n, c) => n + c.lines_off, 0);
@@ -729,7 +739,7 @@ function BookDetails({ book, busy, canArrange, onArrange, f2Here, onUpdate, onDe
         ]} />
       </div>
       <div className="text-label-sm text-on-surface-variant">
-        Played as {book.color} · {plural(chapters.length, "chapter")}{active.length !== chapters.length ? `, ${active.length} active` : ""} · {plural(lines, "line")}{off ? `, ${off} off` : ""}{models ? ` · ${plural(models, "model game")}` : ""}
+        Played as {book.color} · {plural(chapters.length, "chapter")}{active.length !== chapters.length ? `, ${active.length} active` : ""} · {plural(lines, "line")}{off ? `, ${off} off` : ""}{models ? ` · ${plural(models, "model game")}` : ""}{references ? ` · ${plural(references, "reference game")}` : ""}
       </div>
       {!book.active && <div className="text-label-sm text-on-surface-variant">Off: the whole book is out of the repertoire.</div>}
       {book.url && (
@@ -740,7 +750,7 @@ function BookDetails({ book, busy, canArrange, onArrange, f2Here, onUpdate, onDe
       {book.description && <div className="text-body-sm text-on-surface-variant whitespace-pre-wrap break-words">{book.description}</div>}
       {confirmDelete && (
         <div className="flex items-center gap-1 flex-wrap">
-          <button onClick={() => { setConfirmDelete(false); onDelete(); }} disabled={busy} className="h-7 px-2 rounded-full text-label-md text-error hover:bg-error/8">Delete it and its {plural(chapters.length, "chapter")}{models ? ` and ${plural(models, "model game")}` : ""}</button>
+          <button onClick={() => { setConfirmDelete(false); onDelete(); }} disabled={busy} className="h-7 px-2 rounded-full text-label-md text-error hover:bg-error/8">Delete it and its {plural(chapters.length, "chapter")}{games ? ` and ${plural(games, "game")}` : ""}</button>
           <button onClick={() => setConfirmDelete(false)} className={plain}>Cancel</button>
         </div>
       )}
@@ -800,7 +810,7 @@ function Menu({ entries, title, up = false }: {
 function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onCountFens, onRenameMany, onChapter, onDeleteChapter, onDeleteChapters, onAddEmpty, onImport, f2Here, arrowsHere, kind = "chapters", onImportModels, onConvert, onOrder }: {
   /** Which list: the chapters, or — with their own heading and commands —
    *  the model games (`book.chapters` holds the one or the other). */
-  kind?: "chapters" | "models";
+  kind?: "chapters" | "models" | "reference";
   book: BookWithChapters; busy: boolean; current: number | null;
   onPick: (id: number) => void;
   onMerge: (ids: number[]) => void;
@@ -834,10 +844,12 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
    *  before or after, on the board. */
   arrowsHere: () => boolean;
 }) {
-  const models = kind === "models";
+  // The games kept apart — model games and reference games — share the
+  // games' commands; only their names differ.
+  const models = kind !== "chapters";
   // What a chapter is called here, one and several.
-  const one = models ? "model game" : "chapter";
-  const many = models ? "model games" : "chapters";
+  const one = kind === "models" ? "model game" : kind === "reference" ? "reference game" : "chapter";
+  const many = `${one}s`;
   const [note, setNote] = useState<string | null>(null);
   // Pasting PGN: as chapters, or as model games.
   const [pasting, setPasting] = useState<false | "chapters" | "models">(false);
@@ -853,8 +865,9 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
   }
   const pickFilesAs = (asModels: boolean) => { filesAsModels.current = asModels; fileRef.current?.click(); };
   // The model games' list folds away.
-  const [folded, setFolded] = useState(() => { try { return models && localStorage.getItem("repertoireModelsFolded") === "1"; } catch { return false; } });
-  const fold = (f: boolean) => { setFolded(f); try { localStorage.setItem("repertoireModelsFolded", f ? "1" : "0"); } catch { /* not kept */ } };
+  const foldKey = kind === "reference" ? "repertoireReferenceFolded" : "repertoireModelsFolded";
+  const [folded, setFolded] = useState(() => { try { return models && localStorage.getItem(foldKey) === "1"; } catch { return false; } });
+  const fold = (f: boolean) => { setFolded(f); try { localStorage.setItem(foldKey, f ? "1" : "0"); } catch { /* not kept */ } };
   /** Moved one place within this list — to its neighbour's place: the
    *  chapters and the model games are numbered together. */
   const moveBy = (id: number, delta: number) => {
@@ -996,9 +1009,11 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
       <div className="px-3 pt-2 pb-1 flex items-center gap-2">
         {models ? (
           <button onClick={() => fold(!folded)} className="flex-1 min-w-0 flex items-center gap-1.5 text-left text-label-md text-on-surface-variant uppercase tracking-wider"
-            title={folded ? "Show the model games" : "Fold the model games away"} aria-expanded={!folded}>
+            title={kind === "reference"
+              ? (folded ? "Show the reference games — the book's games without comments" : "Fold the reference games away")
+              : (folded ? "Show the model games — the book's annotated games" : "Fold the model games away")} aria-expanded={!folded}>
             <span className="text-[10px] w-3">{folded ? "▸" : "▾"}</span>
-            Model games ({book.chapters.length})
+            {kind === "reference" ? "Reference games" : "Model games"} ({book.chapters.length})
           </button>
         ) : (<>
           <ColorDot color={book.color} />
@@ -1015,7 +1030,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
           </>
         ) : (
           <Menu title={models
-            ? (chapter ? `Model games; the one on the board — ${chapter.name}` : "Model games: rearrange them; choose one for the rest")
+            ? (chapter ? `${kind === "reference" ? "Reference" : "Model"} games; the one on the board — ${chapter.name}` : `${kind === "reference" ? "Reference" : "Model"} games: rearrange them; choose one for the rest`)
             : (chapter ? `Add chapters; the chapter on the board — ${chapter.name}` : "Add chapters, rearrange them; choose one for the rest")} entries={[
             ...(models ? [] : [
               { label: "New empty chapter", onClick: () => onAddEmpty(`Chapter ${book.chapters.length + 1}`), disabled: busy },
@@ -1025,7 +1040,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
             { label: "Paste model games…", onClick: () => setPasting("models"), disabled: busy, separated: !models },
             { label: "Import model games…", onClick: () => pickFilesAs(true), disabled: busy },
             { label: `Rename ${one}… (F2)`, separated: true, onClick: () => chapter && setRenaming(chapter.id), disabled: none },
-            { label: `Export ${models ? "model game" : "chapter"} PGN…`, onClick: () => chapter && void exportPgn(chapterPgnPath(chapter.id), `${book.name}-${chapter.name}`).then(setNote), disabled: none },
+            { label: `Export ${one} PGN…`, onClick: () => chapter && void exportPgn(chapterPgnPath(chapter.id), `${book.name}-${chapter.name}`).then(setNote), disabled: none },
             several
               ? { label: `Delete ${multi.length} ${many}…`, onClick: () => setConfirmDeleteMany(true), disabled: busy }
               : { label: `Delete ${one}…`, onClick: () => setConfirmDelete(true), disabled: none },
@@ -1088,7 +1103,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
         <div className="px-3 pb-2 flex flex-col gap-1.5">
           <textarea autoFocus value={pasted} onChange={(e) => setPasted(e.target.value)} rows={6} placeholder={"[Event \"Najdorf: 6.Bg5\"]\n\n1. e4 c5 2. Nf3 d6 ..."} className="w-full font-mono text-body-sm p-2 rounded-sm bg-surface-container border border-outline/40 text-on-surface" />
           <span className="text-label-sm text-on-surface-variant">{pasting === "models"
-            ? "Each game becomes a model game of the book, with its headers, comments and result."
+            ? "Each game is kept with the book, with its headers, comments and result: with comments under Model games, without under Reference games."
             : "Several games become several chapters, named from their headers."}</span>
           <div className="flex items-center gap-1 justify-end">
             <button onClick={() => { setPasting(false); setPasted(""); }} className={plain}>Cancel</button>
@@ -1124,7 +1139,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
       {!models && !arranging && !selecting && (
         <BookGamesSummary games={games} note={gamesNote} picked={bookPicked} onPick={() => onPickBook(true)} />
       )}
-      {arranging && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Drag a{models ? " model game" : " chapter"} to its place, or move it with ▲ ▼ — or ↑ ↓ for the one on the board; Enter when done.</div>}
+      {arranging && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Drag a {one} to its place, or move it with ▲ ▼ — or ↑ ↓ for the one on the board; Enter when done.</div>}
       {selecting && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Tick the chapters to merge — Shift-click ticks all from the one clicked last. The topmost keeps its name, place and main line; the others' lines and comments go into it, and they are deleted.</div>}
       {confirmDelete && chapter && (
         <div className="px-3 pb-1 flex items-center gap-1 flex-wrap">

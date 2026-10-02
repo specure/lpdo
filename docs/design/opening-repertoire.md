@@ -103,7 +103,10 @@ games"), and keeping their own headers — a Chessable export's title in
 `[White]` — with `[Result]` from `result`, also written after the last move.
 Chapters and model games share one `ord` sequence; the client lists them
 apart and moves each within its own list. Exported, a model game carries
-`[LpdoModelGame "1"]`. Deliberately not in the games database: there they
+`[LpdoModelGame "1"]`. Model games without comments of their own (clock
+times and evaluations left out) are reference games: `annotated`, worked out
+from the PGN when listed, not stored, puts them in a list of their own.
+Deliberately not in the games database: there they
 would be rejected as fragments, merged away by duplicate detection, or
 counted twice, and lost on a rebuild. No position index or database
 matching yet.

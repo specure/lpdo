@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Reference games apart from model games** — a book's games without
+  comments of their own (courses call them reference games) are listed
+  under **Reference games**, the annotated ones under **Model games**;
+  decided from the games themselves, a game moving between the two as
+  comments are added or taken out.
+
 ## [0.22.0] - 2026-10-02
 
 ### Added
