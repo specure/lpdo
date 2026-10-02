@@ -66,6 +66,12 @@ w KQkq - 0 1 1.d4 Nf6…"); the rest of each comment stays as written. It
 counts them first — "25 FEN codes will be removed", per chapter — and
 removes them when you say so; "No FEN codes found" otherwise.
 
+Chapters can be **selected** as in a file manager: a click selects one (and
+puts it on the board), **Shift-click** the range from the one clicked last,
+**Ctrl-click** one more or one less. With several selected, the ⋯ offers
+**Merge N chapters…** and **Rename N chapters… (F2)** for just those; **Esc**
+drops the selection.
+
 **Merge chapters…** there folds several chapters into one — the same
 section imported twice, or split over several files. Tick the chapters
 (Shift-click ticks every chapter from the one clicked last) and **Merge**: the topmost keeps its name, its place and its main line, and

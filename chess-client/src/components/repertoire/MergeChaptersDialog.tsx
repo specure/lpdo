@@ -9,6 +9,7 @@ interface Props {
   target: string;
   others: string[];
   added: number;
+  carried: { comments: number; marks: number };
   takenOver: number;
   conflicts: MergeConflict[];
   busy: boolean;
@@ -21,7 +22,15 @@ const chip = "h-7 px-3 inline-flex items-center rounded-full border border-outli
 
 const KIND: Record<MergeConflict["kind"], string> = { comment: "comment", intro: "line intro", nags: "move marks" };
 
-export default function MergeChaptersDialog({ target, others, added, takenOver, conflicts, busy, onMerge, onCancel }: Props) {
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** ", with their 37 comments and 12 marks" — what the added moves bring along. */
+function carryText({ comments, marks }: { comments: number; marks: number }): string {
+  const parts = [comments && plural(comments, "comment", "comments"), marks && plural(marks, "mark", "marks")].filter(Boolean);
+  return parts.length ? `, with their ${parts.join(" and ")}` : "";
+}
+
+export default function MergeChaptersDialog({ target, others, added, carried, takenOver, conflicts, busy, onMerge, onCancel }: Props) {
   const [choices, setChoices] = useState<MergeChoices>(() => new Map());
   const pick = (id: number, c: number | "all") => setChoices((m) => new Map(m).set(id, c));
   const chapters = [target, ...others];
@@ -37,7 +46,6 @@ export default function MergeChaptersDialog({ target, others, added, takenOver, 
   // The chapters that have a version in some place that differs, in order.
   const involved = chapters.filter((n) => conflicts.some((c) => c.options.some((o) => o.chapter.split(", ").includes(n))));
 
-  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-surface/40" onClick={busy ? undefined : onCancel}>
       <div className="bg-surface-container-high rounded-xl shadow-2xl w-[48rem] max-w-[92vw] max-h-[88vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
@@ -51,8 +59,11 @@ export default function MergeChaptersDialog({ target, others, added, takenOver, 
             {others.length === 1 ? "is" : "are"} deleted after the merge.
           </p>
           <p className="mt-1 text-body-sm text-on-surface-variant">
-            {plural(added, "move", "moves")} added as variations, {plural(takenOver, "comment or mark", "comments or marks")} taken over
-            {conflicts.length ? `, ${plural(conflicts.length, "place", "places")} where they differ:` : ", nothing differs."}
+            {[
+              added > 0 && `${plural(added, "move", "moves")} added as variations${carryText(carried)}`,
+              takenOver > 0 && `${plural(takenOver, "comment or mark", "comments or marks")} added to moves already in “${target}”`,
+              conflicts.length ? `${plural(conflicts.length, "place", "places")} where they differ:` : "no conflicting comments.",
+            ].filter(Boolean).join("; ").replace(/^./, (c) => c.toUpperCase())}
           </p>
           {conflicts.length > 1 && (
             <div className="mt-2 flex flex-wrap items-center gap-1.5">

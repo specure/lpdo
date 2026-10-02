@@ -382,7 +382,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
       <MergeChaptersDialog
         target={merging.labels[0]}
         others={merging.labels.slice(1)}
-        added={merging.result.added} takenOver={merging.result.takenOver} conflicts={merging.result.conflicts}
+        added={merging.result.added} carried={merging.result.carried} takenOver={merging.result.takenOver} conflicts={merging.result.conflicts}
         busy={busy} onMerge={finishMerge} onCancel={() => setMerging(null)}
       />
     )}
@@ -728,26 +728,54 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
     ? `Your games as ${games.color === "white" ? "White" : "Black"}, ${games.months ? `the last ${games.months} months` : "all of them"} (the period is set on the Maintenance page, Repertoire tab)`
     : null;
   const gamesFor = (id: number): Score | null => (games ? games.chapters.find((c) => c.id === id) ?? null : null);
-  const [renamingAll, setRenamingAll] = useState(false);
+  // Renaming chapters at once: which (all of them, or those selected).
+  const [renamingAll, setRenamingAll] = useState<number[] | null>(null);
+  // Chapters selected as in a file manager — a click one (and the board on
+  // it), Shift-click a range from the one clicked last, Ctrl-click one more
+  // or less — for Merge and Rename (F2) on several.
+  const [picked, setPicked] = useState<number[]>([]);
+  useEffect(() => setPicked([]), [book.id]);
+  useEffect(() => { if (current != null && !picked.includes(current)) setPicked([current]); }, [current]); // eslint-disable-line react-hooks/exhaustive-deps
+  const multi = picked.filter((id) => book.chapters.some((c) => c.id === id));
+  const several = multi.length >= 2;
+  function clickChapter(id: number, i: number, e: React.MouseEvent) {
+    if (e.shiftKey && anchor.current != null) {
+      const from = book.chapters.findIndex((c) => c.id === anchor.current);
+      if (from >= 0) { setPicked(book.chapters.slice(Math.min(from, i), Math.max(from, i) + 1).map((c) => c.id)); return; }
+    }
+    if (e.ctrlKey || e.metaKey) {
+      anchor.current = id;
+      setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+      return;
+    }
+    anchor.current = id;
+    setPicked([id]);
+    onPick(id);
+  }
   // Removing FENs: which chapters, said how — the dialog counts first.
   const [fens, setFens] = useState<{ ids: number[]; what: string } | null>(null);
   useEffect(() => setSelecting(null), [book.id]);
   const chapter = book.chapters.find((c) => c.id === current) ?? null;
   useEffect(() => setConfirmDelete(false), [current]);
   const none = !chapter || busy;
-  // F2 renames the chapter on the board, as in a file manager — not while
-  // typing somewhere, ordering or ticking chapters.
+  // F2 renames, as in a file manager: the chapter on the board in place, or
+  // — several selected — those in the Rename dialog. Esc drops a selection
+  // of several. Not while typing somewhere, ordering or ticking chapters.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "F2" || !chapter || busy || arranging || selecting) return;
+      if (busy || arranging || selecting) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      if (e.key === "Escape" && several) { setPicked(current != null ? [current] : []); return; }
+      if (e.key !== "F2") return;
+      if (several) { e.preventDefault(); setRenamingAll(multi); return; }
+      if (!chapter) return;
       e.preventDefault();
       setRenaming(chapter.id);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [chapter, busy, arranging, selecting]);
+  }, [chapter, busy, arranging, selecting, several, multi.join(","), current]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="flex flex-col">
@@ -770,9 +798,13 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
             { label: "Rename chapter… (F2)", onClick: () => chapter && setRenaming(chapter.id), disabled: none },
             { label: "Export chapter PGN…", onClick: () => chapter && void exportPgn(chapterPgnPath(chapter.id), `${book.name}-${chapter.name}`).then(setNote), disabled: none },
             { label: "Delete chapter…", onClick: () => setConfirmDelete(true), disabled: none },
-            { label: "Rename chapters…", onClick: () => { setRenamingAll(true); setRenaming(null); }, disabled: busy || book.chapters.length === 0, separated: true },
+            several
+              ? { label: `Rename ${multi.length} chapters… (F2)`, onClick: () => { setRenamingAll(multi); setRenaming(null); }, disabled: busy, separated: true }
+              : { label: "Rename chapters…", onClick: () => { setRenamingAll(book.chapters.map((c) => c.id)); setRenaming(null); }, disabled: busy || book.chapters.length === 0, separated: true },
             { label: "Rearrange chapters", onClick: () => { setArranging(true); setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
-            { label: "Merge chapters…", onClick: () => { setSelecting(current != null && chapter ? [current] : []); anchor.current = chapter ? current : null; setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
+            several
+              ? { label: `Merge ${multi.length} chapters…`, onClick: () => { onMerge(multi); setPicked([]); setRenaming(null); }, disabled: busy }
+              : { label: "Merge chapters…", onClick: () => { setSelecting(current != null && chapter ? [current] : []); anchor.current = chapter ? current : null; setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
             { label: "Analyse chapter", onClick: () => chapter && onAnalyse([chapter.id]), disabled: none || analysing, separated: true },
             { label: "Analyse all chapters", onClick: () => onAnalyse(book.chapters.map((c) => c.id)), disabled: busy || analysing || book.chapters.length === 0 },
             { label: "Remove FENs from comments…", separated: true, disabled: none,
@@ -795,9 +827,9 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
           onRemove={() => onRemoveFens(fens.ids)} onClose={() => setFens(null)} />
       )}
       {renamingAll && (
-        <RenameChaptersDialog bookName={book.name} chapters={book.chapters} busy={busy}
-          onRename={(changes) => void onRenameMany(changes).then(() => setRenamingAll(false))}
-          onCancel={() => setRenamingAll(false)} />
+        <RenameChaptersDialog bookName={book.name} chapters={book.chapters.filter((c) => renamingAll.includes(c.id))} busy={busy}
+          onRename={(changes) => void onRenameMany(changes).then(() => setRenamingAll(null))}
+          onCancel={() => setRenamingAll(null)} />
       )}
       {/* One's own games in the book and each chapter (the line counts are
           in the chapters' tooltips, and the Lines tab): the columns' names,
@@ -815,6 +847,11 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
       )}
       {!arranging && !selecting && (
         <BookGamesSummary games={games} note={gamesNote} picked={bookPicked} onPick={() => onPickBook(true)} />
+      )}
+      {several && !arranging && !selecting && (
+        <div className="px-3 pb-1 text-label-sm text-on-surface-variant">
+          {multi.length} chapters selected — ⋯ Merge, or F2 to rename them · Esc: none
+        </div>
       )}
       {arranging && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Drag a chapter to its place, or move it with ▲ ▼.</div>}
       {selecting && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Tick the chapters to merge — Shift-click ticks all from the one clicked last. The topmost keeps its name, place and main line; the others' lines and comments go into it, and they are deleted.</div>}
@@ -842,7 +879,8 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
               anchor.current = c.id;
               setSelecting((s) => s && (on ? [...s, ...ids.filter((x) => !s.includes(x))] : s.filter((x) => !ids.includes(x))));
             }}
-            onPick={() => onPick(c.id)}
+            onPick={(e) => clickChapter(c.id, i, e)}
+            picked={several && multi.includes(c.id)}
             onActive={(active) => onChapter(c.id, { active })}
             onRename={(n) => { setRenaming(null); if (n && n !== c.name) onChapter(c.id, { name: n }); }}
             onMove={(delta) => onChapter(c.id, { ord: c.ord + delta })}
@@ -970,14 +1008,16 @@ function ScoreCell({ s }: { s: Score }) {
   return <span className={`w-10 text-right text-label-sm tabular-nums shrink-0 ${tone}`}>{scorePct(s)}</span>;
 }
 
-function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, last, dropTarget, selected, onSelect, mine, onPick, onActive, onRename, onMove, drag }: {
+function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, last, dropTarget, selected, onSelect, mine, picked = false, onPick, onActive, onRename, onMove, drag }: {
   chapter: ChapterSummary; busy: boolean; current: boolean; renaming: boolean; arranging: boolean;
   first: boolean; last: boolean; dropTarget: boolean;
   /** In merge mode: ticked for merging (undefined outside it). */
   selected?: boolean; onSelect: (on: boolean, range: boolean) => void;
   /** "Your games": one's games in the chapter, shown instead of the lines. */
   mine?: Score;
-  onPick: () => void; onActive: (a: boolean) => void; onRename: (n: string) => void; onMove: (delta: -1 | 1) => void;
+  onPick: (e: React.MouseEvent) => void; onActive: (a: boolean) => void; onRename: (n: string) => void; onMove: (delta: -1 | 1) => void;
+  /** One of several chapters selected (for Merge, Rename). */
+  picked?: boolean;
   drag: Pick<React.HTMLAttributes<HTMLDivElement>, "onDragStart" | "onDragOver" | "onDragLeave" | "onDrop" | "onDragEnd">;
 }) {
   const [name, setName] = useState(c.name);
@@ -994,7 +1034,7 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
       // only the checkbox; no text selected by a Shift-click.
       onClick={selected !== undefined ? (e) => { if ((e.target as HTMLElement).tagName !== "INPUT") onSelect(!selected, e.shiftKey); } : undefined}
       onMouseDown={selected !== undefined ? (e) => { if (e.shiftKey) e.preventDefault(); } : undefined}
-      className={`flex items-center gap-1.5 px-3 py-1 ${current ? "bg-primary-container/40" : ""} ${c.active ? "" : "opacity-70"} ${arranging ? "cursor-grab" : ""} ${selected !== undefined ? "cursor-pointer select-none hover:bg-on-surface/4" : ""} ${dropTarget ? "border-t-2 border-primary" : "border-t-2 border-transparent"}`}
+      className={`flex items-center gap-1.5 px-3 py-1 ${current ? "bg-primary-container/40" : picked ? "bg-primary-container/20" : ""} ${c.active ? "" : "opacity-70"} ${arranging ? "cursor-grab" : ""} ${selected !== undefined ? "cursor-pointer select-none hover:bg-on-surface/4" : ""} ${dropTarget ? "border-t-2 border-primary" : "border-t-2 border-transparent"}`}
     >
       {arranging
         ? <span className="shrink-0 text-on-surface-variant text-body-sm select-none" aria-hidden>⠿</span>
@@ -1009,7 +1049,9 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
           onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") { setName(c.name); onRename(c.name); } }}
           className={`${field} flex-1 min-w-0 h-7`} />
       ) : (
-        <button onClick={selected !== undefined ? undefined : onPick} className={`flex-1 min-w-0 text-left text-body-sm truncate ${current ? "text-on-surface font-medium" : "text-on-surface hover:text-primary"}`} title={`${c.name} — ${counts}`}>
+        <button onClick={selected !== undefined ? undefined : onPick}
+          onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
+          className={`flex-1 min-w-0 text-left text-body-sm truncate ${current ? "text-on-surface font-medium" : "text-on-surface hover:text-primary"}`} title={`${c.name} — ${counts}`}>
           {c.name}
         </button>
       )}
