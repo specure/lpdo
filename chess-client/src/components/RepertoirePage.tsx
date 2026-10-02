@@ -141,12 +141,16 @@ export default function RepertoirePage({ onOpenGame }: Props) {
   }, []);
   useEffect(() => { void load(); }, [load]);
 
-  // The book shown follows the chapter on the board.
+  // The book shown follows the chapter on the board — when another chapter
+  // is chosen (or the books first come), not on every reading of the books:
+  // a save while another book is shown (its details being edited) must not
+  // switch back to the chapter's.
+  const followed = useRef<number | null | undefined>(undefined);
   useEffect(() => {
     if (!books) return;
     const owner = chapterId != null ? books.find((b) => b.chapters.some((c) => c.id === chapterId)) : undefined;
-    if (owner) setSelectedBook(owner.id);
-    else if (selectedBook == null || !books.some((b) => b.id === selectedBook)) setSelectedBook(books[0]?.id ?? null);
+    if (owner && followed.current !== chapterId) { followed.current = chapterId; setSelectedBook(owner.id); }
+    else if (selectedBook == null || !books.some((b) => b.id === selectedBook)) setSelectedBook(owner?.id ?? books[0]?.id ?? null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [books, chapterId]);
 
@@ -410,7 +414,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
       layoutId={layoutId}
       emptyState={books && books.length === 0
         ? "No books yet. A book is one opening course or one topic — \"Najdorf for Black\" — with the colour you play it from; its chapters hold the lines. Add a book on the left."
-        : "Choose a chapter on the left to study it here — or add one with the book's ⋯: empty, from pasted PGN, or from PGN files."}
+        : "Choose a chapter on the left to study it here — or add one with the ⋯ above the chapters: empty, from pasted PGN, or from PGN files."}
     />
   </>);
 }
