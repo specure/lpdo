@@ -73,7 +73,9 @@ CREATE TABLE repertoire_chapters (
     name VARCHAR NOT NULL,
     active BOOLEAN NOT NULL DEFAULT TRUE,
     pgn VARCHAR NOT NULL,             -- headers + movetext, as games.pgn
-    updated_at TIMESTAMP NOT NULL
+    updated_at TIMESTAMP NOT NULL,
+    model BOOLEAN DEFAULT FALSE,      -- a model game: kept with the book, not part of the repertoire
+    result VARCHAR DEFAULT '*'        -- a model game's result ('*' for a chapter)
 );
 -- Every position of every variation, for "in my repertoire" lookups (phase 2)
 -- and transposition checks; rebuilt when a chapter is saved.
@@ -92,6 +94,19 @@ Analysis page shows in place of the players: `[Event "<book>"]`,
 `[Round "<chapter order>"]`, `[White "<chapter name>"]`, and the book's colour
 as `[Orientation "black"]`; the book's author, when there is one, as
 `[Annotator]`.
+
+**Model games** — complete annotated games that show a course's ideas — are
+rows of `repertoire_chapters` with `model` set: stored, edited, renamed,
+ordered, deleted and exported as chapters are, but never indexed in
+`repertoire_positions` (so they count in no lookup, statistics or "your
+games"), and keeping their own headers — a Chessable export's title in
+`[White]` — with `[Result]` from `result`, also written after the last move.
+Chapters and model games share one `ord` sequence; the client lists them
+apart and moves each within its own list. Exported, a model game carries
+`[LpdoModelGame "1"]`. Deliberately not in the games database: there they
+would be rejected as fragments, merged away by duplicate detection, or
+counted twice, and lost on a rebuild. No position index or database
+matching yet.
 
 ### API
 

@@ -95,6 +95,32 @@ the chapter a line came from to its last move's comment — "… (Theory 3D:
 is continued by another's, the first name stays where its line ended; where
 several end on the same move, they are listed together, "(A, B)".
 
+### Model games
+
+Some courses come with **model games**: complete games, annotated, that show
+the ideas of the course — the plans, the pawn structures — rather than its
+lines. A book keeps them under its chapters, in a list of their own
+(**Model games**, folded away with ▸ when not wanted). They are not part of
+the repertoire: no switches, they count in no line, statistics or "your
+games", and they are never merged or analysed.
+
+The ⋯ above the chapters adds them: **Paste model games…** or **Import model
+games…** — every game of the PGN becomes a model game, with its own headers,
+comments, arrows and marks, named from its headers (a Chessable export puts
+the game in `[White]`: "Kasparov – Short, Linares 1990"). A chapter imported
+by mistake is made a model game with **Make it a model game** (or, several
+selected, **Make N model games**); the model games' own ⋯ makes one a chapter
+again. They are opened, renamed (F2), deleted, rearranged (M) and selected
+(↑ ↓, Shift-click) as the chapters are; **Reverse the order** turns the list
+round at once (courses often list the newest game first).
+
+Each model game shows its **result** at the right of its row — Chessable's
+exports leave it out, `*` — and a click there sets it: 1-0, 0-1, ½–½ or `*`.
+The result goes into the game's `[Result]` and after its last move, as PGN
+has it. Exported books carry their model games, marked `[LpdoModelGame "1"]`
+with their own headers, so **Import…** makes them model games again; other
+programs read them as ordinary annotated games.
+
 ## Active books and chapters, and switching lines off
 
 The checkbox on a chapter marks it **active** — part of the repertoire you are

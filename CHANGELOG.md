@@ -29,7 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Rename (F2) and Delete, and rearranged by dragging or ↑ ↓; books are
   rearranged the same way, and the keys go to the panel clicked last —
   ↑ ↓ step through the books or chapters, F2 edits the book or renames the
-  chapter, M rearranges, Enter ends. **Off: my
+  chapter, M rearranges, Enter ends. Books keep **model games** — complete
+  annotated games showing a course's ideas — in a list of their own under
+  the chapters, imported or pasted from PGN (or a chapter made one), outside
+  the repertoire; each with its result, set in the list, in its `[Result]`
+  and after its moves, and exported and imported with the book. **Off: my
   sidelines** in the Lines tab switches off every alternative to your own
   moves at once. Chapters can be renamed
   together, by find and replace over their names, with a preview. Chapters

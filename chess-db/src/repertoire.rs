@@ -52,6 +52,12 @@ pub struct ChapterSummary {
     /// positions changed since — moves added or removed; not a comment.
     pub analysed_at: Option<String>,
     pub analysis_stale: Option<bool>,
+    /// A model game: a complete annotated game kept with the book to show
+    /// its ideas — not part of the repertoire (its positions never indexed),
+    /// its own headers kept.
+    pub model: bool,
+    /// The game's result: `*`, `1-0`, `0-1` or `1/2-1/2` (`*` for a chapter).
+    pub result: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -86,7 +92,14 @@ pub struct ChapterPatch {
     pub ord: Option<i64>,
     pub active: Option<bool>,
     pub book_id: Option<i64>,
+    /// Make it a model game, or a chapter again.
+    pub model: Option<bool>,
+    /// A model game's result.
+    pub result: Option<String>,
 }
+
+/// A game's possible results, as PGN writes them.
+pub const RESULTS: [&str; 4] = ["*", "1-0", "0-1", "1/2-1/2"];
 
 fn valid_color(c: &str) -> Result<&str> {
     match c {
@@ -325,7 +338,7 @@ fn header_name(pgn: &str) -> Option<String> {
     if let Some((_, chapter)) = event.split_once(": ") {
         if !chapter.trim().is_empty() { return Some(chapter.trim().to_string()); }
     }
-    let real = |s: Option<String>| s.filter(|v| !v.trim().is_empty() && v.trim() != "?");
+    let real = |s: Option<String>| s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty() && v != "?");
     match (real(tag(pgn, "White")), real(tag(pgn, "Black"))) {
         (Some(w), Some(b)) => return Some(format!("{w} – {b}")),
         (Some(w), None) => return Some(w),
@@ -351,6 +364,41 @@ fn compose_pgn(book: &str, author: Option<&str>, ord: i64, chapter: &str, color:
     )
 }
 
+/// The result a game's PGN gives: its `[Result]`, else the token its moves
+/// end with — `*` when neither says.
+fn result_of(pgn: &str) -> String {
+    if let Some(r) = tag(pgn, "Result").map(|r| r.trim().to_string()).filter(|r| r != "*" && RESULTS.contains(&r.as_str())) {
+        return r;
+    }
+    let moves = movetext_of(pgn);
+    RESULTS.iter().find(|r| moves.trim_end().ends_with(*r)).map_or("*", |r| r).to_string()
+}
+
+/// Moves without the result token ending them.
+fn strip_result(movetext: &str) -> &str {
+    let t = movetext.trim_end();
+    ["1/2-1/2", "1-0", "0-1", "*"].iter().find_map(|r| t.strip_suffix(r)).map_or(t, str::trim_end)
+}
+
+/// A model game's PGN: its own headers — LPDO's tags left out — with
+/// `[Result]` as `result`, then its moves, ending in it.
+fn model_pgn(pgn: &str, movetext: &str, result: &str) -> String {
+    let mut head = String::new();
+    let mut has_result = false;
+    for line in pgn.lines() {
+        let t = line.trim();
+        if t.is_empty() { if head.is_empty() { continue } else { break } }
+        if !t.starts_with('[') { break; }
+        if t.starts_with("[Lpdo") { continue; }
+        if t.starts_with("[Result ") { has_result = true; head += &format!("[Result \"{result}\"]\n"); continue; }
+        head += t;
+        head.push('\n');
+    }
+    if !has_result { head += &format!("[Result \"{result}\"]\n"); }
+    let body = strip_result(movetext);
+    format!("{head}\n{body}{}{result}\n", if body.is_empty() { "" } else { " " })
+}
+
 // ── Database ─────────────────────────────────────────────────────────────────
 
 fn book_row(r: &duckdb::Row<'_>) -> duckdb::Result<Book> {
@@ -367,12 +415,14 @@ fn chapter_row(r: &duckdb::Row<'_>) -> duckdb::Result<ChapterSummary> {
         id: r.get(0)?, book_id: r.get(1)?, ord: r.get(2)?, name: r.get(3)?, active: r.get(4)?,
         lines: r.get(5)?, lines_off: r.get(6)?, updated_at: r.get(7)?,
         analysed_at: r.get(8)?, analysis_stale: r.get(9)?,
+        model: r.get(10)?, result: r.get(11)?,
     })
 }
 
 const CHAPTER_COLS: &str = "id, book_id, ord, name, active, lines, lines_off, CAST(updated_at AS VARCHAR),
     (SELECT CAST(a.analysed_at AS VARCHAR) FROM repertoire_analysis a WHERE a.chapter_id = repertoire_chapters.id),
-    (SELECT a.positions_hash IS DISTINCT FROM repertoire_chapters.positions_hash FROM repertoire_analysis a WHERE a.chapter_id = repertoire_chapters.id)";
+    (SELECT a.positions_hash IS DISTINCT FROM repertoire_chapters.positions_hash FROM repertoire_analysis a WHERE a.chapter_id = repertoire_chapters.id),
+    COALESCE(model, FALSE), COALESCE(result, '*')";
 
 pub fn get_book(conn: &Connection, id: i64) -> Result<Book> {
     conn.query_row(&format!("SELECT {BOOK_COLS} FROM repertoire_books WHERE id = ?"), duckdb::params![id], book_row)
@@ -454,11 +504,13 @@ pub fn update_book(conn: &Connection, id: i64, patch: BookPatch) -> Result<Book>
     // positions, whether the book is on.
     let headers = name != before.name || color != before.color || author != before.author;
     if headers || active != before.active {
-        let mut st = conn.prepare("SELECT id, ord, name, pgn, active FROM repertoire_chapters WHERE book_id = ?")?;
-        let rows: Vec<(i64, i64, String, String, bool)> = st
-            .query_map(duckdb::params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+        let mut st = conn.prepare("SELECT id, ord, name, pgn, active, COALESCE(model, FALSE) FROM repertoire_chapters WHERE book_id = ?")?;
+        let rows: Vec<(i64, i64, String, String, bool, bool)> = st
+            .query_map(duckdb::params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
             .collect::<duckdb::Result<_>>()?;
-        for (cid, ord, cname, pgn, chapter_active) in rows {
+        for (cid, ord, cname, pgn, chapter_active, model) in rows {
+            // A model game keeps its own headers, and has no positions.
+            if model { continue; }
             let movetext = movetext_of(&pgn);
             if headers {
                 let pgn = compose_pgn(&name, author.as_deref(), ord, &cname, &color, &movetext);
@@ -525,6 +577,9 @@ pub fn fill_positions_hashes(conn: &Connection) -> Result<()> {
 fn reindex(conn: &Connection, chapter_id: i64, active: bool, walk: &Walk) -> Result<()> {
     conn.execute("UPDATE repertoire_chapters SET positions_hash = ? WHERE id = ?", duckdb::params![positions_hash(walk), chapter_id])?;
     conn.execute("DELETE FROM repertoire_positions WHERE chapter_id = ?", duckdb::params![chapter_id])?;
+    // A model game is not part of the repertoire: none of its positions count.
+    let model: bool = conn.query_row("SELECT COALESCE(model, FALSE) FROM repertoire_chapters WHERE id = ?", duckdb::params![chapter_id], |r| r.get(0))?;
+    if model { return Ok(()); }
     // In bulk: one INSERT a position, each its own transaction, took a book
     // of 25 chapters (6,000 positions) a minute on a large database.
     let mut app = conn.appender("repertoire_positions")?;
@@ -539,8 +594,16 @@ fn reindex(conn: &Connection, chapter_id: i64, active: bool, walk: &Walk) -> Res
 /// per game of `pgn` (a file's worth), named from their headers — or `name`
 /// when there is one game and a name. `file` is the file the PGN came from:
 /// its name names the chapters the headers leave unnamed.
+#[cfg(test)]
 pub fn add_chapters(conn: &Connection, book_id: i64, name: Option<&str>, pgn: Option<&str>, file: Option<&str>) -> Result<Vec<ChapterSummary>> {
+    add_chapters_as(conn, book_id, name, pgn, file, false)
+}
+
+/// [`add_chapters`], or — `model` — model games: one per game of `pgn`, each
+/// with its own headers and result.
+pub fn add_chapters_as(conn: &Connection, book_id: i64, name: Option<&str>, pgn: Option<&str>, file: Option<&str>, model: bool) -> Result<Vec<ChapterSummary>> {
     let book = get_book(conn, book_id)?;
+    if model && pgn.is_none_or(|p| p.trim().is_empty()) { bail!("model games come from PGN"); }
     let games: Vec<String> = match pgn.map(str::trim).filter(|p| !p.is_empty()) {
         Some(p) => {
             let g = split_games(p);
@@ -569,7 +632,7 @@ pub fn add_chapters(conn: &Connection, book_id: i64, name: Option<&str>, pgn: Op
                     (None, None) => format!("Chapter {}", count + 1),
                 },
             };
-            let id = insert_chapter(conn, &book, &cname, &movetext, &walk, true)?;
+            let id = insert_chapter(conn, &book, &cname, &movetext, &walk, true, model.then_some(game.as_str()))?;
             out.push(get_chapter_summary(conn, id)?);
         }
         Ok(out)
@@ -577,13 +640,18 @@ pub fn add_chapters(conn: &Connection, book_id: i64, name: Option<&str>, pgn: Op
 }
 
 /// A chapter added at the end of `book`, its positions indexed; its id.
-fn insert_chapter(conn: &Connection, book: &Book, name: &str, movetext: &str, walk: &Walk, active: bool) -> Result<i64> {
+/// `model`: the game it is — a model game, with the game's own headers and
+/// result.
+fn insert_chapter(conn: &Connection, book: &Book, name: &str, movetext: &str, walk: &Walk, active: bool, model: Option<&str>) -> Result<i64> {
     let ord: i64 = conn.query_row("SELECT COALESCE(MAX(ord), 0) + 1 FROM repertoire_chapters WHERE book_id = ?", duckdb::params![book.id], |r| r.get(0))?;
     let id = crate::db::ids::next_id(conn, "repertoire_chapters")? as i64;
-    let full = compose_pgn(&book.name, book.author.as_deref(), ord, name, &book.color, movetext);
+    let (full, result) = match model {
+        Some(game) => { let r = result_of(game); (model_pgn(game, movetext, &r), r) }
+        None => (compose_pgn(&book.name, book.author.as_deref(), ord, name, &book.color, movetext), "*".to_string()),
+    };
     conn.execute(
-        "INSERT INTO repertoire_chapters (id, book_id, ord, name, active, pgn, lines, lines_off, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CAST(NOW() AS TIMESTAMP))",
-        duckdb::params![id, book.id, ord, name, active, full, walk.lines, walk.lines_off],
+        "INSERT INTO repertoire_chapters (id, book_id, ord, name, active, pgn, lines, lines_off, updated_at, model, result) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CAST(NOW() AS TIMESTAMP), ?, ?)",
+        duckdb::params![id, book.id, ord, name, active, full, walk.lines, walk.lines_off, model.is_some(), result],
     )?;
     crate::db::ids::raise_high_water(conn, "repertoire_chapters", id as u32)?;
     reindex(conn, id, book.active && active, walk)?;
@@ -631,7 +699,8 @@ pub fn import_books(conn: &Connection, pgn: &str, file: Option<&str>) -> Result<
                 let walk = walk(&movetext).with_context(|| format!("“{name}”, chapter {}", i + 1))?;
                 let cname = header_name(g).unwrap_or_else(|| format!("Chapter {}", i + 1));
                 let active = tag(g, "LpdoChapterActive").as_deref() != Some("false");
-                insert_chapter(conn, &book, &cname, &movetext, &walk, active)?;
+                let model = tag(g, "LpdoModelGame").as_deref() == Some("1");
+                insert_chapter(conn, &book, &cname, &movetext, &walk, active, model.then_some(g.as_str()))?;
             }
             books.push(book);
         }
@@ -659,17 +728,41 @@ fn place_chapter(conn: &Connection, book_id: i64, moved: Option<(i64, i64)>) -> 
     renumber(conn, "repertoire_chapters", &ids)
 }
 
+/// Put `ids` — chapters of one book — in this order, in the places they
+/// hold now, the book's other chapters staying where they are: the model
+/// games reversed, say.
+pub fn order_chapters(conn: &Connection, ids: &[i64]) -> Result<()> {
+    let Some(first) = ids.first() else { return Ok(()) };
+    let book_id = get_chapter_summary(conn, *first)?.book_id;
+    let mut st = conn.prepare("SELECT id FROM repertoire_chapters WHERE book_id = ? ORDER BY ord, id")?;
+    let all: Vec<i64> = st.query_map(duckdb::params![book_id], |r| r.get(0))?.collect::<duckdb::Result<_>>()?;
+    for (i, id) in ids.iter().enumerate() {
+        if !all.contains(id) { bail!("chapter {id} is not in the same book"); }
+        if ids[..i].contains(id) { bail!("chapter {id} is given twice"); }
+    }
+    let mut next = ids.iter();
+    let order: Vec<i64> = all.iter().map(|id| if ids.contains(id) { *next.next().unwrap_or(id) } else { *id }).collect();
+    crate::db::with_tx(conn, || renumber(conn, "repertoire_chapters", &order))
+}
+
 pub fn update_chapter(conn: &Connection, id: i64, patch: ChapterPatch) -> Result<ChapterSummary> {
     let before = get_chapter_summary(conn, id)?;
     if let Some(n) = &patch.name { if n.trim().is_empty() { bail!("the chapter needs a name"); } }
     let name = patch.name.as_deref().map(str::trim).unwrap_or(&before.name).to_string();
     let active = patch.active.unwrap_or(before.active);
     let book_id = patch.book_id.unwrap_or(before.book_id);
+    let model = patch.model.unwrap_or(before.model);
+    let result = match patch.result {
+        Some(r) if RESULTS.contains(&r.as_str()) => r,
+        Some(r) => bail!("“{r}” is not a result: *, 1-0, 0-1 or 1/2-1/2"),
+        None if model => before.result.clone(),
+        None => "*".to_string(),
+    };
     let book = get_book(conn, book_id)?;
     let counted_before = before.active && get_book(conn, before.book_id)?.active;
     conn.execute(
-        "UPDATE repertoire_chapters SET name = ?, active = ?, book_id = ? WHERE id = ?",
-        duckdb::params![name, active, book_id, id],
+        "UPDATE repertoire_chapters SET name = ?, active = ?, book_id = ?, model = ?, result = ? WHERE id = ?",
+        duckdb::params![name, active, book_id, model, result, id],
     )?;
     if book_id != before.book_id {
         // To the end of the new book; the old one closes its gap.
@@ -680,12 +773,14 @@ pub fn update_chapter(conn: &Connection, id: i64, patch: ChapterPatch) -> Result
         place_chapter(conn, book_id, Some((id, to)))?;
     }
     let after = get_chapter_summary(conn, id)?;
-    // The headers carry the chapter's name and order and the book's.
+    // The headers carry the chapter's name and order and the book's — a
+    // model game's are its own, with its result.
     let pgn: String = conn.query_row("SELECT pgn FROM repertoire_chapters WHERE id = ?", duckdb::params![id], |r| r.get(0))?;
     let movetext = movetext_of(&pgn);
-    let full = compose_pgn(&book.name, book.author.as_deref(), after.ord, &after.name, &book.color, &movetext);
+    let full = if model { model_pgn(&pgn, &movetext, &result) }
+        else { compose_pgn(&book.name, book.author.as_deref(), after.ord, &after.name, &book.color, &movetext) };
     conn.execute("UPDATE repertoire_chapters SET pgn = ? WHERE id = ?", duckdb::params![full, id])?;
-    if (active && book.active) != counted_before {
+    if (active && book.active) != counted_before || model != before.model {
         let w = walk(&movetext)?;
         reindex(conn, id, active && book.active, &w)?;
     }
@@ -697,7 +792,12 @@ pub fn set_moves(conn: &Connection, id: i64, movetext: &str) -> Result<ChapterSu
     let before = get_chapter_summary(conn, id)?;
     let book = get_book(conn, before.book_id)?;
     let w = walk(movetext)?;
-    let full = compose_pgn(&book.name, book.author.as_deref(), before.ord, &before.name, &book.color, movetext);
+    let full = if before.model {
+        let pgn: String = conn.query_row("SELECT pgn FROM repertoire_chapters WHERE id = ?", duckdb::params![id], |r| r.get(0))?;
+        model_pgn(&pgn, movetext, &before.result)
+    } else {
+        compose_pgn(&book.name, book.author.as_deref(), before.ord, &before.name, &book.color, movetext)
+    };
     conn.execute(
         "UPDATE repertoire_chapters SET pgn = ?, lines = ?, lines_off = ?, updated_at = CAST(NOW() AS TIMESTAMP) WHERE id = ?",
         duckdb::params![full, w.lines, w.lines_off, id],
@@ -734,9 +834,11 @@ pub fn delete_chapters(conn: &Connection, ids: &[i64]) -> Result<()> {
 /// renamed, say) with the book's own in `LpdoBook…` tags and the chapter's in
 /// `LpdoChapter…`, so that importing it makes the book again one to one
 /// ([`import_books`]); then its moves.
-fn export_chapter(book: &Book, ord: i64, name: &str, active: bool, pgn: &str) -> String {
+/// A model game keeps its own headers, marked `[LpdoModelGame "1"]`.
+fn export_chapter(book: &Book, ord: i64, name: &str, active: bool, model: bool, pgn: &str) -> String {
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "");
-    let base = compose_pgn(&book.name, book.author.as_deref(), ord, name, &book.color, &movetext_of(pgn));
+    let base = if model { model_pgn(pgn, &movetext_of(pgn), &result_of(pgn)) }
+        else { compose_pgn(&book.name, book.author.as_deref(), ord, name, &book.color, &movetext_of(pgn)) };
     let mut tags = format!("[LpdoBook \"{}\"]\n[LpdoBookColor \"{}\"]\n", esc(&book.name), book.color);
     for (t, v) in [("LpdoBookAuthor", &book.author), ("LpdoBookUrl", &book.url), ("LpdoBookNotes", &book.description)] {
         if let Some(v) = v.as_deref().filter(|v| !v.trim().is_empty()) { tags += &format!("[{t} \"{}\"]\n", esc(v)); }
@@ -744,6 +846,7 @@ fn export_chapter(book: &Book, ord: i64, name: &str, active: bool, pgn: &str) ->
     if !book.active { tags += "[LpdoBookActive \"false\"]\n"; }
     tags += &format!("[LpdoChapter \"{}\"]\n", esc(name));
     if !active { tags += "[LpdoChapterActive \"false\"]\n"; }
+    if model { tags += "[LpdoModelGame \"1\"]\n"; }
     match base.split_once("\n\n") {
         Some((head, body)) => format!("{head}\n{tags}\n{body}"),
         None => base,
@@ -752,14 +855,14 @@ fn export_chapter(book: &Book, ord: i64, name: &str, active: bool, pgn: &str) ->
 
 /// A book's chapters as exported, in order.
 fn export_book(conn: &Connection, book: &Book) -> Result<Vec<String>> {
-    let mut st = conn.prepare("SELECT ord, name, active, pgn FROM repertoire_chapters WHERE book_id = ? ORDER BY ord, id")?;
-    let rows: Vec<(i64, String, bool, String)> = st.query_map(duckdb::params![book.id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<duckdb::Result<_>>()?;
-    Ok(rows.iter().map(|(ord, name, active, pgn)| export_chapter(book, *ord, name, *active, pgn).trim().to_string()).collect())
+    let mut st = conn.prepare("SELECT ord, name, active, COALESCE(model, FALSE), pgn FROM repertoire_chapters WHERE book_id = ? ORDER BY ord, id")?;
+    let rows: Vec<(i64, String, bool, bool, String)> = st.query_map(duckdb::params![book.id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect::<duckdb::Result<_>>()?;
+    Ok(rows.iter().map(|(ord, name, active, model, pgn)| export_chapter(book, *ord, name, *active, *model, pgn).trim().to_string()).collect())
 }
 
 pub fn chapter_pgn(conn: &Connection, id: i64) -> Result<String> {
     let c = get_chapter(conn, id)?;
-    Ok(export_chapter(&c.book, c.summary.ord, &c.summary.name, c.summary.active, &c.pgn))
+    Ok(export_chapter(&c.book, c.summary.ord, &c.summary.name, c.summary.active, c.summary.model, &c.pgn))
 }
 
 pub fn book_pgn(conn: &Connection, id: i64) -> Result<String> {
@@ -1073,7 +1176,7 @@ struct Placement {
 /// has them — by any move order.
 fn place(conn: &Connection, book_id: i64, player: i64) -> Result<Placement> {
     let book = get_book(conn, book_id)?;
-    let mut st = conn.prepare("SELECT id, pgn FROM repertoire_chapters WHERE book_id = ? ORDER BY ord, id")?;
+    let mut st = conn.prepare("SELECT id, pgn FROM repertoire_chapters WHERE book_id = ? AND NOT COALESCE(model, FALSE) ORDER BY ord, id")?;
     let chapters: Vec<(i64, String)> = st.query_map(duckdb::params![book_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<duckdb::Result<_>>()?;
 
     // Each chapter's positions (the start left out: every game has it), in
@@ -1206,7 +1309,7 @@ pub fn book_games(conn: &Connection, book_id: i64, player: i64) -> Result<BookGa
     // How far each game followed its chapter — the first it counts for —
     // the same as the chapter's own list.
     let mut follow: std::collections::HashMap<i64, Follow> = std::collections::HashMap::new();
-    let mut st = conn.prepare("SELECT id, pgn FROM repertoire_chapters WHERE book_id = ?")?;
+    let mut st = conn.prepare("SELECT id, pgn FROM repertoire_chapters WHERE book_id = ? AND NOT COALESCE(model, FALSE)")?;
     let pgns: std::collections::HashMap<i64, String> = st.query_map(duckdb::params![book_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<duckdb::Result<_>>()?;
     let mut first: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
     for g in &p.in_book {
@@ -1860,5 +1963,68 @@ mod tests {
         assert!(p.contains("[Annotator \"Doe, J.\"]\n[Orientation \"black\"]"));
         assert!(!compose_pgn("B", Some(" "), 1, "Ch", "white", "").contains("Annotator"));
         assert!(p.ends_with("\n\n1. e4 *\n"));
+    }
+
+    #[test]
+    fn model_games_keep_their_headers_and_result_and_stay_out_of_the_repertoire() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let book = create_book(&conn, "1.c4 Simplified", "white", None, None, None).unwrap();
+        add_chapters(&conn, book.id, Some("Theory"), Some("1. c4 e5 *"), None).unwrap();
+        // As Chessable exports them: the title in [White], no result.
+        let pgn = "[Event \"\"]\n[Site \"?\"]\n[Date \"2026-10-02\"]\n[Round \"?\"]\n[White \"Garry Kasparov – Nigel Short, Linares 1990\"]\n[Black \"?\"]\n[Result \"*\"]\n\n1.c4 Nc6 2.Nc3 e5 {[%cal Gd8d7] A plan.} 3.g3 g6\n\n[Event \"\"]\n[White \"Svidler – Carlsen, Grenke 2019\"]\n[Black \"?\"]\n[Result \"0-1\"]\n\n1.e4 c5 2.Nf3 Nc6 0-1\n";
+        let ms = add_chapters_as(&conn, book.id, None, Some(pgn), None, true).unwrap();
+        assert_eq!(ms.iter().map(|m| (m.name.as_str(), m.model, m.result.as_str())).collect::<Vec<_>>(),
+                   vec![("Garry Kasparov – Nigel Short, Linares 1990", true, "*"), ("Svidler – Carlsen, Grenke 2019", true, "0-1")]);
+        // Never indexed: not part of the repertoire.
+        let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM repertoire_positions WHERE chapter_id IN ({}, {})", ms[0].id, ms[1].id), [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+
+        // A result set, the moves edited, the book renamed: its own headers
+        // stay, with the result in [Result] and after the moves.
+        update_chapter(&conn, ms[0].id, ChapterPatch { result: Some("1-0".into()), ..Default::default() }).unwrap();
+        assert!(update_chapter(&conn, ms[0].id, ChapterPatch { result: Some("2-0".into()), ..Default::default() }).is_err());
+        set_moves(&conn, ms[0].id, "1. c4 Nc6 2. Nc3 e5 {A plan.} 3. g3 g6 4. Bg2").unwrap();
+        update_book(&conn, book.id, BookPatch { name: Some("English".into()), ..Default::default() }).unwrap();
+        let g = get_chapter(&conn, ms[0].id).unwrap();
+        assert!(g.pgn.contains("[White \"Garry Kasparov – Nigel Short, Linares 1990\"]\n[Black \"?\"]\n[Result \"1-0\"]"), "{}", g.pgn);
+        assert!(g.pgn.trim_end().ends_with("4. Bg2 1-0"), "{}", g.pgn);
+        assert!(!g.pgn.contains("LPDO repertoire"));
+
+        // Exported and imported: model games again, with their results.
+        let backup = all_books_pgn(&conn).unwrap();
+        assert_eq!(backup.matches("[LpdoModelGame \"1\"]").count(), 2);
+        let empty = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&empty).unwrap();
+        import_books(&empty, &backup, None).unwrap();
+        let again = &list(&empty).unwrap()[0];
+        assert_eq!(again.chapters.iter().map(|c| (c.name.as_str(), c.model, c.result.as_str())).collect::<Vec<_>>(),
+                   vec![("Theory", false, "*"), ("Garry Kasparov – Nigel Short, Linares 1990", true, "1-0"), ("Svidler – Carlsen, Grenke 2019", true, "0-1")]);
+        let g2 = get_chapter(&empty, again.chapters[1].id).unwrap();
+        assert!(!g2.pgn.contains("[Lpdo"), "LPDO's tags are not kept in the game: {}", g2.pgn);
+        assert_eq!(backup, all_books_pgn(&empty).unwrap(), "a second round trip changes nothing");
+
+        // A chapter made a model game and back: indexed again as a chapter.
+        let theory = again.chapters[0].id;
+        update_chapter(&empty, theory, ChapterPatch { model: Some(true), ..Default::default() }).unwrap();
+        let n: i64 = empty.query_row("SELECT COUNT(*) FROM repertoire_positions WHERE chapter_id = ?", [theory], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+        let back = update_chapter(&empty, theory, ChapterPatch { model: Some(false), ..Default::default() }).unwrap();
+        assert_eq!((back.model, back.result.as_str()), (false, "*"));
+        let n: i64 = empty.query_row("SELECT COUNT(*) FROM repertoire_positions WHERE chapter_id = ?", [theory], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn chapters_are_ordered_within_their_places() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let book = create_book(&conn, "B", "white", None, None, None).unwrap();
+        let cs = add_chapters(&conn, book.id, None, Some("[Event \"A\"]\n\n1. e4 *\n\n[Event \"M1\"]\n\n1. d4 *\n\n[Event \"B\"]\n\n1. c4 *\n\n[Event \"M2\"]\n\n1. Nf3 *\n\n[Event \"M3\"]\n\n1. g3 *\n"), None).unwrap();
+        // The model games M1, M2, M3 reversed: A and B keep their places.
+        order_chapters(&conn, &[cs[4].id, cs[3].id, cs[1].id]).unwrap();
+        let names: Vec<String> = list(&conn).unwrap()[0].chapters.iter().map(|c| c.name.clone()).collect();
+        assert_eq!(names, vec!["A", "M3", "B", "M2", "M1"]);
+        assert!(order_chapters(&conn, &[cs[0].id, cs[0].id]).is_err());
     }
 }
