@@ -23,6 +23,8 @@ const chip = "h-7 px-3 inline-flex items-center rounded-full border border-outli
 
 const KIND: Record<MergeConflict["kind"], string> = { comment: "comment", intro: "line intro", nags: "move marks" };
 
+const NOTE_KEY = "repertoireMergeNoteChapters";
+
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** ", with their 37 comments and 12 marks" — what the added moves bring along. */
@@ -33,7 +35,14 @@ function carryText({ comments, marks }: { comments: number; marks: number }): st
 
 export default function MergeChaptersDialog({ target, others, added, carried, takenOver, conflicts, busy, onMerge, onCancel }: Props) {
   const [choices, setChoices] = useState<MergeChoices>(() => new Map());
-  const [noteChapters, setNoteChapters] = useState(false);
+  // Remembered for the next merge.
+  const [noteChapters, setNoteChapters] = useState(() => {
+    try { return localStorage.getItem(NOTE_KEY) === "1"; } catch { return false; }
+  });
+  const toggleNote = (on: boolean) => {
+    setNoteChapters(on);
+    try { localStorage.setItem(NOTE_KEY, on ? "1" : "0"); } catch { /* not remembered */ }
+  };
   const pick = (id: number, c: number | "all") => setChoices((m) => new Map(m).set(id, c));
   const chapters = [target, ...others];
   const allFrom = (name: string) => setChoices((m) => {
@@ -112,7 +121,7 @@ export default function MergeChaptersDialog({ target, others, added, carried, ta
         <div className="px-6 py-4 shrink-0 flex items-center justify-end gap-2">
           <label className="mr-auto flex items-center gap-2 text-body-sm text-on-surface-variant cursor-pointer"
             title="Each line's last move gets the chapter it came from at the end of its comment, e.g. “… (Theory 3D: #24)”">
-            <input type="checkbox" checked={noteChapters} onChange={(e) => setNoteChapters(e.target.checked)} className="accent-primary" />
+            <input type="checkbox" checked={noteChapters} onChange={(e) => toggleNote(e.target.checked)} className="accent-primary" />
             Note each line's chapter at its end
           </label>
           <button onClick={onCancel} disabled={busy} className={plain}>Cancel</button>
