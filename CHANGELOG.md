@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-02
+
 ### Added
 - **Opening repertoire** — books and chapters, loosely the shape of an
   opening course: a book for a course or a topic, with the colour you play it
@@ -53,7 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   link and notes, and **Import…** beside Books makes them again one to one,
   each a new book; importing shows its progress and takes about a second a
   book. Design in
-  `docs/design/opening-repertoire.md`. (#327, #329, #333, #334)
+  `docs/design/opening-repertoire.md`. (#327, #329, #333, #334, #335, #336, #337)
 
 ### Fixed
 - **Home: your profile showing another player's games** — the profile kept
@@ -1324,7 +1326,9 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/specure/lpdo/compare/v0.21.0...v0.22.0
+[0.21.0]: https://github.com/specure/lpdo/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/specure/lpdo/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/specure/lpdo/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/specure/lpdo/compare/v0.17.0...v0.18.0
