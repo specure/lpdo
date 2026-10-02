@@ -247,8 +247,10 @@ export default function AnalysisPage({
   // The whole book picked on the Repertoire page: its games, under My games.
   const bookId = myGamesBook?.id ?? null;
   useEffect(() => { if (bookId != null) setTab("mine"); }, [bookId]);
-  // Lines and My games are a repertoire chapter's: elsewhere, Reference.
-  const shownTab: RightTab = (tab === "lines" || tab === "mine") && !active?.document ? "reference" : tab;
+  // Lines and My games are a repertoire chapter's — not a model game's:
+  // elsewhere, Reference.
+  const repertoireChapter = !!active?.document && !active.document.model;
+  const shownTab: RightTab = (tab === "lines" || tab === "mine") && !repertoireChapter ? "reference" : tab;
 
   // A repertoire chapter (#327): its lines, the cursor asked for when one is
   // picked, and "→ at the end of a line goes on to the next".
@@ -261,8 +263,10 @@ export default function AnalysisPage({
   const requestCursor = useCallback((cursor: CursorPath) => setCursorRequest((r) => ({ cursor, seq: (r?.seq ?? 0) + 1 })), []);
   // ↑ / ↓ on the board: the previous / next line, at its branching move.
   const lineStep = useCallback((delta: -1 | 1): boolean => {
-    const cur = tabsRef.current.find((t) => t.key === activeKey)?.cursor;
-    if (!cur) return false;
+    const t = tabsRef.current.find((x) => x.key === activeKey);
+    const cur = t?.cursor;
+    // A model game has no lines to step through.
+    if (!cur || t?.document?.model) return false;
     const key = JSON.stringify(cur.steps);
     const i = linesRef.current.findIndex((l) => JSON.stringify(l.steps) === key);
     const to = i >= 0 ? linesRef.current[i + delta] : undefined;
@@ -545,7 +549,7 @@ export default function AnalysisPage({
                     // sit together; the cloud engine is a different question.
                     { key: "reference", label: "Reference" },
                     { key: "related", label: `Games${relatedTotal != null ? ` · ${relatedTotal.toLocaleString()}` : ""}` },
-                    ...(active?.document ? [{ key: "lines" as RightTab, label: "Lines" }, { key: "mine" as RightTab, label: "My games" }] : []),
+                    ...(repertoireChapter ? [{ key: "lines" as RightTab, label: "Lines" }, { key: "mine" as RightTab, label: "My games" }] : []),
                   ] as { key: RightTab; label: string }[]).map((t) => (
                     <button
                       key={t.key}
@@ -570,7 +574,7 @@ export default function AnalysisPage({
                   </button>
                 </div>
 
-                {shownTab === "mine" && active?.document ? (
+                {shownTab === "mine" && repertoireChapter && active?.document ? (
                   <div className="flex-1 min-h-0 flex flex-col">
                     <MyGamesPanel
                       chapterId={active.document.id}
@@ -583,7 +587,7 @@ export default function AnalysisPage({
                     />
                     {previewFrom === "mine" && previewPane}
                   </div>
-                ) : shownTab === "lines" && active?.document ? (
+                ) : shownTab === "lines" && repertoireChapter && active?.document ? (
                   <LinesPanel
                     chapterId={active.document.id}
                     reloadKey={chapterVersion + documentReload}

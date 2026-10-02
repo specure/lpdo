@@ -62,6 +62,8 @@ export interface ChapterDocument {
   color: BookColor;
   /** When the chapter was last analysed — read again when it changes. */
   analysedAt?: string | null;
+  /** A model game: no lines to list, no games of one's own to look up. */
+  model?: boolean;
 }
 
 export const listRepertoire = () => apiGet<BookWithChapters[]>("/repertoire");
@@ -205,5 +207,5 @@ export const bookPgnPath = (id: number) => `/repertoire/books/${id}/pgn`;
 export const chapterPgnPath = (id: number) => `/repertoire/chapters/${id}/pgn`;
 
 export function documentOf(c: ChapterDetail): ChapterDocument {
-  return { kind: "chapter", id: c.id, bookName: c.book.name, chapterName: c.name, color: c.book.color, analysedAt: c.analysed_at };
+  return { kind: "chapter", id: c.id, bookName: c.book.name, chapterName: c.name, color: c.book.color, analysedAt: c.analysed_at, model: c.model };
 }
