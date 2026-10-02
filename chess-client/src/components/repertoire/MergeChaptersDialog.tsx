@@ -2,6 +2,7 @@
 // chapters' comments (or NAGs) differ, which version stays. The lines are
 // already merged (lib/mergeChapters.ts); this only picks among the texts.
 
+import { diffPieces } from "../../lib/textDiff";
 import { useState } from "react";
 import type { MergeChoices, MergeConflict } from "../../lib/mergeChapters";
 
@@ -106,8 +107,11 @@ export default function MergeChaptersDialog({ target, others, added, carried, ta
                     <span className="shrink-0 text-label-sm text-on-surface-variant">{KIND[c.kind]}</span>
                   </div>
                   <div className="p-2 flex flex-col gap-1">
+                    {/* What differs marked: the target's against every other
+                        version, another's against the target's. */}
                     {c.options.map((o, i) => (
-                      <Option key={i} name={c.id} checked={chosen === i} onChange={() => pick(c.id, i)} label={o.chapter} text={o.text} />
+                      <Option key={i} name={c.id} checked={chosen === i} onChange={() => pick(c.id, i)} label={o.chapter} text={o.text}
+                        against={i === 0 ? c.options.slice(1).map((x) => x.text) : [c.options[0].text]} />
                     ))}
                     <Option name={c.id} checked={chosen === "all"} onChange={() => pick(c.id, "all")}
                       label={c.options.length === 2 ? "Both" : "All"}
@@ -135,15 +139,23 @@ export default function MergeChaptersDialog({ target, others, added, carried, ta
   );
 }
 
-function Option({ name, checked, onChange, label, text, muted = false }: {
+function Option({ name, checked, onChange, label, text, against, muted = false }: {
   name: number; checked: boolean; onChange: () => void; label: string; text: string; muted?: boolean;
+  /** The versions to mark the differences against, in yellow. */
+  against?: string[];
 }) {
   return (
     <label className={`flex items-start gap-2 px-2 py-1.5 rounded-sm cursor-pointer ${checked ? "bg-primary-container/40" : "hover:bg-on-surface/4"}`}>
       <input type="radio" name={`merge-${name}`} checked={checked} onChange={onChange} className="accent-primary mt-1 shrink-0" />
       <span className="min-w-0">
         <span className="block text-label-md text-on-surface-variant">{label}</span>
-        <span className={`block text-body-sm whitespace-pre-wrap break-words ${muted ? "text-on-surface-variant italic" : "text-on-surface"}`}>{text}</span>
+        <span className={`block text-body-sm whitespace-pre-wrap break-words ${muted ? "text-on-surface-variant italic" : "text-on-surface"}`}>
+          {against
+            ? diffPieces(text, against).map((p, k) => p.differs
+              ? <mark key={k} className="rounded-[2px] px-px" style={{ backgroundColor: "rgba(250, 204, 21, 0.45)", color: "inherit" }}>{p.text}</mark>
+              : <span key={k}>{p.text}</span>)
+            : text}
+        </span>
       </span>
     </label>
   );
