@@ -68,9 +68,10 @@ removes them when you say so; "No FEN codes found" otherwise.
 
 Chapters can be **selected** as in a file manager: a click selects one (and
 puts it on the board), **Shift-click** the range from the one clicked last,
-**Ctrl-click** one more or one less. With several selected, the ⋯ offers
-**Merge N chapters…** and **Rename N chapters… (F2)** for just those; **Esc**
-drops the selection.
+**Ctrl-click** one more or one less. With several selected, a bar under the
+book's name — it stays in view while the list scrolls — offers **Merge…**,
+**Rename…** (or F2) and **Delete…** for just those (the ⋯ has them too);
+**×** or **Esc** drops the selection.
 
 **Merge chapters…** there folds several chapters into one — the same
 section imported twice, or split over several files. Tick the chapters
