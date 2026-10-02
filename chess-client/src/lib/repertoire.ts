@@ -38,6 +38,9 @@ export interface ChapterSummary {
   model: boolean;
   /** The game's result ("*" for a chapter). */
   result: GameResult;
+  /** A model game with comments of its own (text, arrows, marks — not clock
+   *  times); without, a reference game, listed apart. */
+  annotated: boolean;
 }
 
 export type GameResult = "*" | "1-0" | "0-1" | "1/2-1/2";

@@ -58,6 +58,10 @@ pub struct ChapterSummary {
     pub model: bool,
     /// The game's result: `*`, `1-0`, `0-1` or `1/2-1/2` (`*` for a chapter).
     pub result: String,
+    /// A model game with comments of its own — arrows, marks or text; not
+    /// the clock times and evaluations a broadcast leaves. Without, it is a
+    /// reference game: listed apart.
+    pub annotated: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -415,14 +419,16 @@ fn chapter_row(r: &duckdb::Row<'_>) -> duckdb::Result<ChapterSummary> {
         id: r.get(0)?, book_id: r.get(1)?, ord: r.get(2)?, name: r.get(3)?, active: r.get(4)?,
         lines: r.get(5)?, lines_off: r.get(6)?, updated_at: r.get(7)?,
         analysed_at: r.get(8)?, analysis_stale: r.get(9)?,
-        model: r.get(10)?, result: r.get(11)?,
+        model: r.get(10)?, result: r.get(11)?, annotated: r.get(12)?,
     })
 }
 
 const CHAPTER_COLS: &str = "id, book_id, ord, name, active, lines, lines_off, CAST(updated_at AS VARCHAR),
     (SELECT CAST(a.analysed_at AS VARCHAR) FROM repertoire_analysis a WHERE a.chapter_id = repertoire_chapters.id),
     (SELECT a.positions_hash IS DISTINCT FROM repertoire_chapters.positions_hash FROM repertoire_analysis a WHERE a.chapter_id = repertoire_chapters.id),
-    COALESCE(model, FALSE), COALESCE(result, '*')";
+    COALESCE(model, FALSE), COALESCE(result, '*'),
+    COALESCE(model, FALSE) AND regexp_matches(
+        regexp_replace(pgn, '\\[%(clk|emt|eval|tqu)[^\\]]*\\]', '', 'g'), '\\{\\s*[^}\\s]')";
 
 pub fn get_book(conn: &Connection, id: i64) -> Result<Book> {
     conn.query_row(&format!("SELECT {BOOK_COLS} FROM repertoire_books WHERE id = ?"), duckdb::params![id], book_row)
@@ -2026,5 +2032,20 @@ mod tests {
         let names: Vec<String> = list(&conn).unwrap()[0].chapters.iter().map(|c| c.name.clone()).collect();
         assert_eq!(names, vec!["A", "M3", "B", "M2", "M1"]);
         assert!(order_chapters(&conn, &[cs[0].id, cs[0].id]).is_err());
+    }
+
+    #[test]
+    fn model_games_with_comments_are_told_from_reference_games() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let book = create_book(&conn, "B", "white", None, None, None).unwrap();
+        add_chapters(&conn, book.id, Some("Theory"), Some("1. c4 {A comment} e5 *"), None).unwrap();
+        let pgn = "[White \"Text\"]\n\n1. c4 {A plan.} e5 *\n\n\
+                   [White \"Arrows\"]\n\n1. c4 {[%cal Gc4c5]} e5 *\n\n\
+                   [White \"Plain\"]\n\n1. c4 e5 2. Nc3 1-0\n\n\
+                   [White \"Clock\"]\n\n1. c4 { [%clk 1:30:00] } e5 { [%clk 1:29:58] [%eval 0.2] } *\n";
+        add_chapters_as(&conn, book.id, None, Some(pgn), None, true).unwrap();
+        let got: Vec<(String, bool)> = list(&conn).unwrap()[0].chapters.iter().map(|c| (c.name.clone(), c.annotated)).collect();
+        assert_eq!(got, vec![("Theory".into(), false), ("Text".into(), true), ("Arrows".into(), true), ("Plain".into(), false), ("Clock".into(), false)]);
     }
 }

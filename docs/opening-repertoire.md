@@ -114,6 +114,13 @@ again. They are opened, renamed (F2), deleted, rearranged (M) and selected
 (↑ ↓, Shift-click) as the chapters are; **Reverse the order** turns the list
 round at once (courses often list the newest game first).
 
+Games with comments of their own — text, arrows or marks — are listed as
+**Model games**; games without (courses call them reference games) under
+**Reference games**, a list of its own that works the same way. Nothing to
+choose: a game moves between the two as comments are added to it or taken
+out. Clock times and evaluations a broadcast leaves in a game are not
+comments.
+
 Each model game shows its **result** at the right of its row — Chessable's
 exports leave it out, `*` — and a click there sets it: 1-0, 0-1, ½–½ or `*`.
 The result goes into the game's `[Result]` and after its last move, as PGN
