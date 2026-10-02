@@ -11,7 +11,7 @@ import type { GameSummary } from "../types";
 import {
   addChapters, bookPgnPath, chapterPgnPath, createBook, deleteBook, deleteChapter, getChapter, listRepertoire,
   saveChapterMoves, updateBook, updateChapter, documentOf, analyseChapters, getBookGames, scorePct, importBooks, deleteChapters,
-  type BookGames, type Score, type BookColor, type BookWithChapters, type ChapterSummary,
+  type BookGames, type Score, type BookColor, type BookWithChapters, type ChapterSummary, type GameResult, GAME_RESULTS,
 } from "../lib/repertoire";
 import { saveTextFile } from "../lib/exportPgn";
 import { useJobProgress } from "../hooks/useJobProgress";
@@ -82,11 +82,12 @@ async function loadTab(chapterId: number): Promise<AnalysisTab> {
   const view = readViews()[chapterId];
   const game: GameSummary = {
     id: -c.id, white: c.name, black: c.book.name, white_elo: null, black_elo: null,
-    event: c.book.name, date: null, result: null, eco: null, move_count: null, opening_line: null,
+    // A model game's result — a chapter has none.
+    event: c.book.name, date: null, result: c.model ? c.result : null, eco: null, move_count: null, opening_line: null,
   };
   return {
     key: `c${c.id}`, game,
-    loaded: { id: -c.id, white: c.name, black: c.book.name, result: null, date: null, event: c.book.name, pgn: c.pgn, gameUrl: null, ...buildPlayback(c.pgn) },
+    loaded: { id: -c.id, white: c.name, black: c.book.name, result: c.model ? c.result : null, date: null, event: c.book.name, pgn: c.pgn, gameUrl: null, ...buildPlayback(c.pgn) },
     fen: typeof view?.fen === "string" ? view.fen : null,
     cursor: validCursor(view?.cursor),
     flipped: typeof view?.flipped === "boolean" ? view.flipped : c.book.color === "black",
@@ -214,14 +215,19 @@ export default function RepertoirePage({ onOpenGame }: Props) {
   // An import going on: which file of how many — shown above the chapters,
   // so a long one is not taken for nothing happening.
   const [importing, setImporting] = useState<{ i: number; n: number; file: string | null } | null>(null);
-  const importPgn = (bookId: number, items: { pgn: string; file?: string }[]) => run(async () => {
+  /** Chapters made model games, or model games chapters again. */
+  const convert = (ids: number[], model: boolean) => run(async () => {
+    for (const id of ids) await updateChapter(id, { model });
+  });
+  /** `model`: the games are model games of the book. */
+  const importPgn = (bookId: number, items: { pgn: string; file?: string }[], model = false) => run(async () => {
     // One file at a time, in the order picked: each adds its chapters at the
     // end. A file that fails stops the rest.
     let first: number | null = null;
     try {
       for (const [i, it] of items.entries()) {
         setImporting({ i: i + 1, n: items.length, file: it.file ?? null });
-        const cs = await addChapters(bookId, it).catch((e) => { throw new Error(it.file ? `${it.file}: ${String(e)}` : String(e)); });
+        const cs = await addChapters(bookId, { ...it, model }).catch((e) => { throw new Error(it.file ? `${it.file}: ${String(e)}` : String(e)); });
         first ??= cs[0]?.id ?? null;
       }
     } finally {
@@ -311,7 +317,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
   // The keys go where one is working, as in a file manager: the panel
   // clicked last. ↑ ↓ step through its books or chapters (elsewhere, the
   // board's lines); F2 edits the book, else renames the chapter(s).
-  const keysFor = useRef<"books" | "chapters" | "board">("board");
+  const keysFor = useRef<"books" | "chapters" | "models" | "board">("board");
   useEffect(() => {
     // Ahead of the panels' own (capturing) handlers, which then claim it.
     const away = () => { keysFor.current = "board"; };
@@ -319,8 +325,10 @@ export default function RepertoirePage({ onOpenGame }: Props) {
     return () => window.removeEventListener("mousedown", away, true);
   }, []);
   const f2Books = useCallback(() => keysFor.current === "books", []);
-  const f2Chapters = useCallback(() => keysFor.current !== "books", []);
+  const f2Chapters = useCallback(() => keysFor.current === "chapters" || keysFor.current === "board", []);
   const arrowsChapters = useCallback(() => keysFor.current === "chapters", []);
+  const f2Models = useCallback(() => keysFor.current === "models" || keysFor.current === "board", []);
+  const arrowsModels = useCallback(() => keysFor.current === "models", []);
   const booksPanel = booksFolded ? <Strip label="Books" onOpen={() => setBooksFolded(false)} /> : (
     <div className={box} onMouseDownCapture={() => { keysFor.current = "books"; }}>
       <BooksPanel
@@ -373,9 +381,11 @@ export default function RepertoirePage({ onOpenGame }: Props) {
         </div>
       )}
       <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
-        {book ? (
+        {book ? (<>
           <ChaptersList f2Here={f2Chapters} arrowsHere={arrowsChapters}
-            book={book} busy={busy} current={chapterId}
+            book={{ ...book, chapters: chaptersOf(book) }} busy={busy} current={chapterId}
+            onConvert={(ids) => convert(ids, true)}
+            onImportModels={(items) => importPgn(book.id, items, true)}
             onPick={(id) => { setChapterId(id); setBookPicked(false); }}
             bookPicked={bookPicked} onPickBook={setBookPicked}
             onMerge={startMerge}
@@ -387,7 +397,27 @@ export default function RepertoirePage({ onOpenGame }: Props) {
             onAddEmpty={(name) => addEmpty(book.id, name)} onImport={(items) => importPgn(book.id, items)}
             onDeleteChapters={(ids) => run(async () => { await deleteChapters(ids); if (chapterId != null && ids.includes(chapterId)) dropChapter(); })}
           />
-        ) : (
+          {/* The book's model games: complete annotated games showing its
+              ideas — the same list, apart from the repertoire. */}
+          {modelsOf(book).length > 0 && (
+            <div onMouseDownCapture={() => { keysFor.current = "models"; }}>
+              <ChaptersList kind="models" f2Here={f2Models} arrowsHere={arrowsModels}
+                book={{ ...book, chapters: modelsOf(book) }} busy={busy} current={chapterId}
+                onPick={(id) => { setChapterId(id); setBookPicked(false); }}
+                bookPicked={false} onPickBook={() => {}}
+                onMerge={() => {}} onAnalyse={() => {}} analysing={false}
+                onRemoveFens={removeFens} onCountFens={countFens}
+                onRenameMany={(changes) => run(async () => { for (const c of changes) await updateChapter(c.id, { name: c.name }); })}
+                onChapter={(id, patch) => run(() => updateChapter(id, patch))}
+                onDeleteChapter={(id) => run(async () => { await deleteChapter(id); if (id === chapterId) dropChapter(); })}
+                onAddEmpty={() => {}} onImport={() => {}}
+                onImportModels={(items) => importPgn(book.id, items, true)}
+                onConvert={(ids) => convert(ids, false)}
+                onDeleteChapters={(ids) => run(async () => { await deleteChapters(ids); if (chapterId != null && ids.includes(chapterId)) dropChapter(); })}
+              />
+            </div>
+          )}
+        </>) : (
           <div className="px-3 py-2 text-label-sm text-on-surface-variant">{books && books.length === 0 ? "Add a book first." : "Choose a book."}</div>
         )}
       </div>
@@ -417,7 +447,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
       onOpenGame={onOpenGame}
       onTabState={onTabState}
       onGameMutated={() => void load()}
-      myGamesBook={bookPicked && book ? { id: book.id, chapters: book.chapters.map((c) => ({ id: c.id, name: c.name })) } : null}
+      myGamesBook={bookPicked && book ? { id: book.id, chapters: chaptersOf(book).map((c) => ({ id: c.id, name: c.name })) } : null}
       onPickChapter={(id) => { setChapterId(id); setBookPicked(false); }}
       documentReload={docReload}
       leadingPanels={[
@@ -474,6 +504,10 @@ async function exportPgn(path: string, filename: string): Promise<string | null>
 }
 
 type ImportItem = { pgn: string; file?: string };
+
+/** A book's chapters — its repertoire — and its model games, apart. */
+const chaptersOf = (b: BookWithChapters) => b.chapters.filter((c) => !c.model);
+const modelsOf = (b: BookWithChapters) => b.chapters.filter((c) => c.model);
 
 function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, onCreate, onUpdate, onImportBooks, onDelete }: {
   books: BookWithChapters[] | null; selected: number | null; busy: boolean; error: string | null;
@@ -575,7 +609,7 @@ function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, on
             </div>
           )}
           {books?.map((b, i) => {
-            const on = b.chapters.filter((c) => c.active).length;
+            const on = chaptersOf(b).filter((c) => c.active).length;
             const sel = b.id === selected;
             return (
               <div key={b.id} data-book-id={b.id}
@@ -599,7 +633,7 @@ function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, on
                     <span className="truncate text-body-sm" title={b.name}>{b.name}</span>
                     {b.author && <span className="truncate text-label-sm opacity-70" title={b.author}>{b.author}</span>}
                   </span>
-                  {!arranging && <span className="text-label-sm opacity-70 tabular-nums shrink-0" title={`${on} of ${b.chapters.length} chapters active`}>{on}/{b.chapters.length}</span>}
+                  {!arranging && <span className="text-label-sm opacity-70 tabular-nums shrink-0" title={`${on} of ${chaptersOf(b).length} chapters active`}>{on}/{chaptersOf(b).length}</span>}
                 </button>
                 {arranging && (
                   <>
@@ -659,9 +693,11 @@ function BookDetails({ book, busy, canArrange, onArrange, f2Here, onUpdate, onDe
   useEffect(() => setDescription(book.description ?? ""), [book.description]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [note, setNote] = useState<string | null>(null);
-  const active = book.chapters.filter((c) => c.active);
-  const lines = book.chapters.reduce((n, c) => n + c.lines, 0);
-  const off = book.chapters.reduce((n, c) => n + c.lines_off, 0);
+  const chapters = chaptersOf(book);
+  const models = modelsOf(book).length;
+  const active = chapters.filter((c) => c.active);
+  const lines = chapters.reduce((n, c) => n + c.lines, 0);
+  const off = chapters.reduce((n, c) => n + c.lines_off, 0);
   const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
   /** Save a text field when it is left, if it changed. */
   const commit = (key: "author" | "url" | "description", v: string, was: string | null) => {
@@ -685,7 +721,7 @@ function BookDetails({ book, busy, canArrange, onArrange, f2Here, onUpdate, onDe
         ]} />
       </div>
       <div className="text-label-sm text-on-surface-variant">
-        Played as {book.color} · {plural(book.chapters.length, "chapter")}{active.length !== book.chapters.length ? `, ${active.length} active` : ""} · {plural(lines, "line")}{off ? `, ${off} off` : ""}
+        Played as {book.color} · {plural(chapters.length, "chapter")}{active.length !== chapters.length ? `, ${active.length} active` : ""} · {plural(lines, "line")}{off ? `, ${off} off` : ""}{models ? ` · ${plural(models, "model game")}` : ""}
       </div>
       {!book.active && <div className="text-label-sm text-on-surface-variant">Off: the whole book is out of the repertoire.</div>}
       {book.url && (
@@ -696,7 +732,7 @@ function BookDetails({ book, busy, canArrange, onArrange, f2Here, onUpdate, onDe
       {book.description && <div className="text-body-sm text-on-surface-variant whitespace-pre-wrap break-words">{book.description}</div>}
       {confirmDelete && (
         <div className="flex items-center gap-1 flex-wrap">
-          <button onClick={() => { setConfirmDelete(false); onDelete(); }} disabled={busy} className="h-7 px-2 rounded-full text-label-md text-error hover:bg-error/8">Delete it and its {plural(book.chapters.length, "chapter")}</button>
+          <button onClick={() => { setConfirmDelete(false); onDelete(); }} disabled={busy} className="h-7 px-2 rounded-full text-label-md text-error hover:bg-error/8">Delete it and its {plural(chapters.length, "chapter")}{models ? ` and ${plural(models, "model game")}` : ""}</button>
           <button onClick={() => setConfirmDelete(false)} className={plain}>Cancel</button>
         </div>
       )}
@@ -753,7 +789,10 @@ function Menu({ entries, title, up = false }: {
 
 /** The book's chapters, with one menu for the chapter on the board and a
  *  mode for putting them in order. */
-function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onCountFens, onRenameMany, onChapter, onDeleteChapter, onDeleteChapters, onAddEmpty, onImport, f2Here, arrowsHere }: {
+function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onCountFens, onRenameMany, onChapter, onDeleteChapter, onDeleteChapters, onAddEmpty, onImport, f2Here, arrowsHere, kind = "chapters", onImportModels, onConvert }: {
+  /** Which list: the chapters, or — with their own heading and commands —
+   *  the model games (`book.chapters` holds the one or the other). */
+  kind?: "chapters" | "models";
   book: BookWithChapters; busy: boolean; current: number | null;
   onPick: (id: number) => void;
   onMerge: (ids: number[]) => void;
@@ -769,9 +808,13 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
   onPickBook: (on: boolean) => void;
   analysing: boolean;
   onRenameMany: (changes: { id: number; name: string }[]) => Promise<void>;
-  onChapter: (id: number, patch: { name?: string; ord?: number; active?: boolean }) => void;
+  onChapter: (id: number, patch: { name?: string; ord?: number; active?: boolean; result?: GameResult }) => void;
   onDeleteChapter: (id: number) => void;
   onDeleteChapters: (ids: number[]) => void;
+  /** Model games from PGN (pasted, or files). */
+  onImportModels: (items: ImportItem[]) => void;
+  /** Chapters made model games — or, in the model games' list, chapters again. */
+  onConvert: (ids: number[]) => void;
   /** Adding chapters: an empty one, or from PGN (pasted, or files). */
   onAddEmpty: (name: string) => void;
   onImport: (items: ImportItem[]) => void;
@@ -781,16 +824,34 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
    *  before or after, on the board. */
   arrowsHere: () => boolean;
 }) {
+  const models = kind === "models";
+  // What a chapter is called here, one and several.
+  const one = models ? "model game" : "chapter";
+  const many = models ? "model games" : "chapters";
   const [note, setNote] = useState<string | null>(null);
-  const [pasting, setPasting] = useState(false);
+  // Pasting PGN: as chapters, or as model games.
+  const [pasting, setPasting] = useState<false | "chapters" | "models">(false);
   const [pasted, setPasted] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+  const filesAsModels = useRef(false);
   async function pickFiles(e: React.ChangeEvent<HTMLInputElement>) {
     const files = [...(e.target.files ?? [])];
     e.target.value = "";
     if (files.length === 0) return;
-    onImport(await Promise.all(files.map(async (f) => ({ pgn: await f.text(), file: f.name.replace(/\.[^.]+$/, "") }))));
+    const items = await Promise.all(files.map(async (f) => ({ pgn: await f.text(), file: f.name.replace(/\.[^.]+$/, "") })));
+    (filesAsModels.current ? onImportModels : onImport)(items);
   }
+  const pickFilesAs = (asModels: boolean) => { filesAsModels.current = asModels; fileRef.current?.click(); };
+  // The model games' list folds away.
+  const [folded, setFolded] = useState(() => { try { return models && localStorage.getItem("repertoireModelsFolded") === "1"; } catch { return false; } });
+  const fold = (f: boolean) => { setFolded(f); try { localStorage.setItem("repertoireModelsFolded", f ? "1" : "0"); } catch { /* not kept */ } };
+  /** Moved one place within this list — to its neighbour's place: the
+   *  chapters and the model games are numbered together. */
+  const moveBy = (id: number, delta: number) => {
+    const i = book.chapters.findIndex((c) => c.id === id);
+    const to = book.chapters[i + delta];
+    if (i >= 0 && to) onChapter(id, { ord: to.ord });
+  };
   const [renaming, setRenaming] = useState<number | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   // Deleting the chapters selected: asked in the selection's bar.
@@ -821,6 +882,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
   // Read again when the book's chapters change (an edit, a merge, a move).
   const chaptersKey = book.chapters.map((c) => `${c.id}:${c.updated_at}`).join(",");
   useEffect(() => {
+    if (models) return;
     let gone = false;
     setGamesNote(null);
     void (async () => {
@@ -888,9 +950,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
         if (!chapter || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
         // Not also a step along the board's lines.
         e.preventDefault(); e.stopPropagation();
-        const i = book.chapters.findIndex((c) => c.id === chapter.id);
-        const delta = e.key === "ArrowUp" ? -1 : 1;
-        if (i + delta >= 0 && i + delta < book.chapters.length) onChapter(chapter.id, { ord: chapter.ord + delta });
+        moveBy(chapter.id, e.key === "ArrowUp" ? -1 : 1);
         return;
       }
       if ((e.key === "ArrowUp" || e.key === "ArrowDown") && arrowsHere() && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
@@ -908,7 +968,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
       }
       if (e.key === "Escape" && several) { setConfirmDeleteMany(false); setPicked(current != null ? [current] : []); return; }
       if (e.key !== "F2" || !f2Here()) return;
-      if (several) { e.preventDefault(); setRenamingAll(multi); return; }
+      if (several && arrowsHere()) { e.preventDefault(); setRenamingAll(multi); return; }
       if (!chapter) return;
       e.preventDefault();
       setRenaming(chapter.id);
@@ -922,10 +982,18 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
     <div className="flex flex-col">
       {/* The book's row — its name, the ⋯, and Merge / Cancel or Done in
           those modes — stays at the top while the chapters scroll under it. */}
-      <div className="sticky top-0 z-10 bg-surface-container-low">
+      <div className={models ? "mt-2 border-t border-outline/40" : "sticky top-0 z-10 bg-surface-container-low"}>
       <div className="px-3 pt-2 pb-1 flex items-center gap-2">
-        <ColorDot color={book.color} />
-        <span className="flex-1 min-w-0 truncate text-title-sm text-on-surface" title={book.name}>{book.name}</span>
+        {models ? (
+          <button onClick={() => fold(!folded)} className="flex-1 min-w-0 flex items-center gap-1.5 text-left text-label-md text-on-surface-variant uppercase tracking-wider"
+            title={folded ? "Show the model games" : "Fold the model games away"} aria-expanded={!folded}>
+            <span className="text-[10px] w-3">{folded ? "▸" : "▾"}</span>
+            Model games ({book.chapters.length})
+          </button>
+        ) : (<>
+          <ColorDot color={book.color} />
+          <span className="flex-1 min-w-0 truncate text-title-sm text-on-surface" title={book.name}>{book.name}</span>
+        </>)}
         {arranging ? (
           <button onClick={() => setArranging(false)} className={tonal}>Done</button>
         ) : selecting ? (
@@ -936,19 +1004,29 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
             </button>
           </>
         ) : (
-          <Menu title={chapter ? `Add chapters; the chapter on the board — ${chapter.name}` : "Add chapters, rearrange them; choose one for the rest"} entries={[
-            { label: "New empty chapter", onClick: () => onAddEmpty(`Chapter ${book.chapters.length + 1}`), disabled: busy },
-            { label: "Paste PGN…", onClick: () => setPasting(true), disabled: busy },
-            { label: "Import PGN files…", onClick: () => fileRef.current?.click(), disabled: busy },
-            { label: "Rename chapter… (F2)", separated: true, onClick: () => chapter && setRenaming(chapter.id), disabled: none },
-            { label: "Export chapter PGN…", onClick: () => chapter && void exportPgn(chapterPgnPath(chapter.id), `${book.name}-${chapter.name}`).then(setNote), disabled: none },
+          <Menu title={models
+            ? (chapter ? `Model games; the one on the board — ${chapter.name}` : "Model games: rearrange them; choose one for the rest")
+            : (chapter ? `Add chapters; the chapter on the board — ${chapter.name}` : "Add chapters, rearrange them; choose one for the rest")} entries={[
+            ...(models ? [] : [
+              { label: "New empty chapter", onClick: () => onAddEmpty(`Chapter ${book.chapters.length + 1}`), disabled: busy },
+              { label: "Paste PGN…", onClick: () => setPasting("chapters"), disabled: busy },
+              { label: "Import PGN files…", onClick: () => pickFilesAs(false), disabled: busy },
+            ]),
+            { label: "Paste model games…", onClick: () => setPasting("models"), disabled: busy, separated: !models },
+            { label: "Import model games…", onClick: () => pickFilesAs(true), disabled: busy },
+            { label: `Rename ${one}… (F2)`, separated: true, onClick: () => chapter && setRenaming(chapter.id), disabled: none },
+            { label: `Export ${models ? "model game" : "chapter"} PGN…`, onClick: () => chapter && void exportPgn(chapterPgnPath(chapter.id), `${book.name}-${chapter.name}`).then(setNote), disabled: none },
             several
-              ? { label: `Delete ${multi.length} chapters…`, onClick: () => setConfirmDeleteMany(true), disabled: busy }
-              : { label: "Delete chapter…", onClick: () => setConfirmDelete(true), disabled: none },
+              ? { label: `Delete ${multi.length} ${many}…`, onClick: () => setConfirmDeleteMany(true), disabled: busy }
+              : { label: `Delete ${one}…`, onClick: () => setConfirmDelete(true), disabled: none },
             several
-              ? { label: `Rename ${multi.length} chapters… (F2)`, onClick: () => { setRenamingAll(multi); setRenaming(null); }, disabled: busy, separated: true }
-              : { label: "Rename chapters…", onClick: () => { setRenamingAll(book.chapters.map((c) => c.id)); setRenaming(null); }, disabled: busy || book.chapters.length === 0, separated: true },
-            { label: "Rearrange chapters (M)", onClick: () => { setArranging(true); setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
+              ? { label: models ? `Make ${multi.length} chapters` : `Make ${multi.length} model games`, onClick: () => { onConvert(multi); setPicked([]); }, disabled: busy }
+              : { label: models ? "Make it a chapter" : "Make it a model game", onClick: () => chapter && onConvert([chapter.id]), disabled: none },
+            several
+              ? { label: `Rename ${multi.length} ${many}… (F2)`, onClick: () => { setRenamingAll(multi); setRenaming(null); }, disabled: busy, separated: true }
+              : { label: `Rename ${many}…`, onClick: () => { setRenamingAll(book.chapters.map((c) => c.id)); setRenaming(null); }, disabled: busy || book.chapters.length === 0, separated: true },
+            { label: `Rearrange ${many} (M)`, onClick: () => { setArranging(true); setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
+            ...(models ? [] : [
             several
               ? { label: `Merge ${multi.length} chapters…`, onClick: () => { onMerge(multi); setPicked([]); setRenaming(null); }, disabled: busy }
               : { label: "Merge chapters…", onClick: () => { setSelecting(current != null && chapter ? [current] : []); anchor.current = chapter ? current : null; setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
@@ -958,6 +1036,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
               onClick: () => chapter && setFens({ ids: [chapter.id], what: `“${chapter.name}”` }) },
             { label: "Remove FENs in all chapters…", disabled: busy || book.chapters.length === 0,
               onClick: () => setFens({ ids: book.chapters.map((c) => c.id), what: "the book's chapters" }) },
+            ]),
           ]} />
         )}
       </div>
@@ -968,7 +1047,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
           {confirmDeleteMany ? (
             <>
               <button onClick={() => { setConfirmDeleteMany(false); onDeleteChapters(multi); setPicked([]); }} disabled={busy}
-                className="h-7 px-2 rounded-full text-label-md text-error hover:bg-error/8">Delete {multi.length} chapters</button>
+                className="h-7 px-2 rounded-full text-label-md text-error hover:bg-error/8">Delete {multi.length} {many}</button>
               <button onClick={() => setConfirmDeleteMany(false)} className={plain}>Cancel</button>
             </>
           ) : (
@@ -976,7 +1055,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
               <span className="flex-1 min-w-0 truncate text-label-sm text-on-surface-variant" title="Shift-click: a range · Ctrl-click: one more or less · Esc: none">
                 {multi.length} selected
               </span>
-              <button onClick={() => { onMerge(multi); setPicked([]); setRenaming(null); }} disabled={busy} className={tonal}>Merge…</button>
+              {!models && <button onClick={() => { onMerge(multi); setPicked([]); setRenaming(null); }} disabled={busy} className={tonal}>Merge…</button>}
               <button onClick={() => { setRenamingAll(multi); setRenaming(null); }} disabled={busy} className={plain} title="F2">Rename…</button>
               <button onClick={() => setConfirmDeleteMany(true)} disabled={busy} className={plain}>Delete…</button>
               <button onClick={() => setPicked(current != null ? [current] : [])} className={plain} title="Select none (Esc)" aria-label="Select none">×</button>
@@ -997,10 +1076,14 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
       {pasting && (
         <div className="px-3 pb-2 flex flex-col gap-1.5">
           <textarea autoFocus value={pasted} onChange={(e) => setPasted(e.target.value)} rows={6} placeholder={"[Event \"Najdorf: 6.Bg5\"]\n\n1. e4 c5 2. Nf3 d6 ..."} className="w-full font-mono text-body-sm p-2 rounded-sm bg-surface-container border border-outline/40 text-on-surface" />
-          <span className="text-label-sm text-on-surface-variant">Several games become several chapters, named from their headers.</span>
+          <span className="text-label-sm text-on-surface-variant">{pasting === "models"
+            ? "Each game becomes a model game of the book, with its headers, comments and result."
+            : "Several games become several chapters, named from their headers."}</span>
           <div className="flex items-center gap-1 justify-end">
             <button onClick={() => { setPasting(false); setPasted(""); }} className={plain}>Cancel</button>
-            <button onClick={() => { onImport([{ pgn: pasted }]); setPasted(""); setPasting(false); }} disabled={busy || !pasted.trim()} className={tonal}>Add as chapters</button>
+            <button onClick={() => { (pasting === "models" ? onImportModels : onImport)([{ pgn: pasted }]); setPasted(""); setPasting(false); }} disabled={busy || !pasted.trim()} className={tonal}>
+              {pasting === "models" ? "Add as model games" : "Add as chapters"}
+            </button>
           </div>
         </div>
       )}
@@ -1016,7 +1099,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
       {/* One's own games in the book and each chapter (the line counts are
           in the chapters' tooltips, and the Lines tab): the columns' names,
           then the whole book's row. */}
-      {!arranging && !selecting && games && (
+      {!models && !arranging && !selecting && games && (
         <div className="px-3 flex items-center gap-1.5 text-label-sm text-on-surface-variant whitespace-nowrap">
           <span className="flex-1" />
           <span className="flex items-center gap-1 shrink-0" title={gamesScope ?? undefined}>
@@ -1027,10 +1110,10 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
           <span className="shrink-0 w-2" />
         </div>
       )}
-      {!arranging && !selecting && (
+      {!models && !arranging && !selecting && (
         <BookGamesSummary games={games} note={gamesNote} picked={bookPicked} onPick={() => onPickBook(true)} />
       )}
-      {arranging && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Drag a chapter to its place, or move it with ▲ ▼ — or ↑ ↓ for the one on the board; Enter when done.</div>}
+      {arranging && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Drag a{models ? " model game" : " chapter"} to its place, or move it with ▲ ▼ — or ↑ ↓ for the one on the board; Enter when done.</div>}
       {selecting && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Tick the chapters to merge — Shift-click ticks all from the one clicked last. The topmost keeps its name, place and main line; the others' lines and comments go into it, and they are deleted.</div>}
       {confirmDelete && chapter && (
         <div className="px-3 pb-1 flex items-center gap-1 flex-wrap">
@@ -1038,8 +1121,8 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
           <button onClick={() => setConfirmDelete(false)} className={plain}>Cancel</button>
         </div>
       )}
-      {!book.active && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">The book is off: these chapters are out of the repertoire whatever their switches say.</div>}
-      <div className={`flex flex-col py-1 ${book.active ? "" : "opacity-70"}`}>
+      {!models && !book.active && <div className="px-3 pb-1 text-label-sm text-on-surface-variant">The book is off: these chapters are out of the repertoire whatever their switches say.</div>}
+      {!(models && folded) && <div className={`flex flex-col py-1 ${book.active || models ? "" : "opacity-70"}`}>
         {book.chapters.map((c, i) => (
           <ChapterRow key={c.id} chapter={c} busy={busy} current={c.id === current && !bookPicked}
             renaming={renaming === c.id} arranging={arranging} first={i === 0} last={i === book.chapters.length - 1}
@@ -1062,7 +1145,8 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
             picked={several && multi.includes(c.id)}
             onActive={(active) => onChapter(c.id, { active })}
             onRename={(n) => { setRenaming(null); if (n && n !== c.name) onChapter(c.id, { name: n }); }}
-            onMove={(delta) => onChapter(c.id, { ord: c.ord + delta })}
+            onMove={(delta) => moveBy(c.id, delta)}
+            onResult={(result) => onChapter(c.id, { result })}
             drag={{
               // Not from ▲ ▼; no text selected while dragging.
               onMouseDown: (e) => {
@@ -1074,7 +1158,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
             }} />
         ))}
         {book.chapters.length === 0 && <div className="px-3 py-1 text-label-sm text-on-surface-variant">No chapters yet — the ⋯ above adds one: empty, pasted PGN, or PGN files.</div>}
-      </div>
+      </div>}
 
     </div>
   );
@@ -1185,7 +1269,7 @@ function ScoreCell({ s }: { s: Score }) {
   return <span className={`w-10 text-right text-label-sm tabular-nums shrink-0 ${tone}`}>{scorePct(s)}</span>;
 }
 
-function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, last, dropTarget, dragging = false, selected, onSelect, mine, picked = false, onPick, onActive, onRename, onMove, drag }: {
+function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, last, dropTarget, dragging = false, selected, onSelect, mine, picked = false, onPick, onActive, onRename, onMove, onResult, drag }: {
   chapter: ChapterSummary; busy: boolean; current: boolean; renaming: boolean; arranging: boolean;
   first: boolean; last: boolean;
   /** Rearranging: the dragged chapter goes in above or below this one. */
@@ -1197,6 +1281,8 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
   onPick: (e: React.MouseEvent) => void; onActive: (a: boolean) => void; onRename: (n: string) => void; onMove: (delta: -1 | 1) => void;
   /** One of several chapters selected (for Merge, Rename). */
   picked?: boolean;
+  /** A model game's result, set. */
+  onResult: (r: GameResult) => void;
   drag: Pick<React.HTMLAttributes<HTMLDivElement>, "onMouseDown" | "onMouseEnter">;
 }) {
   const [name, setName] = useState(c.name);
@@ -1212,7 +1298,7 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
       onClick={selected !== undefined ? (e) => { if ((e.target as HTMLElement).tagName !== "INPUT") onSelect(!selected, e.shiftKey); } : undefined}
       onMouseDown={selected !== undefined ? (e) => { if (e.shiftKey) e.preventDefault(); } : undefined}
       {...(arranging ? drag : {})}
-      className={`flex items-center gap-1.5 px-3 py-1 ${current ? "bg-primary-container/40" : picked ? "bg-primary-container/20" : ""} ${c.active ? "" : "opacity-70"} ${arranging ? (dragging ? "cursor-grabbing opacity-50" : "cursor-grab") : ""} ${selected !== undefined ? "cursor-pointer select-none hover:bg-on-surface/4" : ""} border-y-2 ${dropTarget === "above" ? "border-t-primary border-b-transparent" : dropTarget === "below" ? "border-b-primary border-t-transparent" : "border-transparent"}`}
+      className={`flex items-center gap-1.5 px-3 py-1 ${current ? "bg-primary-container/40" : picked ? "bg-primary-container/20" : ""} ${c.active || c.model ? "" : "opacity-70"} ${arranging ? (dragging ? "cursor-grabbing opacity-50" : "cursor-grab") : ""} ${selected !== undefined ? "cursor-pointer select-none hover:bg-on-surface/4" : ""} border-y-2 ${dropTarget === "above" ? "border-t-primary border-b-transparent" : dropTarget === "below" ? "border-b-primary border-t-transparent" : "border-transparent"}`}
     >
       {arranging
         ? <span className="shrink-0 text-on-surface-variant text-body-sm select-none" aria-hidden>⠿</span>
@@ -1220,6 +1306,9 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
         ? <input type="checkbox" checked={selected} disabled={busy} readOnly
             onClick={(e) => onSelect(!selected, e.shiftKey)}
             className="accent-tertiary shrink-0" title="Merge this chapter — Shift-click: all from the one clicked last" />
+        : c.model
+        // A model game is not part of the repertoire: no switch.
+        ? null
         : <input type="checkbox" checked={c.active} disabled={busy} onChange={(e) => onActive(e.target.checked)} className="accent-primary shrink-0" title="Active: part of the repertoire you are playing now" />}
       {renaming ? (
         <input autoFocus value={name} onChange={(e) => setName(e.target.value)}
@@ -1229,7 +1318,7 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
       ) : (
         <button onClick={selected !== undefined ? undefined : onPick}
           onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
-          className={`flex-1 min-w-0 text-left text-body-sm truncate ${current ? "text-on-surface font-medium" : "text-on-surface hover:text-primary"}`} title={`${c.name} — ${counts}`}>
+          className={`flex-1 min-w-0 text-left text-body-sm truncate ${current ? "text-on-surface font-medium" : "text-on-surface hover:text-primary"}`} title={c.model ? c.name : `${c.name} — ${counts}`}>
           {c.name}
         </button>
       )}
@@ -1240,7 +1329,15 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
         </>
       ) : (
         <>
-          {mine ? (
+          {c.model ? (
+            // The game's result, set here: Chessable's exports leave it out.
+            <select data-nodrag value={c.result} disabled={busy} onChange={(e) => onResult(e.target.value as GameResult)}
+              onClick={(e) => e.stopPropagation()}
+              className="shrink-0 h-6 w-10 px-1 appearance-none text-right rounded-sm bg-transparent text-label-sm text-on-surface-variant tabular-nums hover:bg-on-surface/8 cursor-pointer"
+              title="The game's result">
+              {GAME_RESULTS.map((r) => <option key={r} value={r}>{r === "1/2-1/2" ? "½–½" : r}</option>)}
+            </select>
+          ) : mine ? (
             <span className="flex items-center gap-1 shrink-0"
               title={mine.games ? `Your games in this chapter: ${mine.games} · +${mine.w} =${mine.d} −${mine.l}${mine.perf ? ` · performance ${mine.perf}` : ""}` : "None of your games went into this chapter"}>
               <span className="w-9 text-right text-label-sm text-on-surface-variant tabular-nums">{mine.games || "–"}</span>
@@ -1252,13 +1349,13 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
           )}
           {/* Analysed for practice: a dot in a column of its own at the end,
               an empty slot when not, so neither the counts nor the dots move. */}
-          <span className="shrink-0 w-2 flex justify-center"
+          {!c.model && <span className="shrink-0 w-2 flex justify-center"
             title={analysedOn ? (stale ? `Changed since the analysis of ${analysedOn} — analyse again for the new moves` : `Analysed ${analysedOn}`) : "Not analysed"}>
             {analysedOn && (
               <span aria-label={stale ? "changed since analysed" : "analysed"}
                 className={`w-1.5 h-1.5 rounded-full ${stale ? "bg-tertiary" : "bg-primary"}`} />
             )}
-          </span>
+          </span>}
         </>
       )}
     </div>

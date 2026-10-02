@@ -1310,11 +1310,13 @@ struct ChaptersAddBody {
     /// The file the PGN came from (its name without the extension): names
     /// the chapters its headers do not.
     file: Option<String>,
+    /// Model games rather than chapters: one per game, its headers kept.
+    model: Option<bool>,
 }
 
 async fn repertoire_chapters_add_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Json(b): Json<ChaptersAddBody>) -> ApiResult<Vec<crate::repertoire::ChapterSummary>> {
     state.writer.run(move |conn| {
-        crate::repertoire::add_chapters(conn, id, b.name.as_deref(), b.pgn.as_deref(), b.file.as_deref())
+        crate::repertoire::add_chapters_as(conn, id, b.name.as_deref(), b.pgn.as_deref(), b.file.as_deref(), b.model.unwrap_or(false))
             .map(Json).map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))
     }).await
 }
@@ -1329,11 +1331,13 @@ struct ChapterBody {
     ord: Option<i64>,
     active: Option<bool>,
     book_id: Option<i64>,
+    model: Option<bool>,
+    result: Option<String>,
 }
 
 async fn repertoire_chapter_update_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Json(b): Json<ChapterBody>) -> ApiResult<crate::repertoire::ChapterSummary> {
     state.writer.run(move |conn| {
-        let patch = crate::repertoire::ChapterPatch { name: b.name, ord: b.ord, active: b.active, book_id: b.book_id };
+        let patch = crate::repertoire::ChapterPatch { name: b.name, ord: b.ord, active: b.active, book_id: b.book_id, model: b.model, result: b.result };
         crate::repertoire::update_chapter(conn, id, patch).map(Json).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
     }).await
 }

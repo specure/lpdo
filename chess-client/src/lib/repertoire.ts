@@ -33,7 +33,15 @@ export interface ChapterSummary {
    *  positions changed since (moves added or removed — not a comment). */
   analysed_at: string | null;
   analysis_stale: boolean | null;
+  /** A model game: a complete annotated game kept with the book to show its
+   *  ideas — not part of the repertoire; its own headers kept. */
+  model: boolean;
+  /** The game's result ("*" for a chapter). */
+  result: GameResult;
 }
+
+export type GameResult = "*" | "1-0" | "0-1" | "1/2-1/2";
+export const GAME_RESULTS: GameResult[] = ["*", "1-0", "0-1", "1/2-1/2"];
 
 export interface BookWithChapters extends Book {
   chapters: ChapterSummary[];
@@ -64,10 +72,11 @@ export const updateBook = (id: number, patch: { name?: string; color?: BookColor
 export const deleteBook = (id: number) => apiDelete(`/repertoire/books/${id}`);
 /** `file`: the PGN's file name, without the extension — names the chapters
  *  its headers do not. */
-export const addChapters = (bookId: number, body: { name?: string; pgn?: string; file?: string }) =>
+/** `model`: model games, one per game of the PGN. */
+export const addChapters = (bookId: number, body: { name?: string; pgn?: string; file?: string; model?: boolean }) =>
   postJson<ChapterSummary[]>(`/repertoire/books/${bookId}/chapters`, body);
 export const getChapter = (id: number) => apiGet<ChapterDetail>(`/repertoire/chapters/${id}`);
-export const updateChapter = (id: number, patch: { name?: string; ord?: number; active?: boolean; book_id?: number }) =>
+export const updateChapter = (id: number, patch: { name?: string; ord?: number; active?: boolean; book_id?: number; model?: boolean; result?: GameResult }) =>
   putJson<ChapterSummary>(`/repertoire/chapters/${id}`, patch);
 export const saveChapterMoves = (id: number, moves: string) =>
   putJson<ChapterSummary>(`/repertoire/chapters/${id}/moves`, { moves });

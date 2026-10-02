@@ -560,6 +560,11 @@ fn init_repertoire(conn: &Connection) -> Result<()> {
         ALTER TABLE repertoire_analysis ADD COLUMN IF NOT EXISTS positions_hash BIGINT;
         ALTER TABLE repertoire_books ADD COLUMN IF NOT EXISTS author VARCHAR;
         ALTER TABLE repertoire_books ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE;
+        -- Model games: complete annotated games kept with a book to show its
+        -- ideas — not part of the repertoire (never indexed), their own
+        -- headers kept; and a game's result (`*` for a chapter).
+        ALTER TABLE repertoire_chapters ADD COLUMN IF NOT EXISTS model BOOLEAN DEFAULT FALSE;
+        ALTER TABLE repertoire_chapters ADD COLUMN IF NOT EXISTS result VARCHAR DEFAULT '*';
         ",
     )?;
     Ok(())
