@@ -6,7 +6,7 @@ import BoardErrorBoundary from "./BoardErrorBoundary";
 import { Chess } from "chess.js";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
-import { GameSummary, PlayerInfo } from "../types";
+import { GameDetail, GameSummary, PlayerInfo } from "../types";
 import { createPortal } from "react-dom";
 import { parsePgnTree, AnnotatedGame, MoveNode } from "../lib/parsePgnTree";
 import { ensureMoveNumbers, parseBlockTags } from "../lib/pgnEditor";
@@ -79,28 +79,6 @@ const IconFlip = () => (
   </svg>
 );
 
-interface GameDetail {
-  id: number;
-  white: string;
-  black: string;
-  /** The players' ids — absent from an older server, and for a game not
-   *  from the DB. */
-  white_id?: number;
-  black_id?: number;
-  white_fide_id: number | null;
-  black_fide_id: number | null;
-  white_elo: number | null;
-  black_elo: number | null;
-  event: string | null;
-  date: string | null;
-  result: string | null;
-  eco: string | null;
-  move_count: number | null;
-  pgn: string | null;
-  visibility: string | null;
-  collections: string[];
-  deleted_at: string | null;
-}
 
 // Legacy flat format for non-annotated games
 interface MoveEntry {
@@ -491,7 +469,7 @@ function ProfileButton({ id, name, fideId, onOpen }: {
   );
 }
 
-function DetailsToggleButton({ detail, open, onToggle }: {
+export function DetailsToggleButton({ detail, open, onToggle }: {
   detail: GameDetail;
   open: boolean;
   onToggle: () => void;
@@ -778,13 +756,16 @@ function GameActionsBar({
 // chips here are interactive (click visibility to flip; × to remove a
 // collection; "+ Add to collection" opens a picker). Each mutation is a
 // daemon job/mutation; the parent refetches on completion.
-function DetailsPanel({
-  detail, onClose, onDetailChanged,
+export function DetailsPanel({
+  detail, onClose, onDetailChanged, maxHeight = "max-h-[40vh]",
 }: {
   detail: GameDetail;
   onClose: () => void;
   /** Refetch the GameDetail after a successful membership mutation. */
   onDetailChanged: () => void;
+  /** How tall it may grow before it scrolls — a smaller board's preview
+   *  keeps room for the board. */
+  maxHeight?: string;
 }) {
   const isDeleted = detail.deleted_at != null;
   const progress = useJobProgress();
@@ -827,7 +808,7 @@ function DetailsPanel({
   const busy = progress.running;
 
   return (
-    <div className="bg-surface-container-high rounded-lg max-h-[40vh] overflow-y-auto p-4 space-y-3 shrink-0">
+    <div className={`bg-surface-container-high rounded-lg ${maxHeight} overflow-y-auto p-4 space-y-3 shrink-0`}>
       {isDeleted && (
         <div className="bg-error-container text-on-error-container text-label-md px-3 py-2 rounded-md flex items-center justify-between gap-3">
           <span>● Soft-deleted on {detail.deleted_at?.slice(0, 19).replace("T", " ")}</span>

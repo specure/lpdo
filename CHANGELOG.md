@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Player profiles from a game** — on the Analysis board, both players'
   names carry a **Profile** button, opening the same profile as on the
   Players page.
+- **Keyboard in the game list** (Players and Games) — ↑ ↓ preview the
+  previous and next game, ← → step through its moves from the list itself,
+  without clicking the move list first.
+- **Details in the game preview** — the preview's header has the Analysis
+  board's **Details**: the game's full headers, its visibility and
+  collections, changeable there.
+
+### Fixed
+- Scrolling the game list fast could load the same page twice and list its
+  games twice.
 
 ## [0.22.1] - 2026-10-02
 
