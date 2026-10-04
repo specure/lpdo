@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
-import { GameSummary, MoveStats } from "../types";
+import { GameSummary, MoveStats, PlayerInfo } from "../types";
 import { LoadedGame } from "../lib/useGamePgn";
 import { CursorPath } from "../lib/moveTreeNav";
 import MiniBoard from "./games/MiniBoard";
@@ -80,6 +80,8 @@ interface Props {
   /** Persist per-tab view state (position, cursor, orientation) in the owning store. */
   onTabState: (key: string, patch: { fen?: string; cursor?: CursorPath; flipped?: boolean }) => void;
   onGameMutated?: () => void;
+  /** Open a player's profile from the game's header. */
+  onOpenProfile?: (player: PlayerInfo) => void;
 }
 
 const panel = "bg-surface-container-low border border-outline/40 rounded-md overflow-hidden flex flex-col min-h-0 min-w-0 h-full w-full";
@@ -103,7 +105,7 @@ export interface LeadingPanel {
 }
 
 export default function AnalysisPage({
-  tabs, activeKey, onActivate, onClose, onCloseMany, onMove, capacity, onOpenGame, onTabState, onGameMutated,
+  tabs, activeKey, onActivate, onClose, onCloseMany, onMove, capacity, onOpenGame, onTabState, onGameMutated, onOpenProfile,
   leadingPanels, layoutId = "analysis-main", emptyState, myGamesBook, onPickChapter, documentReload = 0,
 }: Props) {
   const lead = leadingPanels && leadingPanels.length > 0 ? leadingPanels : null;
@@ -509,6 +511,7 @@ export default function AnalysisPage({
                 flipped={active.flipped}
                 onFlippedChange={handleFlippedChange}
                 onGameMutated={active.document ? onChapterMutated : onGameMutated}
+                onOpenProfile={onOpenProfile}
                 moveListHost={moveHost}
                 playRequest={playRequest}
                 menuExtras={railExtras}

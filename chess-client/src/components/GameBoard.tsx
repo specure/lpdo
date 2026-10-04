@@ -6,7 +6,7 @@ import BoardErrorBoundary from "./BoardErrorBoundary";
 import { Chess } from "chess.js";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
-import { GameSummary } from "../types";
+import { GameSummary, PlayerInfo } from "../types";
 import { createPortal } from "react-dom";
 import { parsePgnTree, AnnotatedGame, MoveNode } from "../lib/parsePgnTree";
 import { ensureMoveNumbers, parseBlockTags } from "../lib/pgnEditor";
@@ -83,6 +83,10 @@ interface GameDetail {
   id: number;
   white: string;
   black: string;
+  /** The players' ids — absent from an older server, and for a game not
+   *  from the DB. */
+  white_id?: number;
+  black_id?: number;
   white_fide_id: number | null;
   black_fide_id: number | null;
   white_elo: number | null;
@@ -356,6 +360,9 @@ interface Props {
   /** Fires when the user mutates the game from the DetailsPanel (soft-delete,
    * restore, future edits) so parents can re-fetch lists, counts, etc. */
   onGameMutated?: () => void;
+  /** Open a player's profile (as on the Players page) from the names above
+   *  the board. Without it the names carry no Profile button. */
+  onOpenProfile?: (player: PlayerInfo) => void;
   /** Reports when the moves editor enters/leaves edit mode, so the host can
    * suspend list-level arrow-key navigation while editing. */
   onEditingChange?: (editing: boolean) => void;
@@ -460,6 +467,27 @@ function CollectionChip({ name, disabled, onRemove }: {
         </svg>
       </button>
     </span>
+  );
+}
+
+// A player's Profile button beside their name, as on the Players page. A
+// player the server didn't name by id (an older server) still has a FIDE
+// profile, opened without the games-in-DB part.
+function ProfileButton({ id, name, fideId, onOpen }: {
+  id: number | undefined;
+  name: string;
+  fideId: number | null;
+  onOpen?: (player: PlayerInfo) => void;
+}) {
+  if (!onOpen || (id == null && fideId == null)) return null;
+  return (
+    <button
+      onClick={() => onOpen({ id: id ?? 0, name, fide_id: fideId, game_count: 0 })}
+      className="shrink-0 inline-flex items-center h-7 px-3 rounded-full text-label-md border border-outline text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard"
+      title={`${name}: FIDE profile, rating history and activity`}
+    >
+      Profile
+    </button>
   );
 }
 
@@ -857,7 +885,7 @@ function DetailsPanel({
   );
 }
 
-export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange, menuExtras, hintArrows = [], arrowControls, chapter, cursorRequest, onLineStep, reloadKey }: Props) {
+export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange, menuExtras, hintArrows = [], arrowControls, chapter, cursorRequest, onLineStep, reloadKey, onOpenProfile }: Props) {
   // Where the moves go: the chapter's route, or the game's.
   const saveMoves = useCallback(
     (id: number, movetext: string) => (chapter ? chapter.save(movetext) : saveMovetextViaServer(id, movetext)),
@@ -1894,10 +1922,12 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
           )}
           {chapter ? null /* in the banner below */ : (
             <>
-              <div className="text-title-md text-on-surface">
-                {detail.white}{detail.white_elo ? ` (${detail.white_elo})` : ""}{" "}
-                <span className="text-on-surface-variant">vs</span>{" "}
-                {detail.black}{detail.black_elo ? ` (${detail.black_elo})` : ""}
+              <div className="text-title-md text-on-surface flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span>{detail.white}{detail.white_elo ? ` (${detail.white_elo})` : ""}</span>
+                <ProfileButton id={detail.white_id} name={detail.white} fideId={detail.white_fide_id} onOpen={onOpenProfile} />
+                <span className="text-on-surface-variant">vs</span>
+                <span>{detail.black}{detail.black_elo ? ` (${detail.black_elo})` : ""}</span>
+                <ProfileButton id={detail.black_id} name={detail.black} fideId={detail.black_fide_id} onOpen={onOpenProfile} />
               </div>
               <div className="text-body-sm text-on-surface-variant mt-0.5 flex gap-2 items-center">
                 {detail.event && <span>{detail.event}</span>}
