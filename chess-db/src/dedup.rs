@@ -61,12 +61,15 @@ pub const ANNOTATION_MACROS: &str = "\
     CREATE OR REPLACE TEMP MACRO movetext_of(p) AS ( \
         CASE WHEN strpos(p, chr(10) || chr(10)) > 0 THEN substr(p, strpos(p, chr(10) || chr(10))) ELSE p END \
     ); \
+    CREATE OR REPLACE TEMP MACRO has_notes(p) AS ( \
+        p IS NOT NULL AND regexp_matches(movetext_of(p), '[{($]') \
+    ); \
     CREATE OR REPLACE TEMP MACRO human_movetext(p) AS ( \
         regexp_replace(regexp_replace(movetext_of(p), \
             '\\[%(clk|emt|eval|tqu|evp|mdl)[^\\]]*\\]', '', 'g'), '\\{\\s*\\}', '', 'g') \
     ); \
     CREATE OR REPLACE TEMP MACRO annotation_len(p) AS ( \
-        CASE WHEN p IS NULL OR NOT regexp_matches(movetext_of(p), '[{($]') THEN 0 \
+        CASE WHEN NOT has_notes(p) THEN 0 \
              ELSE LENGTH(human_movetext(p)) \
                 - LENGTH(regexp_replace(human_movetext(p), '\\{[^}]*\\}|\\$[0-9]+|\\([^()]*\\)', '', 'g')) END \
     ); \
@@ -613,9 +616,14 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
     // (move_hash = move_hash_short, either way) move sequences. We carry each
     // game's annotation_rank — the survivor metric — but never the pgn itself,
     // so this stays a tiny id+rank result no matter how many duplicates there are.
-    let pairs: Vec<(u32, i64, u32, i64)> = {
+    // Each side's length and whether it has any comment, variation or NAG at
+    // all — a cheap test. The full annotation_rank, a few regex passes over the
+    // pgn, is only worth it where two copies of one game both carry notes (see
+    // rank_copies); a broadcast copy full of clock comments costs ~25 s per
+    // million to rank, a bare copy nothing.
+    let raw: Vec<PairRow> = {
         let mut stmt = conn.prepare(&format!(
-            "SELECT g1.id, annotation_rank(g1.pgn), g2.id, annotation_rank(g2.pgn)
+            "SELECT g1.id, LENGTH(g1.pgn), has_notes(g1.pgn), g2.id, LENGTH(g2.pgn), has_notes(g2.pgn)
              FROM games g1
              JOIN games g2
                ON g1.white_id = g2.white_id
@@ -629,10 +637,14 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
                    OR g1.move_hash_short = g2.move_hash)
               {incremental_filter}"
         ))?;
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        stmt.query_map([], |r| Ok((
+            r.get(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0), r.get::<_, Option<bool>>(2)?.unwrap_or(false),
+            r.get(3)?, r.get::<_, Option<i64>>(4)?.unwrap_or(0), r.get::<_, Option<bool>>(5)?.unwrap_or(false),
+        )))?
             .filter_map(|r| r.ok())
             .collect()
     };
+    let pairs = rank_copies(conn, &raw)?;
     spinner.finish_and_clear();
 
     // Resolve duplicate clusters and pick each survivor: the most annotated copy
@@ -697,6 +709,79 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
         if dry_run { "would be deleted" } else { "deleted" },
     ));
     Ok(())
+}
+
+/// A duplicate pair as found: each side's id, pgn length and whether it has
+/// notes (any comment, variation or NAG).
+type PairRow = (u32, i64, bool, u32, i64, bool);
+
+/// Rank every game of the found pairs for `resolve_survivors`, as
+/// `annotation_rank` ranks them — paying for the full rank only where it can
+/// change the outcome. A game without notes ranks by its length, exactly. In a
+/// group of copies where just one has notes, that one wins — it is the
+/// annotated or the broadcast copy (whose clocks make it the longer anyway) —
+/// so it ranks above any length without being measured. Only groups with two
+/// or more noted copies (a broadcast and an annotated export of one game, say)
+/// are ranked in full, in one query over just those games.
+fn rank_copies(conn: &Connection, raw: &[PairRow]) -> Result<Vec<(u32, i64, u32, i64)>> {
+    use std::collections::HashMap;
+    let mut info: HashMap<u32, (i64, bool)> = HashMap::new();
+    let mut parent: HashMap<u32, u32> = HashMap::new();
+    for &(a, la, na, b, lb, nb) in raw {
+        info.insert(a, (la, na));
+        info.insert(b, (lb, nb));
+        parent.entry(a).or_insert(a);
+        parent.entry(b).or_insert(b);
+        let ra = uf_find(&mut parent, a);
+        let rb = uf_find(&mut parent, b);
+        if ra != rb {
+            parent.insert(ra, rb);
+        }
+    }
+    let ids: Vec<u32> = info.keys().copied().collect();
+    let mut noted_per_group: HashMap<u32, usize> = HashMap::new();
+    for &id in &ids {
+        if info[&id].1 {
+            *noted_per_group.entry(uf_find(&mut parent, id)).or_default() += 1;
+        }
+    }
+    let mut rank: HashMap<u32, i64> = HashMap::new();
+    let mut measure: Vec<u32> = Vec::new();
+    for &id in &ids {
+        let (len, noted) = info[&id];
+        if !noted {
+            rank.insert(id, len);
+        } else if noted_per_group[&uf_find(&mut parent, id)] == 1 {
+            // Above every plain length, as an annotation of one character would be.
+            rank.insert(id, (1i64 << 32) + len);
+        } else {
+            measure.push(id);
+        }
+    }
+    if !measure.is_empty() {
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS rank_ids;
+             CREATE TEMP TABLE rank_ids (id UINTEGER);",
+        )?;
+        {
+            let mut app = conn.appender("rank_ids")?;
+            for id in &measure {
+                app.append_row(duckdb::params![id])?;
+            }
+            app.flush()?;
+        }
+        {
+            let mut stmt = conn.prepare(
+                "SELECT g.id, annotation_rank(g.pgn) FROM games g JOIN rank_ids r ON r.id = g.id",
+            )?;
+            for row in stmt.query_map([], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, i64>(1)?)))? {
+                let (id, r) = row?;
+                rank.insert(id, r);
+            }
+        }
+        conn.execute_batch("DROP TABLE IF EXISTS rank_ids;")?;
+    }
+    Ok(raw.iter().map(|&(a, _, _, b, _, _)| (a, rank[&a], b, rank[&b])).collect())
 }
 
 /// Given duplicate pairs `(id_a, rank_a, id_b, rank_b)`, group them into
