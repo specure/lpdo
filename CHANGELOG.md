@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   board's **Details**: the game's full headers, its visibility and
   collections, changeable there.
 
+### Changed
+- **Open in Analysis** moved into the game preview's **More** menu, which
+  now sits at the far right, after **Details**.
+
 ### Fixed
 - Scrolling the game list fast could load the same page twice and list its
   games twice.

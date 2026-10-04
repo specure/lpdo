@@ -37,6 +37,8 @@ interface Props {
   /** Entries the host adds below the game's own — the Analysis board puts
    *  its whole-rail commands here, where print and export are looked for. */
   extras?: MenuEntry[];
+  /** Entries above all the others — the game preview's "Open in Analysis". */
+  leading?: MenuEntry[];
 }
 
 export interface MenuEntry {
@@ -45,6 +47,8 @@ export interface MenuEntry {
   disabled?: boolean;
   /** Draw a divider above this entry. */
   separated?: boolean;
+  /** Tooltip. */
+  title?: string;
 }
 
 /** The site an address belongs to, for naming the link — "lichess.org" for
@@ -67,7 +71,7 @@ export function lichessGameUrl(startFen: string, sans: string[], ply = 0): strin
   return `https://lichess.org/analysis/pgn/${encodeURIComponent(pvString(startFen, sans))}#${at}`;
 }
 
-export default function GameMoreMenu({ pgn, fen, lineSans, ply, startFen, gameUrl, onExportPgn, onExportPdf, onPrint, extras }: Props) {
+export default function GameMoreMenu({ pgn, fen, lineSans, ply, startFen, gameUrl, onExportPgn, onExportPdf, onPrint, extras, leading }: Props) {
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -129,6 +133,16 @@ export default function GameMoreMenu({ pgn, fen, lineSans, ply, startFen, gameUr
           ref={menuRef}
           className={`absolute top-8 z-30 py-1 rounded-md bg-surface-container-high shadow-xl min-w-56 ${alignRight ? "right-0" : "left-0"}`}
         >
+          {leading && leading.length > 0 && (
+            <>
+              {leading.map((x) => (
+                <button key={x.label} className={item} disabled={x.disabled} title={x.title} onClick={() => { setOpen(false); x.onClick(); }}>
+                  {x.label}
+                </button>
+              ))}
+              <div className="my-1 h-px bg-outline-variant" />
+            </>
+          )}
           {gameUrl && (
             <button className={item} onClick={() => go(gameUrl)} title={gameUrl}>
               {urlHost(gameUrl)

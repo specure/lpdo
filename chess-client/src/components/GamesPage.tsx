@@ -7,7 +7,7 @@ import PositionBoard from "./PositionBoard";
 import PositionMoves from "./PositionMoves";
 import MiniBoard from "./games/MiniBoard";
 import GamePreviewHeader from "./games/GamePreviewHeader";
-import GameMoreMenu from "./games/GameMoreMenu";
+import GameMoreMenu, { MenuEntry } from "./games/GameMoreMenu";
 import PrintDialog, { ExportableGame } from "./games/PrintDialog";
 import { fetchPgns, savePgnFile } from "../lib/exportPgn";
 import MoveList from "./games/MoveList";
@@ -229,6 +229,19 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     { label: `Print the ${n} selected…`, onClick: () => void printSelected("print") },
     { label: `Export the ${n} selected as PDF…`, onClick: () => void printSelected("save") },
     { label: `Export the ${n} selected as PGN…`, onClick: () => void exportSelectedPgn() },
+  ];
+  // Opening in Analysis heads the preview's More menu (Enter and a
+  // double-click in the list do it too).
+  const openEntries: MenuEntry[] = !selectedGame || !onOpenInAnalysis ? [] : [
+    extras.length
+      ? { label: `Open the ${extras.length + 1} selected in Analysis`, onClick: () => void openInAnalysis([selectedGame, ...extras]),
+          title: "Open the selected games on the editable Analysis board, this one first" }
+      : { label: "Open in Analysis", onClick: () => void openInAnalysis([selectedGame]),
+          title: "Open this game on the editable Analysis board (Enter). Ctrl-click other games in the list to open several at once." },
+    ...(onOpenManyInAnalysis && !extras.length && games.length > 1 && games.length <= (analysisCapacity ?? 0) && !loading
+      ? [{ label: `Open all ${games.length} in Analysis`, onClick: () => void openInAnalysis([selectedGame, ...games.filter((g) => g.id !== selectedGame.id)]),
+           title: "Open every game in the list on the Analysis board, this one first" }]
+      : []),
   ];
   async function openInAnalysis(list: GameSummary[]) {
     if (!onOpenManyInAnalysis) { if (list[0]) onOpenInAnalysis?.(list[0]); return; }
@@ -749,8 +762,8 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                         ))}
                         <div className="px-3 py-1 truncate">Event</div>
                       </div>
-                      {/* Enter opens the selection in Analysis, like the preview's
-                          button; a double-click opens the game clicked. ↑/↓ preview
+                      {/* Enter opens the selection in Analysis, like the preview's More
+                          menu; a double-click opens the game clicked. ↑/↓ preview
                           the previous/next game, ←/→ step through its moves. */}
                       <div
                         ref={scrollRef}
@@ -837,6 +850,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                               {selectedGame && (
                                 <div className="shrink-0 px-2 py-1 border-b border-outline/40 flex items-center gap-2">
                                   <GamePreviewHeader game={selectedGame} />
+                                  {loadedGame.detail && <DetailsToggleButton detail={loadedGame.detail} open={detailsOpen} onToggle={() => setDetailsOpen((o) => !o)} />}
                                   <GameMoreMenu
                                     pgn={loadedGame.pgn}
                                     fen={loadedGame.fens[selectedPly] ?? loadedGame.fens[0]}
@@ -844,6 +858,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                                     ply={selectedPly}
                                     startFen={loadedGame.fens[0]}
                                     gameUrl={loadedGame.gameUrl}
+                                    leading={openEntries}
                                     extras={selectionEntries}
                                     // One game: the board's own entries. Several: the
                                     // "N selected" ones below take over.
@@ -851,27 +866,6 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                                     onExportPdf={extras.length === 0 ? () => void printSelected("save") : undefined}
                                     onPrint={extras.length === 0 ? () => void printSelected("print") : undefined}
                                   />
-                                  {loadedGame.detail && <DetailsToggleButton detail={loadedGame.detail} open={detailsOpen} onToggle={() => setDetailsOpen((o) => !o)} />}
-                                  {onOpenInAnalysis && (
-                                    <button
-                                      onClick={() => void openInAnalysis([selectedGame, ...extras])}
-                                      className="shrink-0 text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 px-2.5 h-7 rounded-full transition-colors duration-short3 ease-standard"
-                                      title={extras.length
-                                        ? "Open the selected games in the editable Analysis board, this one first"
-                                        : "Open this game in the editable Analysis board. Ctrl-click other games in the list to open several at once."}
-                                    >
-                                      {extras.length ? `Open ${extras.length + 1} in Analysis →` : "Open in Analysis →"}
-                                    </button>
-                                  )}
-                                  {onOpenManyInAnalysis && !extras.length && games.length > 1 && games.length <= (analysisCapacity ?? 0) && !loading && (
-                                    <button
-                                      onClick={() => void openInAnalysis([selectedGame, ...games.filter((g) => g.id !== selectedGame.id)])}
-                                      className="shrink-0 text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 px-2.5 h-7 rounded-full transition-colors duration-short3 ease-standard"
-                                      title="Open every game in the list on the Analysis board, this one first"
-                                    >
-                                      Open all {games.length} →
-                                    </button>
-                                  )}
                                 </div>
                               )}
                               {selectedGame && detailsOpen && loadedGame.detail && (
