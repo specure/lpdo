@@ -1,4 +1,5 @@
 pub mod visitor;
+mod merge;
 
 use crate::importer::visitor::GameVisitor;
 use anyhow::Result;
@@ -133,13 +134,13 @@ fn split_pgn(pgn: &str) -> (&str, &str) {
     pgn.split_at(at)
 }
 
-/// On a dedup-skip event: when the incoming copy has the very same moves but
-/// says more about them — comments, variations, NAGs — the existing game takes
-/// its movetext. Everything else stays the existing game's own: its id, its
-/// headers (they may have been edited since), its visibility and collections.
-/// The longer copy is what dedup keeps too; this just keeps it under the game
-/// the database already has. Games imported before comments and variations
-/// were kept (#3) get them back this way.
+/// On a dedup-skip event, when the incoming copy has the very same moves: the
+/// existing game takes the comments, NAGs and variations it lacks from it
+/// (merge::merge_movetext) — the owner's notes join a broadcast's clock times
+/// rather than replace them, and a bare game gets them all. Everything else
+/// stays the existing game's own: its id, its headers (they may have been
+/// edited since), its visibility and collections. Games imported before
+/// comments and variations were kept (#3) get them back this way.
 fn upgrade_existing_movetext(conn: &Connection, existing_id: u32, incoming_pgn: &str) -> Result<bool> {
     // A match from earlier in this run may not be written yet: nothing to do.
     let existing: Option<String> = match conn.query_row(
@@ -152,19 +153,16 @@ fn upgrade_existing_movetext(conn: &Connection, existing_id: u32, incoming_pgn: 
         Err(e) => return Err(e.into()),
     };
     let Some(existing) = existing else { return Ok(false) };
-    let (headers, old_moves) = split_pgn(&existing);
-    let (_, new_moves) = split_pgn(incoming_pgn);
-    let new_moves = new_moves.trim();
-    if new_moves.len() <= old_moves.trim().len() {
-        return Ok(false);
-    }
     // The same main line, move for move: then the positions, move count and
     // fingerprints all stay as they are.
     if crate::dedup::move_fingerprints(&existing).0 != crate::dedup::move_fingerprints(incoming_pgn).0 {
         return Ok(false);
     }
+    let (headers, old_moves) = split_pgn(&existing);
+    let (_, new_moves) = split_pgn(incoming_pgn);
+    let Some(merged) = merge::merge_movetext(old_moves, new_moves) else { return Ok(false) };
     let headers = headers.trim_end();
-    let pgn = if headers.is_empty() { new_moves.to_string() } else { format!("{headers}\n\n{new_moves}") };
+    let pgn = if headers.is_empty() { merged } else { format!("{headers}\n\n{merged}") };
     conn.execute("UPDATE games SET pgn = ? WHERE id = ?", duckdb::params![pgn, existing_id])?;
     Ok(true)
 }
@@ -1737,7 +1735,7 @@ fn process_pgn_stream(
 
     if upgraded_games > 0 {
         reporter.log(format!(
-            "  {upgraded_games} game(s) already in the database took this file's comments and variations."
+            "  {upgraded_games} game(s) already in the database took comments and variations from this file."
         ));
     }
 
@@ -2480,6 +2478,27 @@ mod annotated_upgrade_tests {
         assert_eq!(g.len(), 1, "matched by GameId, not added: {g:?}");
         assert!(g[0].1.contains("{Giri's recommendation}"), "{}", g[0].1);
         assert_eq!(g[0].2, "public");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_owners_notes_join_a_broadcasts_clock_times() {
+        let (conn, dir) = setup();
+        let broadcast = "1. e4 {[%clk 1:00:55]} e6 {[%clk 1:00:51]} 2. b3 {[%clk 1:00:40]} d5 \
+            3. Bb2 Nc6 {[%clk 0:59:02]} 4. e5 d4 0-1";
+        import(&conn, &dir, "broadcast.pgn", &format!("{HEADERS}\n{broadcast}\n"), "Lichess Broadcasts", "public");
+        import(&conn, &dir, "mine.pgn", &format!("{HEADERS}\n{ANNOTATED}\n"), "My games", "private");
+
+        let g = games(&conn);
+        assert_eq!(g.len(), 1);
+        let pgn = &g[0].1;
+        assert!(pgn.contains("Nc6 {[%clk 0:59:02]} {Giri's recommendation}"), "both comments, clock first: {pgn}");
+        assert!(pgn.contains("{[%clk 1:00:55]}") && pgn.contains("f6 f4)") && pgn.contains("$1"), "{pgn}");
+        assert_eq!(g[0].2, "public");
+
+        // The same file again adds nothing more.
+        import(&conn, &dir, "mine-again.pgn", &format!("{HEADERS}\n{ANNOTATED}\n"), "My games", "private");
+        assert_eq!(&games(&conn)[0].1, pgn, "idempotent");
         std::fs::remove_dir_all(&dir).ok();
     }
 
