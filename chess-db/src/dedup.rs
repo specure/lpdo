@@ -49,6 +49,34 @@ const ROUND_COMPATIBLE: &str = "\
 /// apart. Both are NULL when the part is unknown ("2026-??-??"), which is what
 /// makes an unknown part say nothing. DuckDB macros live per connection, so
 /// dedup installs them before it queries.
+/// How much a person wrote about a game: the characters of its comments,
+/// variations and NAGs, leaving out what a broadcast or engine writes by itself
+/// (clock times, evaluations — the tags the repertoire ignores too) and the
+/// headers. Ranks two copies of one game: a game with the owner's notes beats a
+/// broadcast copy whose clock comments make it longer. `annotation_rank` puts
+/// that first and the plain length second, so between copies nobody annotated
+/// the fuller one (with its clocks) still wins. Approximate by design — only
+/// innermost variations count in full — it only has to order copies.
+pub const ANNOTATION_MACROS: &str = "\
+    CREATE OR REPLACE TEMP MACRO movetext_of(p) AS ( \
+        CASE WHEN strpos(p, chr(10) || chr(10)) > 0 THEN substr(p, strpos(p, chr(10) || chr(10))) ELSE p END \
+    ); \
+    CREATE OR REPLACE TEMP MACRO has_notes(p) AS ( \
+        p IS NOT NULL AND regexp_matches(movetext_of(p), '[{($]') \
+    ); \
+    CREATE OR REPLACE TEMP MACRO human_movetext(p) AS ( \
+        regexp_replace(regexp_replace(movetext_of(p), \
+            '\\[%(clk|emt|eval|tqu|evp|mdl)[^\\]]*\\]', '', 'g'), '\\{\\s*\\}', '', 'g') \
+    ); \
+    CREATE OR REPLACE TEMP MACRO annotation_len(p) AS ( \
+        CASE WHEN NOT has_notes(p) THEN 0 \
+             ELSE LENGTH(human_movetext(p)) \
+                - LENGTH(regexp_replace(human_movetext(p), '\\{[^}]*\\}|\\$[0-9]+|\\([^()]*\\)', '', 'g')) END \
+    ); \
+    CREATE OR REPLACE TEMP MACRO annotation_rank(p) AS ( \
+        annotation_len(p) * 4294967296 + COALESCE(LENGTH(p), 0) \
+    );";
+
 const DATE_MACROS: &str = "\
     CREATE OR REPLACE TEMP MACRO date_year(d) AS ( \
         CASE WHEN d IS NULL OR split_part(d, '-', 1) LIKE '%?%' \
@@ -571,6 +599,7 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
     // columns, so it runs even on a dry run.
     backfill_move_hashes(conn, reporter)?;
     conn.execute_batch(DATE_MACROS)?;
+    conn.execute_batch(ANNOTATION_MACROS)?;
 
     let spinner = reporter.spinner();
     spinner.set_message("Finding duplicate games...");
@@ -585,11 +614,16 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
     // compatible date and round (see DATE_COMPATIBLE / ROUND_COMPATIBLE), and
     // identical (move_hash = move_hash) or off-by-one-trailing-half-move
     // (move_hash = move_hash_short, either way) move sequences. We carry each
-    // game's pgn LENGTH — the survivor metric — but never the pgn itself, so this
-    // stays a tiny id+length result no matter how many duplicates there are.
-    let pairs: Vec<(u32, i64, u32, i64)> = {
+    // game's annotation_rank — the survivor metric — but never the pgn itself,
+    // so this stays a tiny id+rank result no matter how many duplicates there are.
+    // Each side's length and whether it has any comment, variation or NAG at
+    // all — a cheap test. The full annotation_rank, a few regex passes over the
+    // pgn, is only worth it where two copies of one game both carry notes (see
+    // rank_copies); a broadcast copy full of clock comments costs ~25 s per
+    // million to rank, a bare copy nothing.
+    let raw: Vec<PairRow> = {
         let mut stmt = conn.prepare(&format!(
-            "SELECT g1.id, LENGTH(g1.pgn), g2.id, LENGTH(g2.pgn)
+            "SELECT g1.id, LENGTH(g1.pgn), has_notes(g1.pgn), g2.id, LENGTH(g2.pgn), has_notes(g2.pgn)
              FROM games g1
              JOIN games g2
                ON g1.white_id = g2.white_id
@@ -603,15 +637,20 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
                    OR g1.move_hash_short = g2.move_hash)
               {incremental_filter}"
         ))?;
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        stmt.query_map([], |r| Ok((
+            r.get(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0), r.get::<_, Option<bool>>(2)?.unwrap_or(false),
+            r.get(3)?, r.get::<_, Option<i64>>(4)?.unwrap_or(0), r.get::<_, Option<bool>>(5)?.unwrap_or(false),
+        )))?
             .filter_map(|r| r.ok())
             .collect()
     };
+    let pairs = rank_copies(conn, &raw)?;
     spinner.finish_and_clear();
 
-    // Resolve duplicate clusters and pick each survivor: the LONGEST pgn wins — a
-    // more complete game, or (at equal moves) an annotated one, beats a bare copy;
-    // ties break to the lowest id. Union-find handles exact duplicates, off-by-one
+    // Resolve duplicate clusters and pick each survivor: the most annotated copy
+    // wins — someone's comments and variations over a bare score or a broadcast's
+    // clock times — then the LONGEST pgn, a more complete game or the one with
+    // clocks; ties break to the lowest id. Union-find handles exact duplicates, off-by-one
     // truncations and 3+-way copies uniformly. Returns (loser_id, winner_id).
     let losers = resolve_survivors(&pairs);
 
@@ -672,10 +711,84 @@ pub fn dedup_games(conn: &Connection, dry_run: bool, full: bool, reporter: &Repo
     Ok(())
 }
 
-/// Given duplicate pairs `(id_a, pgn_len_a, id_b, pgn_len_b)`, group them into
+/// A duplicate pair as found: each side's id, pgn length and whether it has
+/// notes (any comment, variation or NAG).
+type PairRow = (u32, i64, bool, u32, i64, bool);
+
+/// Rank every game of the found pairs for `resolve_survivors`, as
+/// `annotation_rank` ranks them — paying for the full rank only where it can
+/// change the outcome. A game without notes ranks by its length, exactly. In a
+/// group of copies where just one has notes, that one wins — it is the
+/// annotated or the broadcast copy (whose clocks make it the longer anyway) —
+/// so it ranks above any length without being measured. Only groups with two
+/// or more noted copies (a broadcast and an annotated export of one game, say)
+/// are ranked in full, in one query over just those games.
+fn rank_copies(conn: &Connection, raw: &[PairRow]) -> Result<Vec<(u32, i64, u32, i64)>> {
+    use std::collections::HashMap;
+    let mut info: HashMap<u32, (i64, bool)> = HashMap::new();
+    let mut parent: HashMap<u32, u32> = HashMap::new();
+    for &(a, la, na, b, lb, nb) in raw {
+        info.insert(a, (la, na));
+        info.insert(b, (lb, nb));
+        parent.entry(a).or_insert(a);
+        parent.entry(b).or_insert(b);
+        let ra = uf_find(&mut parent, a);
+        let rb = uf_find(&mut parent, b);
+        if ra != rb {
+            parent.insert(ra, rb);
+        }
+    }
+    let ids: Vec<u32> = info.keys().copied().collect();
+    let mut noted_per_group: HashMap<u32, usize> = HashMap::new();
+    for &id in &ids {
+        if info[&id].1 {
+            *noted_per_group.entry(uf_find(&mut parent, id)).or_default() += 1;
+        }
+    }
+    let mut rank: HashMap<u32, i64> = HashMap::new();
+    let mut measure: Vec<u32> = Vec::new();
+    for &id in &ids {
+        let (len, noted) = info[&id];
+        if !noted {
+            rank.insert(id, len);
+        } else if noted_per_group[&uf_find(&mut parent, id)] == 1 {
+            // Above every plain length, as an annotation of one character would be.
+            rank.insert(id, (1i64 << 32) + len);
+        } else {
+            measure.push(id);
+        }
+    }
+    if !measure.is_empty() {
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS rank_ids;
+             CREATE TEMP TABLE rank_ids (id UINTEGER);",
+        )?;
+        {
+            let mut app = conn.appender("rank_ids")?;
+            for id in &measure {
+                app.append_row(duckdb::params![id])?;
+            }
+            app.flush()?;
+        }
+        {
+            let mut stmt = conn.prepare(
+                "SELECT g.id, annotation_rank(g.pgn) FROM games g JOIN rank_ids r ON r.id = g.id",
+            )?;
+            for row in stmt.query_map([], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, i64>(1)?)))? {
+                let (id, r) = row?;
+                rank.insert(id, r);
+            }
+        }
+        conn.execute_batch("DROP TABLE IF EXISTS rank_ids;")?;
+    }
+    Ok(raw.iter().map(|&(a, _, _, b, _, _)| (a, rank[&a], b, rank[&b])).collect())
+}
+
+/// Given duplicate pairs `(id_a, rank_a, id_b, rank_b)`, group them into
 /// clusters (union-find over the pair graph) and pick one survivor per cluster —
-/// the game with the LONGEST pgn (ties → lowest id). Returns `(loser, winner)`
-/// for every non-survivor. All in memory over ids + lengths; no PGNs involved.
+/// the game with the highest rank (`annotation_rank`: the most annotated, then
+/// the longest pgn; ties → lowest id). Returns `(loser, winner)` for every
+/// non-survivor. All in memory over ids + ranks; no PGNs involved.
 fn resolve_survivors(pairs: &[(u32, i64, u32, i64)]) -> Vec<(u32, u32)> {
     use std::collections::HashMap;
     let mut parent: HashMap<u32, u32> = HashMap::new();
@@ -691,7 +804,7 @@ fn resolve_survivors(pairs: &[(u32, i64, u32, i64)]) -> Vec<(u32, u32)> {
             parent.insert(ra, rb);
         }
     }
-    // Best (longest pgn, else lowest id) per cluster root.
+    // Best (highest rank, else lowest id) per cluster root.
     let ids: Vec<u32> = len.keys().copied().collect();
     let mut winner: HashMap<u32, (i64, u32)> = HashMap::new();
     for &id in &ids {
@@ -734,7 +847,9 @@ fn uf_find(parent: &mut std::collections::HashMap<u32, u32>, x: u32) -> u32 {
 }
 
 /// Apply a resolved `(loser, winner)` set: move every loser's collection
-/// memberships onto its winner, then delete all losers — two set-based statements
+/// memberships onto its winner — and its visibility, public winning as on
+/// import: a public game stays public when a private copy of it (say, the
+/// owner's annotated one) survives instead — then delete all losers — two set-based statements
 /// via a staging temp table, so the cost is one `game_collections` scan and one
 /// keyed `games` delete regardless of how many duplicates there are. Callers run
 /// the orphan sweep + game-count refresh afterwards.
@@ -762,6 +877,10 @@ fn apply_dedup(conn: &Connection, losers: &[(u32, u32)]) -> Result<()> {
                  SELECT 1 FROM game_collections x
                  WHERE x.game_id = m.winner AND x.collection_id = gc.collection_id
              );
+         UPDATE games SET visibility = 'public'
+             WHERE visibility IS DISTINCT FROM 'public'
+               AND id IN (SELECT m.winner FROM dedup_map m JOIN games l ON l.id = m.loser
+                          WHERE l.visibility = 'public');
          DELETE FROM games WHERE id IN (SELECT loser FROM dedup_map);
          DROP TABLE IF EXISTS dedup_map;",
     )?;
@@ -1082,6 +1201,54 @@ fn pick_survivor(rows: &[&PlayerRow]) -> u32 {
 #[cfg(test)]
 mod dedup_games_tests {
     use super::*;
+
+    /// A broadcast copy's clock comments make it the longer one, but the copy
+    /// someone annotated survives; between two copies nobody annotated, the
+    /// one with clocks (the longer) still does.
+    #[test]
+    fn notes_outrank_a_broadcasts_clock_times() {
+        let conn = setup();
+        let pgn = |moves: &str| format!("[White \"A\"]\n[Black \"B\"]\n\n{moves} 1-0");
+        let clocks = "e4 {[%eval 0.15] [%clk 1:00:55]} e5 {[%eval 0.2] [%clk 1:00:51]} Nf3 {[%eval 0.11] [%clk 1:01:10]}";
+        for (id, moves) in [(1, clocks), (2, "e4 {my idea} e5 Nf3"), (3, "e4 e5 Nf3")] {
+            conn.execute(
+                "INSERT INTO games (id, white_id, black_id, date, result, opening_line, move_count, pgn, deduped)
+                 VALUES (?, 1, 2, '2020-01-01', '1-0', 'e4', 3, ?, FALSE)",
+                duckdb::params![id, pgn(moves)],
+            ).unwrap();
+        }
+        dedup_games(&conn, false, false, &Reporter::silent()).unwrap();
+        assert_eq!(surviving_ids(&conn), [2], "the annotated copy");
+
+        let conn = setup();
+        for (id, moves) in [(1, "e4 e5 Nf3"), (2, clocks)] {
+            conn.execute(
+                "INSERT INTO games (id, white_id, black_id, date, result, opening_line, move_count, pgn, deduped)
+                 VALUES (?, 1, 2, '2020-01-01', '1-0', 'e4', 3, ?, FALSE)",
+                duckdb::params![id, pgn(moves)],
+            ).unwrap();
+        }
+        dedup_games(&conn, false, false, &Reporter::silent()).unwrap();
+        assert_eq!(surviving_ids(&conn), [2], "the one with clocks");
+    }
+
+    /// The owner's annotated copy is private, the bare one public: the longer
+    /// copy survives, and stays public as the game was.
+    #[test]
+    fn a_surviving_private_copy_of_a_public_game_is_public() {
+        let conn = setup();
+        insert_game(&conn, 1, "e4 e5 Nf3", false);
+        conn.execute(
+            "INSERT INTO games (id, white_id, black_id, date, result, opening_line, move_count, pgn, deduped, visibility)
+             VALUES (2, 1, 2, '2020-01-01', '1-0', 'e4', 3, ?, FALSE, 'private')",
+            duckdb::params!["[White \"A\"]\n[Black \"B\"]\n\ne4 {best by test} e5 (e6) Nf3 1-0"],
+        ).unwrap();
+        conn.execute("UPDATE games SET visibility = 'public' WHERE id = 1", []).unwrap();
+        dedup_games(&conn, false, false, &Reporter::silent()).unwrap();
+        assert_eq!(surviving_ids(&conn), [2], "the annotated copy survives");
+        let vis: String = conn.query_row("SELECT visibility FROM games WHERE id = 2", [], |r| r.get(0)).unwrap();
+        assert_eq!(vis, "public");
+    }
 
     fn setup() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

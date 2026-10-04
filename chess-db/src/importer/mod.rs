@@ -1,4 +1,5 @@
 pub mod visitor;
+mod merge;
 
 use crate::importer::visitor::GameVisitor;
 use anyhow::Result;
@@ -117,6 +118,70 @@ fn tag_existing_match(conn: &Connection, existing_id: u32, collection_id: i32, v
         )?;
     }
     Ok(())
+}
+
+/// A stored PGN's tag section — up to and including the blank line after it —
+/// and its movetext.
+fn split_pgn(pgn: &str) -> (&str, &str) {
+    let mut at = 0;
+    for line in pgn.split_inclusive('\n') {
+        let t = line.trim();
+        if !t.is_empty() && !t.starts_with('[') {
+            break;
+        }
+        at += line.len();
+    }
+    pgn.split_at(at)
+}
+
+/// On a dedup-skip event, when the incoming copy has the very same moves: the
+/// existing game takes the comments, NAGs and variations it lacks from it
+/// (merge::merge_movetext) — the owner's notes join a broadcast's clock times
+/// rather than replace them, and a bare game gets them all. Everything else
+/// stays the existing game's own: its id, its headers (they may have been
+/// edited since), its visibility and collections. Games imported before
+/// comments and variations were kept (#3) get them back this way.
+fn upgrade_existing_movetext(conn: &Connection, existing_id: u32, incoming_pgn: &str) -> Result<bool> {
+    // A match from earlier in this run may not be written yet: nothing to do.
+    let existing: Option<String> = match conn.query_row(
+        "SELECT pgn FROM games WHERE id = ?",
+        duckdb::params![existing_id],
+        |r| r.get(0),
+    ) {
+        Ok(pgn) => pgn,
+        Err(duckdb::Error::QueryReturnedNoRows) => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    let Some(existing) = existing else { return Ok(false) };
+    // The same main line, move for move: then the positions, move count and
+    // fingerprints all stay as they are.
+    if crate::dedup::move_fingerprints(&existing).0 != crate::dedup::move_fingerprints(incoming_pgn).0 {
+        return Ok(false);
+    }
+    let (headers, old_moves) = split_pgn(&existing);
+    let (_, new_moves) = split_pgn(incoming_pgn);
+    let Some(merged) = merge::merge_movetext(old_moves, new_moves) else { return Ok(false) };
+    let headers = headers.trim_end();
+    let pgn = if headers.is_empty() { merged } else { format!("{headers}\n\n{merged}") };
+    conn.execute("UPDATE games SET pgn = ? WHERE id = ?", duckdb::params![pgn, existing_id])?;
+    Ok(true)
+}
+
+/// A game imported over a year ago is not in the run's in-memory dedup maps.
+/// A ChessBase GameId still finds it — one indexed lookup, for the games that
+/// carry one — when it is the same two players' game.
+fn existing_by_chessbase_id(conn: &Connection, cbid: i64, white_id: u32, black_id: u32) -> Result<Option<u32>> {
+    match conn.query_row(
+        "SELECT id FROM games
+         WHERE chessbase_id = ? AND white_id = ? AND black_id = ? AND deleted_at IS NULL
+         ORDER BY id LIMIT 1",
+        duckdb::params![cbid, white_id, black_id],
+        |r| r.get(0),
+    ) {
+        Ok(id) => Ok(Some(id)),
+        Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Add every game belonging to `issue_id` to `collection_id` (idempotent).
@@ -1462,6 +1527,8 @@ fn process_pgn_stream(
     let mut position_batch: Vec<PositionRow> = Vec::with_capacity(BATCH_SIZE * 40);
     let mut total_games = 0usize;
     let mut skipped_games = 0usize;
+    // Duplicates whose existing game took this copy's comments and variations.
+    let mut upgraded_games = 0usize;
     let mut skipped_nonstandard = 0usize;
     let mut skipped_window = 0usize;
     let window_unbounded = window.is_unbounded();
@@ -1542,7 +1609,12 @@ fn process_pgn_stream(
             id
         } else {
             if let Some(cbid) = game.chessbase_id {
-                if let Some(&existing_id) = ctx.seen_chessbase_ids.get(&cbid) {
+                let existing = match ctx.seen_chessbase_ids.get(&cbid) {
+                    Some(&id) => Some(id),
+                    None => existing_by_chessbase_id(conn, cbid, white_id, black_id)?,
+                };
+                if let Some(existing_id) = existing {
+                    if upgrade_existing_movetext(conn, existing_id, &game.pgn)? { upgraded_games += 1; }
                     tag_existing_match(conn, existing_id, collection_id, visibility)?;
                     skipped_games += 1;
                     continue;
@@ -1557,6 +1629,7 @@ fn process_pgn_stream(
                 game.move_count,
             );
             if let Some(&existing_id) = ctx.seen_this_run.get(&fp) {
+                if upgrade_existing_movetext(conn, existing_id, &game.pgn)? { upgraded_games += 1; }
                 tag_existing_match(conn, existing_id, collection_id, visibility)?;
                 skipped_games += 1;
                 continue;
@@ -1658,6 +1731,12 @@ fn process_pgn_stream(
     }
     if max_position_depth.is_some() && !position_batch.is_empty() {
         flush_positions(conn, &position_batch, fast)?;
+    }
+
+    if upgraded_games > 0 {
+        reporter.log(format!(
+            "  {upgraded_games} game(s) already in the database took comments and variations from this file."
+        ));
     }
 
     Ok((total_games, skipped_games, skipped_nonstandard, skipped_window))
@@ -2291,5 +2370,141 @@ mod engine_tag_tests {
         assert!(!super::is_engine_pgn("[WhiteTitle \"GM\"]\n\n1. e4 *"));
         // A comment mentioning it is not a tag.
         assert!(!super::is_engine_pgn("[White \"A\"]\n\n1. e4 {[WhiteTitle \"BOT\"]} *"));
+    }
+}
+
+#[cfg(test)]
+mod annotated_upgrade_tests {
+    use super::*;
+
+    const HEADERS: &str = "[Event \"Open\"]\n[Site \"?\"]\n[Date \"2024.08.16\"]\n[Round \"3\"]\n\
+        [White \"Kuntner, Reinhard\"]\n[Black \"Svrcek, Jozef\"]\n[Result \"0-1\"]\n";
+    const BARE: &str = "1. e4 e6 2. b3 d5 3. Bb2 Nc6 4. e5 d4 0-1";
+    const ANNOTATED: &str = "1. e4 e6 2. b3 d5 3. Bb2 Nc6 {Giri's recommendation} 4. e5 d4 $1 (4... f6 5. f4) 0-1";
+
+    fn setup() -> (Connection, std::path::PathBuf) {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "lpdo-upgrade-{}-{:?}", std::process::id(), std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        (conn, dir)
+    }
+
+    /// Import one game from a file of its own (file names are imported once).
+    fn import(conn: &Connection, dir: &Path, file: &str, pgn: &str, collection: &str, visibility: &str) {
+        let path = dir.join(file);
+        std::fs::write(&path, pgn).unwrap();
+        let spec = ImportSpec {
+            collection: collection.into(),
+            visibility: visibility.into(),
+            on_duplicate: "skip".into(),
+        };
+        import_pgn(conn, &path, None, 1000, false, false, &spec, &Reporter::silent()).unwrap();
+    }
+
+    fn games(conn: &Connection) -> Vec<(u32, String, String)> {
+        let mut stmt = conn.prepare("SELECT id, pgn, visibility FROM games ORDER BY id").unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().filter_map(|r| r.ok()).collect()
+    }
+
+    fn collections_of(conn: &Connection, id: u32) -> Vec<String> {
+        let mut stmt = conn.prepare(
+            "SELECT c.name FROM game_collections gc JOIN collections c ON c.id = gc.collection_id
+             WHERE gc.game_id = ? ORDER BY c.name",
+        ).unwrap();
+        stmt.query_map(duckdb::params![id], |r| r.get(0)).unwrap().filter_map(|r| r.ok()).collect()
+    }
+
+    #[test]
+    fn an_annotated_copy_gives_the_existing_game_its_comments_and_variations() {
+        let (conn, dir) = setup();
+        import(&conn, &dir, "ref.pgn", &format!("{HEADERS}\n{BARE}\n"), "Reference", "public");
+        // The owner's copy: annotated, private, its Event spelled differently.
+        let own = HEADERS.replace("[Event \"Open\"]", "[Event \"Open, annotated\"]");
+        import(&conn, &dir, "mine.pgn", &format!("{own}\n{ANNOTATED}\n"), "My games", "private");
+
+        let g = games(&conn);
+        assert_eq!(g.len(), 1, "still one game: {g:?}");
+        let (id, pgn, visibility) = &g[0];
+        assert!(pgn.contains("{Giri's recommendation}"), "comment taken: {pgn}");
+        assert!(pgn.contains("f6 f4)"), "variation taken: {pgn}");
+        assert!(pgn.contains("$1"), "NAG taken: {pgn}");
+        assert!(pgn.contains("[Event \"Open\"]") && !pgn.contains("annotated\"]"), "the database's headers kept: {pgn}");
+        assert!(pgn.contains("[Result \"0-1\"]\n\ne4 e6"), "a blank line between headers and moves: {pgn}");
+        assert_eq!(visibility, "public", "public stays public");
+        assert_eq!(collections_of(&conn, *id), ["My games", "Reference"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_bare_copy_leaves_an_annotated_game_alone() {
+        let (conn, dir) = setup();
+        import(&conn, &dir, "mine.pgn", &format!("{HEADERS}\n{ANNOTATED}\n"), "My games", "private");
+        let before = games(&conn);
+        import(&conn, &dir, "ref.pgn", &format!("{HEADERS}\n{BARE}\n"), "Reference", "private");
+        assert_eq!(games(&conn), before, "nothing changed");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_copy_with_other_moves_changes_nothing() {
+        let (conn, dir) = setup();
+        let bare = "1. e4 e6 2. b3 d5 3. Bb2 Nc6 4. e5 d4 5. f4 g5 6. Bb5 Bd7 0-1";
+        import(&conn, &dir, "ref.pgn", &format!("{HEADERS}\n{bare}\n"), "Reference", "public");
+        let before = games(&conn);
+        // The same first ten half-moves and length — a duplicate to the import —
+        // but the last move differs, so its comments belong to another game.
+        let other = "1. e4 e6 2. b3 d5 3. Bb2 Nc6 {a long comment about this} 4. e5 d4 5. f4 g5 6. Bb5 a6 0-1";
+        import(&conn, &dir, "mine.pgn", &format!("{HEADERS}\n{other}\n"), "My games", "private");
+        let after = games(&conn);
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].1, before[0].1, "the moves were not replaced");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_chessbase_game_id_finds_a_game_imported_long_ago() {
+        let (conn, dir) = setup();
+        let headers = format!("{HEADERS}[GameId \"2088309300901764\"]\n");
+        import(&conn, &dir, "old.pgn", &format!("{headers}\n{BARE}\n"), "My games", "public");
+        // Out of the in-memory dedup window (a year).
+        conn.execute_batch("UPDATE source_items SET imported_at = TIMESTAMP '2020-01-01 00:00:00'").unwrap();
+        import(&conn, &dir, "new.pgn", &format!("{headers}\n{ANNOTATED}\n"), "My games", "private");
+
+        let g = games(&conn);
+        assert_eq!(g.len(), 1, "matched by GameId, not added: {g:?}");
+        assert!(g[0].1.contains("{Giri's recommendation}"), "{}", g[0].1);
+        assert_eq!(g[0].2, "public");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_owners_notes_join_a_broadcasts_clock_times() {
+        let (conn, dir) = setup();
+        let broadcast = "1. e4 {[%clk 1:00:55]} e6 {[%clk 1:00:51]} 2. b3 {[%clk 1:00:40]} d5 \
+            3. Bb2 Nc6 {[%clk 0:59:02]} 4. e5 d4 0-1";
+        import(&conn, &dir, "broadcast.pgn", &format!("{HEADERS}\n{broadcast}\n"), "Lichess Broadcasts", "public");
+        import(&conn, &dir, "mine.pgn", &format!("{HEADERS}\n{ANNOTATED}\n"), "My games", "private");
+
+        let g = games(&conn);
+        assert_eq!(g.len(), 1);
+        let pgn = &g[0].1;
+        assert!(pgn.contains("Nc6 {[%clk 0:59:02]} {Giri's recommendation}"), "both comments, clock first: {pgn}");
+        assert!(pgn.contains("{[%clk 1:00:55]}") && pgn.contains("f6 f4)") && pgn.contains("$1"), "{pgn}");
+        assert_eq!(g[0].2, "public");
+
+        // The same file again adds nothing more.
+        import(&conn, &dir, "mine-again.pgn", &format!("{HEADERS}\n{ANNOTATED}\n"), "My games", "private");
+        assert_eq!(&games(&conn)[0].1, pgn, "idempotent");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn split_pgn_parts() {
+        assert_eq!(split_pgn("[A \"1\"]\n[B \"2\"]\n\n1. e4 {x} e5"), ("[A \"1\"]\n[B \"2\"]\n\n", "1. e4 {x} e5"));
+        assert_eq!(split_pgn("e4 e5"), ("", "e4 e5"));
     }
 }

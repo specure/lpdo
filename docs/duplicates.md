@@ -27,8 +27,36 @@ this holds:
   round 7, game 2 of it. Round 2 and round 7 are never the same game. A round
   of `?`, `-` or free text says nothing and blocks nothing.
 
-Of the copies, the one with the longest PGN survives: the more complete game,
-or the annotated one over a bare score.
+Of the copies, the most annotated one survives — comments and variations a
+person wrote, not a broadcast's clock times — and among equally annotated
+copies the one with the longest PGN: the more complete game, or the one with
+clock times.
+
+### Importing an annotated copy of a game you already have
+
+Importing a game the database already holds adds no second copy: the game
+you have is added to the import's collection instead. When the imported copy
+has the same moves, the game in the database also takes the comments,
+variations and `!`/`?` marks it doesn't have yet. Nothing is replaced: a
+broadcast copy keeps its clock times and evaluations with your notes beside
+them, and a comment or variation both copies have is kept once. Importing the
+same file again changes nothing.
+
+The game keeps its own headers, so anything you corrected with **Edit
+headers** stays, and it keeps its collections and visibility. Public wins: a
+game that was public stays public even when you import your annotated copy as
+private, and a private game becomes public when you import it as public.
+
+When the moves differ — one source has a move wrong, or stops early — the
+copies are different games to LPDO and nothing is merged.
+
+**Remove duplicate games** can only keep one of two copies. It keeps the one
+with the most comments and variations written by a person (clock times and
+evaluations don't count), then the longer one, and the survivor is public if
+either copy was.
+
+This is how games imported before LPDO kept comments and variations get them
+back: import your annotated PGN again.
 
 ### What it deliberately leaves alone
 

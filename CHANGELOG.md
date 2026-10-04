@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Annotated copies fill in games you already have** — importing a game the
+  database already holds, with the same moves, adds the comments, variations
+  and `!`/`?` marks the stored game lacks. Nothing is replaced: a broadcast
+  copy keeps its clock times beside your notes. The game keeps its headers,
+  collections and visibility. Games imported before comments and variations
+  were kept get them back by importing the annotated PGN again. A ChessBase
+  `GameId` finds the game however long ago it was imported.
 - **Player profiles from a game** — on the Analysis board, both players'
   names carry a **Profile** button, opening the same profile as on the
   Players page.
@@ -25,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Scrolling the game list fast could load the same page twice and list its
   games twice.
+- **Removing duplicate games** keeps the copy with the most comments and
+  variations a person wrote, not the longest one — a broadcast's clock times
+  no longer outweigh your notes — and the copy kept is public if either was.
 
 ## [0.22.1] - 2026-10-02
 
