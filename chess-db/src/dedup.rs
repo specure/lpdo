@@ -734,7 +734,9 @@ fn uf_find(parent: &mut std::collections::HashMap<u32, u32>, x: u32) -> u32 {
 }
 
 /// Apply a resolved `(loser, winner)` set: move every loser's collection
-/// memberships onto its winner, then delete all losers — two set-based statements
+/// memberships onto its winner — and its visibility, public winning as on
+/// import: a public game stays public when a private copy of it (say, the
+/// owner's annotated one) survives instead — then delete all losers — two set-based statements
 /// via a staging temp table, so the cost is one `game_collections` scan and one
 /// keyed `games` delete regardless of how many duplicates there are. Callers run
 /// the orphan sweep + game-count refresh afterwards.
@@ -762,6 +764,10 @@ fn apply_dedup(conn: &Connection, losers: &[(u32, u32)]) -> Result<()> {
                  SELECT 1 FROM game_collections x
                  WHERE x.game_id = m.winner AND x.collection_id = gc.collection_id
              );
+         UPDATE games SET visibility = 'public'
+             WHERE visibility IS DISTINCT FROM 'public'
+               AND id IN (SELECT m.winner FROM dedup_map m JOIN games l ON l.id = m.loser
+                          WHERE l.visibility = 'public');
          DELETE FROM games WHERE id IN (SELECT loser FROM dedup_map);
          DROP TABLE IF EXISTS dedup_map;",
     )?;
@@ -1082,6 +1088,24 @@ fn pick_survivor(rows: &[&PlayerRow]) -> u32 {
 #[cfg(test)]
 mod dedup_games_tests {
     use super::*;
+
+    /// The owner's annotated copy is private, the bare one public: the longer
+    /// copy survives, and stays public as the game was.
+    #[test]
+    fn a_surviving_private_copy_of_a_public_game_is_public() {
+        let conn = setup();
+        insert_game(&conn, 1, "e4 e5 Nf3", false);
+        conn.execute(
+            "INSERT INTO games (id, white_id, black_id, date, result, opening_line, move_count, pgn, deduped, visibility)
+             VALUES (2, 1, 2, '2020-01-01', '1-0', 'e4', 3, ?, FALSE, 'private')",
+            duckdb::params!["[White \"A\"]\n[Black \"B\"]\n\ne4 {best by test} e5 (e6) Nf3 1-0"],
+        ).unwrap();
+        conn.execute("UPDATE games SET visibility = 'public' WHERE id = 1", []).unwrap();
+        dedup_games(&conn, false, false, &Reporter::silent()).unwrap();
+        assert_eq!(surviving_ids(&conn), [2], "the annotated copy survives");
+        let vis: String = conn.query_row("SELECT visibility FROM games WHERE id = 2", [], |r| r.get(0)).unwrap();
+        assert_eq!(vis, "public");
+    }
 
     fn setup() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

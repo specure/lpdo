@@ -30,6 +30,24 @@ this holds:
 Of the copies, the one with the longest PGN survives: the more complete game,
 or the annotated one over a bare score.
 
+### Importing an annotated copy of a game you already have
+
+Importing a game the database already holds adds no second copy: the game
+you have is added to the import's collection instead. When the imported copy
+has the same moves but says more about them — your comments, variations,
+`!`/`?` marks — the game in the database takes them over. It keeps its own
+headers, so anything you corrected with **Edit headers** stays, and it keeps
+its collections and visibility.
+
+Public wins: a game that was public stays public even when you import your
+annotated copy as private, and a private game becomes public when you import
+it as public. The same holds when the duplicate is only found by **Remove
+duplicate games** afterwards: the annotated copy survives, public if either
+copy was.
+
+This is how games imported before LPDO kept comments and variations get them
+back: import your annotated PGN again.
+
 ### What it deliberately leaves alone
 
 - **Games whose moves are written differently.** One source writes `Nge7`,

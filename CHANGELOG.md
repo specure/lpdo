@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Annotated copies fill in games you already have** — importing a game the
+  database already holds, with the same moves but with comments, variations or
+  `!`/`?` marks, gives the stored game those, keeping its headers, collections
+  and visibility. Games imported before comments and variations were kept get
+  them back by importing the annotated PGN again. A ChessBase `GameId` finds
+  the game however long ago it was imported.
+
+### Fixed
+- **Public stays public** when removing duplicate games: if the copy that
+  survives was private, it becomes public when the removed copy was.
+
+### Added
 - **Player profiles from a game** — on the Analysis board, both players'
   names carry a **Profile** button, opening the same profile as on the
   Players page.
