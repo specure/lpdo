@@ -18,6 +18,31 @@ export interface GameSummary {
   move_number?: number | null;
 }
 
+/** One game as `/api/games/{id}` returns it: the headers, the PGN, and the
+ *  game's visibility, collections and soft-delete state. */
+export interface GameDetail {
+  id: number;
+  white: string;
+  black: string;
+  /** The players' ids — absent from an older server, and for a game not
+   *  from the DB. */
+  white_id?: number;
+  black_id?: number;
+  white_fide_id: number | null;
+  black_fide_id: number | null;
+  white_elo: number | null;
+  black_elo: number | null;
+  event: string | null;
+  date: string | null;
+  result: string | null;
+  eco: string | null;
+  move_count: number | null;
+  pgn: string | null;
+  visibility: string | null;
+  collections: string[];
+  deleted_at: string | null;
+}
+
 export interface PlayerInfo {
   id: number;
   name: string;

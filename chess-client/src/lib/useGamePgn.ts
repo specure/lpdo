@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Chess } from "chess.js";
 import { parsePgnTree } from "./parsePgnTree";
 import { parseBlockTags } from "./pgnEditor";
+import type { GameDetail } from "../types";
 
 // Fetch + parse a single DB game (by id) into a flat, read-only playback model
 // for the Games page's mini board + compact move list (#219). Linear mainline
@@ -33,6 +34,9 @@ export interface LoadedGame {
    *  broadcasts write GameURL, and Site is a URL for online games. null when
    *  the game names no address (most OTB games from TWIC and Megabase). */
   gameUrl: string | null;
+  /** The game as the server returned it — the Details panel's headers,
+   *  visibility and collections. Absent for a game not from the DB. */
+  detail?: GameDetail;
 }
 
 /** The game's own web address, from the first PGN tag that holds one. Tags
@@ -82,16 +86,18 @@ export function buildPlayback(pgn: string | null): Pick<LoadedGame, "fens" | "mo
 export async function loadGamePgn(gameId: number): Promise<LoadedGame> {
   const r = await fetch(`/api/games/${gameId}`);
   if (!r.ok) throw new Error(`Server error ${r.status}`);
-  const d: { white: string; black: string; result: string | null; date: string | null; event: string | null; pgn: string | null } = await r.json();
+  const d: GameDetail = await r.json();
   return {
     id: gameId, white: d.white, black: d.black, result: d.result, date: d.date, event: d.event,
     pgn: d.pgn,
     gameUrl: gameUrlFromPgn(d.pgn),
+    detail: d,
     ...buildPlayback(d.pgn),
   };
 }
 
-export function useGamePgn(gameId: number | null) {
+/** `reloadKey`: bump to fetch the game again after it changed on the server. */
+export function useGamePgn(gameId: number | null, reloadKey = 0) {
   const [game, setGame] = useState<LoadedGame | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -105,7 +111,7 @@ export function useGamePgn(gameId: number | null) {
       .then((g) => { if (!cancelled) { setGame(g); setLoading(false); } })
       .catch((e) => { if (!cancelled) { setError(String(e)); setLoading(false); } });
     return () => { cancelled = true; };
-  }, [gameId]);
+  }, [gameId, reloadKey]);
 
   return { game, loading, error };
 }

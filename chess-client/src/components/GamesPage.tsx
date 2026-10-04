@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { startTransition, useEffect, useRef, useState, type ReactNode } from "react";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { Chess } from "chess.js";
 import { GameSummary, MoveStats, PlayerInfo } from "../types";
@@ -7,10 +7,11 @@ import PositionBoard from "./PositionBoard";
 import PositionMoves from "./PositionMoves";
 import MiniBoard from "./games/MiniBoard";
 import GamePreviewHeader from "./games/GamePreviewHeader";
-import GameMoreMenu from "./games/GameMoreMenu";
+import GameMoreMenu, { MenuEntry } from "./games/GameMoreMenu";
 import PrintDialog, { ExportableGame } from "./games/PrintDialog";
 import { fetchPgns, savePgnFile } from "../lib/exportPgn";
 import MoveList from "./games/MoveList";
+import { DetailsPanel, DetailsToggleButton } from "./GameBoard";
 import CloudEngine, { pvString } from "./CloudEngine";
 import { useNeighbourResize } from "../lib/panelResize";
 import { useGamePgn } from "../lib/useGamePgn";
@@ -129,6 +130,9 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const queryToken = useRef(0);
+  // The offset of the page being (or last) fetched by loadMore: two scroll
+  // events before the next render — a held ↓ — must not fetch it twice.
+  const moreFrom = useRef(-1);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // ── Opening explorer (A + B), always on ─────────────────────────────────────
@@ -226,6 +230,19 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     { label: `Export the ${n} selected as PDF…`, onClick: () => void printSelected("save") },
     { label: `Export the ${n} selected as PGN…`, onClick: () => void exportSelectedPgn() },
   ];
+  // Opening in Analysis heads the preview's More menu (Enter and a
+  // double-click in the list do it too).
+  const openEntries: MenuEntry[] = !selectedGame || !onOpenInAnalysis ? [] : [
+    extras.length
+      ? { label: `Open the ${extras.length + 1} selected in Analysis`, onClick: () => void openInAnalysis([selectedGame, ...extras]),
+          title: "Open the selected games on the editable Analysis board, this one first" }
+      : { label: "Open in Analysis", onClick: () => void openInAnalysis([selectedGame]),
+          title: "Open this game on the editable Analysis board (Enter). Ctrl-click other games in the list to open several at once." },
+    ...(onOpenManyInAnalysis && !extras.length && games.length > 1 && games.length <= (analysisCapacity ?? 0) && !loading
+      ? [{ label: `Open all ${games.length} in Analysis`, onClick: () => void openInAnalysis([selectedGame, ...games.filter((g) => g.id !== selectedGame.id)]),
+           title: "Open every game in the list on the Analysis board, this one first" }]
+      : []),
+  ];
   async function openInAnalysis(list: GameSummary[]) {
     if (!onOpenManyInAnalysis) { if (list[0]) onOpenInAnalysis?.(list[0]); return; }
     const left = await onOpenManyInAnalysis(list);
@@ -236,7 +253,17 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     }
   }
   const [selectedPly, setSelectedPly] = useState(initial?.selectedPly ?? 0);
-  const { game: loadedGame, loading: gameLoading } = useGamePgn(selectedGame?.id ?? null);
+  // Bumped when the Details panel changed the game (visibility, collections).
+  const [gameReloadKey, setGameReloadKey] = useState(0);
+  const { game: loadedGame, loading: gameLoading } = useGamePgn(selectedGame?.id ?? null, gameReloadKey);
+  // The preview's Details panel, as on the Analysis board — open or closed
+  // stays as left, for every game.
+  const [detailsOpen, setDetailsOpen] = useState(() => {
+    try { return localStorage.getItem("previewDetailsOpen") === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("previewDetailsOpen", detailsOpen ? "1" : "0"); } catch { /* not remembered */ }
+  }, [detailsOpen]);
   // A newly selected game starts at its first move — unless it's a restored
   // selection, which brings its move along. (This also runs on mount, where it
   // used to overwrite the Games page's restored move with 0.)
@@ -337,6 +364,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     abortRef.current = new AbortController();
     const sig = abortRef.current.signal;
     const token = ++queryToken.current;
+    moreFrom.current = -1;
     setLoading(true);
     setError(null);
     setGames([]);
@@ -365,13 +393,15 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   }, [p1?.id, p1Color, p2?.id, p2Color, event, dateFrom, dateTo, firstMovesStr, scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, reloadKey, showEngines]);
 
   function loadMore() {
-    if (loading || loadingMore || total === null || games.length >= total) return;
+    if (loading || loadingMore || total === null || games.length >= total || moreFrom.current === games.length) return;
     const token = queryToken.current;
+    const from = games.length;
+    moreFrom.current = from;
     setLoadingMore(true);
-    fetch(`/api/games?${buildParams(games.length)}`)
+    fetch(`/api/games?${buildParams(from)}`)
       .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<GameSummary[]>; })
       .then((data) => { if (token !== queryToken.current) return; setGames((prev) => [...prev, ...data]); })
-      .catch(() => {})
+      .catch(() => { if (moreFrom.current === from) moreFrom.current = -1; })
       .finally(() => setLoadingMore(false));
   }
 
@@ -732,12 +762,41 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                         ))}
                         <div className="px-3 py-1 truncate">Event</div>
                       </div>
-                      {/* Enter opens the selection in Analysis, like the preview's
-                          button; a double-click opens the game clicked. */}
+                      {/* Enter opens the selection in Analysis, like the preview's More
+                          menu; a double-click opens the game clicked. ↑/↓ preview
+                          the previous/next game, ←/→ step through its moves. */}
                       <div
                         ref={scrollRef}
                         onScroll={onScroll}
                         onKeyDown={(e) => {
+                          if (e.altKey || e.ctrlKey || e.metaKey) return;
+                          if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+                            e.preventDefault();
+                            // Step from the focused row: focus moves at once, while
+                            // the preview follows as a transition — a held key
+                            // repeats faster than the board can render each game.
+                            const focused = Number((document.activeElement as HTMLElement | null)?.dataset.gameId);
+                            const fromId = Number.isFinite(focused) ? focused : selectedGame?.id;
+                            const at = fromId != null ? games.findIndex((g) => g.id === fromId) : -1;
+                            const next = at < 0 ? 0 : at + (e.key === "ArrowUp" ? -1 : 1);
+                            const game = games[next];
+                            if (!game) return;
+                            const row = scrollRef.current?.querySelector<HTMLElement>(`[data-game-id="${game.id}"]`);
+                            row?.focus({ preventScroll: true });
+                            row?.scrollIntoView({ block: "nearest" });
+                            startTransition(() => {
+                              setSelectedGame(game);
+                              setExtras([]);
+                            });
+                            return;
+                          }
+                          if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+                            if (!loadedGame) return;
+                            e.preventDefault();
+                            const last = loadedGame.moves.length;
+                            setSelectedPly((p) => (e.key === "ArrowLeft" ? Math.max(0, p - 1) : Math.min(last, p + 1)));
+                            return;
+                          }
                           if (e.key !== "Enter" || !selectedGame || !onOpenInAnalysis) return;
                           e.preventDefault();
                           void openInAnalysis([selectedGame, ...extras]);
@@ -754,6 +813,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                           return (
                             <button
                               key={game.id}
+                              data-game-id={game.id}
                               onClick={(e) => pickGame(game, e)}
                               onDoubleClick={(e) => {
                                 if (!onOpenInAnalysis || e.ctrlKey || e.metaKey || e.shiftKey) return;
@@ -790,6 +850,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                               {selectedGame && (
                                 <div className="shrink-0 px-2 py-1 border-b border-outline/40 flex items-center gap-2">
                                   <GamePreviewHeader game={selectedGame} />
+                                  {loadedGame.detail && <DetailsToggleButton detail={loadedGame.detail} open={detailsOpen} onToggle={() => setDetailsOpen((o) => !o)} />}
                                   <GameMoreMenu
                                     pgn={loadedGame.pgn}
                                     fen={loadedGame.fens[selectedPly] ?? loadedGame.fens[0]}
@@ -797,6 +858,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                                     ply={selectedPly}
                                     startFen={loadedGame.fens[0]}
                                     gameUrl={loadedGame.gameUrl}
+                                    leading={openEntries}
                                     extras={selectionEntries}
                                     // One game: the board's own entries. Several: the
                                     // "N selected" ones below take over.
@@ -804,27 +866,15 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                                     onExportPdf={extras.length === 0 ? () => void printSelected("save") : undefined}
                                     onPrint={extras.length === 0 ? () => void printSelected("print") : undefined}
                                   />
-                                  {onOpenInAnalysis && (
-                                    <button
-                                      onClick={() => void openInAnalysis([selectedGame, ...extras])}
-                                      className="shrink-0 text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 px-2.5 h-7 rounded-full transition-colors duration-short3 ease-standard"
-                                      title={extras.length
-                                        ? "Open the selected games in the editable Analysis board, this one first"
-                                        : "Open this game in the editable Analysis board. Ctrl-click other games in the list to open several at once."}
-                                    >
-                                      {extras.length ? `Open ${extras.length + 1} in Analysis →` : "Open in Analysis →"}
-                                    </button>
-                                  )}
-                                  {onOpenManyInAnalysis && !extras.length && games.length > 1 && games.length <= (analysisCapacity ?? 0) && !loading && (
-                                    <button
-                                      onClick={() => void openInAnalysis([selectedGame, ...games.filter((g) => g.id !== selectedGame.id)])}
-                                      className="shrink-0 text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 px-2.5 h-7 rounded-full transition-colors duration-short3 ease-standard"
-                                      title="Open every game in the list on the Analysis board, this one first"
-                                    >
-                                      Open all {games.length} →
-                                    </button>
-                                  )}
                                 </div>
+                              )}
+                              {selectedGame && detailsOpen && loadedGame.detail && (
+                                <DetailsPanel
+                                  detail={loadedGame.detail}
+                                  onClose={() => setDetailsOpen(false)}
+                                  onDetailChanged={() => setGameReloadKey((k) => k + 1)}
+                                  maxHeight="max-h-[45%]"
+                                />
                               )}
                               {exportNote && (
                                 <div className="shrink-0 px-2 py-1 text-label-sm bg-surface-container-high text-on-surface">{exportNote}</div>
