@@ -365,7 +365,9 @@ export default function App() {
   // Per-player tools that used to hang off the old player header (#219 replaced
   // it with the analysis mosaic and they went with it): the FIDE profile, and
   // merging the anchor with one Ctrl/Cmd-clicked co-selection.
-  const [profileOpen, setProfileOpen] = useState(false);
+  // Whose profile is open: the Players page's player, or one of the players
+  // of a game on the Analysis board.
+  const [profilePlayer, setProfilePlayer] = useState<PlayerInfo | null>(null);
   const [mergeOpen, setMergeOpen] = useState(false);
   // Everyone Ctrl/Cmd-clicked alongside the anchor. A player can reach the
   // database under several spellings, so any number of them can be merged at
@@ -1065,7 +1067,7 @@ export default function App() {
                 <div className="shrink-0 px-3 py-1.5 flex items-center gap-2 border-b border-outline/40 bg-surface-container-low">
                   <span className="text-label-lg text-on-surface truncate">{selectedPlayer.name}</span>
                   <button
-                    onClick={() => setProfileOpen(true)}
+                    onClick={() => setProfilePlayer(selectedPlayer)}
                     className={playerChip}
                     title="FIDE profile, rating history and activity"
                   >
@@ -1134,12 +1136,13 @@ export default function App() {
           onOpenGame={openManyInAnalysis}
           onTabState={updateAnalysisTab}
           onGameMutated={onGameMutated}
+          onOpenProfile={setProfilePlayer}
         />
       ) : null}
-      {profileOpen && selectedPlayer && (
+      {profilePlayer && (
         <PlayerProfileModal
-          player={selectedPlayer}
-          onClose={() => setProfileOpen(false)}
+          player={profilePlayer}
+          onClose={() => setProfilePlayer(null)}
           onPlayersMerged={handlePlayersMerged}
         />
       )}

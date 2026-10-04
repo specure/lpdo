@@ -172,6 +172,9 @@ pub struct GameDetail {
     pub id: u32,
     pub white: String,
     pub black: String,
+    /// The players' ids, for opening their profiles from the game.
+    pub white_id: u32,
+    pub black_id: u32,
     /// Authoritative FIDE IDs from the joined player rows. Prefer these over
     /// the WhiteFideId/BlackFideId tag inside `pgn`, which can carry stale or
     /// sentinel values (e.g. ChessBase's `-1` = unknown).
@@ -1097,7 +1100,8 @@ async fn game_by_id_handler(
                    g.white_elo, g.black_elo,
                    g.event, g.date, g.result, g.eco, g.move_count, g.pgn,
                    g.visibility,
-                   CAST(g.deleted_at AS VARCHAR)
+                   CAST(g.deleted_at AS VARCHAR),
+                   g.white_id, g.black_id
             FROM games g
             JOIN players pw ON g.white_id = pw.id
             JOIN players pb ON g.black_id = pb.id
@@ -1105,6 +1109,7 @@ async fn game_by_id_handler(
         let mut detail = conn.query_row(sql, duckdb::params![id], |row| {
             Ok(GameDetail {
                 id: row.get(0)?, white: row.get(1)?, black: row.get(2)?,
+                white_id: row.get(15)?, black_id: row.get(16)?,
                 white_fide_id: row.get(3)?, black_fide_id: row.get(4)?,
                 white_elo: row.get(5)?, black_elo: row.get(6)?,
                 event: row.get(7)?, date: row.get(8)?, result: row.get(9)?,
