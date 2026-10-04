@@ -3,6 +3,7 @@ import { Chessboard } from "react-chessboard";
 import { LoadedGame } from "../../lib/useGamePgn";
 import { fitBoard } from "../../lib/boardSize";
 import BoardErrorBoundary from "../BoardErrorBoundary";
+import { IconFlip } from "../GameBoard";
 
 // Small read-only board (area E of the Games page, #219) showing the selected
 // game at the current ply. Nav sits below the board in the unified order shared
@@ -16,6 +17,7 @@ export default function MiniBoard({
   showNav = true,
   fen: fenOverride,
   flipped = false,
+  onFlip,
 }: {
   game: LoadedGame;
   /** Mainline half-move to draw. Ignored when `fen` is given; only the nav
@@ -32,6 +34,9 @@ export default function MiniBoard({
    *  ply in the mainline `fens` array. */
   fen?: string;
   flipped?: boolean;
+  /** Turn the board round; with it, the nav row ends in a flip button as on
+   *  the Analysis board. */
+  onFlip?: () => void;
 }) {
   const last = game.fens.length - 1;
   const at = Math.min(Math.max(ply, 0), last);
@@ -101,6 +106,12 @@ export default function MiniBoard({
           <button className={navBtn} disabled={at === 0} onClick={() => setPly(at - 1)} title="Back">‹</button>
           <button className={navBtn} disabled={at >= last} onClick={() => setPly(at + 1)} title="Forward">›</button>
           <button className={navBtn} disabled={at >= last} onClick={() => setPly(last)} title="Fast-forward to end">⏭</button>
+          {onFlip && (
+            <>
+              <div className="w-px h-5 bg-outline-variant mx-1" />
+              <button className={navBtn} onClick={onFlip} title="Flip board"><IconFlip /></button>
+            </>
+          )}
         </div>
       )}
     </div>

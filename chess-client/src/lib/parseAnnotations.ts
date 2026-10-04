@@ -113,6 +113,9 @@ export const NAG_MAP: Record<number, string> = {
 };
 
 export function nagToSymbol(nag: number): string {
+  // $11 and $12 (equal: a quiet / an active position) read as "=" like $10.
+  // Kept out of NAG_MAP so "=" still maps back to $10 alone.
+  if (nag === 11 || nag === 12) return "=";
   return NAG_MAP[nag] ?? `$${nag}`;
 }
 

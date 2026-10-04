@@ -4,9 +4,8 @@ import { GameSummary, MoveStats, PlayerInfo } from "../types";
 import { LoadedGame } from "../lib/useGamePgn";
 import { CursorPath } from "../lib/moveTreeNav";
 import MiniBoard from "./games/MiniBoard";
-import MoveList from "./games/MoveList";
-import GamePreviewHeader from "./games/GamePreviewHeader";
-import GameMoreMenu, { MenuEntry } from "./games/GameMoreMenu";
+import GamePreview from "./games/GamePreview";
+import type { MenuEntry } from "./games/GameMoreMenu";
 import GameBoard from "./GameBoard";
 import CloudEngine from "./CloudEngine";
 import { useGamePgn } from "../lib/useGamePgn";
@@ -304,7 +303,9 @@ export default function AnalysisPage({
   const [previewFrom, setPreviewFrom] = useState<"related" | "mine">("related");
   const [previewStart, setPreviewStart] = useState(0);
   const [previewPly, setPreviewPly] = useState(0);
-  const { game: previewGame, loading: previewLoading } = useGamePgn(preview?.id ?? null);
+  // Bumped when the preview's Details changed the game (visibility, collections).
+  const [previewReloadKey, setPreviewReloadKey] = useState(0);
+  const { game: previewGame, loading: previewLoading } = useGamePgn(preview?.id ?? null, previewReloadKey);
   useEffect(() => { setPreviewPly(previewStart); }, [preview?.id, previewStart]);
   // Move on and the Games tab's preview no longer belongs to what's listed
   // (My games' moves the board itself: it stays); switch tabs and neither.
@@ -316,45 +317,26 @@ export default function AnalysisPage({
   // board and the moves, opening at its start move.
   const previewPane = preview ? (
                       <div className="shrink-0 h-[58%] min-h-0 flex flex-col border-t border-outline/40">
-                        <div className="shrink-0 px-2 py-1 flex items-center gap-2 border-b border-outline/40">
-                          <GamePreviewHeader game={preview} />
-                          {previewGame && (
-                            <GameMoreMenu
-                              pgn={previewGame.pgn}
-                              fen={previewGame.fens[previewPly] ?? previewGame.fens[0]}
-                              lineSans={previewGame.moves.map((m) => m.san)}
-                              ply={previewPly}
-                              startFen={previewGame.fens[0]}
-                              gameUrl={previewGame.gameUrl}
-                            />
-                          )}
-                          <button
-                            onClick={() => void openRelated(preview)}
-                            className="shrink-0 text-label-md text-primary hover:bg-primary/8 active:bg-primary/12 px-2.5 h-7 rounded-full transition-colors duration-short3 ease-standard"
-                            title="Open this game in its own Analysis tab"
-                          >
-                            Open in Analysis →
-                          </button>
-                          <button
-                            onClick={() => setPreview(null)}
-                            className="shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-sm"
-                            title="Close the preview"
-                          >✕</button>
-                        </div>
-                        {previewGame ? (
-                          <div className="flex-1 min-h-0 flex flex-col">
-                            <div className="flex-[3] min-h-0">
-                              <MiniBoard game={previewGame} ply={previewPly} setPly={setPreviewPly} id="analysis-related-preview" showHeader={false} />
-                            </div>
-                            <div className="flex-[2] min-h-0 border-t border-outline/40">
-                              <MoveList game={previewGame} ply={previewPly} setPly={setPreviewPly} />
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-sm">
-                            {previewLoading ? "Loading…" : "—"}
-                          </div>
-                        )}
+                        <GamePreview
+                          game={preview}
+                          loaded={previewGame}
+                          loading={previewLoading}
+                          ply={previewPly}
+                          setPly={setPreviewPly}
+                          onReload={() => setPreviewReloadKey((k) => k + 1)}
+                          openEntries={[{
+                            label: "Open in Analysis",
+                            onClick: () => void openRelated(preview),
+                            title: "Open this game in its own Analysis tab",
+                          }]}
+                          onClose={() => setPreview(null)}
+                          boardId="analysis-related-preview"
+                          layoutId="analysis-preview"
+                          panelClass="h-full w-full min-h-0 min-w-0 overflow-hidden flex flex-col"
+                          emptyText="—"
+                          // A short space under the list: the board needs the most of it.
+                          boardShare={70}
+                        />
                       </div>
   ) : null;
 
