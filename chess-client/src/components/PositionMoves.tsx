@@ -4,16 +4,17 @@
 // `moveSequence` is the active prefix (its length is the cursor).
 
 import { Fragment } from "react";
+import { IconFirst, IconPrev, IconNext, IconLast } from "./navIcons";
 
 interface Props {
   /** Active line up to the cursor (its length = current ply). */
   moveSequence: string[];
   onBack: () => void;
-  /** Rewind to the start (⏮). */
+  /** Rewind to the start. */
   onReset: () => void;
   /** Step forward along `fullLine` (›). Omit to hide. */
   onForward?: () => void;
-  /** Jump to the end of `fullLine` (⏭). Omit to hide. */
+  /** Jump to the end of `fullLine`. Omit to hide. */
   onEnd?: () => void;
   /** Click a move → set the cursor to that ply. Omit → not clickable. */
   onJumpTo?: (ply: number) => void;
@@ -38,7 +39,8 @@ export default function PositionMoves({ moveSequence, onBack, onReset, onForward
     }
   });
 
-  const navBtn = "shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-full text-on-surface-variant text-body-md hover:bg-on-surface/8 active:bg-on-surface/12 disabled:opacity-30 disabled:hover:bg-transparent transition-colors duration-short3 ease-standard";
+  // As the Analysis board's nav, a size smaller.
+  const navBtn = "shrink-0 w-8 h-8 inline-flex items-center justify-center rounded-full text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 disabled:opacity-25 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-colors duration-short3 ease-standard";
   const moveCls = (i: number) =>
     `px-1 rounded-sm font-mono ${onJumpTo ? "cursor-pointer" : ""} ${
       i === cursor - 1
@@ -58,10 +60,10 @@ export default function PositionMoves({ moveSequence, onBack, onReset, onForward
   return (
     <div className="flex flex-col h-full min-h-0 gap-1.5">
       <div className="flex items-center gap-0.5 shrink-0">
-        <button className={navBtn} onClick={onReset} disabled={!hasSequence} title="Rewind to start">⏮</button>
-        <button className={navBtn} onClick={onBack} disabled={!hasSequence} title="Back">‹</button>
-        {onForward && <button className={navBtn} onClick={onForward} disabled={!canForward} title="Forward">›</button>}
-        {onEnd && <button className={navBtn} onClick={onEnd} disabled={!canForward} title="To end">⏭</button>}
+        <button className={navBtn} onClick={onReset} disabled={!hasSequence} title="First move"><IconFirst /></button>
+        <button className={navBtn} onClick={onBack} disabled={!hasSequence} title="Previous move"><IconPrev /></button>
+        {onForward && <button className={navBtn} onClick={onForward} disabled={!canForward} title="Next move"><IconNext /></button>}
+        {onEnd && <button className={navBtn} onClick={onEnd} disabled={!canForward} title="Last move"><IconLast /></button>}
       </div>
       <div tabIndex={0} onKeyDown={onKeyDown} className="flex-1 min-h-0 overflow-y-auto text-body-sm leading-6 focus:outline-none focus-visible:ring-1 focus-visible:ring-primary/50 rounded-sm">
         {rows.length === 0 ? (

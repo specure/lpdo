@@ -39,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collections, changeable there.
 
 ### Changed
+- **Navigation buttons** of the game preview and the position explorer look
+  like the Analysis board's, instead of orange ⏮ ⏭ emoji.
 - **Open in Analysis** moved into the game preview's **More** menu, which
   now sits at the far right, after **Details**.
 
