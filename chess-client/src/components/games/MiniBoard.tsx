@@ -3,11 +3,11 @@ import { Chessboard } from "react-chessboard";
 import { LoadedGame } from "../../lib/useGamePgn";
 import { fitBoard } from "../../lib/boardSize";
 import BoardErrorBoundary from "../BoardErrorBoundary";
-import { IconFlip } from "../GameBoard";
+import { IconFirst, IconPrev, IconNext, IconLast, IconFlip } from "../navIcons";
 
 // Small read-only board (area E of the Games page, #219) showing the selected
 // game at the current ply. Nav sits below the board in the unified order shared
-// with the position board: ⏮ ‹ › ⏭. Shares the lifted `ply` with the move list (F).
+// with the Analysis board: first, previous, next, last. Shares the lifted `ply` with the move list (F).
 export default function MiniBoard({
   game,
   ply = 0,
@@ -60,7 +60,8 @@ export default function MiniBoard({
     return () => ro.disconnect();
   }, []);
 
-  const navBtn = "w-7 h-7 inline-flex items-center justify-center rounded-full text-on-surface-variant text-body-md hover:bg-on-surface/8 active:bg-on-surface/12 disabled:opacity-30 disabled:hover:bg-transparent transition-colors duration-short3 ease-standard";
+  // As the Analysis board's nav, a size smaller.
+  const navBtn = "w-8 h-8 inline-flex items-center justify-center rounded-full text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 disabled:opacity-25 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-colors duration-short3 ease-standard";
 
   return (
     <div className="flex flex-col h-full min-h-0 p-2 gap-2">
@@ -102,10 +103,10 @@ export default function MiniBoard({
       </div>
       {showNav && (
         <div className="shrink-0 flex flex-wrap items-center justify-center gap-1">
-          <button className={navBtn} disabled={at === 0} onClick={() => setPly(0)} title="Rewind to start">⏮</button>
-          <button className={navBtn} disabled={at === 0} onClick={() => setPly(at - 1)} title="Back">‹</button>
-          <button className={navBtn} disabled={at >= last} onClick={() => setPly(at + 1)} title="Forward">›</button>
-          <button className={navBtn} disabled={at >= last} onClick={() => setPly(last)} title="Fast-forward to end">⏭</button>
+          <button className={navBtn} disabled={at === 0} onClick={() => setPly(0)} title="First move"><IconFirst /></button>
+          <button className={navBtn} disabled={at === 0} onClick={() => setPly(at - 1)} title="Previous move"><IconPrev /></button>
+          <button className={navBtn} disabled={at >= last} onClick={() => setPly(at + 1)} title="Next move"><IconNext /></button>
+          <button className={navBtn} disabled={at >= last} onClick={() => setPly(last)} title="Last move"><IconLast /></button>
           {onFlip && (
             <>
               <div className="w-px h-5 bg-outline-variant mx-1" />
