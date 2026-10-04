@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Comments and variations in the game preview** (Players, Games and the
+  Analysis board's related games) — the move list shows a game's comments,
+  `!`/`?` marks and variations, not only its main line. Clicking a variation's
+  move shows that position on the preview board; ← → step along the
+  variation, and back past its first move returns to the main line.
+- **The result after the moves** — the game preview and the Analysis board's
+  move list end with the game's result on a line of its own (none for `*`).
+- **Flip the preview board** — the game preview's board has the Analysis
+  board's flip button, to see the game from Black's side; it stays as left.
+- **One game preview everywhere** — the Analysis board's preview of related
+  games is now the same as the Players and Games page's: **Details**, **Open
+  in Analysis** in the **More** menu, the flip button, comments and
+  variations.
 - **Annotated copies fill in games you already have** — importing a game the
   database already holds, with the same moves, adds the comments, variations
   and `!`/`?` marks the stored game lacks. Nothing is replaced: a broadcast

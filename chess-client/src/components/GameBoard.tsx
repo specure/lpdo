@@ -70,7 +70,7 @@ const IconLast = () => (
     <path d="M3 3l7 5-7 5V3z" />
   </svg>
 );
-const IconFlip = () => (
+export const IconFlip = () => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transform: "rotate(90deg)" }}>
     <path d="M17 1l4 4-4 4" />
     <path d="M3 11V9a4 4 0 014-4h14" />
@@ -2355,6 +2355,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             onCollapseSubVariations={handleCollapseSubVariations}
             onToggleAnnotations={() => setShowAnnotations((v) => !v)}
                       offAware={!!chapter}
+            result={chapter ? null : detail?.result}
           />
         ) : fens.length > 0 ? (
           <MoveList moves={moves} currentIndex={currentIndex} onSelect={goTo} />

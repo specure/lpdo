@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { Chess } from "chess.js";
-import { parsePgnTree } from "./parsePgnTree";
+import { parsePgnTree, type AnnotatedGame } from "./parsePgnTree";
 import { parseBlockTags } from "./pgnEditor";
 import type { GameDetail } from "../types";
 
 // Fetch + parse a single DB game (by id) into a flat, read-only playback model
-// for the Games page's mini board + compact move list (#219). Linear mainline
-// only — comments and variations are dropped ("compressed").
+// for the Games page's mini board + compact move list (#219). Playback steps
+// through the main line; the parsed tree rides along so the move list can show
+// the comments and variations too.
 
 export interface GameMove {
   ply: number; // 1-based half-move
@@ -27,6 +28,9 @@ export interface LoadedGame {
   /** The PGN has movetext, but none of it could be read as moves — shown as
    *  such, not as a game without moves (#286). */
   unreadable?: boolean;
+  /** The parsed game, comments and variations included — the previews' move
+   *  list shows them. Absent when the moves couldn't be read. */
+  tree?: AnnotatedGame;
   /** The PGN as the server holds it — the previews offer it for copying.
    *  Not persisted anywhere: the Analysis tabs store only ids and cursors. */
   pgn: string | null;
@@ -68,13 +72,13 @@ function hasMovetext(pgn: string): boolean {
  *  used to do this, and it rejects valid PGN — several comments in a row after
  *  one move, which Lichess writes on every move its engine flags as a blunder,
  *  mistake or inaccuracy — with the error swallowed into an empty game (#286). */
-export function buildPlayback(pgn: string | null): Pick<LoadedGame, "fens" | "moves" | "unreadable"> {
+export function buildPlayback(pgn: string | null): Pick<LoadedGame, "fens" | "moves" | "unreadable" | "tree"> {
   const text = pgn ?? "";
   try {
     const tree = parsePgnTree(text);
     const fens = [tree.startFen, ...tree.mainLine.map((n) => n.fen)];
     const moves = tree.mainLine.map((n, i): GameMove => ({ ply: i + 1, san: n.san, color: n.color }));
-    return { fens, moves, unreadable: moves.length === 0 && hasMovetext(text) };
+    return { fens, moves, unreadable: moves.length === 0 && hasMovetext(text), tree };
   } catch (e) {
     // eslint-disable-next-line no-console
     console.warn("Could not read this game's moves:", e);

@@ -5,13 +5,10 @@ import { GameSummary, MoveStats, PlayerInfo } from "../types";
 import PlayerPicker from "./PlayerPicker";
 import PositionBoard from "./PositionBoard";
 import PositionMoves from "./PositionMoves";
-import MiniBoard from "./games/MiniBoard";
-import GamePreviewHeader from "./games/GamePreviewHeader";
-import GameMoreMenu, { MenuEntry } from "./games/GameMoreMenu";
+import type { MenuEntry } from "./games/GameMoreMenu";
 import PrintDialog, { ExportableGame } from "./games/PrintDialog";
 import { fetchPgns, savePgnFile } from "../lib/exportPgn";
-import MoveList from "./games/MoveList";
-import { DetailsPanel, DetailsToggleButton } from "./GameBoard";
+import GamePreview from "./games/GamePreview";
 import CloudEngine, { pvString } from "./CloudEngine";
 import { useNeighbourResize } from "../lib/panelResize";
 import { useGamePgn } from "../lib/useGamePgn";
@@ -256,14 +253,6 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   // Bumped when the Details panel changed the game (visibility, collections).
   const [gameReloadKey, setGameReloadKey] = useState(0);
   const { game: loadedGame, loading: gameLoading } = useGamePgn(selectedGame?.id ?? null, gameReloadKey);
-  // The preview's Details panel, as on the Analysis board — open or closed
-  // stays as left, for every game.
-  const [detailsOpen, setDetailsOpen] = useState(() => {
-    try { return localStorage.getItem("previewDetailsOpen") === "1"; } catch { return false; }
-  });
-  useEffect(() => {
-    try { localStorage.setItem("previewDetailsOpen", detailsOpen ? "1" : "0"); } catch { /* not remembered */ }
-  }, [detailsOpen]);
   // A newly selected game starts at its first move — unless it's a restored
   // selection, which brings its move along. (This also runs on mount, where it
   // used to overwrite the Games page's restored move with 0.)
@@ -522,7 +511,6 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const rightCol = useDefaultLayout({ id: "games-right", storage: localStorage });
   const explorer = useDefaultLayout({ id: "games-b", storage: localStorage });
   const bottom = useDefaultLayout({ id: "games-bottom", storage: localStorage });
-  const preview = useDefaultLayout({ id: "games-ef", storage: localStorage });
   const rz = useNeighbourResize(roster);
   /** Divider that follows panel `key`. */
   const after = (key: string) => rz.separator(at(key));
@@ -841,70 +829,32 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                   <Separator className={vHandle} />
                   {/* E over F */}
                   <Panel defaultSize="38" minSize="18">
-                    <Group orientation="vertical" className="h-full w-full flex" defaultLayout={preview.defaultLayout} onLayoutChanged={preview.onLayoutChanged}>
-                      {/* E — mini board of the selected game */}
-                      <Panel defaultSize="55" minSize="20">
-                        <div className={panel}>
-                          {loadedGame ? (
-                            <>
-                              {selectedGame && (
-                                <div className="shrink-0 px-2 py-1 border-b border-outline/40 flex items-center gap-2">
-                                  <GamePreviewHeader game={selectedGame} />
-                                  {loadedGame.detail && <DetailsToggleButton detail={loadedGame.detail} open={detailsOpen} onToggle={() => setDetailsOpen((o) => !o)} />}
-                                  <GameMoreMenu
-                                    pgn={loadedGame.pgn}
-                                    fen={loadedGame.fens[selectedPly] ?? loadedGame.fens[0]}
-                                    lineSans={loadedGame.moves.map((m) => m.san)}
-                                    ply={selectedPly}
-                                    startFen={loadedGame.fens[0]}
-                                    gameUrl={loadedGame.gameUrl}
-                                    leading={openEntries}
-                                    extras={selectionEntries}
-                                    // One game: the board's own entries. Several: the
-                                    // "N selected" ones below take over.
-                                    onExportPgn={extras.length === 0 ? () => void exportSelectedPgn() : undefined}
-                                    onExportPdf={extras.length === 0 ? () => void printSelected("save") : undefined}
-                                    onPrint={extras.length === 0 ? () => void printSelected("print") : undefined}
-                                  />
-                                </div>
-                              )}
-                              {selectedGame && detailsOpen && loadedGame.detail && (
-                                <DetailsPanel
-                                  detail={loadedGame.detail}
-                                  onClose={() => setDetailsOpen(false)}
-                                  onDetailChanged={() => setGameReloadKey((k) => k + 1)}
-                                  maxHeight="max-h-[45%]"
-                                />
-                              )}
-                              {exportNote && (
-                                <div className="shrink-0 px-2 py-1 text-label-sm bg-surface-container-high text-on-surface">{exportNote}</div>
-                              )}
-                              {analysisNote && (
-                                <div className="shrink-0 px-2 py-1 text-label-sm text-on-error-container bg-error-container">{analysisNote}</div>
-                              )}
-                              {/* The header above already names the players and
-                                  the result, so the board's own line would repeat it. */}
-                              <MiniBoard game={loadedGame} ply={selectedPly} setPly={setSelectedPly} showHeader={!selectedGame} />
-                            </>
-                          ) : (
-                            <div className="flex-1 flex items-center justify-center text-center text-on-surface-variant text-body-sm px-3">
-                              {gameLoading ? "Loading…" : "Select a game"}
-                            </div>
-                          )}
-                        </div>
-                      </Panel>
-                      <Separator className={hHandle} />
-                      {/* F — compact move list of the selected game */}
-                      <Panel defaultSize="45" minSize="12">
-                        <div className={panel}>
-                          {loadedGame ? (
-                            <MoveList game={loadedGame} ply={selectedPly} setPly={setSelectedPly} />
-                          ) : (
-                            <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-sm px-3">—</div>
-                          )}
-                        </div>
-                      </Panel>
-                    </Group>
+                    <GamePreview
+                      game={selectedGame}
+                      loaded={loadedGame}
+                      loading={gameLoading}
+                      ply={selectedPly}
+                      setPly={setSelectedPly}
+                      onReload={() => setGameReloadKey((k) => k + 1)}
+                      openEntries={openEntries}
+                      menuExtras={selectionEntries}
+                      // One game: the board's own entries. Several: the
+                      // "N selected" ones in menuExtras take over.
+                      onExportPgn={extras.length === 0 ? () => void exportSelectedPgn() : undefined}
+                      onExportPdf={extras.length === 0 ? () => void printSelected("save") : undefined}
+                      onPrint={extras.length === 0 ? () => void printSelected("print") : undefined}
+                      notes={<>
+                        {exportNote && (
+                          <div className="shrink-0 px-2 py-1 text-label-sm bg-surface-container-high text-on-surface">{exportNote}</div>
+                        )}
+                        {analysisNote && (
+                          <div className="shrink-0 px-2 py-1 text-label-sm text-on-error-container bg-error-container">{analysisNote}</div>
+                        )}
+                      </>}
+                      boardId="games-mini-board"
+                      layoutId="games-ef"
+                      panelClass={panel}
+                    />
                   </Panel>
                 </Group>
               </Panel>

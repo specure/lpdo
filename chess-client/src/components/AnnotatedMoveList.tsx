@@ -30,12 +30,15 @@ interface AnnotatedMoveListProps {
   /** Switch the move at `index` (1-based) of `line` off or on — offered on
    *  the current move. */
   onToggleOff?: (line: MoveNode[], index: number, off: boolean) => void;
+  /** The game's result, shown on its own line after the moves; nothing for
+   *  "*" (unfinished or unknown) or none. */
+  result?: string | null;
 }
 
 export default function AnnotatedMoveList({
   game, activeLine, activeIndex, showAnnotations, collapsedNodes, partialNodes, inSubVariation,
   breadcrumbs, onNavigate, onToggleCollapse, onExpandAll, onCollapseAll,
-  onExpandSubVariations, onCollapseSubVariations, onToggleAnnotations, offAware, onToggleOff,
+  onExpandSubVariations, onCollapseSubVariations, onToggleAnnotations, offAware, onToggleOff, result,
 }: AnnotatedMoveListProps) {
   const activeRef = useRef<HTMLSpanElement>(null);
   // The current move's off-switch state, found while the moves are drawn; the
@@ -286,6 +289,9 @@ export default function AnnotatedMoveList({
         <div className="leading-normal">
           {renderLine(game.mainLine, "m", 0)}
         </div>
+        {result && result !== "*" && (
+          <div className="mt-1 text-on-surface">{result === "1/2-1/2" ? "½-½" : result}</div>
+        )}
       </div>
 
       {/* Bottom toolbar */}
