@@ -1056,19 +1056,19 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
             several
               ? { label: models ? `Make ${multi.length} chapters` : `Make ${multi.length} model games`, onClick: () => { onConvert(multi); setPicked([]); }, disabled: busy }
               : { label: models ? "Make it a chapter" : "Make it a model game", onClick: () => chapter && onConvert([chapter.id]), disabled: none },
+            // A model game told by its comments — a finish after the last move
+            // makes one — set as the other kind by hand, or left to them again.
+            ...(models && onSetKind ? [
+              several
+                ? { label: kind === "models" ? `Make ${multi.length} reference games` : `Make ${multi.length} model games`, onClick: () => { onSetKind(multi, kind !== "models"); setPicked([]); }, disabled: busy }
+                : { label: kind === "models" ? "Make it a reference game" : "Make it a model game", onClick: () => chapter && onSetKind([chapter.id], kind !== "models"), disabled: none },
+              ...(!several && chapter?.annotated_set ? [{ label: "Model or reference: by its comments", onClick: () => onSetKind([chapter.id], null), disabled: none }] : []),
+            ] : []),
             several
               ? { label: `Rename ${multi.length} ${many}… (F2)`, onClick: () => { setRenamingAll(multi); setRenaming(null); }, disabled: busy, separated: true }
               : { label: `Rename ${many}…`, onClick: () => { setRenamingAll(book.chapters.map((c) => c.id)); setRenaming(null); }, disabled: busy || book.chapters.length === 0, separated: true },
             { label: `Rearrange ${many} (M)`, onClick: () => { setArranging(true); setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
             ...(models && onOrder ? [{ label: "Reverse the order", onClick: () => onOrder(book.chapters.map((c) => c.id).reverse()), disabled: busy || book.chapters.length < 2 }] : []),
-            // A model game told by its comments — a finish after the last move
-            // makes one — set as the other kind by hand, or left to them again.
-            ...(models && onSetKind ? [
-              several
-                ? { label: kind === "models" ? `Make ${multi.length} reference games` : `Make ${multi.length} model games`, onClick: () => { onSetKind(multi, kind !== "models"); setPicked([]); }, disabled: busy, separated: true }
-                : { label: kind === "models" ? "Make it a reference game" : "Make it a model game", onClick: () => chapter && onSetKind([chapter.id], kind !== "models"), disabled: none, separated: true },
-              ...(!several && chapter?.annotated_set ? [{ label: "Model or reference: by its comments", onClick: () => onSetKind([chapter.id], null), disabled: none }] : []),
-            ] : []),
             ...(models ? [] : [
             several
               ? { label: `Merge ${multi.length} chapters…`, onClick: () => { onMerge(multi); setPicked([]); setRenaming(null); }, disabled: busy }
