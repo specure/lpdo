@@ -20,6 +20,10 @@ interface Props {
   onOpenTournament: () => void;
   /** Open the Repertoire page (#327). */
   onOpenRepertoire: () => void;
+  /** Open the Games page: every game in the database. */
+  onOpenGames: () => void;
+  /** Open the Analysis page: the games opened on the board. */
+  onOpenAnalysis: () => void;
   onBrowseLocal: () => void;
   /** Open the Setup Wizard (used by the empty-database CTA). */
   onRunWizard: () => void;
@@ -38,6 +42,22 @@ const IconBook = () => (
   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M2 4h6a4 4 0 0 1 4 4v12a3 3 0 0 0-3-3H2z" />
     <path d="M22 4h-6a4 4 0 0 0-4 4v12a3 3 0 0 1 3-3h7z" />
+  </svg>
+);
+
+// A list, for the games in the database.
+const IconList = () => (
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M8 6h13M8 12h13M8 18h13" />
+    <path d="M3 6h.01M3 12h.01M3 18h.01" />
+  </svg>
+);
+
+// A rising line, for analysis with the engines.
+const IconChart = () => (
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 3v18h18" />
+    <path d="m7 15 4-4 3 3 6-6" />
   </svg>
 );
 
@@ -306,7 +326,7 @@ function ActionCard({
 }
 
 export default function HomeEmptyState({
-  status, onMyGames, onSearchPlayer, onOpenTournament, onOpenRepertoire, onBrowseLocal, onRunWizard,
+  status, onMyGames, onSearchPlayer, onOpenTournament, onOpenRepertoire, onOpenGames, onOpenAnalysis, onBrowseLocal, onRunWizard,
 }: Props) {
   // Live first-run readiness (overrides the parent's slow-polled status). The
   // slot below the quick-start cards becomes one of: Preparing… / failed (Reset)
@@ -360,13 +380,13 @@ export default function HomeEmptyState({
           </div>
         </div>
 
-        {/* Quick-start cards — colour-coded by action role.
+        {/* Quick-start cards — colour-coded by action role, in the order of
+            the top bar's places (Home aside): your own work in the first row,
+            the database and the board in the second.
             Each icon has its own personality: the magnifier tilts as if peering,
             the trophy lifts up like a podium presentation, the folder pops at
             an angle suggesting it's about to open. Cards rise in 60ms apart. */}
-        {/* Two rows on wide screens: the three main actions, then the two
-            secondary ones as wide, shorter cards. */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-4">
           <ActionCard
             tone="primary"
             icon={<IconBoard />}
@@ -378,7 +398,7 @@ export default function HomeEmptyState({
             onClick={onMyGames}
             disabled={!hasMyPlayer}
             delayMs={60}
-            className="lg:col-span-2"
+            className="lg:col-span-4"
           />
           <ActionCard
             tone="tertiary"
@@ -387,8 +407,8 @@ export default function HomeEmptyState({
             title="Prepare for my next game"
             description="Add a chess-results.com tournament and prep against likely opponents."
             onClick={onOpenTournament}
-            delayMs={120}
-            className="lg:col-span-2"
+            delayMs={100}
+            className="lg:col-span-4"
           />
           <ActionCard
             tone="secondary"
@@ -397,28 +417,48 @@ export default function HomeEmptyState({
             title="My repertoire"
             description="Opening books and chapters — the lines you play, studied with the database and the engines."
             onClick={onOpenRepertoire}
-            delayMs={150}
-            className="lg:col-span-2"
+            delayMs={140}
+            className="lg:col-span-4"
           />
           <ActionCard
             tone="secondary"
             icon={<IconSearch />}
             iconHoverClass="group-hover:-rotate-12 group-hover:scale-110"
             title="Search a player"
-            description="Find any player in the database and explore their games and openings."
+            description="Find any player and explore their games and openings."
             onClick={onSearchPlayer}
             delayMs={180}
-            wide className="lg:col-span-3"
+            className="lg:col-span-3"
+          />
+          <ActionCard
+            tone="secondary"
+            icon={<IconList />}
+            iconHoverClass="group-hover:scale-110"
+            title="Browse games"
+            description="Every game in the database, by collection and opening."
+            onClick={onOpenGames}
+            delayMs={210}
+            className="lg:col-span-3"
+          />
+          <ActionCard
+            tone="secondary"
+            icon={<IconChart />}
+            iconHoverClass="group-hover:-translate-y-0.5 group-hover:scale-110"
+            title="Analysis board"
+            description="The games you opened, on the board with the engines."
+            onClick={onOpenAnalysis}
+            delayMs={240}
+            className="lg:col-span-3"
           />
           <ActionCard
             tone="neutral"
             icon={<IconFolder />}
             iconHoverClass="group-hover:-rotate-6 group-hover:scale-105"
             title="Browse local PGN files"
-            description="Open PGN files from your filesystem without touching the database."
+            description="Open PGN files from your computer without touching the database."
             onClick={onBrowseLocal}
-            delayMs={240}
-            wide className="lg:col-span-3"
+            delayMs={270}
+            className="lg:col-span-3"
           />
         </div>
 
