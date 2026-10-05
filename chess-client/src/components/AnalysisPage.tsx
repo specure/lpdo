@@ -1,5 +1,5 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Group, Panel, Separator, useDefaultLayout, useGroupRef } from "react-resizable-panels";
 import { GameSummary, MoveStats, PlayerInfo } from "../types";
 import { LoadedGame } from "../lib/useGamePgn";
 import { CursorPath } from "../lib/moveTreeNav";
@@ -293,6 +293,31 @@ export default function AnalysisPage({
   const rz = useNeighbourResize([...leadIds, "board", "moves", "side"]);
   const [moveHost, setMoveHost] = useState<HTMLDivElement | null>(null);
   const saved = useDefaultLayout({ id: layoutId, storage: localStorage });
+  // Another layoutId — a panel folded or opened on the Repertoire page — sets
+  // the new sizes in place. Remounting the group for it would remount the
+  // board, and throw away an edit of the moves in progress. The layout last
+  // used with this id is read while rendering, before the group commits its
+  // new constraints under the id; without one, the leading panels take their
+  // default sizes and the board takes up the difference.
+  const group = useGroupRef();
+  const remembered = saved.defaultLayout;
+  const appliedLayout = useRef(layoutId);
+  useLayoutEffect(() => {
+    if (appliedLayout.current === layoutId) return;
+    appliedLayout.current = layoutId;
+    const g = group.current;
+    if (!g) return;
+    let next = remembered;
+    if (!next) {
+      next = { ...g.getLayout() };
+      for (const p of lead ?? []) {
+        const size = Number(p.size);
+        next.board = (next.board ?? 0) + (next[p.id] ?? size) - size;
+        next[p.id] = size;
+      }
+    }
+    g.setLayout(next);
+  }, [layoutId]); // eslint-disable-line react-hooks/exhaustive-deps
   const sideCol = useDefaultLayout({ id: "analysis-side", storage: localStorage });
 
   // A related game being previewed in place — picking a row no longer opens a
@@ -417,7 +442,7 @@ export default function AnalysisPage({
     <div className="flex flex-1 overflow-hidden p-1.5">
       {/* Rail | board | position intel. One group, so every divider follows the
           same rule: it resizes the two panels it separates and nothing else. */}
-      <Group orientation="horizontal" className="flex-1 min-w-0 flex" defaultLayout={saved.defaultLayout} onLayoutChanged={saved.onLayoutChanged} onLayoutChange={rz.onLayout}>
+      <Group orientation="horizontal" className="flex-1 min-w-0 flex" groupRef={group} defaultLayout={saved.defaultLayout} onLayoutChanged={saved.onLayoutChanged} onLayoutChange={rz.onLayout}>
       {/* A — open-game tabs (mini-board previews) */}
       {lead ? lead.map((p, i) => (
         <Fragment key={p.id}>
