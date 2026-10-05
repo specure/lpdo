@@ -459,7 +459,8 @@ export default function RepertoirePage({ onOpenGame }: Props) {
     </div>
   );
 
-  // Each fold has a layout of its own: the group reads its sizes once.
+  // Each fold has a layout of its own, which AnalysisPage applies in place —
+  // never by remounting it, which would lose an edit of the lines in progress.
   const layoutId = `repertoire-${booksFolded ? "b" : "B"}${chaptersFolded ? "c" : "C"}`;
   return (<>
     {preparingMerge && <PleaseWait text="Merging the chapters…" />}
@@ -472,7 +473,6 @@ export default function RepertoirePage({ onOpenGame }: Props) {
       />
     )}
     <AnalysisPage
-      key={layoutId}
       tabs={tab ? [tab] : []}
       activeKey={tab?.key ?? null}
       onActivate={() => {}}
@@ -1152,11 +1152,13 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
               : { label: "Merge chapters…", onClick: () => { setSelecting(current != null && chapter ? [current] : []); anchor.current = chapter ? current : null; setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
             { label: "Analyse chapter", onClick: () => chapter && onAnalyse([chapter.id]), disabled: none || analysing, separated: true },
             { label: "Analyse all chapters", onClick: () => onAnalyse(book.chapters.map((c) => c.id)), disabled: busy || analysing || book.chapters.length === 0 },
+            ]),
+            // FENs left in the comments by other tools' exports — in model and
+            // reference games as much as in chapters.
             { label: "Remove FENs from comments…", separated: true, disabled: none,
               onClick: () => chapter && setFens({ ids: [chapter.id], what: `“${chapter.name}”` }) },
-            { label: "Remove FENs in all chapters…", disabled: busy || book.chapters.length === 0,
-              onClick: () => setFens({ ids: book.chapters.map((c) => c.id), what: "the book's chapters" }) },
-            ]),
+            { label: `Remove FENs in all ${many}…`, disabled: busy || book.chapters.length === 0,
+              onClick: () => setFens({ ids: book.chapters.map((c) => c.id), what: `the book's ${many}` }) },
           ]} />
         )}
       </div>
