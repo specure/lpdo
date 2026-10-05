@@ -50,6 +50,7 @@ import UpdateBanner, { EngineUpdateBanner } from "./components/UpdateBanner";
  *  not a database. */
 export const ANALYSIS_TAB_CAP = 20;
 import ActivityIndicator from "./components/ActivityIndicator";
+import { useDailyBackups } from "./lib/backup";
 import { loadMyPlayer, resolveCurrentPlayer } from "./components/MyStatsWidget";
 import { useUpdateCheck } from "./hooks/useUpdateCheck";
 import { GameSummary, LocalGame, PlayerInfo, PrepContext, StatusInfo } from "./types";
@@ -351,6 +352,9 @@ function basename(path: string): string {
 
 export default function App() {
   const { status, info, refresh: refreshServerStatus } = useServerStatus();
+  // The daily automatic backups (Maintenance → Backup) run while the app is
+  // open, whichever page is showing.
+  useDailyBackups(status === "connected");
   const { step, setStep, max } = useFontScale();
   const { hc, toggle: toggleHc } = useHighContrast();
   const { scheme, toggle: toggleScheme } = useColorScheme();

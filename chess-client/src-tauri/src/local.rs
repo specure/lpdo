@@ -285,10 +285,13 @@ pub async fn download_backup(
     token: String,
     collection: String,
     dest_path: String,
+    // The daily automatic backup: no progress events, so it never moves the
+    // bar of a backup the user started.
+    quiet: Option<bool>,
 ) -> Result<String, String> {
     let url = format!("{}/backup/download", base_url.trim_end_matches('/'));
     let req = reqwest::Client::new().get(url).query(&[("collection", collection)]);
-    save_backup(Some(app), req, &token, dest_path).await
+    save_backup((quiet != Some(true)).then_some(app), req, &token, dest_path).await
 }
 
 /// The repertoire's backup — every book as a `.pgn.zip`, from the daemon's

@@ -9,6 +9,10 @@ import { clearCrashLog, formatCrashLog, readCrashLog, type CrashEntry } from "..
 import { listen } from "@tauri-apps/api/event";
 import { useJobProgress } from "../hooks/useJobProgress";
 import { getRepertoireSettings, putRepertoireSettings } from "../lib/repertoire";
+import {
+  DEFAULT_BACKUP_DIR, DEFAULT_COLLECTION, backupCollection, backupFolder, rememberBackupCollection, rememberBackupFolder,
+  saveBackup, useAutoBackup, type BackupKind,
+} from "../lib/backup";
 import SourcesPanel from "./SourcesPanel";
 import MergePlayersDialog from "./MergePlayersDialog";
 import { StatusInfo, ScheduleInfo } from "../types";
@@ -1941,36 +1945,15 @@ function NormaliseSection({ onMutated }: { onMutated?: () => void }) {
 }
 
 // ── Backup tab ────────────────────────────────────────────────────────────────
-
-// Pre-selected when present — the private collection the wizard/AddGame flow
-// writes to. Falls back to the first available collection otherwise.
-const DEFAULT_COLLECTION = "My games";
+// Saving and the daily automatic backup live in lib/backup.ts; here are the
+// folder, the cards and their switches.
 
 interface Collection { id: number; name: string; game_count: number }
 
-// Backups are saved where the USER chooses (#121). The hardened daemon can't
-// write to the user's home, so it builds each .pgn.zip and streams it here; the
-// GUI writes it to the folder the user picks — one folder for every backup,
-// remembered (localStorage) so repeat backups don't re-prompt. The user can type
-// a path or pick one with Browse; each filename is generated per backup.
-const BACKUP_DIR_KEY = "lpdo.backupDir";
-const DEFAULT_BACKUP_DIR = "~/lpdo/backup";
-
-/** The folder as typed, without trailing slashes — and kept for next time. */
-function rememberBackupFolder(folder: string): string {
-  const dir = folder.trim().replace(/\/+$/, "");
-  if (dir) localStorage.setItem(BACKUP_DIR_KEY, dir);
-  return dir;
-}
-
-const today = () => new Date().toISOString().slice(0, 10);
-
-/** Everything that can be backed up, side by side, saved to one folder. Later
- *  the place for automated backups too. */
+/** Everything that can be backed up, side by side, saved to one folder, each
+ *  with its daily automatic backup. */
 function BackupTab() {
-  const [folder, setFolder] = useState<string>(
-    () => localStorage.getItem(BACKUP_DIR_KEY) || DEFAULT_BACKUP_DIR,
-  );
+  const [folder, setFolder] = useState<string>(backupFolder);
 
   async function browse() {
     const picked = await openDialog({ multiple: false, directory: true });
@@ -1980,8 +1963,9 @@ function BackupTab() {
   return (
     <div className="space-y-4">
       <TabLead>
-        What you made yourself, saved as zip-compressed PGN files in one folder: your collections, and your
-        repertoire books. Each backup is named by date and what it holds.
+        What you made yourself, saved as zip-compressed PGN files in one folder: a collection, and your repertoire
+        books. Each backup is named by date and what it holds. A daily backup is made by the app while it is open —
+        when it starts, then hourly — and only when something has changed since the last one.
       </TabLead>
       <div className={grid}>
         <div className="md:col-span-2">
@@ -2038,9 +2022,28 @@ function BackupSaved({ path, again, onAgain }: { path: string | null; again: str
   );
 }
 
+/** The daily backup's switch, and what it last did. */
+function DailyBackupToggle({ kind, label }: { kind: BackupKind; label: string }) {
+  const [auto, setOn] = useAutoBackup(kind);
+  const day = new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD, local
+  const last = !auto.on ? null
+    : auto.error ? <span className="text-error">Last try failed: {auto.error}</span>
+    : auto.savedOn ? <>Last saved {auto.savedOn === day ? "today" : auto.savedOn}{auto.checkedOn === day && auto.savedOn !== day ? "; no changes today" : ""}</>
+    : "Not saved yet";
+  return (
+    <div className="space-y-1 pt-1">
+      <label className="flex items-center gap-2 text-body-sm text-on-surface cursor-pointer">
+        <input type="checkbox" checked={auto.on} onChange={(e) => setOn(e.target.checked)} className="accent-primary" />
+        {label}
+      </label>
+      {last && <p className="text-label-sm text-on-surface-variant break-words pl-6" title={auto.path}>{last}</p>}
+    </div>
+  );
+}
+
 function CollectionBackupSection({ folder }: { folder: string }) {
   const [collections, setCollections] = useState<Collection[] | null>(null);
-  const [collection, setCollection] = useState(DEFAULT_COLLECTION);
+  const [collection, setCollection] = useState(backupCollection);
   const [phase, setPhase] = useState<"idle" | "saving" | "done" | "error">("idle");
   const [pct, setPct] = useState<number | null>(null);
   const [savedPath, setSavedPath] = useState<string | null>(null);
@@ -2063,12 +2066,15 @@ function CollectionBackupSection({ folder }: { folder: string }) {
     return () => { cancelled = true; };
   }, []);
 
+  function pick(name: string) {
+    setCollection(name);
+    rememberBackupCollection(name);
+  }
+
   async function run() {
     setError(null);
     const dir = rememberBackupFolder(folder);
     if (!dir) return;
-    const safe = collection.replace(/[^\w.-]+/g, "_");
-    const dest = `${dir}/${today()}-${safe}.pgn.zip`;
     setPhase("saving");
     setPct(null);
     const un = await listen<{ received: number; total: number }>("backup-download-progress", (e) => {
@@ -2076,10 +2082,7 @@ function CollectionBackupSection({ folder }: { folder: string }) {
       setPct(total > 0 ? Math.min(100, (received / total) * 100) : null);
     });
     try {
-      // download_backup returns the resolved absolute path (leading `~/`
-      // expanded) — use it for Reveal, which needs a real path, not `~/…`.
-      const resolved = await invoke<string>("download_backup", { baseUrl: serverUrl(), token: serverToken(), collection, destPath: dest });
-      setSavedPath(resolved || dest);
+      setSavedPath(await saveBackup("collection", dir, collection));
       setPhase("done");
     } catch (e: unknown) {
       setError(String(e));
@@ -2102,7 +2105,7 @@ function CollectionBackupSection({ folder }: { folder: string }) {
           <div className="space-y-2">
             <select
               value={collection}
-              onChange={(e) => setCollection(e.target.value)}
+              onChange={(e) => pick(e.target.value)}
               disabled={collections === null}
               className="w-full h-9 px-3 rounded-sm bg-transparent text-on-surface text-body-sm border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard disabled:opacity-40"
             >
@@ -2151,6 +2154,8 @@ function CollectionBackupSection({ folder }: { folder: string }) {
           <ActionButton onClick={() => { void run(); }}>Try again</ActionButton>
         </div>
       )}
+
+      {hasCollections && <DailyBackupToggle kind="collection" label="Back up the selected collection daily, when it has changed" />}
     </SectionCard>
   );
 }
@@ -2169,12 +2174,10 @@ function RepertoireBackupSection({ folder }: { folder: string }) {
     if (!dir) return;
     setPhase("saving");
     try {
-      const resolved = await invoke<string>("download_repertoire_backup", { baseUrl: serverUrl(), token: serverToken(), destPath: `${dir}/${today()}-repertoire.pgn.zip` });
-      setSavedPath(resolved);
+      setSavedPath(await saveBackup("repertoire", dir, ""));
       setPhase("done");
     } catch (e: unknown) {
-      const msg = String(e);
-      setError(msg.includes("(404") ? "the server cannot back up the repertoire as a zip yet. Update the server." : msg);
+      setError(String(e));
       setPhase("error");
     }
   }
@@ -2199,6 +2202,7 @@ function RepertoireBackupSection({ folder }: { folder: string }) {
           <ActionButton onClick={() => { void run(); }}>Try again</ActionButton>
         </div>
       )}
+      <DailyBackupToggle kind="repertoire" label="Back up all books daily, when they have changed" />
     </SectionCard>
   );
 }

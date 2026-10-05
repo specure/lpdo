@@ -1180,6 +1180,24 @@ pub(crate) fn build_backup_zip(
     Ok(total)
 }
 
+/// What a backup of `collection` would hold, as a short signature: the same
+/// while its games are, different once one is added, removed or edited — so
+/// the client's daily backup can skip a day without changes. Order-free
+/// (`bit_xor`), and only as stable as DuckDB's `hash`: a new DuckDB may change
+/// it, which costs one backup more, never one less.
+pub(crate) fn collection_signature(conn: &duckdb::Connection, collection: &str) -> Result<String> {
+    let (n, h): (i64, Option<String>) = conn.query_row(
+        "SELECT count(*), CAST(bit_xor(hash(g.id, g.pgn)) AS VARCHAR)
+         FROM games g
+         JOIN game_collections gc ON gc.game_id = g.id
+         JOIN collections c ON c.id = gc.collection_id
+         WHERE c.name = ? AND g.deleted_at IS NULL AND g.pgn IS NOT NULL",
+        duckdb::params![collection],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok(format!("{n}:{}", h.unwrap_or_default()))
+}
+
 /// Default backup filename stem for a collection: `<stamp>-<collection>`.
 pub(crate) fn backup_base_name(collection: &str) -> String {
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
@@ -2575,6 +2593,35 @@ mod tests {
         assert!(text.contains("1. d4 d5"), "second game present");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn collection_signature_follows_what_a_backup_would_hold() {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO collections (id, name, created_at) VALUES (9001, 'Test', NOW());
+             INSERT INTO games (id, date, pgn) VALUES (9001, '2020.01.01', '[Event \"A\"]\n\n1. e4 e5 1-0');
+             INSERT INTO game_collections (game_id, collection_id) VALUES (9001, 9001);",
+        )
+        .unwrap();
+        let one = collection_signature(&conn, "Test").unwrap();
+        assert_eq!(collection_signature(&conn, "Test").unwrap(), one, "unchanged, the same");
+
+        conn.execute_batch("UPDATE games SET pgn = '[Event \"A\"]\n\n1. e4 c5 1-0' WHERE id = 9001").unwrap();
+        let edited = collection_signature(&conn, "Test").unwrap();
+        assert_ne!(edited, one, "a game edited");
+
+        conn.execute_batch(
+            "INSERT INTO games (id, date, pgn) VALUES (9002, '2021.06.02', '[Event \"B\"]\n\n1. d4 d5 0-1');
+             INSERT INTO game_collections (game_id, collection_id) VALUES (9002, 9001);",
+        )
+        .unwrap();
+        let added = collection_signature(&conn, "Test").unwrap();
+        assert_ne!(added, edited, "a game added");
+
+        conn.execute_batch("UPDATE games SET deleted_at = NOW() WHERE id = 9002").unwrap();
+        assert_eq!(collection_signature(&conn, "Test").unwrap(), edited, "deleted again: as before");
     }
 
     /// `sources overlap` counts A-games that have a B-duplicate under the dedup

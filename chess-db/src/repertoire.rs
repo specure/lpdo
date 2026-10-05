@@ -915,6 +915,14 @@ pub fn all_books_zip(conn: &Connection, entry: &str) -> Result<Vec<u8>> {
     Ok(zip.finish()?.into_inner())
 }
 
+/// What the backup would hold, as a short signature (the MD5 of its PGN): the
+/// same until a book or a chapter changes, for the client's daily backup to
+/// skip a day without changes.
+pub fn backup_signature(conn: &Connection) -> Result<String> {
+    let pgn = all_books_pgn(conn)?;
+    Ok(conn.query_row("SELECT md5(?)", duckdb::params![pgn], |r| r.get(0))?)
+}
+
 /// The `.pgn` files in a zip — a backup, or PGNs zipped by hand — each with
 /// its name less the extension, for a book of a PGN from elsewhere to be
 /// named after its file, as when it is imported unzipped.
@@ -1975,6 +1983,17 @@ mod tests {
         crate::db::schema::init(&empty).unwrap();
         let made = import_books(&empty, &entries[0].1, Some(&entries[0].0)).unwrap();
         assert_eq!((made[0].name.as_str(), made[0].color.as_str()), ("Caro-Kann", "black"));
+    }
+
+    #[test]
+    fn the_backup_signature_changes_with_the_books_only() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let b = create_book(&conn, "Caro-Kann", "black", None, None, None).unwrap();
+        let empty = backup_signature(&conn).unwrap();
+        assert_eq!(backup_signature(&conn).unwrap(), empty, "the same books, the same signature");
+        add_chapters(&conn, b.id, Some("Advance"), Some("1. e4 c6 2. d4 d5 3. e5 *"), None).unwrap();
+        assert_ne!(backup_signature(&conn).unwrap(), empty, "a chapter more, another signature");
     }
 
     #[test]
