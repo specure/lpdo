@@ -36,6 +36,9 @@ const field = "h-8 px-2 rounded-sm bg-surface-container border border-outline/40
 const tonal = "h-7 px-3 inline-flex items-center rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 disabled:opacity-50 transition-all duration-short3 ease-standard whitespace-nowrap";
 const plain = "h-7 px-2 inline-flex items-center rounded-full text-label-md text-on-surface-variant hover:bg-on-surface/8 disabled:opacity-40 transition-colors duration-short3 ease-standard whitespace-nowrap";
 const nav = "w-6 h-6 inline-flex items-center justify-center rounded-full text-on-surface-variant hover:bg-on-surface/8 disabled:opacity-30 text-[10px]";
+// ▲ ▼ in a row being arranged: as tall as the row's line of text, so the
+// rows keep their spacing while they are moved; the buttons overhang it.
+const moveNav = `${nav} -my-1`;
 const box = "h-full overflow-hidden flex flex-col bg-surface-container-low border border-outline/40 rounded-md";
 const CHAPTER_KEY = "repertoireChapter";
 const BOOKS_FOLDED_KEY = "repertoireBooksCollapsed";
@@ -653,8 +656,8 @@ function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, on
                 </button>
                 {arranging && (
                   <>
-                    <button data-nodrag onClick={() => onUpdate(b.id, { ord: b.ord - 1 })} disabled={busy || i === 0} className={nav} title="Move up (↑)">▲</button>
-                    <button data-nodrag onClick={() => onUpdate(b.id, { ord: b.ord + 1 })} disabled={busy || i === books.length - 1} className={nav} title="Move down (↓)">▼</button>
+                    <button data-nodrag onClick={() => onUpdate(b.id, { ord: b.ord - 1 })} disabled={busy || i === 0} className={moveNav} title="Move up (↑)">▲</button>
+                    <button data-nodrag onClick={() => onUpdate(b.id, { ord: b.ord + 1 })} disabled={busy || i === books.length - 1} className={moveNav} title="Move down (↓)">▼</button>
                   </>
                 )}
               </div>
@@ -1350,8 +1353,8 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
       )}
       {arranging ? (
         <>
-          <button data-nodrag onClick={() => onMove(-1)} disabled={busy || first} className={nav} title="Move up (↑)">▲</button>
-          <button data-nodrag onClick={() => onMove(1)} disabled={busy || last} className={nav} title="Move down (↓)">▼</button>
+          <button data-nodrag onClick={() => onMove(-1)} disabled={busy || first} className={moveNav} title="Move up (↑)">▲</button>
+          <button data-nodrag onClick={() => onMove(1)} disabled={busy || last} className={moveNav} title="Move down (↓)">▼</button>
         </>
       ) : (
         <>
