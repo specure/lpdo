@@ -10,7 +10,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { GameSummary } from "../types";
 import {
   addChapters, bookPgnPath, chapterPgnPath, createBook, deleteBook, deleteChapter, getChapter, listRepertoire,
-  saveChapterMoves, updateBook, updateChapter, documentOf, analyseChapters, getBookGames, scorePct, importBooks, deleteChapters, orderChapters,
+  saveChapterMoves, updateBook, updateChapter, documentOf, analyseChapters, getBookGames, scorePct, importBooks, importBooksZip, deleteChapters, orderChapters,
   type BookGames, type Score, type BookColor, type BookWithChapters, type ChapterSummary, type GameResult, GAME_RESULTS,
 } from "../lib/repertoire";
 import { saveTextFile } from "../lib/exportPgn";
@@ -201,12 +201,12 @@ export default function RepertoirePage({ onOpenGame }: Props) {
     run(async () => { const [c] = await addChapters(bookId, { name }); if (c) setChapterId(c.id); });
   // Books from LPDO's own export (a book, or a backup): made again, each a
   // new book — never added to the one selected.
-  const importBookFiles = (items: { pgn: string; file?: string }[]) => run(async () => {
+  const importBookFiles = (items: BookFile[]) => run(async () => {
     let first: number | null = null;
     try {
       for (const [i, it] of items.entries()) {
         setImporting({ i: i + 1, n: items.length, file: it.file ?? null });
-        const made = await importBooks(it.pgn, it.file).catch((e) => { throw new Error(it.file ? `${it.file}: ${String(e)}` : String(e)); });
+        const made = await ("zip" in it ? importBooksZip(it.zip) : importBooks(it.pgn, it.file)).catch((e) => { throw new Error(it.file ? `${it.file}: ${String(e)}` : String(e)); });
         first ??= made[0]?.id ?? null;
       }
     } finally {
@@ -535,6 +535,8 @@ async function exportPgn(path: string, filename: string): Promise<string | null>
 }
 
 type ImportItem = { pgn: string; file?: string };
+/** A file picked for the books' Import…: a PGN, or a zip of them (a backup). */
+type BookFile = ImportItem | { zip: Blob; file?: string };
 
 /** A book's chapters — its repertoire — and its model games, apart. */
 const chaptersOf = (b: BookWithChapters) => b.chapters.filter((c) => !c.model);
@@ -553,7 +555,7 @@ function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, on
   onCreate: (b: { name: string; author: string | null; color: BookColor }) => void;
   onUpdate: (id: number, patch: BookPatch) => void;
   /** Books from LPDO's own PGN (a book exported, or a backup). */
-  onImportBooks: (items: ImportItem[]) => void;
+  onImportBooks: (items: BookFile[]) => void;
   onDelete: (b: BookWithChapters) => void;
 }) {
   const [adding, setAdding] = useState(false);
@@ -601,7 +603,9 @@ function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, on
     const files = [...(e.target.files ?? [])];
     e.target.value = "";
     if (files.length === 0) return;
-    onImportBooks(await Promise.all(files.map(async (f) => ({ pgn: await f.text(), file: f.name.replace(/\.[^.]+$/, "") }))));
+    onImportBooks(await Promise.all(files.map(async (f): Promise<BookFile> => /\.zip$/i.test(f.name)
+      ? { zip: f, file: f.name }
+      : { pgn: await f.text(), file: f.name.replace(/\.[^.]+$/, "") })));
   }
   const [name, setName] = useState("");
   const [author, setAuthor] = useState("");
@@ -618,7 +622,7 @@ function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, on
         <span className="flex-1 text-label-md text-on-surface-variant uppercase tracking-wider">Books</span>
         <button onClick={() => booksFileRef.current?.click()} disabled={busy} className={plain}
           title="Books exported from LPDO — one, or a backup of them all — made again as they were: name, colour, author, link, notes and chapters. Each becomes a new book.">Import…</button>
-        <input ref={booksFileRef} type="file" multiple accept=".pgn,text/plain" className="hidden" onChange={(e) => void pickBookFiles(e)} />
+        <input ref={booksFileRef} type="file" multiple accept=".pgn,.zip,text/plain,application/zip" className="hidden" onChange={(e) => void pickBookFiles(e)} />
         <button onClick={() => setAdding((a) => !a)} className={plain}>{adding ? "Cancel" : "+ New"}</button>
         <button onClick={onFold} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide the books">«</button>
       </div>

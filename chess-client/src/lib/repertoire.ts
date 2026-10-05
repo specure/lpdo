@@ -2,7 +2,7 @@
 // chapter a PGN game studied in the Analysis page. See
 // docs/design/opening-repertoire.md.
 
-import { apiDelete, apiGet, postJson, putJson, submitJob } from "../api";
+import { apiDelete, apiGet, apiUrl, postJson, putJson, submitJob } from "../api";
 import type { PositionStat } from "../trainer/buildPackage";
 import type { Mine } from "../trainer/format";
 
@@ -206,8 +206,14 @@ export const putRepertoireSettings = (s: RepertoireSettings) => putJson<Repertoi
 /** Books from a PGN exported by LPDO (a book, or a backup of them all), made
  *  again one to one; a PGN without LPDO's tags makes one book after `file`. */
 export const importBooks = (pgn: string, file?: string) => postJson<Book[]>("/repertoire/import", { pgn, file });
-/** Every book as one PGN: the repertoire's backup. */
-export const allBooksPgnPath = "/repertoire/pgn";
+/** Books from a zip of PGNs — a backup, or PGNs zipped by hand: each `.pgn`
+ *  in it imported as if picked on its own. */
+export async function importBooksZip(zip: Blob): Promise<Book[]> {
+  const r = await fetch(apiUrl("/repertoire/import/zip"), { method: "POST", headers: { "content-type": "application/zip" }, body: zip });
+  if (r.status === 404 || r.status === 405) throw new Error("The server cannot import zipped books yet. Update the server.");
+  if (!r.ok) throw new Error((await r.text()) || `${r.status} ${r.statusText}`);
+  return r.json() as Promise<Book[]>;
+}
 /** Where a book's or a chapter's PGN is served (for exporting). */
 export const bookPgnPath = (id: number) => `/repertoire/books/${id}/pgn`;
 export const chapterPgnPath = (id: number) => `/repertoire/chapters/${id}/pgn`;

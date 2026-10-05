@@ -901,6 +901,41 @@ pub fn all_books_pgn(conn: &Connection) -> Result<String> {
     Ok(out.join("\n\n") + "\n")
 }
 
+/// The backup as a zip, like a collection's: one deflated `entry` holding
+/// every book — PGN is text, and shrinks several times over.
+pub fn all_books_zip(conn: &Connection, entry: &str) -> Result<Vec<u8>> {
+    use std::io::Write;
+    let pgn = all_books_pgn(conn)?;
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .compression_level(Some(9));
+    zip.start_file(entry, options)?;
+    zip.write_all(pgn.as_bytes())?;
+    Ok(zip.finish()?.into_inner())
+}
+
+/// The `.pgn` files in a zip — a backup, or PGNs zipped by hand — each with
+/// its name less the extension, for a book of a PGN from elsewhere to be
+/// named after its file, as when it is imported unzipped.
+pub fn pgns_of_zip(bytes: &[u8]) -> Result<Vec<(String, String)>> {
+    use std::io::Read;
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).context("not a zip file")?;
+    let mut out = Vec::new();
+    for i in 0..archive.len() {
+        let mut f = archive.by_index(i)?;
+        let path = f.name().to_string();
+        let file = path.rsplit('/').next().unwrap_or(&path);
+        if !f.is_file() || !file.to_ascii_lowercase().ends_with(".pgn") { continue }
+        let stem = file[..file.len() - 4].to_string();
+        let mut buf = Vec::new();
+        f.read_to_end(&mut buf).with_context(|| path.clone())?;
+        out.push((stem, String::from_utf8_lossy(&buf).into_owned()));
+    }
+    if out.is_empty() { bail!("no PGN file in the zip"); }
+    Ok(out)
+}
+
 // ── The database's figures for a chapter (practice, #327) ───────────────────
 
 /// A move from a position, as the database's games played it.
@@ -1922,6 +1957,35 @@ mod tests {
         let plain = "[Event \"X\"]\n[Orientation \"black\"]\n\n1. e4 c5 *\n";
         let made = import_books(&empty, plain, Some("Najdorf")).unwrap();
         assert_eq!((made[0].name.as_str(), made[0].color.as_str()), ("Najdorf", "black"));
+    }
+
+    #[test]
+    fn the_zipped_backup_holds_the_same_pgn() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let b = create_book(&conn, "Caro-Kann", "black", None, None, None).unwrap();
+        add_chapters(&conn, b.id, Some("Advance"), Some("1. e4 c6 2. d4 d5 3. e5 *"), None).unwrap();
+
+        let zip = all_books_zip(&conn, "repertoire.pgn").unwrap();
+        let entries = pgns_of_zip(&zip).unwrap();
+        assert_eq!(entries, vec![("repertoire".to_string(), all_books_pgn(&conn).unwrap())]);
+
+        // Into an empty database, the book comes back under its own name.
+        let empty = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&empty).unwrap();
+        let made = import_books(&empty, &entries[0].1, Some(&entries[0].0)).unwrap();
+        assert_eq!((made[0].name.as_str(), made[0].color.as_str()), ("Caro-Kann", "black"));
+    }
+
+    #[test]
+    fn a_zip_without_pgn_is_refused() {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file("notes.txt", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(b"hello").unwrap();
+        let bytes = zip.finish().unwrap().into_inner();
+        assert!(pgns_of_zip(&bytes).is_err());
+        assert!(pgns_of_zip(b"not a zip").is_err());
     }
 
     #[test]

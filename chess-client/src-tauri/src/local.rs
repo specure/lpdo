@@ -286,14 +286,39 @@ pub async fn download_backup(
     collection: String,
     dest_path: String,
 ) -> Result<String, String> {
+    let url = format!("{}/backup/download", base_url.trim_end_matches('/'));
+    let req = reqwest::Client::new().get(url).query(&[("collection", collection)]);
+    save_backup(Some(app), req, &token, dest_path).await
+}
+
+/// The repertoire's backup — every book as a `.pgn.zip`, from the daemon's
+/// `GET /repertoire/backup` — written to `dest_path` like a collection's. Small
+/// enough to need no progress, and so it never moves the collection's bar.
+#[tauri::command]
+pub async fn download_repertoire_backup(
+    base_url: String,
+    token: String,
+    dest_path: String,
+) -> Result<String, String> {
+    let url = format!("{}/repertoire/backup", base_url.trim_end_matches('/'));
+    save_backup(None, reqwest::Client::new().get(url), &token, dest_path).await
+}
+
+/// Send `req` and stream the backup it answers with into `dest_path` (a leading
+/// `~/` is the user's home), with `backup-download-progress` events when `app`
+/// is given. Returns the path written.
+async fn save_backup(
+    app: Option<tauri::AppHandle>,
+    mut req: reqwest::RequestBuilder,
+    token: &str,
+    dest_path: String,
+) -> Result<String, String> {
     use futures_util::StreamExt;
     use tauri::Emitter;
     use tokio::io::AsyncWriteExt;
 
-    let url = format!("{}/backup/download", base_url.trim_end_matches('/'));
-    let mut req = reqwest::Client::new().get(url).query(&[("collection", collection)]);
     if !token.is_empty() {
-        req = req.header("x-lpdo-token", &token);
+        req = req.header("x-lpdo-token", token);
     }
     let resp = req
         .send()
@@ -336,7 +361,7 @@ pub async fn download_backup(
             .await
             .map_err(|e| format!("write {dest_path}: {e}"))?;
         received += bytes.len() as u64;
-        if received >= next_emit {
+        if let Some(app) = app.as_ref().filter(|_| received >= next_emit) {
             next_emit = received + step;
             let _ = app.emit(
                 "backup-download-progress",
@@ -345,10 +370,12 @@ pub async fn download_backup(
         }
     }
     file.flush().await.map_err(|e| format!("flush {dest_path}: {e}"))?;
-    let _ = app.emit(
-        "backup-download-progress",
-        serde_json::json!({ "received": received, "total": total.max(received) }),
-    );
+    if let Some(app) = &app {
+        let _ = app.emit(
+            "backup-download-progress",
+            serde_json::json!({ "received": received, "total": total.max(received) }),
+        );
+    }
     // Return the resolved absolute path (with any leading `~/` expanded) so the
     // GUI can reveal it — `revealItemInDir` needs a real path, not `~/…`.
     Ok(dest_path)

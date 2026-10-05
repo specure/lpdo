@@ -26,8 +26,9 @@ the books in order (drag one to its place, ▲ ▼, or ↑ ↓ for the one selec
 goes into the chapters' PGN as `[Annotator]`.
 
 **Import…** beside *Books* makes books again from a PGN LPDO exported — a
-book's (Export PGN…) or a backup of them all (Maintenance → Repertoire →
-Back up all books…): each as a new book, with its name, colour, author,
+book's (Export PGN…) or a backup of them all (Maintenance → Backup →
+Repertoire books, a `.pgn.zip`; a zip is read as it is, each `.pgn` in it
+as if picked on its own): each as a new book, with its name, colour, author,
 link, notes and active switch, its chapters in their order with their
 names, lines, comments and switches — never added to the book that happens
 to be selected. A PGN from elsewhere becomes one new book named after the
