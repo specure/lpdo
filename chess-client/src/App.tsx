@@ -11,7 +11,7 @@ import PrepView from "./components/prep/PrepView";
 import PrepPlayerList from "./components/prep/PrepPlayerList";
 import DirectoryBrowser from "./components/local/DirectoryBrowser";
 import LocalGameList from "./components/local/LocalGameList";
-import GamesPage from "./components/GamesPage";
+import GamesPage, { PLAYERS_RAIL_KEY } from "./components/GamesPage";
 import PlayerProfileModal from "./components/PlayerProfileModal";
 import MergePlayersDialog from "./components/MergePlayersDialog";
 import RepertoirePage from "./components/RepertoirePage";
@@ -36,8 +36,8 @@ async function loadChapterTab(chapterId: number): Promise<AnalysisTab> {
   };
 }
 import AnalysisPage, { AnalysisTab } from "./components/AnalysisPage";
-import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
-import { useNeighbourResize } from "./lib/panelResize";
+import { Group, Panel, Separator } from "react-resizable-panels";
+import { useNeighbourResize, usePanelLayout } from "./lib/panelResize";
 import { loadGamePgn } from "./lib/useGamePgn";
 import { CursorPath } from "./lib/moveTreeNav";
 import { setAppVersion as setCrashAppVersion, setCrashContext } from "./lib/crashLog";
@@ -527,7 +527,7 @@ export default function App() {
   // This view is mounted the whole time and merely hidden, so the group measures
   // zero on mount and falls back to an equal split, ignoring each Panel's
   // defaultSize. An explicit starting layout does not depend on measurement.
-  const pgnLayout = useDefaultLayout({ id: "pgn-cols", storage: localStorage });
+  const pgnLayout = usePanelLayout("pgn-cols", showPgnGamesPanel ? ["files", "games", "board"] : ["files", "board"]);
   const pgnDefaultLayout = pgnLayout.defaultLayout
     ?? (showPgnGamesPanel ? { files: 16, games: 20, board: 64 } : { files: 16, board: 84 });
 
@@ -851,7 +851,7 @@ export default function App() {
 
             <Separator className={vHandle} {...pgnRz.separator(0)} />
 
-            {showPgnGamesPanel && !gameListCollapsed && (
+            {showPgnGamesPanel && (
               <Panel
                 id="games"
                 defaultSize="20"
@@ -1100,7 +1100,9 @@ export default function App() {
               </div>
             ) : (
               <>
-                {playersRail && <div className="w-56 shrink-0 p-1.5">{playersRail}</div>}
+                {/* As wide as beside a player's games (what was dragged last, else
+                    the default), so picking a player doesn't move it. */}
+                {playersRail && <div className="shrink-0 p-1.5" style={{ width: `${Number(localStorage.getItem(PLAYERS_RAIL_KEY)) || 13}%` }}>{playersRail}</div>}
                 <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md">
                   {prepContext ? "Select an opponent to view their games" : "Search for a player"}
                 </div>

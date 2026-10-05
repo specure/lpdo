@@ -401,7 +401,11 @@ export default function AnalysisPage({
   if (tabs.length === 0) {
     return (
       <div className="flex flex-1 overflow-hidden p-1.5 gap-1.5">
-        {lead?.map((p) => <div key={p.id} className={`${p.strip ? "w-10" : "w-64"} shrink-0 min-h-0`}>{p.node}</div>)}
+        {/* As wide as in the layout with a game open (what was dragged last,
+            else the default), so closing the last chapter doesn't squeeze them. */}
+        {lead?.map((p) => (
+          <div key={p.id} className="shrink-0 min-h-0" style={{ width: `${saved.defaultLayout?.[p.id] ?? Number(p.size)}%` }}>{p.node}</div>
+        ))}
         <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md px-6 text-center">
           {emptyState ?? 'Open a game from the Games or Players page ("Open in Analysis") to start analysing.'}
         </div>
