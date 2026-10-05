@@ -11,7 +11,7 @@ import { useJobProgress } from "../hooks/useJobProgress";
 import { getRepertoireSettings, putRepertoireSettings } from "../lib/repertoire";
 import {
   DEFAULT_BACKUP_DIR, DEFAULT_COLLECTION, backupCollection, backupFolder, rememberBackupCollection, rememberBackupFolder,
-  saveBackup, useAutoBackup, type BackupKind,
+  saveBackup, useAutoBackup, whenAt, type BackupKind,
 } from "../lib/backup";
 import SourcesPanel from "./SourcesPanel";
 import MergePlayersDialog from "./MergePlayersDialog";
@@ -2026,9 +2026,13 @@ function BackupSaved({ path, again, onAgain }: { path: string | null; again: str
 function DailyBackupToggle({ kind, label }: { kind: BackupKind; label: string }) {
   const [auto, setOn] = useAutoBackup(kind);
   const day = new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD, local
+  // When it last saved, and — on a day with nothing new — when it looked.
+  // (Backups made before the time was kept show only their day.)
+  const saved = auto.savedAt ? whenAt(auto.savedAt) : auto.savedOn === day ? "today" : auto.savedOn;
+  const lookedToday = auto.checkedOn === day && auto.savedOn !== day;
   const last = !auto.on ? null
     : auto.error ? <span className="text-error">Last try failed: {auto.error}</span>
-    : auto.savedOn ? <>Last saved {auto.savedOn === day ? "today" : auto.savedOn}{auto.checkedOn === day && auto.savedOn !== day ? "; no changes today" : ""}</>
+    : auto.savedOn ? <>Last saved {saved}{lookedToday ? ` · no changes when checked ${auto.checkedAt ? whenAt(auto.checkedAt) : "today"}` : ""}</>
     : "Not saved yet";
   return (
     <div className="space-y-1 pt-1">
