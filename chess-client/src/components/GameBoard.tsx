@@ -26,7 +26,7 @@ import { serializeMovetext } from "../lib/serializeMovetext";
 import { gameUrlFromPgn } from "../lib/useGamePgn";
 import GameMoreMenu, { MenuEntry } from "./games/GameMoreMenu";
 import PrintDialog from "./games/PrintDialog";
-import { appendScratchMove, clearScratchMarks, replayAsScratch, sansToCursor, type ScratchMove } from "../lib/scratchLine";
+import { appendScratchMove, clearScratchMarks, dropLastScratchMove, replayAsScratch, sansToCursor, type ScratchMove } from "../lib/scratchLine";
 import type { CalArrow, CslCircle } from "../lib/parseAnnotations";
 import { nagsToString, nagToSymbol } from "../lib/parseAnnotations";
 import AnnotatedMoveList from "./AnnotatedMoveList";
@@ -1454,9 +1454,21 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
 
   const goTo = useCallback((index: number) => {
     const clamped = Math.max(0, Math.min(index, maxIndex));
-    // Stepping anywhere while a scratch line is up abandons it — the moves
-    // were never written down, so going back forgets them.
+    // One step back in a scratch line takes back its last move, like on a
+    // physical board; stepping anywhere else abandons the line — the moves
+    // were never written down, so going away forgets them.
     if (scratch) {
+      if (useAnnotated && annotatedGame && clamped === activeIndex - 1) {
+        const back = dropLastScratchMove(annotatedGame, cursor);
+        const at = back && resolvePathSafe(back.game.mainLine, back.cursor.steps);
+        if (back && at) {
+          setAnnotatedGame(back.game);
+          setActiveLine(at.line);
+          setBreadcrumbs(at.breadcrumbs);
+          setActiveIndex(back.cursor.index);
+          return;
+        }
+      }
       // Arrow-right at the end of the line clamps to where we already are —
       // that is not a step, so it must not throw the line away.
       if (clamped !== (useAnnotated ? activeIndex : currentIndex)) discardScratch({ steps: cursor.steps, index: clamped });
@@ -1464,7 +1476,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     }
     if (useAnnotated) setActiveIndex(clamped);
     else setCurrentIndex(clamped);
-  }, [maxIndex, useAnnotated, scratch, discardScratch, cursor, activeIndex, currentIndex]);
+  }, [maxIndex, useAnnotated, scratch, discardScratch, cursor, activeIndex, currentIndex, annotatedGame]);
 
   const effectiveIndex = useAnnotated ? activeIndex : currentIndex;
 
