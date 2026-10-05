@@ -120,16 +120,31 @@ async function download(kind: BackupKind, dir: string, collection: string, quiet
 
 export interface AutoBackup {
   on: boolean;
-  /** The day it last looked, whether or not it saved. */
+  /** The day it last looked, whether or not it saved — and when (ms). */
   checkedOn?: string;
-  /** The day it last saved, the content's signature then, and where. */
+  checkedAt?: number;
+  /** The day it last saved and when (ms), the content's signature then, and
+   *  where. */
   savedOn?: string;
+  savedAt?: number;
   signature?: string;
   path?: string;
   /** The collection that signature is of — another one picked is a change. */
   collection?: string;
   /** Why the last attempt failed; it is tried again within the hour. */
   error?: string;
+}
+
+/** "today at 12:41", "yesterday at 18:20", "on 3 Oct at 08:15" — the time in
+ *  the system's own 12- or 24-hour style. */
+export function whenAt(ms: number): string {
+  const d = new Date(ms);
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const dayOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((dayOf(new Date()) - dayOf(d)) / 86_400_000);
+  const day = days === 0 ? "today" : days === 1 ? "yesterday"
+    : `on ${d.toLocaleDateString([], { day: "numeric", month: "short", ...(d.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}) })}`;
+  return `${day} at ${time}`;
 }
 
 const AUTO_EVENT = "lpdo:auto-backup";
@@ -195,17 +210,18 @@ async function runOne(kind: BackupKind) {
     // empty backup) — noted like a day without changes, not tried hourly.
     if (kind === "collection" && sig.startsWith("0:")) {
       endJob(id, "unchanged", "No games to back up");
-      setAutoBackup(kind, { checkedOn: day, error: undefined });
+      setAutoBackup(kind, { checkedOn: day, checkedAt: Date.now(), error: undefined });
       return;
     }
     if (sig === state.signature && (kind === "repertoire" || collection === state.collection)) {
-      endJob(id, "unchanged", state.savedOn ? `No changes since ${state.savedOn}` : "No changes");
-      setAutoBackup(kind, { checkedOn: day, error: undefined });
+      endJob(id, "unchanged", state.savedOn ? `No changes since ${state.savedAt ? whenAt(state.savedAt) : state.savedOn}` : "No changes");
+      setAutoBackup(kind, { checkedOn: day, checkedAt: Date.now(), error: undefined });
       return;
     }
     const path = await download(kind, dir, collection, true);
     endJob(id, "done", path);
-    setAutoBackup(kind, { checkedOn: day, savedOn: day, signature: sig, path, collection, error: undefined });
+    const now = Date.now();
+    setAutoBackup(kind, { checkedOn: day, checkedAt: now, savedOn: day, savedAt: now, signature: sig, path, collection, error: undefined });
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     endJob(id, "error", error);
