@@ -677,6 +677,33 @@ fn insert_chapter(conn: &Connection, book: &Book, name: &str, movetext: &str, wa
 /// named after `file`, its colour from `[Orientation]`. Never adds to an
 /// existing book; all or nothing.
 pub fn import_books(conn: &Connection, pgn: &str, file: Option<&str>) -> Result<Vec<Book>> {
+    crate::db::with_tx(conn, || import_books_in(conn, pgn, file))
+}
+
+/// The repertoire made again from a backup (the `.pgn` files of its zip, each
+/// with its name): every book deleted, then the backup's books made — in one
+/// transaction, so a backup that cannot be read leaves the books as they were.
+/// Only a backup LPDO made: a PGN without its book tags would replace every
+/// book with one, which is never what restoring means.
+pub fn restore_books(conn: &Connection, files: &[(String, String)]) -> Result<Vec<Book>> {
+    if !files.iter().any(|(_, pgn)| split_games(pgn.trim()).iter().any(|g| tag(g, "LpdoBook").is_some())) {
+        bail!("not a backup of the repertoire: it holds no books exported from LPDO");
+    }
+    crate::db::with_tx(conn, || {
+        conn.execute_batch(
+            "DELETE FROM repertoire_positions; DELETE FROM repertoire_analysis;
+             DELETE FROM repertoire_chapters; DELETE FROM repertoire_books;",
+        )?;
+        let mut books = Vec::new();
+        for (file, pgn) in files {
+            books.extend(import_books_in(conn, pgn, Some(file)).with_context(|| format!("{file}.pgn"))?);
+        }
+        Ok(books)
+    })
+}
+
+/// `import_books` inside a transaction the caller holds.
+fn import_books_in(conn: &Connection, pgn: &str, file: Option<&str>) -> Result<Vec<Book>> {
     let games = split_games(pgn.trim());
     if games.is_empty() { bail!("no games in the PGN"); }
     // The books in the order they first come, each with its games.
@@ -688,7 +715,7 @@ pub fn import_books(conn: &Connection, pgn: &str, file: Option<&str>) -> Result<
             None => groups.push((key, vec![g])),
         }
     }
-    crate::db::with_tx(conn, || {
+    {
         let mut books = Vec::new();
         for (key, gs) in &groups {
             let first = gs[0];
@@ -720,7 +747,7 @@ pub fn import_books(conn: &Connection, pgn: &str, file: Option<&str>) -> Result<
             books.push(book);
         }
         Ok(books)
-    })
+    }
 }
 
 pub fn get_chapter(conn: &Connection, id: i64) -> Result<ChapterDetail> {
@@ -1994,6 +2021,32 @@ mod tests {
         assert_eq!(backup_signature(&conn).unwrap(), empty, "the same books, the same signature");
         add_chapters(&conn, b.id, Some("Advance"), Some("1. e4 c6 2. d4 d5 3. e5 *"), None).unwrap();
         assert_ne!(backup_signature(&conn).unwrap(), empty, "a chapter more, another signature");
+    }
+
+    #[test]
+    fn restoring_replaces_every_book_or_none() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let b = create_book(&conn, "Caro-Kann", "black", None, None, None).unwrap();
+        add_chapters(&conn, b.id, Some("Advance"), Some("1. e4 c6 2. d4 d5 3. e5 *"), None).unwrap();
+        let backup = vec![("repertoire".to_string(), all_books_pgn(&conn).unwrap())];
+
+        // Books made since the backup go; the backup's come back, once.
+        let later = create_book(&conn, "Later", "white", None, None, None).unwrap();
+        add_chapters(&conn, later.id, Some("1.e4"), Some("1. e4 *"), None).unwrap();
+        let made = restore_books(&conn, &backup).unwrap();
+        assert_eq!(made.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(), vec!["Caro-Kann"]);
+        let now = list(&conn).unwrap();
+        assert_eq!(now.len(), 1);
+        assert_eq!(now[0].chapters.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["Advance"]);
+        let positions: i64 = conn.query_row("SELECT count(*) FROM repertoire_positions WHERE chapter_id NOT IN (SELECT id FROM repertoire_chapters)", [], |r| r.get(0)).unwrap();
+        assert_eq!(positions, 0, "no positions left of the deleted chapters");
+
+        // A PGN that is no backup, or one that cannot be read, changes nothing.
+        assert!(restore_books(&conn, &[("x".into(), "[Event \"X\"]\n\n1. e4 e5 *\n".into())]).is_err());
+        let broken = backup[0].1.replace("3. e5", "3. Ke7");
+        assert!(restore_books(&conn, &[("repertoire".into(), broken)]).is_err());
+        assert_eq!(list(&conn).unwrap().len(), 1, "the books as they were");
     }
 
     #[test]

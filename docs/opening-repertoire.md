@@ -15,7 +15,8 @@ is used.
 
 ## Books and chapters
 
-**+ New** beside *Books* asks for a name, the author (optional) and the
+The ⋯ beside *Books* holds **New book…**, **Import…** and **Restore from
+backup…**. **New book…** asks for a name, the author (optional) and the
 colour. Under the list, the selected book's details: its author, colour,
 chapter and line counts, the link to the course (a click opens it) and your
 notes. Its ⋯ menu has **Edit…** to change them (or **F2**, when the books
@@ -25,7 +26,7 @@ the books in order (drag one to its place, ▲ ▼, or ↑ ↓ for the one selec
 **Delete…** to delete it with its chapters. The author
 goes into the chapters' PGN as `[Annotator]`.
 
-**Import…** beside *Books* makes books again from a PGN LPDO exported — a
+**Import…** makes books again from a PGN LPDO exported — a
 book's (Export PGN…) or a backup of them all (Maintenance → Backup →
 Repertoire books, a `.pgn.zip`; a zip is read as it is, each `.pgn` in it
 as if picked on its own): each as a new book, with its name, colour, author,
@@ -36,6 +37,13 @@ file (its colour from an `[Orientation]` tag, else White). Exported PGN
 carries the book in tags of LPDO's own (`[LpdoBook]`, `[LpdoBookColor]`,
 `[LpdoBookAuthor]`, `[LpdoBookUrl]`, `[LpdoBookNotes]`, `[LpdoChapter]`, …),
 which other programs ignore.
+
+**Restore from backup…** puts the repertoire back as a backup holds it (the
+`.pgn.zip` from Maintenance → Backup, or a PGN backup): after a warning that
+says how many books and chapters go, every book here is deleted and the
+backup's books are made instead. It happens at once or not at all — a file
+that is not a backup of the repertoire (no books exported from LPDO in it),
+or cannot be read, leaves the books as they were.
 
 A chapter is added to the selected book in one of three ways, from the ⋯
 above its chapters:

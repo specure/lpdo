@@ -206,6 +206,15 @@ export const putRepertoireSettings = (s: RepertoireSettings) => putJson<Repertoi
 /** Books from a PGN exported by LPDO (a book, or a backup of them all), made
  *  again one to one; a PGN without LPDO's tags makes one book after `file`. */
 export const importBooks = (pgn: string, file?: string) => postJson<Book[]>("/repertoire/import", { pgn, file });
+/** Every book replaced by a backup's — a `.pgn.zip` from Maintenance → Backup,
+ *  or a plain PGN backup. One transaction: a file that cannot be read leaves
+ *  the books as they were. */
+export async function restoreBooks(file: Blob): Promise<Book[]> {
+  const r = await fetch(apiUrl("/repertoire/restore"), { method: "POST", headers: { "content-type": "application/octet-stream" }, body: file });
+  if (r.status === 404 || r.status === 405) throw new Error("The server cannot restore the repertoire yet. Update the server.");
+  if (!r.ok) throw new Error((await r.text()) || `${r.status} ${r.statusText}`);
+  return r.json() as Promise<Book[]>;
+}
 /** Books from a zip of PGNs — a backup, or PGNs zipped by hand: each `.pgn`
  *  in it imported as if picked on its own. */
 export async function importBooksZip(zip: Blob): Promise<Book[]> {

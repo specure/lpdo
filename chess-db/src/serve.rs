@@ -1439,6 +1439,21 @@ async fn repertoire_import_zip_handler(State(state): State<AppState>, body: axum
     }).await
 }
 
+/// Every book replaced by a backup's — a `.pgn.zip` from Maintenance → Backup,
+/// or a plain PGN backup — in one transaction.
+async fn repertoire_restore_handler(State(state): State<AppState>, body: axum::body::Bytes) -> ApiResult<Vec<crate::repertoire::Book>> {
+    state.writer.run(move |conn| {
+        let files = if body.starts_with(b"PK") {
+            crate::repertoire::pgns_of_zip(&body)
+        } else {
+            Ok(vec![("repertoire".to_string(), String::from_utf8_lossy(&body).into_owned())])
+        };
+        files.and_then(|f| crate::repertoire::restore_books(conn, &f))
+            .map(Json)
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))
+    }).await
+}
+
 /// The repertoire's backup as a `.pgn.zip`, like a collection's.
 async fn repertoire_backup_handler(State(state): State<AppState>) -> std::result::Result<axum::response::Response, (StatusCode, String)> {
     let bytes = state.reads.run(move |conn| crate::repertoire::all_books_zip(conn, "repertoire.pgn")
@@ -2929,6 +2944,7 @@ pub async fn run(
         .route("/repertoire/import",                   post(repertoire_import_handler))
         .route("/repertoire/import/zip",               post(repertoire_import_zip_handler).layer(DefaultBodyLimit::max(256 * 1024 * 1024)))
         .route("/repertoire/backup",                   get(repertoire_backup_handler))
+        .route("/repertoire/restore",                  post(repertoire_restore_handler).layer(DefaultBodyLimit::max(256 * 1024 * 1024)))
         .route("/repertoire/backup/signature",         get(repertoire_backup_signature_handler))
         .route("/repertoire/chapters/delete",          post(repertoire_chapters_delete_handler))
         .route("/repertoire/chapters/order",           post(repertoire_chapters_order_handler))
