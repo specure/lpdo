@@ -90,12 +90,21 @@ export function useLocalJobs(): LocalJob[] {
 // ── Saving a backup ───────────────────────────────────────────────────────────
 
 /** Save a backup of `kind` into `dir` by hand, logged as a local job; returns
- *  the path written (a leading `~/` expanded, as Reveal needs). */
+ *  the path written (a leading `~/` expanded, as Reveal needs). It counts for
+ *  the daily backup too: its status shows it, and the next daily check finds
+ *  nothing new unless something changed since. */
 export async function saveBackup(kind: BackupKind, dir: string, collection: string): Promise<string> {
   const id = startJob(`Backup: ${kind === "repertoire" ? "repertoire books" : collection}`);
   try {
+    // Asked first, so a change made while saving is never taken as saved;
+    // an older server without signatures just leaves the daily record alone.
+    const sig = await signature(kind, collection).catch(() => null);
     const path = await download(kind, dir, collection, false);
     endJob(id, "done", path);
+    if (sig !== null) {
+      const now = Date.now();
+      setAutoBackup(kind, { checkedOn: today(), checkedAt: now, savedOn: today(), savedAt: now, signature: sig, path, collection, error: undefined });
+    }
     return path;
   } catch (e) {
     endJob(id, "error", String(e));
