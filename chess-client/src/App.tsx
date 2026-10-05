@@ -65,6 +65,18 @@ type ServerStatus = "checking" | "connected" | "disconnected" | "unauthorized";
 // seconds — e.g. launched from the installer's finish page right after the
 // service was registered), and a single failed probe used to pin "Server
 // offline" for up to 30 minutes until the app was restarted.
+/** The top bar's places, in the order of the cards on Home. */
+const NAV = [
+  ["home", "Home"],
+  ["mygames", "My games"],
+  ["prep", "Prep"],
+  ["repertoire", "Repertoire"],
+  ["players", "Players"],
+  ["games", "Games"],
+  ["analysis", "Analysis"],
+  ["local", "PGNs"],
+] as const;
+
 const STATUS_POLL_INTERVAL_MS = 30 * 60 * 1000;
 const STATUS_RETRY_OFFLINE_MS = 3 * 1000;
 
@@ -653,6 +665,12 @@ export default function App() {
   // collection may not exist — so this is just the player's games. The Home card
   // is disabled when no profile is set, so myPlayer is normally present; the
   // guard keeps it safe if that ever changes.
+  // The profile player, read each render (Home's widget sets it), and whether
+  // Players is showing that player — then the menu's "My games" is the lit one.
+  const myPlayer = loadMyPlayer();
+  const onMyGames = mode === "players" && myPlayer !== null && selectedPlayer !== null
+    && (myPlayer.fide_id != null ? selectedPlayer.fide_id === myPlayer.fide_id : selectedPlayer.name === myPlayer.name);
+
   async function handleMyGames() {
     const myPlayer = loadMyPlayer();
     if (!myPlayer) return;
@@ -753,21 +771,32 @@ export default function App() {
             </button>
           </div>
 
-          {/* Segmented mode switcher — outlined pill */}
+          {/* Segmented mode switcher — outlined pill. The same places, in the
+              same order, as the cards on Home. "My games" is not a mode of its
+              own: it is Players with the profile player picked, and lights up
+              (instead of Players) while that player is the one shown. */}
           <div className="inline-flex items-center h-9 rounded-full border border-outline overflow-hidden">
-            {(["home", "players", "prep", "games", "analysis", "repertoire", "local"] as const).map((m) => (
-              <button
-                key={m}
-                onClick={() => setMode(m)}
-                className={`px-4 h-full text-label-lg transition-colors duration-short3 ease-standard ${
-                  mode === m
-                    ? "bg-secondary-container text-on-secondary-container"
-                    : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
-                }`}
-              >
-                {m === "home" ? "Home" : m === "players" ? "Players" : m === "prep" ? "Prep" : m === "games" ? "Games" : m === "analysis" ? "Analysis" : m === "repertoire" ? "Repertoire" : "PGNs"}
-              </button>
-            ))}
+            {NAV.map(([m, label]) => {
+              const active = m === "mygames" ? onMyGames : m === "players" ? mode === "players" && !onMyGames : mode === m;
+              const disabled = m === "mygames" && myPlayer === null;
+              return (
+                <button
+                  key={m}
+                  onClick={() => (m === "mygames" ? void handleMyGames() : setMode(m))}
+                  disabled={disabled}
+                  title={disabled ? "Set your player on the Home page first" : undefined}
+                  className={`px-4 h-full text-label-lg transition-colors duration-short3 ease-standard ${
+                    active
+                      ? "bg-secondary-container text-on-secondary-container"
+                      : disabled
+                      ? "text-on-surface/38 cursor-not-allowed"
+                      : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
+                  }`}
+                >
+                  {label}
+                </button>
+              );
+            })}
           </div>
 
           {/* Filled button — primary action */}
@@ -939,6 +968,8 @@ export default function App() {
           onSearchPlayer={() => { setMode("players"); setPendingSearchFocus(true); }}
           onOpenTournament={() => setMode("prep")}
           onOpenRepertoire={() => setMode("repertoire")}
+          onOpenGames={() => setMode("games")}
+          onOpenAnalysis={() => setMode("analysis")}
           onBrowseLocal={() => setMode("local")}
           onRunWizard={() => setShowSetup(true)}
         />
