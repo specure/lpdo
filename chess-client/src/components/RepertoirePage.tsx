@@ -260,9 +260,17 @@ export default function RepertoirePage({ onOpenGame }: Props) {
 
   // Merge the chapters into the topmost of them: its tree gains the others'
   // lines and comments, then they are deleted.
-  const startMerge = (ids: number[]) => run(async () => {
+  // Reading and merging many chapters can take a while before the window
+  // opens: until then the page waits under a "Please wait" cover, so nothing
+  // else is clicked and the merge isn't started twice.
+  const [preparingMerge, setPreparingMerge] = useState(false);
+  const startMerge = (ids: number[]) => !preparingMerge && run(async () => {
     const cs = (book?.chapters ?? []).filter((c) => ids.includes(c.id)).sort((a, b) => a.ord - b.ord);
     if (cs.length < 2) return;
+    setPreparingMerge(true);
+    try { await prepareMerge(cs); } finally { setPreparingMerge(false); }
+  });
+  const prepareMerge = async (cs: ChapterSummary[]) => {
     const [first, ...rest] = await Promise.all(cs.map((c) => getChapter(c.id)));
     // Names as the list shows them; a repeated one numbered "(2)", "(3)" in
     // list order, so the merge window tells them apart.
@@ -272,9 +280,11 @@ export default function RepertoirePage({ onOpenGame }: Props) {
       seen.set(c.name, n);
       return n > 1 ? `${c.name} (${n})` : c.name;
     });
+    // The merge itself holds the page: let the cover paint first.
+    await new Promise((r) => setTimeout(r, 30));
     const result = mergeChapters({ name: labels[0], pgn: first.pgn }, rest.map((c, i) => ({ name: labels[i + 1], pgn: c.pgn })));
     setMerging({ target: cs[0], others: cs.slice(1), labels, result });
-  });
+  };
   // How many FENs each chapter's comments hold — nothing changed.
   const countFens = async (ids: number[]): Promise<{ id: number; name: string; n: number }[]> => {
     const out: { id: number; name: string; n: number }[] = [];
@@ -438,6 +448,7 @@ export default function RepertoirePage({ onOpenGame }: Props) {
   // Each fold has a layout of its own: the group reads its sizes once.
   const layoutId = `repertoire-${booksFolded ? "b" : "B"}${chaptersFolded ? "c" : "C"}`;
   return (<>
+    {preparingMerge && <PleaseWait text="Merging the chapters…" />}
     {merging && (
       <MergeChaptersDialog
         target={merging.labels[0]}
@@ -1384,6 +1395,24 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
           </span>}
         </>
       )}
+    </div>
+  );
+}
+
+/** A cover over the whole page while something runs: no clicks or keys get
+ *  through to what is underneath. */
+function PleaseWait({ text }: { text: string }) {
+  useEffect(() => {
+    const swallow = (e: KeyboardEvent) => { e.preventDefault(); e.stopImmediatePropagation(); };
+    window.addEventListener("keydown", swallow, true);
+    return () => window.removeEventListener("keydown", swallow, true);
+  }, []);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-surface/40 cursor-wait">
+      <div className="bg-surface-container-high rounded-xl shadow-2xl px-6 py-4 flex items-center gap-3 text-body-md text-on-surface">
+        <span className="inline-block w-4 h-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+        {text} Please wait.
+      </div>
     </div>
   );
 }
