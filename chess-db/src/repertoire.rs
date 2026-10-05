@@ -60,8 +60,10 @@ pub struct ChapterSummary {
     pub result: String,
     /// A model game with comments of its own — arrows, marks or text; not
     /// the clock times and evaluations a broadcast leaves. Without, it is a
-    /// reference game: listed apart.
+    /// reference game: listed apart. Set by hand, it stays so.
     pub annotated: bool,
+    /// Whether `annotated` was set by hand, not told by the comments.
+    pub annotated_set: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -100,6 +102,9 @@ pub struct ChapterPatch {
     pub model: Option<bool>,
     /// A model game's result.
     pub result: Option<String>,
+    /// A model game shown as one with comments (true) or as a reference game
+    /// (false), whatever its comments; `Some(None)`: told by them again.
+    pub annotated: Option<Option<bool>>,
 }
 
 /// A game's possible results, as PGN writes them.
@@ -419,7 +424,7 @@ fn chapter_row(r: &duckdb::Row<'_>) -> duckdb::Result<ChapterSummary> {
         id: r.get(0)?, book_id: r.get(1)?, ord: r.get(2)?, name: r.get(3)?, active: r.get(4)?,
         lines: r.get(5)?, lines_off: r.get(6)?, updated_at: r.get(7)?,
         analysed_at: r.get(8)?, analysis_stale: r.get(9)?,
-        model: r.get(10)?, result: r.get(11)?, annotated: r.get(12)?,
+        model: r.get(10)?, result: r.get(11)?, annotated: r.get(12)?, annotated_set: r.get(13)?,
     })
 }
 
@@ -427,8 +432,9 @@ const CHAPTER_COLS: &str = "id, book_id, ord, name, active, lines, lines_off, CA
     (SELECT CAST(a.analysed_at AS VARCHAR) FROM repertoire_analysis a WHERE a.chapter_id = repertoire_chapters.id),
     (SELECT a.positions_hash IS DISTINCT FROM repertoire_chapters.positions_hash FROM repertoire_analysis a WHERE a.chapter_id = repertoire_chapters.id),
     COALESCE(model, FALSE), COALESCE(result, '*'),
-    COALESCE(model, FALSE) AND regexp_matches(
-        regexp_replace(pgn, '\\[%(clk|emt|eval|tqu)[^\\]]*\\]', '', 'g'), '\\{\\s*[^}\\s]')";
+    COALESCE(model, FALSE) AND COALESCE(annotated, regexp_matches(
+        regexp_replace(pgn, '\\[%(clk|emt|eval|tqu)[^\\]]*\\]', '', 'g'), '\\{\\s*[^}\\s]')),
+    annotated IS NOT NULL";
 
 pub fn get_book(conn: &Connection, id: i64) -> Result<Book> {
     conn.query_row(&format!("SELECT {BOOK_COLS} FROM repertoire_books WHERE id = ?"), duckdb::params![id], book_row)
@@ -706,7 +712,10 @@ pub fn import_books(conn: &Connection, pgn: &str, file: Option<&str>) -> Result<
                 let cname = header_name(g).unwrap_or_else(|| format!("Chapter {}", i + 1));
                 let active = tag(g, "LpdoChapterActive").as_deref() != Some("false");
                 let model = tag(g, "LpdoModelGame").as_deref() == Some("1");
-                insert_chapter(conn, &book, &cname, &movetext, &walk, active, model.then_some(g.as_str()))?;
+                let id = insert_chapter(conn, &book, &cname, &movetext, &walk, active, model.then_some(g.as_str()))?;
+                if let (true, Some(r)) = (model, tag(g, "LpdoReferenceGame")) {
+                    conn.execute("UPDATE repertoire_chapters SET annotated = ? WHERE id = ?", duckdb::params![r != "1", id])?;
+                }
             }
             books.push(book);
         }
@@ -766,9 +775,14 @@ pub fn update_chapter(conn: &Connection, id: i64, patch: ChapterPatch) -> Result
     };
     let book = get_book(conn, book_id)?;
     let counted_before = before.active && get_book(conn, before.book_id)?.active;
+    // Set by hand for a model game; made a chapter (or one again), told by
+    // its comments.
+    let annotated = if model && before.model {
+        match patch.annotated { Some(a) => a, None => before.annotated_set.then_some(before.annotated) }
+    } else { None };
     conn.execute(
-        "UPDATE repertoire_chapters SET name = ?, active = ?, book_id = ?, model = ?, result = ? WHERE id = ?",
-        duckdb::params![name, active, book_id, model, result, id],
+        "UPDATE repertoire_chapters SET name = ?, active = ?, book_id = ?, model = ?, result = ?, annotated = ? WHERE id = ?",
+        duckdb::params![name, active, book_id, model, result, annotated, id],
     )?;
     if book_id != before.book_id {
         // To the end of the new book; the old one closes its gap.
@@ -840,8 +854,9 @@ pub fn delete_chapters(conn: &Connection, ids: &[i64]) -> Result<()> {
 /// renamed, say) with the book's own in `LpdoBook…` tags and the chapter's in
 /// `LpdoChapter…`, so that importing it makes the book again one to one
 /// ([`import_books`]); then its moves.
-/// A model game keeps its own headers, marked `[LpdoModelGame "1"]`.
-fn export_chapter(book: &Book, ord: i64, name: &str, active: bool, model: bool, pgn: &str) -> String {
+/// A model game keeps its own headers, marked `[LpdoModelGame "1"]` — and
+/// `[LpdoReferenceGame "1"]` or `"0"` when it was set as one or not by hand.
+fn export_chapter(book: &Book, ord: i64, name: &str, active: bool, model: bool, annotated: Option<bool>, pgn: &str) -> String {
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "");
     let base = if model { model_pgn(pgn, &movetext_of(pgn), &result_of(pgn)) }
         else { compose_pgn(&book.name, book.author.as_deref(), ord, name, &book.color, &movetext_of(pgn)) };
@@ -853,6 +868,7 @@ fn export_chapter(book: &Book, ord: i64, name: &str, active: bool, model: bool, 
     tags += &format!("[LpdoChapter \"{}\"]\n", esc(name));
     if !active { tags += "[LpdoChapterActive \"false\"]\n"; }
     if model { tags += "[LpdoModelGame \"1\"]\n"; }
+    if let (true, Some(a)) = (model, annotated) { tags += &format!("[LpdoReferenceGame \"{}\"]\n", if a { 0 } else { 1 }); }
     match base.split_once("\n\n") {
         Some((head, body)) => format!("{head}\n{tags}\n{body}"),
         None => base,
@@ -861,14 +877,15 @@ fn export_chapter(book: &Book, ord: i64, name: &str, active: bool, model: bool, 
 
 /// A book's chapters as exported, in order.
 fn export_book(conn: &Connection, book: &Book) -> Result<Vec<String>> {
-    let mut st = conn.prepare("SELECT ord, name, active, COALESCE(model, FALSE), pgn FROM repertoire_chapters WHERE book_id = ? ORDER BY ord, id")?;
-    let rows: Vec<(i64, String, bool, bool, String)> = st.query_map(duckdb::params![book.id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect::<duckdb::Result<_>>()?;
-    Ok(rows.iter().map(|(ord, name, active, model, pgn)| export_chapter(book, *ord, name, *active, *model, pgn).trim().to_string()).collect())
+    let mut st = conn.prepare("SELECT ord, name, active, COALESCE(model, FALSE), annotated, pgn FROM repertoire_chapters WHERE book_id = ? ORDER BY ord, id")?;
+    let rows: Vec<(i64, String, bool, bool, Option<bool>, String)> = st.query_map(duckdb::params![book.id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?.collect::<duckdb::Result<_>>()?;
+    Ok(rows.iter().map(|(ord, name, active, model, annotated, pgn)| export_chapter(book, *ord, name, *active, *model, *annotated, pgn).trim().to_string()).collect())
 }
 
 pub fn chapter_pgn(conn: &Connection, id: i64) -> Result<String> {
     let c = get_chapter(conn, id)?;
-    Ok(export_chapter(&c.book, c.summary.ord, &c.summary.name, c.summary.active, c.summary.model, &c.pgn))
+    let set = c.summary.annotated_set.then_some(c.summary.annotated);
+    Ok(export_chapter(&c.book, c.summary.ord, &c.summary.name, c.summary.active, c.summary.model, set, &c.pgn))
 }
 
 pub fn book_pgn(conn: &Connection, id: i64) -> Result<String> {
@@ -2047,5 +2064,35 @@ mod tests {
         add_chapters_as(&conn, book.id, None, Some(pgn), None, true).unwrap();
         let got: Vec<(String, bool)> = list(&conn).unwrap()[0].chapters.iter().map(|c| (c.name.clone(), c.annotated)).collect();
         assert_eq!(got, vec![("Theory".into(), false), ("Text".into(), true), ("Arrows".into(), true), ("Plain".into(), false), ("Clock".into(), false)]);
+    }
+
+    #[test]
+    fn a_model_game_is_set_as_a_reference_game_by_hand() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let book = create_book(&conn, "B", "white", None, None, None).unwrap();
+        // A finish in a comment after the last move: told as a model game.
+        let pgn = "[White \"Kasparov\"]\n\n1. d4 Nf6 2. c4 e6 {2...g6 3.Nc3} 1-0\n";
+        let id = add_chapters_as(&conn, book.id, None, Some(pgn), None, true).unwrap()[0].id;
+        let get = |conn: &Connection| { let c = get_chapter_summary(conn, id).unwrap(); (c.annotated, c.annotated_set) };
+        assert_eq!(get(&conn), (true, false));
+        update_chapter(&conn, id, ChapterPatch { annotated: Some(Some(false)), ..Default::default() }).unwrap();
+        assert_eq!(get(&conn), (false, true));
+        // Other changes keep it; a backup carries it.
+        update_chapter(&conn, id, ChapterPatch { name: Some("K".into()), ..Default::default() }).unwrap();
+        assert_eq!(get(&conn), (false, true));
+        let backup = book_pgn(&conn, book.id).unwrap();
+        assert!(backup.contains("[LpdoReferenceGame \"1\"]"));
+        let other = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&other).unwrap();
+        import_books(&other, &backup, None).unwrap();
+        let again = list(&other).unwrap()[0].chapters[0].clone();
+        assert_eq!((again.annotated, again.annotated_set), (false, true));
+        // Told by its comments again; made a chapter, the setting goes.
+        update_chapter(&conn, id, ChapterPatch { annotated: Some(None), ..Default::default() }).unwrap();
+        assert_eq!(get(&conn), (true, false));
+        update_chapter(&conn, id, ChapterPatch { annotated: Some(Some(false)), ..Default::default() }).unwrap();
+        update_chapter(&conn, id, ChapterPatch { model: Some(false), ..Default::default() }).unwrap();
+        assert_eq!(get(&conn).1, false);
     }
 }

@@ -565,6 +565,9 @@ fn init_repertoire(conn: &Connection) -> Result<()> {
         -- headers kept; and a game's result (`*` for a chapter).
         ALTER TABLE repertoire_chapters ADD COLUMN IF NOT EXISTS model BOOLEAN DEFAULT FALSE;
         ALTER TABLE repertoire_chapters ADD COLUMN IF NOT EXISTS result VARCHAR DEFAULT '*';
+        -- A model game set by hand as one with comments (a model game) or
+        -- without (a reference game); NULL: told by its comments.
+        ALTER TABLE repertoire_chapters ADD COLUMN IF NOT EXISTS annotated BOOLEAN;
         ",
     )?;
     Ok(())

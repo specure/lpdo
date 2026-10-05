@@ -39,8 +39,11 @@ export interface ChapterSummary {
   /** The game's result ("*" for a chapter). */
   result: GameResult;
   /** A model game with comments of its own (text, arrows, marks — not clock
-   *  times); without, a reference game, listed apart. */
+   *  times); without, a reference game, listed apart. Set by hand, it stays so. */
   annotated: boolean;
+  /** Whether `annotated` was set by hand rather than told by the comments
+   *  (absent from servers before it could be). */
+  annotated_set?: boolean;
 }
 
 export type GameResult = "*" | "1-0" | "0-1" | "1/2-1/2";
@@ -81,7 +84,7 @@ export const deleteBook = (id: number) => apiDelete(`/repertoire/books/${id}`);
 export const addChapters = (bookId: number, body: { name?: string; pgn?: string; file?: string; model?: boolean }) =>
   postJson<ChapterSummary[]>(`/repertoire/books/${bookId}/chapters`, body);
 export const getChapter = (id: number) => apiGet<ChapterDetail>(`/repertoire/chapters/${id}`);
-export const updateChapter = (id: number, patch: { name?: string; ord?: number; active?: boolean; book_id?: number; model?: boolean; result?: GameResult }) =>
+export const updateChapter = (id: number, patch: { name?: string; ord?: number; active?: boolean; book_id?: number; model?: boolean; result?: GameResult; annotated?: boolean | null }) =>
   putJson<ChapterSummary>(`/repertoire/chapters/${id}`, patch);
 export const saveChapterMoves = (id: number, moves: string) =>
   putJson<ChapterSummary>(`/repertoire/chapters/${id}/moves`, { moves });

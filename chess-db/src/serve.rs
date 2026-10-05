@@ -1338,11 +1338,20 @@ struct ChapterBody {
     book_id: Option<i64>,
     model: Option<bool>,
     result: Option<String>,
+    /// true / false: shown as a model or a reference game; null: told by its
+    /// comments again. Left out: unchanged.
+    #[serde(default, deserialize_with = "some_option")]
+    annotated: Option<Option<bool>>,
+}
+
+/// A field present — `null` included — as `Some`, apart from one left out.
+fn some_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(d).map(Some)
 }
 
 async fn repertoire_chapter_update_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Json(b): Json<ChapterBody>) -> ApiResult<crate::repertoire::ChapterSummary> {
     state.writer.run(move |conn| {
-        let patch = crate::repertoire::ChapterPatch { name: b.name, ord: b.ord, active: b.active, book_id: b.book_id, model: b.model, result: b.result };
+        let patch = crate::repertoire::ChapterPatch { name: b.name, ord: b.ord, active: b.active, book_id: b.book_id, model: b.model, result: b.result, annotated: b.annotated };
         crate::repertoire::update_chapter(conn, id, patch).map(Json).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
     }).await
 }
