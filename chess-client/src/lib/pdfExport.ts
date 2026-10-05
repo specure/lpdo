@@ -256,6 +256,8 @@ const SPELLED: Record<string, string> = {
   "\u2192": " ->",       // → with attack
   "\u2191": " ^",        // ↑ with initiative
   "\u21c6": " <->",      // ⇆ counterplay
+  "\u27f3": " @",        // ⟳ development advantage
+  "\u2295": " (time)",   // ⊕ time trouble
   "\u25a1": "[]",       // □ only move
   "\u2206": "D",        // ∆ with the idea
   "\u2212": "-",        // − minus sign
@@ -274,6 +276,7 @@ function encodable(ch: string): boolean {
 }
 export function printable(text: string): string {
   let out = "";
+  text = text.replace(/=\u221e/g, " (comp.)"); // =∞ compensation, not "= (unclear)"
   for (const ch of text) {
     if (encodable(ch)) { out += ch; continue; }
     if (SPELLED[ch] !== undefined) { out += SPELLED[ch]; continue; }

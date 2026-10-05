@@ -107,16 +107,28 @@ export const NAG_MAP: Record<number, string> = {
   17: "\u2213",   // ∓
   18: "+-",
   19: "-+",
-  22: "\u2a00",   // ⨀
-  36: "\u2192",   // →
-  40: "\u2191",   // ↑
+  22: "\u2a00",   // ⨀ zugzwang
+  32: "\u27f3",   // ⟳ development advantage
+  36: "\u2192",   // → initiative
+  40: "\u2191",   // ↑ attack
+  44: "=\u221e",  // =∞ compensation for the material
+  132: "\u21c6",  // ⇆ counterplay
+  138: "\u2295",  // ⊕ time trouble
+  140: "\u2206",  // ∆ with the idea
+  146: "N",        // novelty
+};
+
+// Black's twin of a White NAG reads with the same sign (lichess and ChessBase
+// do the same). Kept out of NAG_MAP so each symbol still maps back to one code.
+const BLACK_TWIN: Record<number, number> = {
+  23: 22, 33: 32, 37: 36, 41: 40, 45: 44, 133: 132, 139: 138,
 };
 
 export function nagToSymbol(nag: number): string {
   // $11 and $12 (equal: a quiet / an active position) read as "=" like $10.
   // Kept out of NAG_MAP so "=" still maps back to $10 alone.
   if (nag === 11 || nag === 12) return "=";
-  return NAG_MAP[nag] ?? `$${nag}`;
+  return NAG_MAP[BLACK_TWIN[nag] ?? nag] ?? `$${nag}`;
 }
 
 /** Render a move's NAG codes as a display string (e.g. [1, 16] → "!±"). */
