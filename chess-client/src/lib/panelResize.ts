@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
-import type { Layout } from "react-resizable-panels";
+import { useMemo, useRef, useState } from "react";
+import { useDefaultLayout, type Layout } from "react-resizable-panels";
 
 // One rule for every divider in the app: it resizes the two panels it separates,
 // their total stays the same, and nothing else moves.
@@ -87,4 +87,23 @@ export function useNeighbourResize(panelIds: string[]) {
       return typeof size === "number" ? String(size) : null;
     },
   };
+}
+
+// A group whose panels come and go (a list hidden, a column only in one state)
+// keeps a saved layout for each set of them. Saved as one, the sizes for one
+// set failed to match the other's panels and every column fell back to its
+// default the first time the set changed. A layout saved the old way, under
+// the group's id alone, is still used for the set it was saved with.
+export function usePanelLayout(id: string, panelIds: string[]) {
+  const saved = useDefaultLayout({ id, panelIds, storage: localStorage });
+  const key = panelIds.join(",");
+  const before = useMemo(() => {
+    if (saved.defaultLayout) return undefined;
+    try {
+      const v = JSON.parse(localStorage.getItem(`react-resizable-panels:${id}`) ?? "null") as Layout | null;
+      if (v && Object.keys(v).sort().join(",") === [...panelIds].sort().join(",")) return v;
+    } catch { /* none */ }
+    return undefined;
+  }, [saved.defaultLayout, id, key]); // eslint-disable-line react-hooks/exhaustive-deps
+  return { ...saved, defaultLayout: saved.defaultLayout ?? before };
 }

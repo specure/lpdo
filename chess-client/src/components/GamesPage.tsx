@@ -10,7 +10,7 @@ import PrintDialog, { ExportableGame } from "./games/PrintDialog";
 import { fetchPgns, savePgnFile } from "../lib/exportPgn";
 import GamePreview from "./games/GamePreview";
 import CloudEngine, { pvString } from "./CloudEngine";
-import { useNeighbourResize } from "../lib/panelResize";
+import { useNeighbourResize, usePanelLayout } from "../lib/panelResize";
 import { useGamePgn } from "../lib/useGamePgn";
 import { EMPTY_PLAYER_VIEW, loadPlayerViewState, savePlayerViewState } from "../lib/playerViewState";
 import { useArrowToggles, type CombinedMove } from "./HintArrows";
@@ -92,6 +92,9 @@ function displayDate(date: string | null): string {
 function displayRound(round: string | null | undefined): string {
   return round && round !== "?" && round !== "-" ? round : "";
 }
+
+/** Where the players list's width (a percentage) is kept. */
+export const PLAYERS_RAIL_KEY = "players-rail-size";
 
 export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, player, onOpenInAnalysis, onOpenManyInAnalysis, analysisCapacity, collections, onCollectionChange, reloadKey, leadingPanel, leadingPanelSize = 14 }: Props) {
   // Engine games counted or not (#296): one setting shared with Analysis.
@@ -505,10 +508,24 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     "right",
   ];
   const at = (key: string) => roster.indexOf(key);
+  // The rest of the row, so the defaults add up to 100. (Percentages as
+  // strings: a bare number is pixels — the players list's 13 had been 13px,
+  // so it opened at its minimum.)
+  const rightDefault = 100 - (leadingPanel ? leadingPanelSize : 0) - (filtersCollapsed ? 0 : 18) - (listOnly ? 0 : 30);
   // Layout persistence moved from autoSaveId to explicit storage wiring in v4.
-  const cols = useDefaultLayout({ id: "games-cols-v2", storage: localStorage });
+  const savedCols = usePanelLayout("games-cols-v2", roster);
+  // The players list's width, kept apart: the Players page shows it without
+  // this page while no player is picked.
+  const cols = {
+    ...savedCols,
+    onLayoutChanged: (...a: Parameters<typeof savedCols.onLayoutChanged>) => {
+      const lead = a[0].lead;
+      if (lead) { try { localStorage.setItem(PLAYERS_RAIL_KEY, String(lead)); } catch { /* not kept */ } }
+      savedCols.onLayoutChanged(...a);
+    },
+  };
   const leftCol = useDefaultLayout({ id: "games-leftcol", storage: localStorage });
-  const rightCol = useDefaultLayout({ id: "games-right", storage: localStorage });
+  const rightCol = usePanelLayout("games-right", listOnly ? ["bottom"] : ["explorer", "bottom"]);
   const explorer = useDefaultLayout({ id: "games-b", storage: localStorage });
   const bottom = useDefaultLayout({ id: "games-bottom", storage: localStorage });
   const rz = useNeighbourResize(roster);
@@ -536,7 +553,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
 
           {leadingPanel && (
             <Panel id="lead"
-                   defaultSize={leadingPanelSize}
+                   defaultSize={`${leadingPanelSize}%`}
                    minSize={rz.floor("lead") ?? "8"}
                    maxSize="30">
               {leadingPanel}
@@ -650,7 +667,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
 
           {/* Right area: B (B1|B2) over bottom (D | E/F) */}
           <Panel id="right"
-                 defaultSize={listOnly ? "100" : "70"}
+                 defaultSize={`${rightDefault}%`}
                  minSize={rz.floor("right") ?? "30"}>
             <Group orientation="vertical" className="h-full w-full flex" defaultLayout={rightCol.defaultLayout} onLayoutChanged={rightCol.onLayoutChanged}>
               {/* B — the opening explorer, tied to the board's position: gone
@@ -720,7 +737,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
 
               {/* Bottom: D (game list) | E-F (mini board over move list). The
                   whole area in the list-only state. */}
-              <Panel id="bottom" defaultSize={listOnly ? 100 : 66} minSize="25">
+              <Panel id="bottom" defaultSize={listOnly ? "100" : "66"} minSize="25">
                 <Group orientation="horizontal" className="h-full w-full flex" defaultLayout={bottom.defaultLayout} onLayoutChanged={bottom.onLayoutChanged}>
                   {/* D — game list (resizable columns) */}
                   <Panel defaultSize="62" minSize="25">
