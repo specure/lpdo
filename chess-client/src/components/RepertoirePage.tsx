@@ -1351,7 +1351,9 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
         ? null
         : <input type="checkbox" checked={c.active} disabled={busy} onChange={(e) => onActive(e.target.checked)} className="accent-primary shrink-0" title="Active: part of the repertoire you are playing now" />}
       {renaming ? (
+        // The name all selected, as in a file manager: typing replaces it.
         <input autoFocus value={name} onChange={(e) => setName(e.target.value)}
+          onFocus={(e) => e.currentTarget.select()}
           onBlur={() => onRename(name.trim())}
           onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") { setName(c.name); onRename(c.name); } }}
           className={`${field} flex-1 min-w-0 h-7`} />
