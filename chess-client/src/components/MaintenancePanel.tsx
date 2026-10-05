@@ -8,8 +8,11 @@ import { getVersion } from "@tauri-apps/api/app";
 import { clearCrashLog, formatCrashLog, readCrashLog, type CrashEntry } from "../lib/crashLog";
 import { listen } from "@tauri-apps/api/event";
 import { useJobProgress } from "../hooks/useJobProgress";
-import { allBooksPgnPath, getRepertoireSettings, putRepertoireSettings } from "../lib/repertoire";
-import { saveTextFile } from "../lib/exportPgn";
+import { getRepertoireSettings, putRepertoireSettings } from "../lib/repertoire";
+import {
+  DEFAULT_BACKUP_DIR, DEFAULT_COLLECTION, backupCollection, backupFolder, rememberBackupCollection, rememberBackupFolder,
+  saveBackup, useAutoBackup, type BackupKind,
+} from "../lib/backup";
 import SourcesPanel from "./SourcesPanel";
 import MergePlayersDialog from "./MergePlayersDialog";
 import { StatusInfo, ScheduleInfo } from "../types";
@@ -941,48 +944,6 @@ function RepertoireSection() {
         </div>
       )}
       {error && <p className="text-body-sm text-error">{error}</p>}
-    </SectionCard>
-  );
-}
-
-/** The repertoire's backup: every book in one PGN, with each book's name,
- *  colour, author, link, notes and switches — "Import…" in the Repertoire
- *  page's Books panel makes them all again, on this server or another. */
-function RepertoireBackupSection() {
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  async function backup() {
-    setBusy(true); setNote(null); setError(null);
-    try {
-      const r = await fetch(apiUrl(allBooksPgnPath));
-      if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
-      const text = await r.text();
-      const chapters = (text.match(/^\[LpdoChapter /gm) ?? []).length;
-      const books = new Set(text.match(/^\[LpdoBook "(.*)"\]$/gm) ?? []).size;
-      const day = new Date().toISOString().slice(0, 10);
-      if (await saveTextFile(`lpdo-repertoire-${day}.pgn`, text)) setNote(`Saved ${books} ${books === 1 ? "book" : "books"}, ${chapters} chapters.`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <SectionCard title="Backup of the repertoire">
-      <div className="space-y-2">
-        <p className="text-body-sm text-on-surface-variant">
-          Every book in one PGN file — its name, colour, author, link and notes, its chapters with their lines, comments
-          and switches. To restore, on this server or another: Repertoire → Books → Import…, which makes each book again
-          as a new one.
-        </p>
-        <button onClick={() => void backup()} disabled={busy}
-          className="h-8 px-3 inline-flex items-center rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 disabled:opacity-50 transition-all duration-short3 ease-standard">
-          {busy ? "Saving…" : "Back up all books…"}
-        </button>
-        {note && <p className="text-body-sm text-success">{note}</p>}
-        {error && <p className="text-body-sm text-error">{error}</p>}
-      </div>
     </SectionCard>
   );
 }
@@ -1983,28 +1944,106 @@ function NormaliseSection({ onMutated }: { onMutated?: () => void }) {
   );
 }
 
-// ── Backup section ────────────────────────────────────────────────────────────
-
-// Pre-selected when present — the private collection the wizard/AddGame flow
-// writes to. Falls back to the first available collection otherwise.
-const DEFAULT_COLLECTION = "My games";
+// ── Backup tab ────────────────────────────────────────────────────────────────
+// Saving and the daily automatic backup live in lib/backup.ts; here are the
+// folder, the cards and their switches.
 
 interface Collection { id: number; name: string; game_count: number }
 
-// Save a collection's backup where the USER chooses (#121). The hardened daemon
-// can't write to the user's home, so it builds the .pgn.zip and streams it here
-// via `download_backup`; the GUI writes it to a folder the user picks. The folder
-// is remembered (localStorage) so repeat backups don't re-prompt — the user can
-// type a path or pick one with Browse, and the filename is generated per backup.
-const BACKUP_DIR_KEY = "lpdo.backupDir";
-const DEFAULT_BACKUP_DIR = "~/lpdo/backup";
+/** Everything that can be backed up, side by side, saved to one folder, each
+ *  with its daily automatic backup. */
+function BackupTab() {
+  const [folder, setFolder] = useState<string>(backupFolder);
 
-function BackupSection() {
-  const [collections, setCollections] = useState<Collection[] | null>(null);
-  const [collection, setCollection] = useState(DEFAULT_COLLECTION);
-  const [folder, setFolder] = useState<string>(
-    () => localStorage.getItem(BACKUP_DIR_KEY) || DEFAULT_BACKUP_DIR,
+  async function browse() {
+    const picked = await openDialog({ multiple: false, directory: true });
+    if (typeof picked === "string") setFolder(rememberBackupFolder(picked));
+  }
+
+  return (
+    <div className="space-y-4">
+      <TabLead>
+        What you made yourself, saved as zip-compressed PGN files in one folder: a collection, and your repertoire
+        books. Each backup is named by date and what it holds. A daily backup is made by the app while it is open —
+        when it starts, then hourly — and only when something has changed since the last one.
+      </TabLead>
+      <div className={grid}>
+        <div className="md:col-span-2">
+          <SectionCard title="Backup folder">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={folder}
+                onChange={(e) => setFolder(e.target.value)}
+                onBlur={() => rememberBackupFolder(folder)}
+                placeholder={DEFAULT_BACKUP_DIR}
+                spellCheck={false}
+                className="flex-1 min-w-0 h-9 px-3 rounded-sm bg-transparent text-on-surface text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
+              />
+              <button
+                onClick={() => { void browse(); }}
+                className="h-9 px-3 shrink-0 inline-flex items-center rounded-sm border border-outline text-on-surface text-label-md hover:bg-on-surface/8 transition-colors duration-short3 ease-standard"
+              >
+                Browse…
+              </button>
+            </div>
+          </SectionCard>
+        </div>
+        <CollectionBackupSection folder={folder} />
+        <RepertoireBackupSection folder={folder} />
+      </div>
+    </div>
   );
+}
+
+/** A backup written: where, a way to it, and back to the start. */
+function BackupSaved({ path, again, onAgain }: { path: string | null; again: string; onAgain: () => void }) {
+  return (
+    <div className="space-y-2">
+      <p className="text-body-sm text-success">✓ Backup saved.</p>
+      {path && <p className="text-label-sm text-on-surface-variant break-all font-mono">{path}</p>}
+      <div className="flex gap-2">
+        {path && (
+          <button
+            onClick={() => { void revealItemInDir(path); }}
+            className="h-7 px-3 inline-flex items-center rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 transition-all duration-short3 ease-standard"
+          >
+            Reveal in file manager
+          </button>
+        )}
+        <button
+          onClick={onAgain}
+          className="h-7 px-3 inline-flex items-center rounded-full text-primary text-label-md hover:bg-primary/8 transition-colors duration-short3 ease-standard"
+        >
+          {again}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** The daily backup's switch, and what it last did. */
+function DailyBackupToggle({ kind, label }: { kind: BackupKind; label: string }) {
+  const [auto, setOn] = useAutoBackup(kind);
+  const day = new Date().toLocaleDateString("sv-SE"); // YYYY-MM-DD, local
+  const last = !auto.on ? null
+    : auto.error ? <span className="text-error">Last try failed: {auto.error}</span>
+    : auto.savedOn ? <>Last saved {auto.savedOn === day ? "today" : auto.savedOn}{auto.checkedOn === day && auto.savedOn !== day ? "; no changes today" : ""}</>
+    : "Not saved yet";
+  return (
+    <div className="space-y-1 pt-1">
+      <label className="flex items-center gap-2 text-body-sm text-on-surface cursor-pointer">
+        <input type="checkbox" checked={auto.on} onChange={(e) => setOn(e.target.checked)} className="accent-primary" />
+        {label}
+      </label>
+      {last && <p className="text-label-sm text-on-surface-variant break-words pl-6" title={auto.path}>{last}</p>}
+    </div>
+  );
+}
+
+function CollectionBackupSection({ folder }: { folder: string }) {
+  const [collections, setCollections] = useState<Collection[] | null>(null);
+  const [collection, setCollection] = useState(backupCollection);
   const [phase, setPhase] = useState<"idle" | "saving" | "done" | "error">("idle");
   const [pct, setPct] = useState<number | null>(null);
   const [savedPath, setSavedPath] = useState<string | null>(null);
@@ -2027,22 +2066,15 @@ function BackupSection() {
     return () => { cancelled = true; };
   }, []);
 
-  async function browse() {
-    const picked = await openDialog({ multiple: false, directory: true });
-    if (typeof picked === "string") {
-      setFolder(picked);
-      localStorage.setItem(BACKUP_DIR_KEY, picked);
-    }
+  function pick(name: string) {
+    setCollection(name);
+    rememberBackupCollection(name);
   }
 
   async function run() {
     setError(null);
-    const dir = folder.trim().replace(/\/+$/, "");
+    const dir = rememberBackupFolder(folder);
     if (!dir) return;
-    localStorage.setItem(BACKUP_DIR_KEY, dir);
-    const date = new Date().toISOString().slice(0, 10);
-    const safe = collection.replace(/[^\w.-]+/g, "_");
-    const dest = `${dir}/${date}-${safe}.pgn.zip`;
     setPhase("saving");
     setPct(null);
     const un = await listen<{ received: number; total: number }>("backup-download-progress", (e) => {
@@ -2050,10 +2082,7 @@ function BackupSection() {
       setPct(total > 0 ? Math.min(100, (received / total) * 100) : null);
     });
     try {
-      // download_backup returns the resolved absolute path (leading `~/`
-      // expanded) — use it for Reveal, which needs a real path, not `~/…`.
-      const resolved = await invoke<string>("download_backup", { baseUrl: serverUrl(), token: serverToken(), collection, destPath: dest });
-      setSavedPath(resolved || dest);
+      setSavedPath(await saveBackup("collection", dir, collection));
       setPhase("done");
     } catch (e: unknown) {
       setError(String(e));
@@ -2066,10 +2095,9 @@ function BackupSection() {
   const hasCollections = collections === null || collections.length > 0;
 
   return (
-    <SectionCard title="Backup">
+    <SectionCard title="Collections">
       <p className="text-body-sm text-on-surface-variant">
-        Save a collection to a zip-compressed PGN file in the folder you choose. The folder is
-        remembered for next time; each backup is named by date and collection.
+        One collection's games, oldest first. Restore by importing the file into a collection.
       </p>
 
       {phase === "idle" && (
@@ -2077,7 +2105,7 @@ function BackupSection() {
           <div className="space-y-2">
             <select
               value={collection}
-              onChange={(e) => setCollection(e.target.value)}
+              onChange={(e) => pick(e.target.value)}
               disabled={collections === null}
               className="w-full h-9 px-3 rounded-sm bg-transparent text-on-surface text-body-sm border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard disabled:opacity-40"
             >
@@ -2091,22 +2119,6 @@ function BackupSection() {
                 ))
               )}
             </select>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={folder}
-                onChange={(e) => setFolder(e.target.value)}
-                placeholder={DEFAULT_BACKUP_DIR}
-                spellCheck={false}
-                className="flex-1 min-w-0 h-9 px-3 rounded-sm bg-transparent text-on-surface text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
-              />
-              <button
-                onClick={() => { void browse(); }}
-                className="h-9 px-3 shrink-0 inline-flex items-center rounded-sm border border-outline text-on-surface text-label-md hover:bg-on-surface/8 transition-colors duration-short3 ease-standard"
-              >
-                Browse…
-              </button>
-            </div>
             <ActionButton onClick={() => { void run(); }} disabled={collections === null || !collection || !folder.trim()}>
               Back up
             </ActionButton>
@@ -2133,26 +2145,7 @@ function BackupSection() {
       )}
 
       {phase === "done" && (
-        <div className="space-y-2">
-          <p className="text-body-sm text-success">✓ Backup saved.</p>
-          {savedPath && <p className="text-label-sm text-on-surface-variant break-all font-mono">{savedPath}</p>}
-          <div className="flex gap-2">
-            {savedPath && (
-              <button
-                onClick={() => { void revealItemInDir(savedPath); }}
-                className="h-7 px-3 inline-flex items-center rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 transition-all duration-short3 ease-standard"
-              >
-                Reveal in file manager
-              </button>
-            )}
-            <button
-              onClick={() => { setPhase("idle"); setSavedPath(null); }}
-              className="h-7 px-3 inline-flex items-center rounded-full text-primary text-label-md hover:bg-primary/8 transition-colors duration-short3 ease-standard"
-            >
-              Back up another
-            </button>
-          </div>
-        </div>
+        <BackupSaved path={savedPath} again="Back up another" onAgain={() => { setPhase("idle"); setSavedPath(null); }} />
       )}
 
       {phase === "error" && (
@@ -2161,6 +2154,55 @@ function BackupSection() {
           <ActionButton onClick={() => { void run(); }}>Try again</ActionButton>
         </div>
       )}
+
+      {hasCollections && <DailyBackupToggle kind="collection" label="Back up the selected collection daily, when it has changed" />}
+    </SectionCard>
+  );
+}
+
+/** The repertoire's backup: every book in one zipped PGN, with each book's
+ *  name, colour, author, link, notes and switches — "Import…" in the Repertoire
+ *  page's Books panel makes them all again, on this server or another. */
+function RepertoireBackupSection({ folder }: { folder: string }) {
+  const [phase, setPhase] = useState<"idle" | "saving" | "done" | "error">("idle");
+  const [savedPath, setSavedPath] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run() {
+    setError(null);
+    const dir = rememberBackupFolder(folder);
+    if (!dir) return;
+    setPhase("saving");
+    try {
+      setSavedPath(await saveBackup("repertoire", dir, ""));
+      setPhase("done");
+    } catch (e: unknown) {
+      setError(String(e));
+      setPhase("error");
+    }
+  }
+
+  return (
+    <SectionCard title="Repertoire books">
+      <p className="text-body-sm text-on-surface-variant">
+        Every book — its name, colour, author, link and notes, its chapters with their lines, comments and switches.
+        Restore, on this server or another, with Repertoire → Books → Import…, which makes each book again as a new one.
+      </p>
+      {(phase === "idle" || phase === "saving") && (
+        <ActionButton onClick={() => { void run(); }} disabled={phase === "saving" || !folder.trim()}>
+          {phase === "saving" ? "Saving…" : "Back up all books"}
+        </ActionButton>
+      )}
+      {phase === "done" && (
+        <BackupSaved path={savedPath} again="Back up again" onAgain={() => { setPhase("idle"); setSavedPath(null); }} />
+      )}
+      {phase === "error" && (
+        <div className="space-y-2">
+          <p className="text-label-sm text-error break-words">Backup failed: {error}</p>
+          <ActionButton onClick={() => { void run(); }}>Try again</ActionButton>
+        </div>
+      )}
+      <DailyBackupToggle kind="repertoire" label="Back up all books daily, when they have changed" />
     </SectionCard>
   );
 }
@@ -2250,12 +2292,16 @@ function MergePlayersSection({ onMutated }: { onMutated?: () => void }) {
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 
+/** A tab's cards: two columns where there is room. */
+const grid = "grid grid-cols-1 md:grid-cols-2 gap-4 items-start";
+
 const TABS = [
   { id: "sources", label: "Sources" },
   { id: "databases", label: "Database" },
   { id: "players", label: "Players" },
   { id: "engines", label: "Engines" },
   { id: "repertoire", label: "Repertoire" },
+  { id: "backup", label: "Backup" },
   { id: "others", label: "Others" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
@@ -2303,7 +2349,6 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
 
   // Inactive tabs are hidden, not unmounted, so a long-running job (e.g. a TWIC
   // import) keeps its live progress when you switch away and back.
-  const grid = "grid grid-cols-1 md:grid-cols-2 gap-4 items-start";
 
   return (
     <div className="flex-1 overflow-y-auto bg-surface">
@@ -2417,13 +2462,15 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
             </TabLead>
             <div className={grid}>
               <RepertoireSection />
-              <RepertoireBackupSection />
             </div>
+          </div>
+
+          <div className={tab === "backup" ? "" : "hidden"}>
+            <BackupTab />
           </div>
 
           <div className={`${grid} ${tab === "others" ? "" : "hidden"}`}>
             <ServerConnectionSection status={status} connection={connection} />
-            <BackupSection />
             <DiagnosticsSection />
           </div>
         </div>

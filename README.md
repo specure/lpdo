@@ -81,7 +81,7 @@ the rest of the app. The home screen shows what came in and when.
   from FIDE-less sources by name (see [Player-name normalisation](#player-name-normalisation)).
 - **Player profiles & statistics**, including a personalised home screen scoped to
   your own games.
-- **Backup** your private "My games" collection to a timestamped PGN file.
+- **Backup** a collection, or all your repertoire books, to a dated zip-compressed PGN file (Maintenance → Backup) — by hand, or daily while the app is open, only when something changed.
 
 **Prepare for tournaments**
 

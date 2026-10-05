@@ -107,6 +107,7 @@ pub fn run() {
             local::read_pgn_file,
             local::upload_pgn_file,
             local::download_backup,
+            local::download_repertoire_backup,
             local::append_pgn_file,
             local::write_pgn_file,
             local::write_binary_file,

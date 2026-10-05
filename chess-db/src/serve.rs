@@ -1425,6 +1425,54 @@ async fn repertoire_import_handler(State(state): State<AppState>, Json(b): Json<
     state.writer.run(move |conn| crate::repertoire::import_books(conn, &b.pgn, b.file.as_deref()).map(Json).map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))).await
 }
 
+/// Books from a zip of PGNs — a zipped backup, or PGNs zipped by hand: each
+/// `.pgn` in it imported as if picked on its own.
+async fn repertoire_import_zip_handler(State(state): State<AppState>, body: axum::body::Bytes) -> ApiResult<Vec<crate::repertoire::Book>> {
+    state.writer.run(move |conn| {
+        let bad = |e: anyhow::Error| (StatusCode::BAD_REQUEST, format!("{e:#}"));
+        let mut books = Vec::new();
+        for (file, pgn) in crate::repertoire::pgns_of_zip(&body).map_err(bad)? {
+            let made = crate::repertoire::import_books(conn, &pgn, Some(&file)).map_err(|e| bad(e.context(format!("{file}.pgn"))))?;
+            books.extend(made);
+        }
+        Ok(Json(books))
+    }).await
+}
+
+/// Every book replaced by a backup's — a `.pgn.zip` from Maintenance → Backup,
+/// or a plain PGN backup — in one transaction.
+async fn repertoire_restore_handler(State(state): State<AppState>, body: axum::body::Bytes) -> ApiResult<Vec<crate::repertoire::Book>> {
+    state.writer.run(move |conn| {
+        let files = if body.starts_with(b"PK") {
+            crate::repertoire::pgns_of_zip(&body)
+        } else {
+            Ok(vec![("repertoire".to_string(), String::from_utf8_lossy(&body).into_owned())])
+        };
+        files.and_then(|f| crate::repertoire::restore_books(conn, &f))
+            .map(Json)
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))
+    }).await
+}
+
+/// The repertoire's backup as a `.pgn.zip`, like a collection's.
+async fn repertoire_backup_handler(State(state): State<AppState>) -> std::result::Result<axum::response::Response, (StatusCode, String)> {
+    let bytes = state.reads.run(move |conn| crate::repertoire::all_books_zip(conn, "repertoire.pgn")
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))).await?;
+    axum::response::Response::builder()
+        .header(axum::http::header::CONTENT_TYPE, "application/zip")
+        .header(axum::http::header::CONTENT_DISPOSITION, "attachment; filename=\"repertoire.pgn.zip\"")
+        .body(Body::from(bytes))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("response: {e}")))
+}
+
+/// The repertoire backup's signature — the same until a book or chapter
+/// changes; the client's daily backup skips a day when it has not.
+async fn repertoire_backup_signature_handler(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
+    state.reads.run(move |conn| crate::repertoire::backup_signature(conn)
+        .map(|s| Json(serde_json::json!({ "signature": s })))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))).await
+}
+
 /// Every book as one PGN — the repertoire's backup.
 async fn repertoire_all_pgn_handler(State(state): State<AppState>) -> std::result::Result<String, (StatusCode, String)> {
     state.reads.run(move |conn| crate::repertoire::all_books_pgn(conn).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))).await
@@ -1763,6 +1811,17 @@ struct BackupDownloadQuery {
 /// bytes to the GUI, which saves them to a user-chosen, user-accessible path.
 /// Builds into a daemon-owned temp file, streams it, and deletes it once the
 /// response body is dropped (fully sent or the client disconnected).
+/// A collection backup's signature — the same while its games are; the
+/// client's daily backup skips a day when it has not changed.
+async fn backup_signature_handler(
+    State(state): State<AppState>,
+    Query(q): Query<BackupDownloadQuery>,
+) -> ApiResult<serde_json::Value> {
+    state.reads.run(move |conn| crate::collection_signature(conn, &q.collection)
+        .map(|s| Json(serde_json::json!({ "signature": s })))
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))).await
+}
+
 async fn backup_download_handler(
     State(state): State<AppState>,
     Query(q): Query<BackupDownloadQuery>,
@@ -2883,6 +2942,10 @@ pub async fn run(
         .route("/repertoire/chapters/{id}/games",      get(repertoire_chapter_games_handler))
         .route("/repertoire/books/{id}/games",         get(repertoire_book_games_handler))
         .route("/repertoire/import",                   post(repertoire_import_handler))
+        .route("/repertoire/import/zip",               post(repertoire_import_zip_handler).layer(DefaultBodyLimit::max(256 * 1024 * 1024)))
+        .route("/repertoire/backup",                   get(repertoire_backup_handler))
+        .route("/repertoire/restore",                  post(repertoire_restore_handler).layer(DefaultBodyLimit::max(256 * 1024 * 1024)))
+        .route("/repertoire/backup/signature",         get(repertoire_backup_signature_handler))
         .route("/repertoire/chapters/delete",          post(repertoire_chapters_delete_handler))
         .route("/repertoire/chapters/order",           post(repertoire_chapters_order_handler))
         .route("/repertoire/pgn",                      get(repertoire_all_pgn_handler))
@@ -2937,6 +3000,7 @@ pub async fn run(
         // multi-GB file streams straight to a spool + import job.
         .route("/import/upload", post(import_upload_handler).layer(DefaultBodyLimit::disable()))
         .route("/backup/download", get(backup_download_handler))
+        .route("/backup/signature", get(backup_signature_handler))
         .route("/jobs/{id}",                           get(get_job_handler))
         .route("/jobs/{id}/events",                    get(job_events_handler))
         .route("/jobs/{id}/cancel",                    post(cancel_job_handler))

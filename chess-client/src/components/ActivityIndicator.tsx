@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { getJobs, cancelJob, retryJob, getCloudWatches, deleteCloudWatch } from "../api";
 import type { Job } from "../types";
 import type { CloudWatch } from "../api";
+import { useLocalJobs, type LocalJob } from "../lib/backup";
 
 // ── Global background-activity view (#40 Phase C3) ────────────────────────────
 //
@@ -210,6 +211,29 @@ function RecentRow({ job }: { job: Job }) {
   );
 }
 
+/** A backup the app made (not the server): running, saved, skipped as
+ *  unchanged, or failed. */
+function AppJobRow({ job }: { job: LocalJob }) {
+  const { icon, color } = job.status === "done" ? { icon: "✓", color: "text-success" }
+    : job.status === "unchanged" ? { icon: "–", color: "text-on-surface-variant" }
+    : job.status === "error" ? { icon: "✕", color: "text-error" }
+    : { icon: "⟳", color: "text-primary animate-spin" };
+  return (
+    <div className="px-4 py-2 flex items-start gap-2">
+      <span className={`inline-block text-base leading-5 shrink-0 ${color}`}>{icon}</span>
+      <div className="min-w-0">
+        <div className="text-body-sm text-on-surface line-clamp-2 break-words">{job.label}</div>
+        {job.message && <div className={`text-label-sm break-all ${job.status === "error" ? "text-error" : "text-on-surface-variant"}`}>{job.message}</div>}
+        <div className="text-label-sm text-on-surface-variant">
+          {job.ended_at ? `${formatAgo(job.ended_at)} · took ${formatDuration(job.ended_at - job.started_at)}` : "Saving…"}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const sectionHead = "px-4 pt-3 pb-1 text-label-sm text-on-surface-variant uppercase tracking-wider";
+
 /** Window event dispatched when a watch fires — chessdb revised the position's
  *  evaluations. The Games panel refreshes its move table (if on that position)
  *  and re-enables Deepen. */
@@ -262,6 +286,9 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
   const [cancelling, setCancelling] = useState<Set<string>>(() => new Set());
   const [open, setOpen] = useState(false);
   const [watches, setWatches] = useState<CloudWatch[]>([]);
+  // Backups the app makes itself, newest first; they never reach the server's
+  // job list, so they get a section of their own.
+  const appJobs = [...useLocalJobs()].reverse();
   // Zobrist keys already seen "updated", so a watch fires its notification once.
   // Seeded on first poll so pre-existing updated watches don't fire on mount.
   const firedSeenRef = useRef<Set<number> | null>(null);
@@ -381,7 +408,8 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
   const watching = watches.filter((w) => w.status === "watching");
   const updatedWatches = watches.filter((w) => w.status === "updated");
   // Watches count toward "busy" so the badge reflects the whole pipeline.
-  const activeCount = active.length + watching.length;
+  const appRunning = appJobs.filter((j) => j.status === "running").length;
+  const activeCount = active.length + watching.length + appRunning;
   const busy = activeCount > 0;
 
   function handleCancel(id: string) {
@@ -426,12 +454,15 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
             </span>
           </div>
 
+          {/* Who does the work: the server (local or remote), or the app. The
+              Server heading shows only when the app has work to list too. */}
+          {appJobs.length > 0 && <div className={sectionHead}>Server</div>}
           {unreachable ? (
             <div className="px-4 py-6 text-body-sm text-on-surface-variant">Server not reachable — activity unavailable.</div>
           ) : jobs === null ? (
             <div className="px-4 py-6 text-body-sm text-on-surface-variant">Loading…</div>
           ) : active.length === 0 && recent.length === 0 && watches.length === 0 ? (
-            <div className="px-4 py-6 text-body-sm text-on-surface-variant">No background activity.</div>
+            <div className="px-4 py-6 text-body-sm text-on-surface-variant">{appJobs.length > 0 ? "No server activity." : "No background activity."}</div>
           ) : (
             <>
               {active.length > 0 && (
@@ -450,13 +481,21 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
               )}
               {recent.length > 0 && (
                 <>
-                  <div className="px-4 pt-3 pb-1 text-label-sm text-on-surface-variant uppercase tracking-wider">Recent</div>
+                  <div className={sectionHead}>Recent</div>
                   <div className="pb-2">
                     {recent.map((j) => <RecentRow key={j.id} job={j} />)}
                   </div>
                 </>
               )}
             </>
+          )}
+          {appJobs.length > 0 && (
+            <div className="border-t border-outline-variant">
+              <div className={sectionHead}>App</div>
+              <div className="pb-2">
+                {appJobs.map((j) => <AppJobRow key={j.id} job={j} />)}
+              </div>
+            </div>
           )}
         </div>
       )}

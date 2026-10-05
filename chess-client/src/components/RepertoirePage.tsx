@@ -10,7 +10,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { GameSummary } from "../types";
 import {
   addChapters, bookPgnPath, chapterPgnPath, createBook, deleteBook, deleteChapter, getChapter, listRepertoire,
-  saveChapterMoves, updateBook, updateChapter, documentOf, analyseChapters, getBookGames, scorePct, importBooks, deleteChapters, orderChapters,
+  saveChapterMoves, updateBook, updateChapter, documentOf, analyseChapters, getBookGames, scorePct, importBooks, importBooksZip, restoreBooks, deleteChapters, orderChapters,
   type BookGames, type Score, type BookColor, type BookWithChapters, type ChapterSummary, type GameResult, GAME_RESULTS,
 } from "../lib/repertoire";
 import { saveTextFile } from "../lib/exportPgn";
@@ -201,12 +201,12 @@ export default function RepertoirePage({ onOpenGame }: Props) {
     run(async () => { const [c] = await addChapters(bookId, { name }); if (c) setChapterId(c.id); });
   // Books from LPDO's own export (a book, or a backup): made again, each a
   // new book — never added to the one selected.
-  const importBookFiles = (items: { pgn: string; file?: string }[]) => run(async () => {
+  const importBookFiles = (items: BookFile[]) => run(async () => {
     let first: number | null = null;
     try {
       for (const [i, it] of items.entries()) {
         setImporting({ i: i + 1, n: items.length, file: it.file ?? null });
-        const made = await importBooks(it.pgn, it.file).catch((e) => { throw new Error(it.file ? `${it.file}: ${String(e)}` : String(e)); });
+        const made = await ("zip" in it ? importBooksZip(it.zip) : importBooks(it.pgn, it.file)).catch((e) => { throw new Error(it.file ? `${it.file}: ${String(e)}` : String(e)); });
         first ??= made[0]?.id ?? null;
       }
     } finally {
@@ -359,6 +359,11 @@ export default function RepertoirePage({ onOpenGame }: Props) {
         onCreate={(b) => run(async () => { const nb = await createBook(b); setSelectedBook(nb.id); })}
         onUpdate={(id, patch) => run(() => updateBook(id, patch))}
         onImportBooks={importBookFiles}
+        onRestore={(file) => run(async () => {
+          const made = await restoreBooks(file);
+          dropChapter();
+          setSelectedBook(made[0]?.id ?? null);
+        })}
         onDelete={(b) => run(async () => {
           await deleteBook(b.id);
           if (b.chapters.some((c) => c.id === chapterId)) dropChapter();
@@ -535,6 +540,8 @@ async function exportPgn(path: string, filename: string): Promise<string | null>
 }
 
 type ImportItem = { pgn: string; file?: string };
+/** A file picked for the books' Import…: a PGN, or a zip of them (a backup). */
+type BookFile = ImportItem | { zip: Blob; file?: string };
 
 /** A book's chapters — its repertoire — and its model games, apart. */
 const chaptersOf = (b: BookWithChapters) => b.chapters.filter((c) => !c.model);
@@ -545,7 +552,7 @@ const gamesOf = (b: BookWithChapters) => b.chapters.filter((c) => c.model);
 const modelsOf = (b: BookWithChapters) => b.chapters.filter((c) => c.model && c.annotated !== false);
 const referencesOf = (b: BookWithChapters) => b.chapters.filter((c) => c.model && c.annotated === false);
 
-function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, onCreate, onUpdate, onImportBooks, onDelete }: {
+function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, onCreate, onUpdate, onImportBooks, onRestore, onDelete }: {
   books: BookWithChapters[] | null; selected: number | null; busy: boolean; error: string | null;
   /** Whether F2 is the books' (they were clicked last): Edit… the selected one. */
   f2Here: () => boolean;
@@ -553,10 +560,15 @@ function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, on
   onCreate: (b: { name: string; author: string | null; color: BookColor }) => void;
   onUpdate: (id: number, patch: BookPatch) => void;
   /** Books from LPDO's own PGN (a book exported, or a backup). */
-  onImportBooks: (items: ImportItem[]) => void;
+  onImportBooks: (items: BookFile[]) => void;
+  /** Every book replaced by a backup's (Maintenance → Backup). */
+  onRestore: (file: File) => void;
   onDelete: (b: BookWithChapters) => void;
 }) {
   const [adding, setAdding] = useState(false);
+  // A backup picked to restore from, waiting for the warning to be confirmed.
+  const [restoring, setRestoring] = useState<File | null>(null);
+  const restoreFileRef = useRef<HTMLInputElement>(null);
   // Putting the books in order: dragged with the mouse (HTML drag and drop
   // does not reach the page in the app's window), ▲ ▼, or ↑ ↓ for the one
   // selected — as the chapters are.
@@ -601,7 +613,9 @@ function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, on
     const files = [...(e.target.files ?? [])];
     e.target.value = "";
     if (files.length === 0) return;
-    onImportBooks(await Promise.all(files.map(async (f) => ({ pgn: await f.text(), file: f.name.replace(/\.[^.]+$/, "") }))));
+    onImportBooks(await Promise.all(files.map(async (f): Promise<BookFile> => /\.zip$/i.test(f.name)
+      ? { zip: f, file: f.name }
+      : { pgn: await f.text(), file: f.name.replace(/\.[^.]+$/, "") })));
   }
   const [name, setName] = useState("");
   const [author, setAuthor] = useState("");
@@ -616,13 +630,43 @@ function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, on
     <>
       <div className="px-3 py-2 flex items-center gap-1 border-b border-outline/40 shrink-0">
         <span className="flex-1 text-label-md text-on-surface-variant uppercase tracking-wider">Books</span>
-        <button onClick={() => booksFileRef.current?.click()} disabled={busy} className={plain}
-          title="Books exported from LPDO — one, or a backup of them all — made again as they were: name, colour, author, link, notes and chapters. Each becomes a new book.">Import…</button>
-        <input ref={booksFileRef} type="file" multiple accept=".pgn,text/plain" className="hidden" onChange={(e) => void pickBookFiles(e)} />
-        <button onClick={() => setAdding((a) => !a)} className={plain}>{adding ? "Cancel" : "+ New"}</button>
+        <Menu right title="Books: a new one, import, restore from a backup" entries={[
+          { label: adding ? "Cancel the new book" : "New book…", onClick: () => setAdding((a) => !a), disabled: busy },
+          // Books exported from LPDO — one, or a backup of them all — made again
+          // as they were, each a new book beside those already here.
+          { label: "Import…", onClick: () => booksFileRef.current?.click(), disabled: busy },
+          { label: "Restore from backup…", onClick: () => restoreFileRef.current?.click(), disabled: busy, separated: true },
+        ]} />
+        <input ref={booksFileRef} type="file" multiple accept=".pgn,.zip,text/plain,application/zip" className="hidden" onChange={(e) => void pickBookFiles(e)} />
+        <input ref={restoreFileRef} type="file" accept=".zip,.pgn,application/zip,text/plain" className="hidden"
+          onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) setRestoring(f); }} />
         <button onClick={onFold} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide the books">«</button>
       </div>
       {error && <div className="px-3 py-1 text-body-sm text-error">{error}</div>}
+      {restoring && (
+        <div className="px-3 py-2 flex flex-col gap-1.5 border-b border-outline/40 bg-error/8 text-body-sm">
+          <div className="text-on-surface">
+            <span className="text-error font-medium">Restore from “{restoring.name}”?</span>{" "}
+            {books && books.length > 0
+              ? <>This deletes all {books.length === 1 ? "the book" : `${books.length} books`} here, with their{" "}
+                  {books.reduce((n, b) => n + b.chapters.length, 0)} chapters and model games, and makes the books in the backup instead.</>
+              : <>The books in the backup are made here.</>}
+          </div>
+          {books && books.length > 0 && (
+            <div className="text-label-sm text-on-surface-variant">
+              It cannot be undone. To keep the books here, back them up first (Maintenance → Backup). A file that is not a
+              backup of the repertoire, or cannot be read, changes nothing.
+            </div>
+          )}
+          <div className="flex items-center gap-1 flex-wrap">
+            <button onClick={() => { const f = restoring; setRestoring(null); onRestore(f); }} disabled={busy}
+              className="h-7 px-2 rounded-full text-label-md text-error hover:bg-error/8">
+              {books && books.length > 0 ? "Delete all books and restore" : "Restore"}
+            </button>
+            <button onClick={() => setRestoring(null)} className={plain}>Cancel</button>
+          </div>
+        </div>
+      )}
       <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
         {adding && (
           <form className="px-3 py-2 flex flex-col gap-1.5 border-b border-outline/40"
@@ -680,7 +724,7 @@ function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, on
               </div>
             );
           })}
-          {books && books.length === 0 && !adding && <div className="px-3 py-1 text-label-sm text-on-surface-variant">None yet — + New adds one.</div>}
+          {books && books.length === 0 && !adding && <div className="px-3 py-1 text-label-sm text-on-surface-variant">None yet — the ⋯ above adds one, imports books, or restores a backup.</div>}
         </div>
         {book && books && (
           <BookDetails key={book.id} book={book} busy={busy} canArrange={books.length > 1} onArrange={() => setArranging(true)} f2Here={f2Here}
@@ -793,28 +837,47 @@ function BookDetails({ book, busy, canArrange, onArrange, f2Here, onUpdate, onDe
   );
 }
 
-/** Commands behind one ⋯. `up`: opens upwards (at the foot of a panel). */
-function Menu({ entries, title, up = false }: {
-  entries: { label: string; onClick: () => void; disabled?: boolean; separated?: boolean }[]; title: string; up?: boolean;
+/** Commands behind one ⋯. `up`: opens upwards (at the foot of a panel);
+ *  `right`: opens rightwards, for a ⋯ near the window's left edge. Placed
+ *  against the window (fixed), so a panel's edge never cuts it off; a scroll
+ *  closes it rather than leave it behind. */
+function Menu({ entries, title, up = false, right = false }: {
+  entries: { label: string; onClick: () => void; disabled?: boolean; separated?: boolean }[]; title: string; up?: boolean; right?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [at, setAt] = useState<DOMRect | null>(null);
+  const open = at !== null;
   const ref = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!open) return;
-    const away = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    const close = () => setAt(null);
+    const away = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node)) close(); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+    const scrolled = (e: Event) => { if (!ref.current?.contains(e.target as Node)) close(); };
     document.addEventListener("pointerdown", away);
     document.addEventListener("keydown", esc);
-    return () => { document.removeEventListener("pointerdown", away); document.removeEventListener("keydown", esc); };
+    window.addEventListener("scroll", scrolled, true);
+    window.addEventListener("resize", close);
+    return () => {
+      document.removeEventListener("pointerdown", away);
+      document.removeEventListener("keydown", esc);
+      window.removeEventListener("scroll", scrolled, true);
+      window.removeEventListener("resize", close);
+    };
   }, [open]);
+  const place: React.CSSProperties | undefined = at ? {
+    ...(up ? { bottom: window.innerHeight - at.top + 4 } : { top: at.bottom + 4 }),
+    ...(right ? { left: at.left } : { right: window.innerWidth - at.right }),
+  } : undefined;
   return (
     <div ref={ref} className="relative shrink-0">
-      <button onClick={() => setOpen((o) => !o)} className={`${nav} text-body-sm`} title={title} aria-haspopup="menu" aria-expanded={open}>⋯</button>
+      <button ref={button} onClick={() => setAt(open ? null : button.current?.getBoundingClientRect() ?? null)}
+        className={`${nav} text-body-sm`} title={title} aria-haspopup="menu" aria-expanded={open}>⋯</button>
       {open && (
-        <div role="menu" className={`absolute right-0 ${up ? "bottom-full mb-1" : "top-full mt-1"} z-20 min-w-44 py-1 rounded-md bg-surface-container-high border border-outline/40 shadow-lg flex flex-col`}>
+        <div role="menu" style={place} className="fixed z-50 min-w-44 py-1 rounded-md bg-surface-container-high border border-outline/40 shadow-lg flex flex-col">
           {entries.map((e) => (
             <button key={e.label} role="menuitem" disabled={e.disabled}
-              onClick={() => { setOpen(false); e.onClick(); }}
+              onClick={() => { setAt(null); e.onClick(); }}
               className={`text-left px-3 py-1.5 text-body-sm text-on-surface hover:bg-on-surface/8 disabled:opacity-40 disabled:hover:bg-transparent ${e.separated ? "border-t border-outline/40 mt-1 pt-2" : ""}`}>
               {e.label}
             </button>

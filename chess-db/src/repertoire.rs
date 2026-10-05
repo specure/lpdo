@@ -677,6 +677,33 @@ fn insert_chapter(conn: &Connection, book: &Book, name: &str, movetext: &str, wa
 /// named after `file`, its colour from `[Orientation]`. Never adds to an
 /// existing book; all or nothing.
 pub fn import_books(conn: &Connection, pgn: &str, file: Option<&str>) -> Result<Vec<Book>> {
+    crate::db::with_tx(conn, || import_books_in(conn, pgn, file))
+}
+
+/// The repertoire made again from a backup (the `.pgn` files of its zip, each
+/// with its name): every book deleted, then the backup's books made — in one
+/// transaction, so a backup that cannot be read leaves the books as they were.
+/// Only a backup LPDO made: a PGN without its book tags would replace every
+/// book with one, which is never what restoring means.
+pub fn restore_books(conn: &Connection, files: &[(String, String)]) -> Result<Vec<Book>> {
+    if !files.iter().any(|(_, pgn)| split_games(pgn.trim()).iter().any(|g| tag(g, "LpdoBook").is_some())) {
+        bail!("not a backup of the repertoire: it holds no books exported from LPDO");
+    }
+    crate::db::with_tx(conn, || {
+        conn.execute_batch(
+            "DELETE FROM repertoire_positions; DELETE FROM repertoire_analysis;
+             DELETE FROM repertoire_chapters; DELETE FROM repertoire_books;",
+        )?;
+        let mut books = Vec::new();
+        for (file, pgn) in files {
+            books.extend(import_books_in(conn, pgn, Some(file)).with_context(|| format!("{file}.pgn"))?);
+        }
+        Ok(books)
+    })
+}
+
+/// `import_books` inside a transaction the caller holds.
+fn import_books_in(conn: &Connection, pgn: &str, file: Option<&str>) -> Result<Vec<Book>> {
     let games = split_games(pgn.trim());
     if games.is_empty() { bail!("no games in the PGN"); }
     // The books in the order they first come, each with its games.
@@ -688,7 +715,7 @@ pub fn import_books(conn: &Connection, pgn: &str, file: Option<&str>) -> Result<
             None => groups.push((key, vec![g])),
         }
     }
-    crate::db::with_tx(conn, || {
+    {
         let mut books = Vec::new();
         for (key, gs) in &groups {
             let first = gs[0];
@@ -720,7 +747,7 @@ pub fn import_books(conn: &Connection, pgn: &str, file: Option<&str>) -> Result<
             books.push(book);
         }
         Ok(books)
-    })
+    }
 }
 
 pub fn get_chapter(conn: &Connection, id: i64) -> Result<ChapterDetail> {
@@ -899,6 +926,49 @@ pub fn all_books_pgn(conn: &Connection) -> Result<String> {
     let mut out = Vec::new();
     for b in list(conn)? { out.extend(export_book(conn, &b.book)?); }
     Ok(out.join("\n\n") + "\n")
+}
+
+/// The backup as a zip, like a collection's: one deflated `entry` holding
+/// every book — PGN is text, and shrinks several times over.
+pub fn all_books_zip(conn: &Connection, entry: &str) -> Result<Vec<u8>> {
+    use std::io::Write;
+    let pgn = all_books_pgn(conn)?;
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .compression_level(Some(9));
+    zip.start_file(entry, options)?;
+    zip.write_all(pgn.as_bytes())?;
+    Ok(zip.finish()?.into_inner())
+}
+
+/// What the backup would hold, as a short signature (the MD5 of its PGN): the
+/// same until a book or a chapter changes, for the client's daily backup to
+/// skip a day without changes.
+pub fn backup_signature(conn: &Connection) -> Result<String> {
+    let pgn = all_books_pgn(conn)?;
+    Ok(conn.query_row("SELECT md5(?)", duckdb::params![pgn], |r| r.get(0))?)
+}
+
+/// The `.pgn` files in a zip — a backup, or PGNs zipped by hand — each with
+/// its name less the extension, for a book of a PGN from elsewhere to be
+/// named after its file, as when it is imported unzipped.
+pub fn pgns_of_zip(bytes: &[u8]) -> Result<Vec<(String, String)>> {
+    use std::io::Read;
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).context("not a zip file")?;
+    let mut out = Vec::new();
+    for i in 0..archive.len() {
+        let mut f = archive.by_index(i)?;
+        let path = f.name().to_string();
+        let file = path.rsplit('/').next().unwrap_or(&path);
+        if !f.is_file() || !file.to_ascii_lowercase().ends_with(".pgn") { continue }
+        let stem = file[..file.len() - 4].to_string();
+        let mut buf = Vec::new();
+        f.read_to_end(&mut buf).with_context(|| path.clone())?;
+        out.push((stem, String::from_utf8_lossy(&buf).into_owned()));
+    }
+    if out.is_empty() { bail!("no PGN file in the zip"); }
+    Ok(out)
 }
 
 // ── The database's figures for a chapter (practice, #327) ───────────────────
@@ -1922,6 +1992,72 @@ mod tests {
         let plain = "[Event \"X\"]\n[Orientation \"black\"]\n\n1. e4 c5 *\n";
         let made = import_books(&empty, plain, Some("Najdorf")).unwrap();
         assert_eq!((made[0].name.as_str(), made[0].color.as_str()), ("Najdorf", "black"));
+    }
+
+    #[test]
+    fn the_zipped_backup_holds_the_same_pgn() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let b = create_book(&conn, "Caro-Kann", "black", None, None, None).unwrap();
+        add_chapters(&conn, b.id, Some("Advance"), Some("1. e4 c6 2. d4 d5 3. e5 *"), None).unwrap();
+
+        let zip = all_books_zip(&conn, "repertoire.pgn").unwrap();
+        let entries = pgns_of_zip(&zip).unwrap();
+        assert_eq!(entries, vec![("repertoire".to_string(), all_books_pgn(&conn).unwrap())]);
+
+        // Into an empty database, the book comes back under its own name.
+        let empty = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&empty).unwrap();
+        let made = import_books(&empty, &entries[0].1, Some(&entries[0].0)).unwrap();
+        assert_eq!((made[0].name.as_str(), made[0].color.as_str()), ("Caro-Kann", "black"));
+    }
+
+    #[test]
+    fn the_backup_signature_changes_with_the_books_only() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let b = create_book(&conn, "Caro-Kann", "black", None, None, None).unwrap();
+        let empty = backup_signature(&conn).unwrap();
+        assert_eq!(backup_signature(&conn).unwrap(), empty, "the same books, the same signature");
+        add_chapters(&conn, b.id, Some("Advance"), Some("1. e4 c6 2. d4 d5 3. e5 *"), None).unwrap();
+        assert_ne!(backup_signature(&conn).unwrap(), empty, "a chapter more, another signature");
+    }
+
+    #[test]
+    fn restoring_replaces_every_book_or_none() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let b = create_book(&conn, "Caro-Kann", "black", None, None, None).unwrap();
+        add_chapters(&conn, b.id, Some("Advance"), Some("1. e4 c6 2. d4 d5 3. e5 *"), None).unwrap();
+        let backup = vec![("repertoire".to_string(), all_books_pgn(&conn).unwrap())];
+
+        // Books made since the backup go; the backup's come back, once.
+        let later = create_book(&conn, "Later", "white", None, None, None).unwrap();
+        add_chapters(&conn, later.id, Some("1.e4"), Some("1. e4 *"), None).unwrap();
+        let made = restore_books(&conn, &backup).unwrap();
+        assert_eq!(made.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(), vec!["Caro-Kann"]);
+        let now = list(&conn).unwrap();
+        assert_eq!(now.len(), 1);
+        assert_eq!(now[0].chapters.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["Advance"]);
+        let positions: i64 = conn.query_row("SELECT count(*) FROM repertoire_positions WHERE chapter_id NOT IN (SELECT id FROM repertoire_chapters)", [], |r| r.get(0)).unwrap();
+        assert_eq!(positions, 0, "no positions left of the deleted chapters");
+
+        // A PGN that is no backup, or one that cannot be read, changes nothing.
+        assert!(restore_books(&conn, &[("x".into(), "[Event \"X\"]\n\n1. e4 e5 *\n".into())]).is_err());
+        let broken = backup[0].1.replace("3. e5", "3. Ke7");
+        assert!(restore_books(&conn, &[("repertoire".into(), broken)]).is_err());
+        assert_eq!(list(&conn).unwrap().len(), 1, "the books as they were");
+    }
+
+    #[test]
+    fn a_zip_without_pgn_is_refused() {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file("notes.txt", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(b"hello").unwrap();
+        let bytes = zip.finish().unwrap().into_inner();
+        assert!(pgns_of_zip(&bytes).is_err());
+        assert!(pgns_of_zip(b"not a zip").is_err());
     }
 
     #[test]
