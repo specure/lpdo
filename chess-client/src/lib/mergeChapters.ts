@@ -19,8 +19,9 @@ export interface MergeConflict {
   kind: ConflictKind;
   /** The line to the move, "1.c4 e5 2.g3 … 7.e3" — "" for the chapter's intro. */
   where: string;
-  /** The distinct versions, the target's first; `chapter` names where each
-   *  comes from ("A, B" when two chapters agree). */
+  /** The distinct versions, the one in the merged chapter first (the
+   *  target's, or the chapter it was taken from where the target had none);
+   *  `chapter` names where each comes from ("A, B" when two chapters agree). */
   options: { chapter: string; text: string }[];
 }
 
@@ -96,7 +97,28 @@ class Merger {
   carried = { comments: 0, marks: 0 };
   takenOver = 0;
 
+  // Which chapters each comment, intro and NAG set in the merged tree came
+  // from (the target's when not listed) and those that agreed with it since:
+  // a move the target has bare takes the first other chapter's, and a move it
+  // lacks comes with that chapter's — a later chapter differing there must be
+  // shown against those chapters, not the target.
+  private origin = new Map<string, number[]>();
+
   constructor(private chapters: string[]) {}
+
+  private fieldKey(owner: object, kind: ConflictKind): string {
+    return `${this.keyOf(owner)}:${kind}`;
+  }
+
+  /** Moves copied in from chapter `from`: their notes are that chapter's. */
+  private adopt(line: MoveNode[], from: number) {
+    for (const n of line) {
+      if (norm(n.annotations.comment)) this.origin.set(this.fieldKey(n, "comment"), [from]);
+      if (norm(n.preComment)) this.origin.set(this.fieldKey(n, "intro"), [from]);
+      if (n.annotations.nags?.length) this.origin.set(this.fieldKey(n, "nags"), [from]);
+      for (const v of n.variations) this.adopt(v, from);
+    }
+  }
 
   private keyOf(o: object): number {
     let k = this.keys.get(o);
@@ -107,26 +129,27 @@ class Merger {
   /** One text field: taken over, equal, or a conflict. */
   private text(owner: object, kind: ConflictKind, where: string, cur: string | undefined, incoming: string | undefined, from: number, set: (v: string | undefined) => void) {
     if (!norm(incoming)) return;
-    if (!norm(cur)) { set(incoming); this.takenOver++; return; }
+    if (!norm(cur)) { set(incoming); this.takenOver++; this.origin.set(this.fieldKey(owner, kind), [from]); return; }
     this.record(owner, kind, where, cur!, incoming!, from, (a, b) => norm(a as string) === norm(b as string), set as Pending["set"]);
   }
 
   private nags(node: MoveNode, where: string, incoming: number[] | undefined, from: number) {
     if (!incoming?.length) return;
     const cur = node.annotations.nags;
-    if (!cur?.length) { node.annotations.nags = [...incoming]; this.takenOver++; return; }
+    if (!cur?.length) { node.annotations.nags = [...incoming]; this.takenOver++; this.origin.set(this.fieldKey(node, "nags"), [from]); return; }
     this.record(node, "nags", where, cur, incoming, from, (a, b) => sameNags(a as number[], b as number[]),
       (v) => { node.annotations.nags = v as number[] | undefined; });
   }
 
   private record(owner: object, kind: ConflictKind, where: string, cur: string | number[], incoming: string | number[], from: number,
     same: (a: string | number[], b: string | number[]) => boolean, set: Pending["set"]) {
-    const key = `${this.keyOf(owner)}:${kind}`;
+    const key = this.fieldKey(owner, kind);
     let p = this.pending.get(key);
+    const had = this.origin.get(key) ?? [0];
     if (!p) {
-      if (same(cur, incoming)) return;
+      if (same(cur, incoming)) { if (!had.includes(from)) this.origin.set(key, [...had, from]); return; }
       p = {
-        conflict: { id: this.pending.size, kind, where, options: [{ chapter: this.chapters[0], text: show(cur) }] },
+        conflict: { id: this.pending.size, kind, where, options: [{ chapter: had.map((c) => this.chapters[c]).join(", "), text: show(cur) }] },
         values: [cur], set,
       };
       this.pending.set(key, p);
@@ -177,6 +200,7 @@ class Merger {
       const rest = structuredClone(sline.slice(si));
       this.added += countMoves(rest);
       countNotes(rest, this.carried);
+      this.adopt(rest, from);
       line.push(...rest);
       return;
     }
@@ -195,6 +219,7 @@ class Merger {
         v[0].variations = [];
         this.added += countMoves(v);
         countNotes(v, this.carried);
+        this.adopt(v, from);
         line[i].variations.push(v);
         mine.push({ line: v, i: 0 });
       }
