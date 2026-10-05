@@ -437,6 +437,12 @@ export default function RepertoirePage({ onOpenGame }: Props) {
                 onImportModels={(items) => importPgn(book.id, items, true)}
                 onConvert={(ids) => convert(ids, false)}
                 onOrder={(ids) => run(() => orderChapters(ids))}
+                onSetKind={(ids, annotated) => run(async () => {
+                  for (const id of ids) {
+                    const c = await updateChapter(id, { annotated });
+                    if (annotated !== null && c.annotated_set === undefined) throw new Error("The server cannot set this yet. Update the server.");
+                  }
+                })}
                 onDeleteChapters={(ids) => run(async () => { await deleteChapters(ids); if (chapterId != null && ids.includes(chapterId)) dropChapter(); })}
               />
             </div>
@@ -821,7 +827,7 @@ function Menu({ entries, title, up = false }: {
 
 /** The book's chapters, with one menu for the chapter on the board and a
  *  mode for putting them in order. */
-function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onCountFens, onRenameMany, onChapter, onDeleteChapter, onDeleteChapters, onAddEmpty, onImport, f2Here, arrowsHere, kind = "chapters", onImportModels, onConvert, onOrder }: {
+function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onCountFens, onRenameMany, onChapter, onDeleteChapter, onDeleteChapters, onAddEmpty, onImport, f2Here, arrowsHere, kind = "chapters", onImportModels, onConvert, onOrder, onSetKind }: {
   /** Which list: the chapters, or — with their own heading and commands —
    *  the model games (`book.chapters` holds the one or the other). */
   kind?: "chapters" | "models" | "reference";
@@ -849,6 +855,9 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
   onConvert: (ids: number[]) => void;
   /** The list put in this order (the model games reversed). */
   onOrder?: (ids: number[]) => void;
+  /** Games shown as model games (true) or reference games (false) whatever
+   *  their comments; null: told by their comments again. */
+  onSetKind?: (ids: number[], annotated: boolean | null) => void;
   /** Adding chapters: an empty one, or from PGN (pasted, or files). */
   onAddEmpty: (name: string) => void;
   onImport: (items: ImportItem[]) => void;
@@ -1061,6 +1070,14 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
             several
               ? { label: models ? `Make ${multi.length} chapters` : `Make ${multi.length} model games`, onClick: () => { onConvert(multi); setPicked([]); }, disabled: busy }
               : { label: models ? "Make it a chapter" : "Make it a model game", onClick: () => chapter && onConvert([chapter.id]), disabled: none },
+            // A model game told by its comments — a finish after the last move
+            // makes one — set as the other kind by hand, or left to them again.
+            ...(models && onSetKind ? [
+              several
+                ? { label: kind === "models" ? `Make ${multi.length} reference games` : `Make ${multi.length} model games`, onClick: () => { onSetKind(multi, kind !== "models"); setPicked([]); }, disabled: busy }
+                : { label: kind === "models" ? "Make it a reference game" : "Make it a model game", onClick: () => chapter && onSetKind([chapter.id], kind !== "models"), disabled: none },
+              ...(!several && chapter?.annotated_set ? [{ label: "Model or reference: by its comments", onClick: () => onSetKind([chapter.id], null), disabled: none }] : []),
+            ] : []),
             several
               ? { label: `Rename ${multi.length} ${many}… (F2)`, onClick: () => { setRenamingAll(multi); setRenaming(null); }, disabled: busy, separated: true }
               : { label: `Rename ${many}…`, onClick: () => { setRenamingAll(book.chapters.map((c) => c.id)); setRenaming(null); }, disabled: busy || book.chapters.length === 0, separated: true },
