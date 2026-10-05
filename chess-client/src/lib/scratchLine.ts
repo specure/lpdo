@@ -7,7 +7,8 @@
 // helpers and the serializer all work on it unchanged; the only rule is that
 // the clone never reaches the server unless the user asks to keep the line.
 // GameBoard holds the untouched tree aside and puts it back when the line is
-// abandoned, which happens on any step back (see `discardScratch` there).
+// abandoned (see `discardScratch` there). One step back takes back only the
+// last move (`dropLastScratchMove`); going anywhere else abandons the line.
 
 import { Chess } from "chess.js";
 import type { AnnotatedGame, MoveNode } from "./parsePgnTree";
@@ -63,6 +64,22 @@ export function appendScratchMove(
   }
   line.push(node);
   return { game: clone, cursor: { steps: cursor.steps, index: cursor.index + 1 } };
+}
+
+/** Take back the scratch move just before `cursor` — the last one: the
+ *  line is always played at its end — and step back onto the move before it.
+ *  Null when that leaves no scratch move (the line is then abandoned
+ *  instead) or the cursor is not just after a scratch move. */
+export function dropLastScratchMove(
+  game: AnnotatedGame,
+  cursor: CursorPath,
+): { game: AnnotatedGame; cursor: CursorPath } | null {
+  const clone = structuredClone(game);
+  const resolved = resolvePathSafe(clone.mainLine, cursor.steps);
+  if (!resolved || cursor.index < 1 || !resolved.line[cursor.index - 1]?.scratch) return null;
+  resolved.line.splice(cursor.index - 1);
+  if (resolved.line.length === 0 || !hasScratch(clone)) return null;
+  return { game: clone, cursor: { steps: cursor.steps, index: cursor.index - 1 } };
 }
 
 /** True once any node in the tree is a scratch node. */
