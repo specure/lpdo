@@ -568,6 +568,9 @@ fn init_repertoire(conn: &Connection) -> Result<()> {
         -- A model game set by hand as one with comments (a model game) or
         -- without (a reference game); NULL: told by its comments.
         ALTER TABLE repertoire_chapters ADD COLUMN IF NOT EXISTS annotated BOOLEAN;
+        -- An overview chapter (an introduction, a quickstarter) set by hand
+        -- as one or not; NULL: told by its name.
+        ALTER TABLE repertoire_chapters ADD COLUMN IF NOT EXISTS overview BOOLEAN;
         ",
     )?;
     Ok(())

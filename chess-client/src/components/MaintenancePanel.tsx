@@ -8,7 +8,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { clearCrashLog, formatCrashLog, readCrashLog, type CrashEntry } from "../lib/crashLog";
 import { listen } from "@tauri-apps/api/event";
 import { useJobProgress } from "../hooks/useJobProgress";
-import { getRepertoireSettings, putRepertoireSettings } from "../lib/repertoire";
+import { getRepertoireSettings, putRepertoireSettings, type OverviewGames, type RepertoireSettings } from "../lib/repertoire";
 import {
   DEFAULT_BACKUP_DIR, DEFAULT_COLLECTION, backupCollection, backupFolder, rememberBackupCollection, rememberBackupFolder,
   saveBackup, useAutoBackup, whenAt, type BackupKind,
@@ -895,24 +895,34 @@ function LichessStats() {
 // position there (and chessdb keeps what it is asked), so past the opening the
 // server keeps positions to itself; the local engine analyses those.
 /** The repertoire's settings (#327): which of one's own games count in a
- *  chapter's practice figures. */
+ *  chapter's practice figures, and which an overview chapter lists. */
+const OVERVIEW_GAMES: { value: OverviewGames; label: string; hint: string }[] = [
+  { value: "none", label: "None", hint: "games that reached no other chapter count as having left the book" },
+  { value: "unclaimed", label: "Unclaimed games only", hint: "games that went through it and reached no other chapter (default)" },
+  { value: "every", label: "Every game that passes the filter", hint: "every game through its moves, the other chapters' games too" },
+];
+
 function RepertoireSection() {
-  const [months, setMonths] = useState<number | null>(null);
+  const [settings, setSettings] = useState<RepertoireSettings | null>(null);
   const [value, setValue] = useState("");
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     getRepertoireSettings()
-      .then((s) => { setMonths(s.own_games_months); setValue(String(s.own_games_months)); })
+      .then((s) => { setSettings(s); setValue(String(s.own_games_months)); })
       .catch((e) => setError(String(e)));
   }, []);
+  const months = settings?.own_games_months ?? null;
   const n = parseInt(value, 10);
-  async function save(m: number) {
+  // The whole settings sent each time: one left out goes back to its default.
+  async function save(patch: Partial<RepertoireSettings>) {
+    if (!settings) return;
     setError(null);
     setNote(null);
     try {
-      const s = await putRepertoireSettings({ own_games_months: m });
-      setMonths(s.own_games_months);
+      const s = await putRepertoireSettings({ ...settings, ...patch });
+      if (patch.overview_games && s.overview_games === undefined) throw new Error("The server cannot set this yet. Update the server.");
+      setSettings(s);
       setValue(String(s.own_games_months));
       setNote("Saved.");
     } catch (e) {
@@ -922,17 +932,17 @@ function RepertoireSection() {
   const status = months == null ? undefined : months === 0 ? "all your games" : `last ${months} months`;
   return (
     <SectionCard title="Your games in practice" status={status}>
-      {months != null && (
+      {settings && months != null && (
         <div className="space-y-2">
           <div className="flex items-center gap-2 text-body-sm text-on-surface flex-wrap">
             <span>Count your games from the last</span>
             <input
               type="number" min={0} max={600} value={value} onChange={(e) => setValue(e.target.value)}
-              {...commitOn(() => { if (Number.isFinite(n) && n >= 0 && n !== months) void save(n); })}
+              {...commitOn(() => { if (Number.isFinite(n) && n >= 0 && n !== months) void save({ own_games_months: n }); })}
               className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums"
             />
             <span>months</span>
-            {months !== 0 && <button onClick={() => void save(0)} className="h-7 px-2 rounded-full text-label-md text-primary hover:bg-primary/8">All</button>}
+            {months !== 0 && <button onClick={() => void save({ own_games_months: 0 })} className="h-7 px-2 rounded-full text-label-md text-primary hover:bg-primary/8">All</button>}
           </div>
           <p className="text-label-sm text-on-surface-variant">
             How you have done in a chapter's positions — your games, wins, draws and losses, and what you played —
@@ -940,6 +950,25 @@ function RepertoireSection() {
             0 counts all of them; the default is 12. Your player is the one set on the Home page; your games are
             looked up each time, so a game added counts at once.
           </p>
+          {settings.overview_games !== undefined && (
+            <fieldset className="space-y-1 pt-1">
+              <legend className="text-body-sm text-on-surface pb-1">An overview chapter lists</legend>
+              {OVERVIEW_GAMES.map((o) => (
+                <label key={o.value} className="flex items-start gap-2 text-body-sm text-on-surface cursor-pointer">
+                  <input type="radio" name="overview-games" className="accent-primary mt-1 shrink-0"
+                    checked={settings.overview_games === o.value}
+                    onChange={() => void save({ overview_games: o.value })} />
+                  <span>{o.label} <span className="text-label-sm text-on-surface-variant">— {o.hint}</span></span>
+                </label>
+              ))}
+              <p className="text-label-sm text-on-surface-variant pt-1">
+                An overview chapter — an introduction, a quickstarter, an overview — goes over moves the other
+                chapters have. It never takes a game from them: a game counts for the chapter it reaches, as if the
+                overview were not there. A chapter is an overview when its name says so (Overview, Introduction,
+                Quickstarter, Summary…), shown in italics; set it either way in the chapters' menu.
+              </p>
+            </fieldset>
+          )}
           {note && <p className="text-body-sm text-success">{note}</p>}
         </div>
       )}
