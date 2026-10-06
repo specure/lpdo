@@ -282,7 +282,13 @@ resumes after — one's own analysis is never slowed.
   one's older 3...c5 games under a 3...a6 chapter, "you deviated at 3...c5",
   which is what to see when one has switched lines. (A first version
   required one's own move into the chapter — so a game counted for the
-  chapter one played — and left those games out.) Positions several chapters
+  chapter one played — and left those games out.) A game that reached the
+  own positions of several chapters went from one into another (1.Nf3 Nf6
+  2.g3 c5 3.c4 through a 1.Nf3 chapter into a 1.c4 c5 one): it went into the
+  one whose own position it reached last, and by default counts for that one
+  only; a setting (Maintenance, "When a game transposes to another chapter")
+  lists it in both instead, the one it left saying "transposed at 6.Nc3 to
+  …". Positions several chapters
   share count for none: a Winawer after a 3.Nc3 three chapters have counts
   for none of them; the games in the book's opening (the
   positions every chapter has, reached by one's own move — after 1...e6, so

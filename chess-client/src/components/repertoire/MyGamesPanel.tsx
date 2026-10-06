@@ -187,7 +187,10 @@ function ChapterGamesList({ chapterId, reloadKey, onPick, onOpen, onPreview }: P
         <div className="flex-1 overflow-y-auto py-1">
           {list.games.map((g) => {
             return (
-              <GameRow key={g.id} g={g} meWhite={list.color === "white"} picked={picked === g.id} how={followed(g)}
+              <GameRow key={g.id} g={g} meWhite={list.color === "white"} picked={picked === g.id}
+                how={g.transposed_to
+                  ? <>transposed{g.followed === "left" && g.move ? ` at ${g.move}` : ""} to {g.transposed_to.name}</>
+                  : followed(g)}
                 title={`${g.white} – ${g.black}, ${g.event ?? ""} ${g.date ?? ""}. Click: the board where it left the chapter; double-click: open the game.`}
                 onClick={() => pick(g)} onDoubleClick={() => onOpen(summary(g))} />
             );

@@ -166,6 +166,9 @@ export interface ChapterGame {
   move: string | null;
   at_key: string;
   at_ply: number;
+  /** The chapter it went into from this one, when it transposed and both
+   *  list it (the setting; absent from older servers). */
+  transposed_to?: { id: number; name: string } | null;
 }
 export interface ChapterGameList {
   color: BookColor;
@@ -189,6 +192,7 @@ export interface BookGame {
   event: string | null;
   date: string | null;
   result: string | null;
+  /** The one it went into first when it transposed from one to another. */
   chapters: number[];
   /** How far it followed its (first) chapter — as that chapter's list says. */
   follow: Pick<ChapterGame, "followed" | "left_by" | "move" | "at_key" | "at_ply"> | null;
@@ -207,8 +211,12 @@ export interface RepertoireSettings {
   own_games_months: number;
   /** Which of your games an overview chapter lists (absent from older servers). */
   overview_games?: OverviewGames;
+  /** Where a game counts that went from one chapter into another (absent
+   *  from older servers). */
+  transposed_games?: TransposedGames;
 }
 export type OverviewGames = "none" | "unclaimed" | "every";
+export type TransposedGames = "show" | "target";
 export const getRepertoireSettings = () => apiGet<RepertoireSettings>("/repertoire/settings");
 export const putRepertoireSettings = (s: RepertoireSettings) => putJson<RepertoireSettings>("/repertoire/settings", s);
 /** Books from a PGN exported by LPDO (a book, or a backup of them all), made

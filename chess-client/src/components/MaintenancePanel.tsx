@@ -8,7 +8,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { clearCrashLog, formatCrashLog, readCrashLog, type CrashEntry } from "../lib/crashLog";
 import { listen } from "@tauri-apps/api/event";
 import { useJobProgress } from "../hooks/useJobProgress";
-import { getRepertoireSettings, putRepertoireSettings, type OverviewGames, type RepertoireSettings } from "../lib/repertoire";
+import { getRepertoireSettings, putRepertoireSettings, type OverviewGames, type RepertoireSettings, type TransposedGames } from "../lib/repertoire";
 import {
   DEFAULT_BACKUP_DIR, DEFAULT_COLLECTION, backupCollection, backupFolder, rememberBackupCollection, rememberBackupFolder,
   saveBackup, useAutoBackup, whenAt, type BackupKind,
@@ -902,6 +902,11 @@ const OVERVIEW_GAMES: { value: OverviewGames; label: string; hint: string }[] = 
   { value: "every", label: "Every game that passes the filter", hint: "every game through its moves, the other chapters' games too" },
 ];
 
+const TRANSPOSED_GAMES: { value: TransposedGames; label: string; hint: string }[] = [
+  { value: "target", label: "Only show the game in the target chapter", hint: "the chapter it went into (default)" },
+  { value: "show", label: "Show the transposition in the respective chapter", hint: "both list it; the one it left says where it went" },
+];
+
 function RepertoireSection() {
   const [settings, setSettings] = useState<RepertoireSettings | null>(null);
   const [value, setValue] = useState("");
@@ -921,7 +926,9 @@ function RepertoireSection() {
     setNote(null);
     try {
       const s = await putRepertoireSettings({ ...settings, ...patch });
-      if (patch.overview_games && s.overview_games === undefined) throw new Error("The server cannot set this yet. Update the server.");
+      if ((patch.overview_games && s.overview_games === undefined) || (patch.transposed_games && s.transposed_games === undefined)) {
+        throw new Error("The server cannot set this yet. Update the server.");
+      }
       setSettings(s);
       setValue(String(s.own_games_months));
       setNote("Saved.");
@@ -966,6 +973,23 @@ function RepertoireSection() {
                 chapters have. It never takes a game from them: a game counts for the chapter it reaches, as if the
                 overview were not there. A chapter is an overview when its name says so (Overview, Introduction,
                 Quickstarter, Summary…), shown in italics; set it either way in the chapters' menu.
+              </p>
+            </fieldset>
+          )}
+          {settings.transposed_games !== undefined && (
+            <fieldset className="space-y-1 pt-1">
+              <legend className="text-body-sm text-on-surface pb-1">When a game transposes to another chapter</legend>
+              {TRANSPOSED_GAMES.map((o) => (
+                <label key={o.value} className="flex items-start gap-2 text-body-sm text-on-surface cursor-pointer">
+                  <input type="radio" name="transposed-games" className="accent-primary mt-1 shrink-0"
+                    checked={settings.transposed_games === o.value}
+                    onChange={() => void save({ transposed_games: o.value })} />
+                  <span>{o.label} <span className="text-label-sm text-on-surface-variant">— {o.hint}</span></span>
+                </label>
+              ))}
+              <p className="text-label-sm text-on-surface-variant pt-1">
+                A game can pass through a position only one chapter has and go on into another chapter's — 1.Nf3 Nf6
+                2.g3 c5 3.c4 through a 1.Nf3 chapter into a 1.c4 c5 one. It went into the chapter it reached last.
               </p>
             </fieldset>
           )}
