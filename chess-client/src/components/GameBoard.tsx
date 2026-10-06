@@ -1294,8 +1294,11 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     if (!next) return false;
     const at = resolvePathSafe(next.game.mainLine, next.cursor.steps);
     if (!at) return false;
-    setScratch((prev) => prev ?? { saved: annotatedGame, anchor: cursor });
-    setAnnotatedGame(next.game);
+    // A move the game already has: only go on to it.
+    if (!next.followed) {
+      setScratch((prev) => prev ?? { saved: annotatedGame, anchor: cursor });
+      setAnnotatedGame(next.game);
+    }
     setActiveLine(at.line);
     setBreadcrumbs(at.breadcrumbs);
     setActiveIndex(next.cursor.index);

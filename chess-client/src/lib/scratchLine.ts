@@ -20,15 +20,17 @@ export type ScratchMove = { from: string; to: string; promotion?: string } | { s
 
 /** Play `move` at `cursor` in a copy of `game`, as a scratch node.
  *
- *  Mid-line the move becomes a new variation on the move it replaces — even
- *  when it repeats that move, so the scratch line stays visibly apart from the
- *  game. At the end of a line it extends that line. Returns null when the move
- *  is illegal or the cursor no longer resolves. */
+ *  A move the tree already has there — the line's next move or the first of
+ *  one of its variations — is followed instead: the cursor goes on to it and
+ *  the tree stays as it is (`followed`). Otherwise, mid-line, the move becomes
+ *  a new variation on the move it replaces; at the end of a line it extends
+ *  that line. Returns null when the move is illegal or the cursor no longer
+ *  resolves. */
 export function appendScratchMove(
   game: AnnotatedGame,
   cursor: CursorPath,
   move: ScratchMove,
-): { game: AnnotatedGame; cursor: CursorPath } | null {
+): { game: AnnotatedGame; cursor: CursorPath; followed?: boolean } | null {
   const clone = structuredClone(game);
   const resolved = resolvePathSafe(clone.mainLine, cursor.steps);
   if (!resolved) return null;
@@ -44,6 +46,16 @@ export function appendScratchMove(
     return null;   // chess.js throws on an illegal move
   }
   if (!played) return null;
+
+  if (cursor.index < line.length) {
+    const next = line[cursor.index];
+    const same = (n: MoveNode | undefined) => !!n && bare(n.san) === bare(played.san);
+    if (same(next)) return { game, cursor: { steps: cursor.steps, index: cursor.index + 1 }, followed: true };
+    const v = next.variations.findIndex((l) => same(l[0]));
+    if (v >= 0) {
+      return { game, cursor: { steps: [...cursor.steps, { node: cursor.index, varIdx: v }], index: 1 }, followed: true };
+    }
+  }
 
   const node: MoveNode = {
     san: played.san,
@@ -65,6 +77,9 @@ export function appendScratchMove(
   line.push(node);
   return { game: clone, cursor: { steps: cursor.steps, index: cursor.index + 1 } };
 }
+
+/** A SAN without its check, mate and annotation marks. */
+const bare = (san: string) => san.replace(/[+#!?]+$/, "");
 
 /** Take back the scratch move just before `cursor` — the last one: the
  *  line is always played at its end — and step back onto the move before it.
