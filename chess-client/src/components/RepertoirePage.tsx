@@ -423,6 +423,12 @@ export default function RepertoirePage({ onOpenGame }: Props) {
             onDeleteChapter={(id) => run(async () => { await deleteChapter(id); if (id === chapterId) dropChapter(); })}
             onAddEmpty={(name) => addEmpty(book.id, name)} onImport={(items) => importPgn(book.id, items)}
             onDeleteChapters={(ids) => run(async () => { await deleteChapters(ids); if (chapterId != null && ids.includes(chapterId)) dropChapter(); })}
+            onSetOverview={(ids, overview) => run(async () => {
+              for (const id of ids) {
+                const c = await updateChapter(id, { overview });
+                if (c.overview_set === undefined) throw new Error("The server cannot set this yet. Update the server.");
+              }
+            })}
           />
           {/* The book's games, apart from the repertoire: model games —
               annotated, showing its ideas — and reference games, without
@@ -890,7 +896,7 @@ function Menu({ entries, title, up = false, right = false }: {
 
 /** The book's chapters, with one menu for the chapter on the board and a
  *  mode for putting them in order. */
-function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onCountFens, onRenameMany, onChapter, onDeleteChapter, onDeleteChapters, onAddEmpty, onImport, f2Here, arrowsHere, kind = "chapters", onImportModels, onConvert, onOrder, onSetKind }: {
+function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onCountFens, onRenameMany, onChapter, onDeleteChapter, onDeleteChapters, onAddEmpty, onImport, f2Here, arrowsHere, kind = "chapters", onImportModels, onConvert, onOrder, onSetKind, onSetOverview }: {
   /** Which list: the chapters, or — with their own heading and commands —
    *  the model games (`book.chapters` holds the one or the other). */
   kind?: "chapters" | "models" | "reference";
@@ -921,6 +927,9 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
   /** Games shown as model games (true) or reference games (false) whatever
    *  their comments; null: told by their comments again. */
   onSetKind?: (ids: number[], annotated: boolean | null) => void;
+  /** Chapters set as overviews (true) or not (false) whatever their names;
+   *  null: told by their names again. */
+  onSetOverview?: (ids: number[], overview: boolean | null) => void;
   /** Adding chapters: an empty one, or from PGN (pasted, or files). */
   onAddEmpty: (name: string) => void;
   onImport: (items: ImportItem[]) => void;
@@ -1141,6 +1150,17 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
                 : { label: kind === "models" ? "Make it a reference game" : "Make it a model game", onClick: () => chapter && onSetKind([chapter.id], kind !== "models"), disabled: none },
               ...(!several && chapter?.annotated_set ? [{ label: "Model or reference: by its comments", onClick: () => onSetKind([chapter.id], null), disabled: none }] : []),
             ] : []),
+            // An overview — a quickstarter, an introduction — takes none of
+            // one's games from the other chapters; told by its name, or set.
+            ...(!models && onSetOverview ? (() => {
+              const allOverviews = several && multi.every((id) => book.chapters.find((c) => c.id === id)?.overview);
+              return [
+                several
+                  ? { label: allOverviews ? `Make ${multi.length} regular chapters` : `Make ${multi.length} overview chapters`, onClick: () => { onSetOverview(multi, !allOverviews); setPicked([]); }, disabled: busy }
+                  : { label: chapter?.overview ? "Make it a regular chapter" : "Make it an overview chapter", onClick: () => chapter && onSetOverview([chapter.id], !chapter.overview), disabled: none },
+                ...(!several && chapter?.overview_set ? [{ label: "Overview or not: by its name", onClick: () => onSetOverview([chapter.id], null), disabled: none }] : []),
+              ];
+            })() : []),
             several
               ? { label: `Rename ${multi.length} ${many}… (F2)`, onClick: () => { setRenamingAll(multi); setRenaming(null); }, disabled: busy, separated: true }
               : { label: `Rename ${many}…`, onClick: () => { setRenamingAll(book.chapters.map((c) => c.id)); setRenaming(null); }, disabled: busy || book.chapters.length === 0, separated: true },
@@ -1442,7 +1462,8 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
       ) : (
         <button onClick={selected !== undefined ? undefined : onPick}
           onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
-          className={`flex-1 min-w-0 text-left text-body-sm truncate ${current ? "text-on-surface font-medium" : "text-on-surface hover:text-primary"}`} title={c.model ? c.name : `${c.name} — ${counts}`}>
+          className={`flex-1 min-w-0 text-left text-body-sm truncate ${c.overview ? "italic" : ""} ${current ? "text-on-surface font-medium" : "text-on-surface hover:text-primary"}`}
+          title={c.model ? c.name : `${c.name} — ${counts}${c.overview ? " · an overview chapter: takes none of your games from the other chapters (Maintenance → Repertoire)" : ""}`}>
           {c.name}
         </button>
       )}

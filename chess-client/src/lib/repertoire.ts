@@ -44,6 +44,11 @@ export interface ChapterSummary {
   /** Whether `annotated` was set by hand rather than told by the comments
    *  (absent from servers before it could be). */
   annotated_set?: boolean;
+  /** An overview chapter — an introduction, a quickstarter — going over the
+   *  other chapters' moves: it takes none of your games from them. Told by
+   *  its name unless set by hand (absent from older servers). */
+  overview?: boolean;
+  overview_set?: boolean;
 }
 
 export type GameResult = "*" | "1-0" | "0-1" | "1/2-1/2";
@@ -84,7 +89,7 @@ export const deleteBook = (id: number) => apiDelete(`/repertoire/books/${id}`);
 export const addChapters = (bookId: number, body: { name?: string; pgn?: string; file?: string; model?: boolean }) =>
   postJson<ChapterSummary[]>(`/repertoire/books/${bookId}/chapters`, body);
 export const getChapter = (id: number) => apiGet<ChapterDetail>(`/repertoire/chapters/${id}`);
-export const updateChapter = (id: number, patch: { name?: string; ord?: number; active?: boolean; book_id?: number; model?: boolean; result?: GameResult; annotated?: boolean | null }) =>
+export const updateChapter = (id: number, patch: { name?: string; ord?: number; active?: boolean; book_id?: number; model?: boolean; result?: GameResult; annotated?: boolean | null; overview?: boolean | null }) =>
   putJson<ChapterSummary>(`/repertoire/chapters/${id}`, patch);
 export const saveChapterMoves = (id: number, moves: string) =>
   putJson<ChapterSummary>(`/repertoire/chapters/${id}/moves`, { moves });
@@ -200,7 +205,10 @@ export const scorePct = (s: Score) => (s.games ? `${Math.round(((s.w + s.d / 2) 
 export interface RepertoireSettings {
   /** One's own games count from this many months back; 0 = all. */
   own_games_months: number;
+  /** Which of your games an overview chapter lists (absent from older servers). */
+  overview_games?: OverviewGames;
 }
+export type OverviewGames = "none" | "unclaimed" | "every";
 export const getRepertoireSettings = () => apiGet<RepertoireSettings>("/repertoire/settings");
 export const putRepertoireSettings = (s: RepertoireSettings) => putJson<RepertoireSettings>("/repertoire/settings", s);
 /** Books from a PGN exported by LPDO (a book, or a backup of them all), made
