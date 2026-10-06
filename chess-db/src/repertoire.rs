@@ -1304,11 +1304,17 @@ struct Placement {
     /// Per game, the deepest position of the chapters it reached — not of
     /// an overview — (its ply) and the move played from it.
     deepest: std::collections::HashMap<i64, (i64, Option<String>)>,
+    /// The games that reached the own positions of several chapters — went
+    /// from one into another — and the chapter they went into: the one whose
+    /// own position they reached last.
+    transposed: std::collections::HashMap<i64, i64>,
 }
 
 /// Which of one's games count for which of a book's chapters: those that
 /// reached one of a chapter's own positions — no other chapter of the book
-/// has them — by any move order.
+/// has them — by any move order. A game that went from one chapter's own
+/// positions into another's counts for the latter only, or for both, as the
+/// settings say.
 fn place(conn: &Connection, book_id: i64, player: i64) -> Result<Placement> {
     let book = get_book(conn, book_id)?;
     let mut st = conn.prepare("SELECT id, pgn, name, overview FROM repertoire_chapters WHERE book_id = ? AND NOT COALESCE(model, FALSE) ORDER BY ord, id")?;
@@ -1367,6 +1373,7 @@ fn place(conn: &Connection, book_id: i64, player: i64) -> Result<Placement> {
         overview: overview.clone(),
         per_chapter: vec![Vec::new(); n],
         in_book: Vec::new(), left: Vec::new(), deepest: std::collections::HashMap::new(),
+        transposed: std::collections::HashMap::new(),
     };
     if out.games.is_empty() || count.is_empty() { return Ok(out); }
 
@@ -1377,23 +1384,43 @@ fn place(conn: &Connection, book_id: i64, player: i64) -> Result<Placement> {
     let mut st = conn.prepare(&format!(
         "SELECT game_id, zobrist_hash, move_number, next_move FROM positions
          WHERE game_id IN ({ids}) AND zobrist_hash IN ({hashes})"))?;
-    let mut reached: std::collections::HashMap<i64, std::collections::HashSet<i64>> = std::collections::HashMap::new();
+    // Per game, the positions it reached, each at its last ply.
+    let mut reached: std::collections::HashMap<i64, std::collections::HashMap<i64, i64>> = std::collections::HashMap::new();
     let mut rows = st.query([])?;
     while let Some(r) = rows.next()? {
         let (g, z, ply, next): (i64, i64, i64, Option<String>) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
-        reached.entry(g).or_default().insert(z);
+        let at = reached.entry(g).or_default().entry(z).or_insert(ply);
+        *at = (*at).max(ply);
         // Where it left the chapters: an overview's positions are not theirs.
         if count[&z] == 0 { continue; }
         let d = out.deepest.entry(g).or_insert((-1, None));
         if ply > d.0 { *d = (ply, next); }
     }
 
-    out.in_book = reached.iter().filter(|(_, zs)| zs.iter().any(|z| shared.contains(z))).map(|(g, _)| *g).collect();
+    out.in_book = reached.iter().filter(|(_, zs)| zs.keys().any(|z| shared.contains(z))).map(|(g, _)| *g).collect();
     let mut placed: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    // Per game, the chapters whose own positions it reached, and the last
+    // ply it was in each.
+    let mut claims: std::collections::HashMap<i64, Vec<(usize, i64)>> = std::collections::HashMap::new();
     for (i, own) in own.iter().enumerate() {
-        let gs: Vec<i64> = reached.iter().filter(|(_, zs)| zs.iter().any(|z| own.contains(z))).map(|(g, _)| *g).collect();
-        placed.extend(gs.iter().copied());
-        out.per_chapter[i] = gs;
+        for (g, zs) in &reached {
+            if let Some(ply) = zs.iter().filter(|(z, _)| own.contains(z)).map(|(_, ply)| *ply).max() {
+                claims.entry(*g).or_default().push((i, ply));
+            }
+        }
+    }
+    // A game that went from one chapter into another — 1.Nf3 Nf6 2.g3 c5
+    // 3.c4 through a 1.Nf3 chapter into a 1.c4 c5 one — went into the one it
+    // reached last; the earlier ones list it as transposed, or not at all.
+    let only_target = settings().transposed_games == TransposedGames::Target;
+    for (g, mut cs) in claims {
+        placed.insert(g);
+        if cs.len() > 1 {
+            cs.sort_by_key(|(i, ply)| (std::cmp::Reverse(*ply), *i));
+            out.transposed.insert(g, out.chapters[cs[0].0]);
+            if only_target { cs.truncate(1); }
+        }
+        for (i, _) in cs { out.per_chapter[i].push(g); }
     }
     // The overviews: the book's games that went through one — those no
     // other chapter claimed, or all of them, as the settings say.
@@ -1403,7 +1430,7 @@ fn place(conn: &Connection, book_id: i64, player: i64) -> Result<Placement> {
         for (i, set) in sets.iter().enumerate().filter(|(i, _)| overview[*i]) {
             let gs: Vec<i64> = out.in_book.iter().copied()
                 .filter(|g| mode == OverviewGames::Every || !claimed.contains(g))
-                .filter(|g| reached.get(g).is_some_and(|zs| zs.iter().any(|z| set.contains(z))))
+                .filter(|g| reached.get(g).is_some_and(|zs| zs.keys().any(|z| set.contains(z))))
                 .collect();
             placed.extend(gs.iter().copied());
             out.per_chapter[i] = gs;
@@ -1444,6 +1471,7 @@ pub struct BookGame {
     pub event: Option<String>,
     pub date: Option<String>,
     pub result: Option<String>,
+    /// The one it went into first when it transposed from one to another.
     pub chapters: Vec<i64>,
     /// How far it followed its (first) chapter — as that chapter's list says.
     pub follow: Option<Follow>,
@@ -1465,8 +1493,8 @@ pub fn book_games(conn: &Connection, book_id: i64, player: i64) -> Result<BookGa
     let started = std::time::Instant::now();
     let p = place(conn, book_id, player)?;
     let mut out = BookGameList { color: p.color.clone(), months: p.months, since: p.since.clone(), games: Vec::new(), ms: 0 };
-    // How far each game followed its chapter — the first it counts for —
-    // the same as the chapter's own list.
+    // How far each game followed its chapter — the one it transposed into,
+    // or the first it counts for — the same as the chapter's own list.
     let mut follow: std::collections::HashMap<i64, Follow> = std::collections::HashMap::new();
     let mut st = conn.prepare("SELECT id, pgn FROM repertoire_chapters WHERE book_id = ? AND NOT COALESCE(model, FALSE)")?;
     let pgns: std::collections::HashMap<i64, String> = st.query_map(duckdb::params![book_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<duckdb::Result<_>>()?;
@@ -1475,7 +1503,7 @@ pub fn book_games(conn: &Connection, book_id: i64, player: i64) -> Result<BookGa
         // An overview only when no other chapter has it.
         let has = |(_, gs): &(&i64, &Vec<i64>)| gs.contains(g);
         let mut regular = p.chapters.iter().zip(&p.per_chapter).zip(&p.overview).filter(|(_, o)| !**o).map(|(c, _)| c);
-        if let Some(c) = regular.find(has).or_else(|| p.chapters.iter().zip(&p.per_chapter).find(has)).map(|(c, _)| *c) {
+        if let Some(c) = p.transposed.get(g).copied().or_else(|| regular.find(has).or_else(|| p.chapters.iter().zip(&p.per_chapter).find(has)).map(|(c, _)| *c)) {
             first.entry(c).or_default().push(*g);
         }
     }
@@ -1483,8 +1511,9 @@ pub fn book_games(conn: &Connection, book_id: i64, player: i64) -> Result<BookGa
         if let Some(pgn) = pgns.get(c) { follow.extend(follow_chapter(conn, pgn, gs, &p.color)?); }
     }
     for row in game_rows(conn, &p.in_book)? {
-        let chapters: Vec<i64> = p.chapters.iter().zip(&p.per_chapter)
+        let mut chapters: Vec<i64> = p.chapters.iter().zip(&p.per_chapter)
             .filter(|(_, gs)| gs.contains(&row.id)).map(|(c, _)| *c).collect();
+        if let Some(t) = p.transposed.get(&row.id) { chapters.sort_by_key(|c| c != t); }
         let left = if chapters.is_empty() {
             p.deepest.get(&row.id).and_then(|(ply, san)| san.as_deref().map(|s| move_label(*ply, s)))
         } else { None };
@@ -1510,6 +1539,14 @@ pub struct ChapterGame {
     pub result: Option<String>,
     #[serde(flatten)]
     pub follow: Follow,
+    /// The chapter it went into from this one, when it transposed.
+    pub transposed_to: Option<ChapterRef>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ChapterRef {
+    pub id: i64,
+    pub name: String,
 }
 
 /// How far a game followed a chapter: "left" — a move the chapter does not
@@ -1595,11 +1632,19 @@ pub fn chapter_games(conn: &Connection, chapter_id: i64, player: i64) -> Result<
     }
 
     let follow = follow_chapter(conn, &detail.pgn, &ids, &p.color)?;
+    let mut names: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
     for row in game_rows(conn, &ids)? {
         let Some(f) = follow.get(&row.id).cloned() else { continue };
+        let transposed_to = match p.transposed.get(&row.id) {
+            Some(t) if *t != chapter_id => {
+                if !names.contains_key(t) { names.insert(*t, get_chapter_summary(conn, *t)?.name); }
+                Some(ChapterRef { id: *t, name: names[t].clone() })
+            }
+            _ => None,
+        };
         out.games.push(ChapterGame {
             id: row.id, white: row.white, black: row.black, white_elo: row.white_elo, black_elo: row.black_elo,
-            event: row.event, date: row.date, result: row.result, follow: f,
+            event: row.event, date: row.date, result: row.result, follow: f, transposed_to,
         });
     }
     out.ms = started.elapsed().as_millis() as i64;
@@ -1675,10 +1720,24 @@ pub struct RepertoireSettings {
     pub own_games_months: u32,
     /// Which of one's games an overview chapter lists.
     pub overview_games: OverviewGames,
+    /// Where a game that went from one chapter into another counts.
+    pub transposed_games: TransposedGames,
 }
 
 impl Default for RepertoireSettings {
-    fn default() -> Self { Self { own_games_months: 12, overview_games: OverviewGames::default() } }
+    fn default() -> Self { Self { own_games_months: 12, overview_games: OverviewGames::default(), transposed_games: TransposedGames::default() } }
+}
+
+/// Where a game counts that reached one chapter's own positions and then
+/// another's — went from one chapter into the other ([`place`]).
+#[derive(Clone, Copy, Debug, Default, Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TransposedGames {
+    /// In both: the chapter it left lists it as transposed to the other.
+    Show,
+    /// Only in the chapter it went into.
+    #[default]
+    Target,
 }
 
 /// Which of one's games an overview chapter lists. It never takes a game
@@ -2110,6 +2169,61 @@ mod tests {
         update_chapter(&conn, quick, ChapterPatch { overview: Some(None), ..Default::default() }).unwrap();
         assert!(!get_chapter_summary(&conn, quick).unwrap().overview_set);
         assert!(get_chapter_summary(&conn, quick).unwrap().overview);
+    }
+
+    #[test]
+    fn a_transposed_game_goes_into_the_chapter_it_reached_last() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let book = create_book(&conn, "French", "black", None, None, None).unwrap();
+        let add = |name: &str, moves: &str| add_chapters(&conn, book.id, Some(name), Some(moves), None).unwrap().remove(0).id;
+        // 2.d4 d5 is the Advance's own; 2.Nc3 d5 3.d4 — the same position
+        // as 2.d4 d5 3.Nc3 — the Winawer's.
+        let advance = add("Advance", "1. e4 e6 2. d4 d5 3. e5 c5 *");
+        let winawer = add("Winawer", "1. e4 e6 2. Nc3 d5 3. d4 Bb4 *");
+
+        // Through the Advance's 2...d5 into the Winawer; the Advance.
+        let games: [&str; 2] = ["e4 e6 d4 d5 Nc3 Bb4 e5", "e4 e6 d4 d5 e5 c5"];
+        let mut sql = String::from("INSERT INTO players (id, name, name_normalized) VALUES (1, 'Me', 'me'), (2, 'O', 'o');");
+        for (i, moves) in games.iter().enumerate() {
+            let id = i + 1;
+            sql += &format!("INSERT INTO games (id, white_id, black_id, date, result, pgn) VALUES ({id}, 2, 1, CAST(current_date AS VARCHAR), '1/2-1/2', '');");
+            let mut pos = Chess::default();
+            for (ply, san) in moves.split(' ').enumerate() {
+                let z = pos.zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64;
+                sql += &format!("INSERT INTO positions (game_id, move_number, zobrist_hash, next_move) VALUES ({id}, {ply}, {z}, '{san}');");
+                let m = shakmaty::san::San::from_ascii(san.as_bytes()).unwrap().to_move(&pos).unwrap();
+                pos.play_unchecked(m);
+            }
+        }
+        conn.execute_batch(&sql).unwrap();
+
+        let _turn = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let placed = |mode: TransposedGames| {
+            set_settings(RepertoireSettings { transposed_games: mode, ..Default::default() }).unwrap();
+            let b = book_games(&conn, book.id, 1).unwrap();
+            let mut by: Vec<(i64, Vec<i64>)> = b.games.into_iter().map(|g| (g.id, g.chapters)).collect();
+            by.sort();
+            by
+        };
+        assert_eq!(placed(TransposedGames::Target), vec![(1, vec![winawer]), (2, vec![advance])], "the default");
+        assert!(chapter_games(&conn, advance, 1).unwrap().games.iter().all(|g| g.id == 2));
+        let mine = book_mine(&conn, book.id, 1).unwrap();
+        assert_eq!(mine.chapters.iter().map(|c| c.score.games).collect::<Vec<_>>(), vec![1, 1]);
+
+        // Shown in both, the chapter it went into first; the Advance says
+        // where it went.
+        assert_eq!(placed(TransposedGames::Show), vec![(1, vec![winawer, advance]), (2, vec![advance])]);
+        let b = book_games(&conn, book.id, 1).unwrap();
+        let f = b.games.iter().find(|g| g.id == 1).unwrap().follow.as_ref().unwrap();
+        assert_eq!(f.followed, "end", "as the Winawer has it");
+        let a = chapter_games(&conn, advance, 1).unwrap();
+        let g = a.games.iter().find(|g| g.id == 1).unwrap();
+        assert_eq!(g.transposed_to.as_ref().map(|c| c.id), Some(winawer));
+        assert_eq!(g.follow.mv.as_deref(), Some("3.Nc3"));
+        assert!(a.games.iter().find(|g| g.id == 2).unwrap().transposed_to.is_none());
+        assert!(chapter_games(&conn, winawer, 1).unwrap().games[0].transposed_to.is_none());
+        set_settings(RepertoireSettings::default()).unwrap();
     }
 
     #[test]
