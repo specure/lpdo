@@ -1405,6 +1405,14 @@ async fn repertoire_chapter_mine_handler(State(state): State<AppState>, AxumPath
     state.reads.run(move |conn| crate::repertoire::chapter_mine(conn, id, q.player_id).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
 }
 
+#[derive(Deserialize)]
+struct MatchBody { moves: Vec<String>, color: String }
+
+/// The chapters a game's line went into, in the books of one colour.
+async fn repertoire_match_handler(State(state): State<AppState>, Json(b): Json<MatchBody>) -> ApiResult<Vec<crate::repertoire::LineMatch>> {
+    state.reads.run(move |conn| crate::repertoire::match_line(conn, &b.moves, &b.color).map(Json).map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))).await
+}
+
 /// One's own games across a book's chapters, looked up live.
 async fn repertoire_book_mine_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<ChapterMineQuery>) -> ApiResult<crate::repertoire::BookGames> {
     state.reads.run(move |conn| crate::repertoire::book_mine(conn, id, q.player_id).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
@@ -2942,6 +2950,7 @@ pub async fn run(
         .route("/repertoire/chapters/{id}/pgn",        get(repertoire_chapter_pgn_handler))
         .route("/repertoire/chapters/{id}/stats",      get(repertoire_chapter_stats_handler))
         .route("/repertoire/chapters/{id}/mine",       get(repertoire_chapter_mine_handler))
+        .route("/repertoire/match",                    post(repertoire_match_handler))
         .route("/repertoire/books/{id}/mine",          get(repertoire_book_mine_handler))
         .route("/repertoire/chapters/{id}/games",      get(repertoire_chapter_games_handler))
         .route("/repertoire/books/{id}/games",         get(repertoire_book_games_handler))

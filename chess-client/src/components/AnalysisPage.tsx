@@ -15,9 +15,10 @@ import type { EngineHistory } from "../api";
 import PrintDialog, { ExportableGame } from "./games/PrintDialog";
 import { useShowEngineGames, engineParam as engineParamFor } from "../lib/engineGames";
 import { ArrowToggles, dbArrows, engineArrows, useArrowToggles, type CombinedMove } from "./HintArrows";
-import { saveChapterMoves, type ChapterDocument } from "../lib/repertoire";
+import { saveChapterMoves, type ChapterDocument, type LineMatch } from "../lib/repertoire";
 import LinesPanel from "./repertoire/LinesPanel";
 import MyGamesPanel from "./repertoire/MyGamesPanel";
+import RepertoireMatchPanel, { matchCount, useRepertoireMatch } from "./repertoire/RepertoireMatchPanel";
 import type { ChapterLine } from "../lib/repertoireLines";
 
 // The Analysis board (#220): the editable, multi-game workbench. Several games
@@ -73,6 +74,9 @@ interface Props {
    *  editor — the board, Lines and My games read them again. */
   documentReload?: number;
   onPickChapter?: (id: number) => void;
+  /** Open a chapter a game went into on the Repertoire page (the Repertoire
+   *  tab, on a game — not on a chapter). */
+  onOpenRepertoire?: (m: LineMatch, moves: string[]) => void;
   /** Open a related game as a new tab. Resolves to 0, or to how many did not
    *  fit (the rail is full) — then it stayed closed. */
   onOpenGame: (games: GameSummary[]) => Promise<number>;
@@ -88,7 +92,7 @@ const vHandle = "w-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-st
 const hHandle = "h-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-state=drag]:bg-primary/50 transition-colors";
 const STARTPOS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-type RightTab = "reference" | "related" | "lines" | "mine";
+type RightTab = "reference" | "related" | "lines" | "mine" | "repertoire";
 const TAB_KEY = "analysisRightTab";
 
 /** A panel of the host's, left of the board, in the rail's place. */
@@ -105,7 +109,7 @@ export interface LeadingPanel {
 
 export default function AnalysisPage({
   tabs, activeKey, onActivate, onClose, onCloseMany, onMove, capacity, onOpenGame, onTabState, onGameMutated, onOpenProfile,
-  leadingPanels, layoutId = "analysis-main", emptyState, myGamesBook, onPickChapter, documentReload = 0,
+  leadingPanels, layoutId = "analysis-main", emptyState, myGamesBook, onPickChapter, documentReload = 0, onOpenRepertoire,
 }: Props) {
   const lead = leadingPanels && leadingPanels.length > 0 ? leadingPanels : null;
   const leadIds = lead ? lead.map((p) => p.id) : ["rail"];
@@ -241,7 +245,7 @@ export default function AnalysisPage({
   // was a third tab; it now has the panel below, always shown.)
   const [tab, setTab] = useState<RightTab>(() => {
     const saved = localStorage.getItem(TAB_KEY);
-    return saved === "related" || saved === "lines" || saved === "mine" ? saved : "reference";
+    return saved === "related" || saved === "lines" || saved === "mine" || saved === "repertoire" ? saved : "reference";
   });
   useEffect(() => { localStorage.setItem(TAB_KEY, tab); }, [tab]);
   // The Lines tab belongs to a chapter (#327): on a game it falls back.
@@ -251,7 +255,12 @@ export default function AnalysisPage({
   // Lines and My games are a repertoire chapter's — not a model game's:
   // elsewhere, Reference.
   const repertoireChapter = !!active?.document && !active.document.model;
-  const shownTab: RightTab = (tab === "lines" || tab === "mine") && !repertoireChapter ? "reference" : tab;
+  // The Repertoire tab is a game's: the chapters it went into.
+  const repertoireMatch = !!active && !active.document && !!onOpenRepertoire;
+  const shownTab: RightTab = ((tab === "lines" || tab === "mine") && !repertoireChapter) || (tab === "repertoire" && !repertoireMatch) ? "reference" : tab;
+  const gameMoves = useMemo(() => active?.loaded.moves.map((m) => m.san) ?? [], [active?.loaded.moves]);
+  const match = useRepertoireMatch(gameMoves, active?.game.white ?? "", active?.game.black ?? "", repertoireMatch);
+  const matched = match.matches && matchCount(match.matches);
 
   // A repertoire chapter (#327): its lines, the cursor asked for when one is
   // picked, and "→ at the end of a line goes on to the next".
@@ -564,9 +573,17 @@ export default function AnalysisPage({
                     { key: "reference", label: "Reference" },
                     { key: "related", label: `Games${relatedTotal != null ? ` · ${relatedTotal.toLocaleString()}` : ""}` },
                     ...(repertoireChapter ? [{ key: "lines" as RightTab, label: "Lines" }, { key: "mine" as RightTab, label: "My games" }] : []),
-                  ] as { key: RightTab; label: string }[]).map((t) => (
+                    ...(repertoireMatch ? [{
+                      key: "repertoire" as RightTab,
+                      label: `Repertoire${matched ? ` · ${matched.chapters}` : ""}`,
+                      title: matched
+                        ? `This game went into ${matched.books} ${matched.books === 1 ? "book" : "books"}, ${matched.chapters} ${matched.chapters === 1 ? "chapter" : "chapters"} of your ${match.color === "white" ? "White" : "Black"} repertoire`
+                        : undefined,
+                    }] : []),
+                  ] as { key: RightTab; label: string; title?: string }[]).map((t) => (
                     <button
                       key={t.key}
+                      title={t.title}
                       onClick={() => setTab(t.key)}
                       className={`h-7 px-3 rounded-full text-label-md transition-colors duration-short3 ease-standard ${
                         shownTab === t.key ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12"
@@ -588,7 +605,9 @@ export default function AnalysisPage({
                   </button>
                 </div>
 
-                {shownTab === "mine" && repertoireChapter && active?.document ? (
+                {shownTab === "repertoire" && active && onOpenRepertoire ? (
+                  <RepertoireMatchPanel moves={gameMoves} match={match} onOpen={(m) => onOpenRepertoire(m, gameMoves)} />
+                ) : shownTab === "mine" && repertoireChapter && active?.document ? (
                   <div className="flex-1 min-h-0 flex flex-col">
                     <MyGamesPanel
                       chapterId={active.document.id}

@@ -164,6 +164,17 @@ another book, delete; add a chapter (empty, pasted PGN, PGN file); export the
 book or a chapter. A **Repertoire card** on the Home page lists the active
 books with their active chapter counts and opens the page.
 
+**A game's repertoire** — on a game in Analysis, a **Repertoire** tab lists the
+chapters the game's main line went into (`POST /repertoire/match`, the line's
+moves and a colour, looked up in `repertoire_positions`): the books of one
+colour — a switch, one's own colour in the game when one played it (the player
+set on the Home page), else the one picked last — and in each book the
+chapters the game went furthest in, by any move order, deepest first; an
+overview only when it went further than any other chapter of its book. Each
+says how far ("in the chapter to 5...Nxd5") and what then — who deviated and
+where, the end of the chapter's line, or the game's end. A click opens the
+chapter on the Repertoire page, its board where the game left it.
+
 ## Practice
 
 Learning the lines, not just reading them: chapters taken to the phone —

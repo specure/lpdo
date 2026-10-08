@@ -199,6 +199,26 @@ export interface BookGame {
   left: string | null;
 }
 export interface BookGameList { color: BookColor; months: number; since: string | null; games: BookGame[]; ms: number }
+/** A chapter a game's line went into (Analysis, the Repertoire tab): how
+ *  far (`ply`, the half-moves to the deepest of its positions the line
+ *  reached, by any move order) and what then, as a chapter's own games say.
+ *  `at_key`: that position, for the chapter's board. */
+export interface LineMatch {
+  book_id: number;
+  book_name: string;
+  chapter_id: number;
+  chapter_name: string;
+  overview: boolean;
+  ply: number;
+  followed: "left" | "end" | "ended";
+  left_by: "you" | "opponent" | null;
+  move: string | null;
+  at_key: string;
+}
+/** The chapters of the books of `color` a line of moves (SAN, from the
+ *  start) went into, deepest first — in each book the ones it went furthest in. */
+export const matchLine = (moves: string[], color: BookColor) =>
+  postJson<LineMatch[]>("/repertoire/match", { moves, color });
 export const getBookGameList = (bookId: number, playerId: number) =>
   apiGet<BookGameList>(`/repertoire/books/${bookId}/games?player_id=${playerId}`);
 

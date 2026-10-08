@@ -1709,6 +1709,109 @@ pub fn chapter_mine(conn: &Connection, id: i64, player: i64) -> Result<OwnGames>
     Ok(out)
 }
 
+// ── A game's line in the repertoire ──────────────────────────────────────────
+
+/// A chapter a line of moves went into (see [`match_line`]).
+#[derive(Clone, Debug, Serialize)]
+pub struct LineMatch {
+    pub book_id: i64,
+    pub book_name: String,
+    pub chapter_id: i64,
+    pub chapter_name: String,
+    pub overview: bool,
+    /// How far the line went in the chapter: the half-moves played to the
+    /// deepest of its positions the line reached, by any move order.
+    pub ply: i64,
+    /// From there, as a chapter's own games say ([`Follow`]): "left" — a
+    /// move the chapter does not have, `left_by` (the book's side, "you", or
+    /// the opponent), `move` ("9...Nd4"); "end" — to the end of one of its
+    /// lines; "ended" — the line ended in it.
+    pub followed: &'static str,
+    pub left_by: Option<&'static str>,
+    #[serde(rename = "move")]
+    pub mv: Option<String>,
+    /// That position's key — where to put the chapter's board.
+    pub at_key: String,
+}
+
+/// The chapters of the books of `color` a line of moves (SAN, from the
+/// start) went into, deepest first: in each book, the chapters it went
+/// furthest in — an overview only when it went further there than in any
+/// other chapter. A move that cannot be played ends the line.
+pub fn match_line(conn: &Connection, sans: &[String], color: &str) -> Result<Vec<LineMatch>> {
+    let color = valid_color(color)?;
+    // The line's positions, before each move and after the last.
+    let mut pos = Chess::default();
+    let mut zs = vec![pos.zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64];
+    let mut keys = vec![position_key(&pos)];
+    let mut moves: Vec<&str> = Vec::new();
+    for san in sans {
+        let Ok(m) = ShakmatySanPlus::from_ascii(san.as_bytes()).map_err(|_| ()).and_then(|s| s.san.to_move(&pos).map_err(|_| ())) else { break };
+        pos.play_unchecked(m);
+        moves.push(strip_marks(san));
+        zs.push(pos.zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64);
+        keys.push(position_key(&pos));
+    }
+    let n = moves.len();
+    if n == 0 { return Ok(Vec::new()); }
+
+    // The chapters' moves from the line's positions.
+    let hashes = zs.iter().map(|z| z.to_string()).collect::<Vec<_>>().join(",");
+    let mut st = conn.prepare(&format!(
+        "SELECT p.chapter_id, p.zobrist_hash, p.next_move, b.id, b.name, b.ord, c.name, c.ord, c.overview
+         FROM repertoire_positions p
+         JOIN repertoire_chapters c ON c.id = p.chapter_id
+         JOIN repertoire_books b ON b.id = c.book_id
+         WHERE b.color = ? AND p.zobrist_hash IN ({hashes})"))?;
+    struct Chapter { book: (i64, String, i64), name: String, ord: i64, overview: bool, moves: std::collections::HashMap<i64, std::collections::HashSet<String>> }
+    let mut chapters: std::collections::HashMap<i64, Chapter> = std::collections::HashMap::new();
+    let mut rows = st.query(duckdb::params![color])?;
+    while let Some(r) = rows.next()? {
+        let (id, z, next): (i64, i64, String) = (r.get(0)?, r.get(1)?, r.get(2)?);
+        let c = chapters.entry(id).or_insert_with(|| Chapter {
+            book: (r.get(3).unwrap_or_default(), r.get(4).unwrap_or_default(), r.get(5).unwrap_or_default()),
+            name: r.get(6).unwrap_or_default(), ord: r.get(7).unwrap_or_default(), overview: false, moves: Default::default(),
+        });
+        let set: Option<bool> = r.get(8)?;
+        c.overview = set.unwrap_or_else(|| looks_like_overview(&c.name));
+        c.moves.entry(z).or_default().insert(strip_marks(&next).to_string());
+    }
+
+    // Per chapter, the deepest position of the line it has: one it has a
+    // move from, or — the line playing that move — the one after it.
+    let mut found: Vec<(LineMatch, (i64, i64))> = Vec::new();
+    for (id, c) in chapters {
+        let mut deepest = 0usize;
+        for (ply, z) in zs.iter().enumerate() {
+            let Some(ms) = c.moves.get(z) else { continue };
+            let reach = if ply < n && ms.contains(moves[ply]) { ply + 1 } else { ply };
+            deepest = deepest.max(reach);
+        }
+        if deepest == 0 { continue; }
+        let side_to_move = if deepest.is_multiple_of(2) { "white" } else { "black" };
+        let (followed, left_by, mv) = if deepest == n { ("ended", None, None) }
+            else if c.moves.contains_key(&zs[deepest]) {
+                ("left", Some(if side_to_move == color { "you" } else { "opponent" }), Some(move_label(deepest as i64, moves[deepest])))
+            } else { ("end", None, None) };
+        found.push((LineMatch {
+            book_id: c.book.0, book_name: c.book.1.clone(), chapter_id: id, chapter_name: c.name, overview: c.overview,
+            ply: deepest as i64, followed, left_by, mv, at_key: keys[deepest].clone(),
+        }, (c.book.2, c.ord)));
+    }
+    // In each book, the chapters the line went furthest in.
+    let mut best: std::collections::HashMap<i64, (i64, i64)> = std::collections::HashMap::new();
+    for (m, _) in &found {
+        let b = best.entry(m.book_id).or_insert((0, 0));
+        if m.overview { b.1 = b.1.max(m.ply) } else { b.0 = b.0.max(m.ply) }
+    }
+    found.retain(|(m, _)| {
+        let (regular, overview) = best[&m.book_id];
+        if m.overview { m.ply == overview && overview > regular } else { m.ply == regular }
+    });
+    found.sort_by(|(a, ao), (b, bo)| b.ply.cmp(&a.ply).then(ao.cmp(bo)));
+    Ok(found.into_iter().map(|(m, _)| m).collect())
+}
+
 // ── Settings ─────────────────────────────────────────────────────────────────
 
 /// The repertoire's settings, on the Maintenance page; kept in
@@ -2224,6 +2327,34 @@ mod tests {
         assert!(a.games.iter().find(|g| g.id == 2).unwrap().transposed_to.is_none());
         assert!(chapter_games(&conn, winawer, 1).unwrap().games[0].transposed_to.is_none());
         set_settings(RepertoireSettings::default()).unwrap();
+    }
+
+    #[test]
+    fn a_line_finds_the_chapters_it_went_furthest_in() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let french = create_book(&conn, "French", "black", None, None, None).unwrap();
+        let white = create_book(&conn, "1.e4", "white", None, None, None).unwrap();
+        let add = |book: i64, name: &str, moves: &str| add_chapters(&conn, book, Some(name), Some(moves), None).unwrap().remove(0).id;
+        let advance = add(french.id, "Advance", "1. e4 e6 2. d4 d5 3. e5 c5 *");
+        let winawer = add(french.id, "Winawer", "1. e4 e6 2. Nc3 d5 3. d4 Bb4 *");
+        add(french.id, "Quickstarter", "1. e4 e6 2. d4 d5 3. Nc3 Bb4 4. e5 c5 *");
+        let e4 = add(white.id, "1.e4 e6", "1. e4 e6 2. d4 *");
+        let line = |moves: &str| moves.split(' ').map(String::from).collect::<Vec<_>>();
+        let found = |moves: &str, color: &str| match_line(&conn, &line(moves), color).unwrap()
+            .into_iter().map(|m| (m.chapter_id, m.ply, m.followed, m.left_by, m.mv)).collect::<Vec<_>>();
+
+        // Into the Winawer by 2.d4 d5 3.Nc3, to the end of its line; the
+        // Advance left at 3.Nc3, the quickstarter no further than the Winawer.
+        assert_eq!(found("e4 e6 d4 d5 Nc3 Bb4 a3", "black"), vec![(winawer, 6, "end", None, None)]);
+        assert_eq!(found("e4 e6 d4 d5 e5", "black"), vec![(advance, 5, "ended", None, None)]);
+        assert_eq!(found("e4 e6 d4 Nf6", "black"), vec![(advance, 3, "left", Some("you"), Some("2...Nf6".to_string()))]);
+        // The other colour's books; none for a line they do not have.
+        assert_eq!(found("e4 e6 d4 d5 e5", "white"), vec![(e4, 3, "end", None, None)]);
+        assert!(found("d4 d5", "black").is_empty());
+        let m = &match_line(&conn, &line("e4 e6 d4 d5 e5"), "black").unwrap()[0];
+        assert_eq!((m.book_name.as_str(), m.chapter_name.as_str()), ("French", "Advance"));
+        assert_eq!(m.at_key, "rnbqkbnr/ppp2ppp/4p3/3pP3/3P4/8/PPP2PPP/RNBQKBNR b KQkq");
     }
 
     #[test]

@@ -26,11 +26,22 @@ import { parsePgnTree } from "../lib/parsePgnTree";
 import { serializeMovetext } from "../lib/serializeMovetext";
 import { stripFens } from "../lib/stripFens";
 import type { CursorPath } from "../lib/moveTreeNav";
+import { cursorForGame } from "../lib/repertoireLines";
+import { positionKey } from "../trainer/buildPackage";
 
 interface Props {
   /** Open games (a related game from the Games tab) in the Analysis page. */
   onOpenGame: (games: GameSummary[]) => Promise<number>;
+  /** A chapter to open, at a position (Analysis, a game's Repertoire tab);
+   *  `onOpened` once it is. */
+  open?: RepertoireOpen | null;
+  onOpened?: () => void;
 }
+
+/** A chapter asked for from elsewhere, and where to put its board: the
+ *  position's key (`positionKey`), in the variation a game's `moves` (SAN,
+ *  from the start) took. */
+export interface RepertoireOpen { chapterId: number; key: string; moves: string[]; seq: number }
 
 const field = "h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface";
 const tonal = "h-7 px-3 inline-flex items-center rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 disabled:opacity-50 transition-all duration-short3 ease-standard whitespace-nowrap";
@@ -110,7 +121,7 @@ function openLink(url: string) {
   openUrl(full).catch(() => window.open(full, "_blank", "noopener"));
 }
 
-export default function RepertoirePage({ onOpenGame }: Props) {
+export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
   const [books, setBooks] = useState<BookWithChapters[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -118,6 +129,10 @@ export default function RepertoirePage({ onOpenGame }: Props) {
   const [chaptersFolded, setChaptersFolded] = useFolded(CHAPTERS_FOLDED_KEY);
   // The chapter on the board, as an Analysis tab of one.
   const [tab, setTab] = useState<AnalysisTab | null>(null);
+  // A position asked for in a chapter (see `open` below), and a load of the
+  // chapter afresh to take it.
+  const pendingCursor = useRef<{ chapterId: number; cursor: CursorPath } | null>(null);
+  const [openLoad, setOpenLoad] = useState(0);
   const [chapterId, setChapterId] = useState<number | null>(() => {
     const v = Number(localStorage.getItem(CHAPTER_KEY));
     return Number.isFinite(v) && v > 0 ? v : null;
@@ -165,10 +180,21 @@ export default function RepertoirePage({ onOpenGame }: Props) {
     localStorage.setItem(CHAPTER_KEY, String(chapterId));
     let gone = false;
     loadTab(chapterId)
-      .then((t) => { if (!gone) setTab((prev) => (prev?.key === t.key ? { ...t, fen: prev.fen, cursor: prev.cursor, flipped: prev.flipped } : t)); })
+      .then((t) => {
+        if (gone) return;
+        // A position asked for (a game's Repertoire tab) outranks the one
+        // the chapter was left at.
+        const asked = pendingCursor.current;
+        if (asked?.chapterId === chapterId) {
+          pendingCursor.current = null;
+          setTab({ ...t, fen: null, cursor: asked.cursor });
+          return;
+        }
+        setTab((prev) => (prev?.key === t.key ? { ...t, fen: prev.fen, cursor: prev.cursor, flipped: prev.flipped } : t));
+      })
       .catch(() => { if (!gone) { setTab(null); setChapterId(null); localStorage.removeItem(CHAPTER_KEY); } });
     return () => { gone = true; };
-  }, [chapterId]);
+  }, [chapterId, openLoad]);
   // A rename, or a move to another book, reaches the tab's names.
   useEffect(() => {
     if (!tab || !books) return;
@@ -179,6 +205,37 @@ export default function RepertoirePage({ onOpenGame }: Props) {
       setTab({ ...tab, game: { ...tab.game, white: c.name, black: owner.name, event: owner.name }, document: { ...tab.document, chapterName: c.name, bookName: owner.name, color: owner.color, analysedAt: c.analysed_at } });
     }
   }, [books, tab]);
+
+  // A chapter asked for (a game's Repertoire tab in Analysis): its board put
+  // where the game left it — the chapter loaded afresh with that cursor,
+  // even the one on the board (whose board would report its own position
+  // over it). Not through the stored views: a write there may fail, and is
+  // let fail.
+  useEffect(() => {
+    if (!open) return;
+    let gone = false;
+    void (async () => {
+      let bookId: number | null = null;
+      try {
+        const c = await getChapter(open.chapterId);
+        bookId = c.book.id;
+        const at = cursorForGame(parsePgnTree(c.pgn), open.moves, open.key, positionKey);
+        if (gone) return;
+        if (at) {
+          pendingCursor.current = { chapterId: open.chapterId, cursor: at };
+          setTab(null);
+          setOpenLoad((n) => n + 1);
+        }
+      } catch { /* gone: the chapter as it is */ }
+      if (gone) return;
+      setChapterId(open.chapterId);
+      if (bookId != null) setSelectedBook(bookId);
+      setBookPicked(false);
+      onOpened?.();
+    })();
+    return () => { gone = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open?.seq]);
 
   /** Run a change, then read everything again. */
   async function run(f: () => Promise<unknown>) {
