@@ -51,7 +51,7 @@ import UpdateBanner, { EngineUpdateBanner } from "./components/UpdateBanner";
 export const ANALYSIS_TAB_CAP = 20;
 import ActivityIndicator from "./components/ActivityIndicator";
 import { useDailyBackups } from "./lib/backup";
-import { loadMyPlayer, resolveCurrentPlayer } from "./components/MyStatsWidget";
+import { loadMyPlayer, myColorIn, resolveCurrentPlayer } from "./components/MyStatsWidget";
 import { useUpdateCheck } from "./hooks/useUpdateCheck";
 import { GameSummary, LocalGame, PlayerInfo, PrepContext, StatusInfo } from "./types";
 import { isDefaultServer, serverUrl } from "./api";
@@ -424,7 +424,8 @@ export default function App() {
     setMode("analysis");
     if (games.length) setActiveAnalysisKey(`g${games[0].id}`);
     const loaded = await Promise.all(fresh.map(async (game) => {
-      try { return { key: `g${game.id}`, game, loaded: await loadGamePgn(game.id), fen: null, cursor: null, flipped: false } as AnalysisTab; }
+      // One of the user's own games opens from their side.
+      try { return { key: `g${game.id}`, game, loaded: await loadGamePgn(game.id), fen: null, cursor: null, flipped: myColorIn(game) === "black" } as AnalysisTab; }
       catch { return null; }   // load failure → the tab simply doesn't appear
     }));
     const tabs = loaded.filter((t): t is AnalysisTab => t !== null);
