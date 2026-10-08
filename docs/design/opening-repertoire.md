@@ -169,8 +169,10 @@ chapters the game's main line went into (`POST /repertoire/match`, the line's
 moves and a colour, looked up in `repertoire_positions`): the books of one
 colour — a switch, one's own colour in the game when one played it (the player
 set on the Home page), else the one picked last — and in each book, of the
-chapters the game went into (reached a position of theirs no other chapter
-of the book has, as "Your games" counts them), those it went furthest in, by
+chapters the game went into (played on from a position of theirs no other
+chapter of the book has — stricter than "Your games", where reaching one is
+enough: 1.c4 e5 2.g3 is not in a book's 1...e5 chapter that has 2.Nc3, as the
+game went), those it went furthest in, by
 any move order, deepest first; overview chapters not at all (they repeat
 the others' moves — "Your games" on the Repertoire page still lists them as
 set under Maintenance). A book the game only started — left within

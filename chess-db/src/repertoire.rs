@@ -1810,8 +1810,9 @@ pub struct LineMatch {
 
 /// The chapters of the books of `color` a line of moves (SAN, from the
 /// start) went into, deepest first: in each book, of the chapters it went
-/// into — reached a position of theirs no other chapter of the book has,
-/// as "Your games" counts them ([`place`]) — those it went furthest in.
+/// into — played on from a position of theirs no other chapter of the book
+/// has (stricter than "Your games", [`place`], where reaching one is
+/// enough) — those it went furthest in.
 /// Overview chapters are left out: they go over the others' moves, so they
 /// only repeat them. Then the books it went into none of the chapters of, one row each
 /// (`left_book`). A move that cannot be played ends the line.
@@ -1889,7 +1890,16 @@ pub fn match_line(conn: &Connection, sans: &[String], color: &str) -> Result<Vec
     for (id, c) in &chapters {
         for z in &has[id] { *count.entry((c.book.0, *z)).or_default() += 1; }
     }
-    let went_into = |id: i64, book: i64| has[&id].iter().any(|z| count[&(book, *z)] == 1);
+    // Went into a chapter: played on from a position of its own — the
+    // chapter's move there, or to the end of its line, or the line ended
+    // there. Only reaching one and deviating at once is not enough: for the
+    // game as it went the chapter is not what was played (1.c4 e5 2.g3 in a
+    // book whose 1...e5 chapter has 2.Nc3).
+    let went_into = |id: i64, book: i64| (1..=n).any(|ply| {
+        let z = zs[ply];
+        has[&id].contains(&z) && count[&(book, z)] == 1
+            && (ply == n || chapters[&id].moves.get(&z).is_none_or(|ms| ms.contains(moves[ply])))
+    });
 
     // In each book, the chapters it went into, furthest; else the book's own row.
     let mut best: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
@@ -2466,7 +2476,9 @@ mod tests {
         // The quickstarter goes on with 4.e5, further than any chapter: an
         // overview is never listed.
         assert_eq!(found("e4 e6 d4 d5 Nc3 Bb4 e5 c5", "black"), vec![(winawer, 6, "end", None, None)]);
-        assert_eq!(found("e4 e6 d4 Nf6", "black"), vec![(advance, 3, "left", Some("you"), Some("2...Nf6".to_string()))]);
+        // Into the Advance's own 2.d4 and out at once: the book's row.
+        let m = &match_line(&conn, &line("e4 e6 d4 Nf6"), "black").unwrap()[0];
+        assert_eq!((m.chapter_id, m.ply, m.left_book, m.mv.as_deref(), m.book_has.clone()), (advance, 3, true, Some("2...Nf6"), vec!["2...d5".to_string()]));
         // The other colour's books; none for a line they do not have.
         assert_eq!(found("e4 e6 d4 d5 e5", "white"), vec![(e4, 3, "end", None, None)]);
         assert!(found("d4 d5", "black").is_empty());
