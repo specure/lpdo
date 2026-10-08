@@ -575,7 +575,7 @@ export default function AnalysisPage({
                     ...(repertoireChapter ? [{ key: "lines" as RightTab, label: "Lines" }, { key: "mine" as RightTab, label: "My games" }] : []),
                     ...(repertoireMatch ? [{
                       key: "repertoire" as RightTab,
-                      label: `Repertoire${matched ? ` · ${matched.chapters ? `${matched.books}/${matched.chapters}` : 0}` : ""}`,
+                      label: `Repertoire${matched ? ` · ${matched.chapters}` : ""}`,
                       title: matched
                         ? `This game went into ${matched.books} ${matched.books === 1 ? "book" : "books"}, ${matched.chapters} ${matched.chapters === 1 ? "chapter" : "chapters"} of your ${match.color === "white" ? "White" : "Black"} repertoire`
                         : undefined,
