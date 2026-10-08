@@ -168,9 +168,14 @@ books with their active chapter counts and opens the page.
 chapters the game's main line went into (`POST /repertoire/match`, the line's
 moves and a colour, looked up in `repertoire_positions`): the books of one
 colour — a switch, one's own colour in the game when one played it (the player
-set on the Home page), else the one picked last — and in each book the
-chapters the game went furthest in, by any move order, deepest first; an
-overview only when it went further than any other chapter of its book. Each
+set on the Home page), else the one picked last — and in each book, of the
+chapters the game went into (reached a position of theirs no other chapter
+of the book has, as "Your games" counts them), those it went furthest in, by
+any move order, deepest first; an overview only when it went further than
+any other chapter of its book. A book the game only started — left within
+the moves all its chapters share (1.d4 Nf6 2.c4 e6 of a 3.Nf3 book, for a
+3.Nc3 game) — is one grey row, "left the book at 3.Nc3 · the book has
+3.Nf3", not counted on the tab. Each
 says how far ("in the chapter to 5...Nxd5") and what then — who deviated and
 where, the end of the chapter's line, or the game's end. A click opens the
 chapter on the Repertoire page, its board where the game left it.
