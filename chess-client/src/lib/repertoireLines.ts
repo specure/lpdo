@@ -97,6 +97,45 @@ export function cursorAtPosition(game: AnnotatedGame, key: string, keyOf: (fen: 
   return find(game.mainLine, []);
 }
 
+/** Where a game left a chapter, in the variation the game took: its moves
+ *  (SAN, from the start) followed through the chapter's lines and
+ *  variations, to the deepest position with the key `key`. When the game
+ *  got there by another move order, the position wherever the chapter goes
+ *  on from it (the main line first) — else wherever it is. */
+export function cursorForGame(game: AnnotatedGame, sans: string[], key: string, keyOf: (fen: string) => string): { steps: PathStep[]; index: number } | null {
+  const bare = (san: string) => san.replace(/[+#!?]+$/, "");
+  let line = game.mainLine;
+  let steps: PathStep[] = [];
+  let index = 0;
+  let found: { steps: PathStep[]; index: number } | null = keyOf(game.startFen) === key ? { steps: [], index: 0 } : null;
+  for (const san of sans) {
+    const next = line[index];
+    if (!next) break;
+    if (bare(next.san) === bare(san)) {
+      index += 1;
+    } else {
+      const v = next.variations.findIndex((l) => l[0] && bare(l[0].san) === bare(san));
+      if (v < 0) break;
+      steps = [...steps, { node: index, varIdx: v }];
+      line = next.variations[v];
+      index = 1;
+    }
+    if (keyOf(line[index - 1].fen) === key) found = { steps, index };
+  }
+  if (found) return found;
+
+  // Another move order: every place the position is, one the chapter goes
+  // on from first.
+  const all: { steps: PathStep[]; index: number; on: boolean }[] = [];
+  const walk = (l: MoveNode[], at: PathStep[]) => {
+    for (let i = 0; i < l.length; i++) if (l[i].san && keyOf(l[i].fen) === key) all.push({ steps: at, index: i + 1, on: i + 1 < l.length });
+    for (let i = 0; i < l.length; i++) l[i].variations.forEach((v, j) => walk(v, [...at, { node: i, varIdx: j }]));
+  };
+  walk(game.mainLine, []);
+  const hit = all.find((c) => c.on) ?? all[0];
+  return hit ? { steps: hit.steps, index: hit.index } : null;
+}
+
 /** Switch off one's own second choices: wherever a move of `color` has
  *  alternatives in the chapter (11.Nxf4, and 11.gxf4?! as a variation), the
  *  first stays and the others are switched off — with everything below

@@ -18,7 +18,7 @@ import { ArrowToggles, dbArrows, engineArrows, useArrowToggles, type CombinedMov
 import { saveChapterMoves, type ChapterDocument, type LineMatch } from "../lib/repertoire";
 import LinesPanel from "./repertoire/LinesPanel";
 import MyGamesPanel from "./repertoire/MyGamesPanel";
-import RepertoireMatchPanel from "./repertoire/RepertoireMatchPanel";
+import RepertoireMatchPanel, { matchCount, useRepertoireMatch } from "./repertoire/RepertoireMatchPanel";
 import type { ChapterLine } from "../lib/repertoireLines";
 
 // The Analysis board (#220): the editable, multi-game workbench. Several games
@@ -76,7 +76,7 @@ interface Props {
   onPickChapter?: (id: number) => void;
   /** Open a chapter a game went into on the Repertoire page (the Repertoire
    *  tab, on a game — not on a chapter). */
-  onOpenRepertoire?: (m: LineMatch) => void;
+  onOpenRepertoire?: (m: LineMatch, moves: string[]) => void;
   /** Open a related game as a new tab. Resolves to 0, or to how many did not
    *  fit (the rail is full) — then it stayed closed. */
   onOpenGame: (games: GameSummary[]) => Promise<number>;
@@ -259,6 +259,8 @@ export default function AnalysisPage({
   const repertoireMatch = !!active && !active.document && !!onOpenRepertoire;
   const shownTab: RightTab = ((tab === "lines" || tab === "mine") && !repertoireChapter) || (tab === "repertoire" && !repertoireMatch) ? "reference" : tab;
   const gameMoves = useMemo(() => active?.loaded.moves.map((m) => m.san) ?? [], [active?.loaded.moves]);
+  const match = useRepertoireMatch(gameMoves, active?.game.white ?? "", active?.game.black ?? "", repertoireMatch);
+  const matched = match.matches && matchCount(match.matches);
 
   // A repertoire chapter (#327): its lines, the cursor asked for when one is
   // picked, and "→ at the end of a line goes on to the next".
@@ -571,10 +573,17 @@ export default function AnalysisPage({
                     { key: "reference", label: "Reference" },
                     { key: "related", label: `Games${relatedTotal != null ? ` · ${relatedTotal.toLocaleString()}` : ""}` },
                     ...(repertoireChapter ? [{ key: "lines" as RightTab, label: "Lines" }, { key: "mine" as RightTab, label: "My games" }] : []),
-                    ...(repertoireMatch ? [{ key: "repertoire" as RightTab, label: "Repertoire" }] : []),
-                  ] as { key: RightTab; label: string }[]).map((t) => (
+                    ...(repertoireMatch ? [{
+                      key: "repertoire" as RightTab,
+                      label: `Repertoire${matched ? ` · ${matched.chapters ? `${matched.books}/${matched.chapters}` : 0}` : ""}`,
+                      title: matched
+                        ? `This game went into ${matched.books} ${matched.books === 1 ? "book" : "books"}, ${matched.chapters} ${matched.chapters === 1 ? "chapter" : "chapters"} of your ${match.color === "white" ? "White" : "Black"} repertoire`
+                        : undefined,
+                    }] : []),
+                  ] as { key: RightTab; label: string; title?: string }[]).map((t) => (
                     <button
                       key={t.key}
+                      title={t.title}
                       onClick={() => setTab(t.key)}
                       className={`h-7 px-3 rounded-full text-label-md transition-colors duration-short3 ease-standard ${
                         shownTab === t.key ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12"
@@ -597,7 +606,7 @@ export default function AnalysisPage({
                 </div>
 
                 {shownTab === "repertoire" && active && onOpenRepertoire ? (
-                  <RepertoireMatchPanel moves={gameMoves} white={active.game.white} black={active.game.black} onOpen={onOpenRepertoire} />
+                  <RepertoireMatchPanel moves={gameMoves} match={match} onOpen={(m) => onOpenRepertoire(m, gameMoves)} />
                 ) : shownTab === "mine" && repertoireChapter && active?.document ? (
                   <div className="flex-1 min-h-0 flex flex-col">
                     <MyGamesPanel

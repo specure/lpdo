@@ -4,16 +4,23 @@
 // player set on the Home page), else the one picked last. A click opens the
 // chapter on the Repertoire page, where the game left it.
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { matchLine, type BookColor, type LineMatch } from "../../lib/repertoire";
 import { currentMyPlayer } from "../MyStatsWidget";
 
 interface Props {
   /** The game's moves (its main line), SAN. */
   moves: string[];
-  white: string;
-  black: string;
+  match: RepertoireMatch;
   onOpen: (m: LineMatch) => void;
+}
+
+export interface RepertoireMatch {
+  color: BookColor;
+  pick: (c: BookColor) => void;
+  /** null: being looked up. */
+  matches: LineMatch[] | null;
+  error: string | null;
 }
 
 const COLOR_KEY = "analysisRepertoireColor";
@@ -22,13 +29,16 @@ const COLOR_KEY = "analysisRepertoireColor";
 const moveAt = (moves: string[], ply: number) =>
   `${Math.floor((ply - 1) / 2) + 1}${(ply - 1) % 2 ? "..." : "."}${moves[ply - 1] ?? ""}`;
 
-export default function RepertoireMatchPanel({ moves, white, black, onOpen }: Props) {
+/** The chapters a game went into, in the books of the colour picked — kept
+ *  by the Analysis page, so the tab can say how many while it is not shown. */
+export function useRepertoireMatch(moves: string[], white: string, black: string, on: boolean): RepertoireMatch {
   const [color, setColor] = useState<BookColor>(() => (localStorage.getItem(COLOR_KEY) === "black" ? "black" : "white"));
   const [matches, setMatches] = useState<LineMatch[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // One's own colour when one played the game.
   useEffect(() => {
+    if (!on) return;
     let gone = false;
     void currentMyPlayer().then((me) => {
       if (gone || !me) return;
@@ -36,10 +46,11 @@ export default function RepertoireMatchPanel({ moves, white, black, onOpen }: Pr
       else if (me.name === black) setColor("black");
     }).catch(() => {});
     return () => { gone = true; };
-  }, [white, black]);
+  }, [white, black, on]);
 
   const line = moves.join(" ");
   useEffect(() => {
+    if (!on) return;
     let gone = false;
     setMatches(null);
     setError(null);
@@ -47,13 +58,21 @@ export default function RepertoireMatchPanel({ moves, white, black, onOpen }: Pr
       .then((m) => { if (!gone) setMatches(m); })
       .catch((e) => { if (!gone) setError(String(e)); });
     return () => { gone = true; };
-  }, [line, color]);
+  }, [line, color, on]);
 
-  function pick(c: BookColor) {
+  const pick = useCallback((c: BookColor) => {
     setColor(c);
     try { localStorage.setItem(COLOR_KEY, c); } catch { /* not kept */ }
-  }
+  }, []);
+  return { color, pick, matches, error };
+}
 
+/** "1 book · 2 chapters" — what the tab's "1/2" says. */
+export function matchCount(matches: LineMatch[]): { books: number; chapters: number } {
+  return { books: new Set(matches.map((m) => m.book_id)).size, chapters: matches.length };
+}
+
+export default function RepertoireMatchPanel({ moves, match: { color, pick, matches, error }, onOpen }: Props) {
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       <div className="px-3 py-1 shrink-0 flex items-center gap-2 text-label-sm text-on-surface-variant border-b border-outline/40">

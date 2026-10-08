@@ -26,7 +26,7 @@ import { parsePgnTree } from "../lib/parsePgnTree";
 import { serializeMovetext } from "../lib/serializeMovetext";
 import { stripFens } from "../lib/stripFens";
 import type { CursorPath } from "../lib/moveTreeNav";
-import { cursorAtPosition } from "../lib/repertoireLines";
+import { cursorForGame } from "../lib/repertoireLines";
 import { positionKey } from "../trainer/buildPackage";
 
 interface Props {
@@ -39,8 +39,9 @@ interface Props {
 }
 
 /** A chapter asked for from elsewhere, and where to put its board: the
- *  position's key (`positionKey`). */
-export interface RepertoireOpen { chapterId: number; key: string; seq: number }
+ *  position's key (`positionKey`), in the variation a game's `moves` (SAN,
+ *  from the start) took. */
+export interface RepertoireOpen { chapterId: number; key: string; moves: string[]; seq: number }
 
 const field = "h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface";
 const tonal = "h-7 px-3 inline-flex items-center rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 disabled:opacity-50 transition-all duration-short3 ease-standard whitespace-nowrap";
@@ -202,7 +203,7 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
       try {
         const c = await getChapter(open.chapterId);
         bookId = c.book.id;
-        const at = cursorAtPosition(parsePgnTree(c.pgn), open.key, positionKey);
+        const at = cursorForGame(parsePgnTree(c.pgn), open.moves, open.key, positionKey);
         const prev = readViews()[open.chapterId];
         if (at) saveView(open.chapterId, { fen: null, cursor: at, flipped: typeof prev?.flipped === "boolean" ? prev.flipped : c.book.color === "black" });
         if (gone) return;

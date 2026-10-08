@@ -412,8 +412,8 @@ export default function App() {
    *  fit is returned, for the caller to say so. 0 means they are all open. */
   /** A chapter a game went into (the Analysis page's Repertoire tab), opened
    *  on the Repertoire page where the game left it. */
-  function openRepertoireChapter(m: LineMatch) {
-    setRepertoireOpen((r) => ({ chapterId: m.chapter_id, key: m.at_key, seq: (r?.seq ?? 0) + 1 }));
+  function openRepertoireChapter(m: LineMatch, moves: string[]) {
+    setRepertoireOpen((r) => ({ chapterId: m.chapter_id, key: m.at_key, moves, seq: (r?.seq ?? 0) + 1 }));
     setMode("repertoire");
   }
   async function openManyInAnalysis(games: GameSummary[]): Promise<number> {
