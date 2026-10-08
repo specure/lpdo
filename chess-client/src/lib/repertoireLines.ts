@@ -99,7 +99,7 @@ export function cursorAtPosition(game: AnnotatedGame, key: string, keyOf: (fen: 
 
 /** The cursor after the first `ply` moves of `sans` (SAN, from the start),
  *  followed through the game's main line and variations; null when the tree
- *  does not have them all (a trial line's moves). */
+ *  does not have them all. */
 export function cursorAlong(game: AnnotatedGame, sans: string[], ply: number): { steps: PathStep[]; index: number } | null {
   const bare = (san: string) => san.replace(/[+#!?]+$/, "");
   let line = game.mainLine;

@@ -8,6 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { GameDetail, GameSummary, PlayerInfo } from "../types";
 import { createPortal } from "react-dom";
+import { cursorAlong } from "../lib/repertoireLines";
 import { parsePgnTree, AnnotatedGame, MoveNode } from "../lib/parsePgnTree";
 import { ensureMoveNumbers, parseBlockTags } from "../lib/pgnEditor";
 import { useJobProgress } from "../hooks/useJobProgress";
@@ -358,7 +359,10 @@ interface Props {
    *  other chapters merged into it): read them again. */
   reloadKey?: number;
   /** Put the cursor here (a line picked in the Lines panel). */
-  cursorRequest?: { cursor: CursorPath; seq: number } | null;
+  /** A place the host asks for: a cursor, or — `along` — the position after
+   *  the first `ply` moves of a line (SAN, from the start), found in the tree
+   *  as it is on the board, a trial line's moves included. */
+  cursorRequest?: { cursor?: CursorPath; along?: { sans: string[]; ply: number }; seq: number } | null;
   /** ↑ / ↓ while viewing: the previous / next line of a repertoire chapter
    *  (#327); true when the host took it. */
   onLineStep?: (delta: -1 | 1) => boolean;
@@ -1343,13 +1347,20 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
     onGameMutated?.();
   }, [scratch, annotatedGame, game.id, cursor, onGameMutated, saveMoves]);
 
-  // A cursor the host asks for (a line picked in the Lines panel).
+  // A cursor the host asks for (a line picked in the Lines panel; where the
+  // line left a chapter, from the Repertoire tab).
   useEffect(() => {
     if (!cursorRequest || !annotatedGame || movesEditor.active) return;
-    const r = resolvePathSafe(annotatedGame.mainLine, cursorRequest.cursor.steps);
+    const want = cursorRequest.along
+      ? cursorAlong(annotatedGame, cursorRequest.along.sans, cursorRequest.along.ply)
+      : cursorRequest.cursor;
+    if (!want) return;
+    const r = resolvePathSafe(annotatedGame.mainLine, want.steps);
     if (!r) return;
-    const index = Math.max(0, Math.min(cursorRequest.cursor.index, r.line.length));
-    if (scratch) { discardScratch({ steps: cursorRequest.cursor.steps, index }); return; }
+    const index = Math.max(0, Math.min(want.index, r.line.length));
+    // Within a trial line's own moves it stays: only the board moves.
+    const inScratch = !!r.line[index - 1]?.scratch;
+    if (scratch && !inScratch) { discardScratch({ steps: want.steps, index }); return; }
     setActiveLine(r.line);
     setBreadcrumbs(r.breadcrumbs);
     setActiveIndex(index);

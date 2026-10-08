@@ -19,7 +19,7 @@ import { saveChapterMoves, type ChapterDocument, type LineMatch } from "../lib/r
 import LinesPanel from "./repertoire/LinesPanel";
 import MyGamesPanel from "./repertoire/MyGamesPanel";
 import RepertoireMatchPanel, { matchCount, useRepertoireMatch } from "./repertoire/RepertoireMatchPanel";
-import { cursorAlong, type ChapterLine } from "../lib/repertoireLines";
+import type { ChapterLine } from "../lib/repertoireLines";
 
 // The Analysis board (#220): the editable, multi-game workbench. Several games
 // open at once as mini-board tabs (A). The active game is edited in a full
@@ -274,8 +274,10 @@ export default function AnalysisPage({
   // the board reads it again.
   const [linesSaved, setLinesSaved] = useState(0);
   const linesRef = useRef<ChapterLine[]>([]);
-  const [cursorRequest, setCursorRequest] = useState<{ cursor: CursorPath; seq: number } | null>(null);
+  const [cursorRequest, setCursorRequest] = useState<{ cursor?: CursorPath; along?: { sans: string[]; ply: number }; seq: number } | null>(null);
   const requestCursor = useCallback((cursor: CursorPath) => setCursorRequest((r) => ({ cursor, seq: (r?.seq ?? 0) + 1 })), []);
+  // The position after a line's first `ply` moves, as the board has the line.
+  const requestAlong = useCallback((sans: string[], ply: number) => setCursorRequest((r) => ({ along: { sans, ply }, seq: (r?.seq ?? 0) + 1 })), []);
   // ↑ / ↓ on the board: the previous / next line, at its branching move.
   const lineStep = useCallback((delta: -1 | 1): boolean => {
     const t = tabsRef.current.find((x) => x.key === activeKey);
@@ -612,11 +614,7 @@ export default function AnalysisPage({
 
                 {shownTab === "repertoire" && active && onOpenRepertoire ? (
                   <RepertoireMatchPanel moves={gameMoves} match={match}
-                    onShow={(m) => {
-                      // Not within a trial line's own moves: going there would drop it.
-                      const at = active.loaded.tree && cursorAlong(active.loaded.tree, gameMoves, m.ply);
-                      if (at) requestCursor(at);
-                    }}
+                    onShow={(m) => requestAlong(gameMoves, m.ply)}
                     onOpen={(m) => onOpenRepertoire(m, gameMoves)} />
                 ) : shownTab === "mine" && repertoireChapter && active?.document ? (
                   <div className="flex-1 min-h-0 flex flex-col">
