@@ -274,8 +274,10 @@ export default function AnalysisPage({
   // the board reads it again.
   const [linesSaved, setLinesSaved] = useState(0);
   const linesRef = useRef<ChapterLine[]>([]);
-  const [cursorRequest, setCursorRequest] = useState<{ cursor: CursorPath; seq: number } | null>(null);
+  const [cursorRequest, setCursorRequest] = useState<{ cursor?: CursorPath; along?: { sans: string[]; ply: number }; seq: number } | null>(null);
   const requestCursor = useCallback((cursor: CursorPath) => setCursorRequest((r) => ({ cursor, seq: (r?.seq ?? 0) + 1 })), []);
+  // The position after a line's first `ply` moves, as the board has the line.
+  const requestAlong = useCallback((sans: string[], ply: number) => setCursorRequest((r) => ({ along: { sans, ply }, seq: (r?.seq ?? 0) + 1 })), []);
   // ↑ / ↓ on the board: the previous / next line, at its branching move.
   const lineStep = useCallback((delta: -1 | 1): boolean => {
     const t = tabsRef.current.find((x) => x.key === activeKey);
@@ -541,7 +543,7 @@ export default function AnalysisPage({
                 playRequest={playRequest}
                 menuExtras={railExtras}
                 chapter={chapterDoc}
-                cursorRequest={active.document ? cursorRequest : null}
+                cursorRequest={cursorRequest}
                 onLineStep={active.document ? lineStep : undefined}
                 reloadKey={active.document ? documentReload + linesSaved : undefined}
               />
@@ -611,7 +613,9 @@ export default function AnalysisPage({
                 </div>
 
                 {shownTab === "repertoire" && active && onOpenRepertoire ? (
-                  <RepertoireMatchPanel moves={gameMoves} match={match} onOpen={(m) => onOpenRepertoire(m, gameMoves)} />
+                  <RepertoireMatchPanel moves={gameMoves} match={match}
+                    onShow={(m) => requestAlong(gameMoves, m.ply)}
+                    onOpen={(m) => onOpenRepertoire(m, gameMoves)} />
                 ) : shownTab === "mine" && repertoireChapter && active?.document ? (
                   <div className="flex-1 min-h-0 flex flex-col">
                     <MyGamesPanel

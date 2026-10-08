@@ -12,6 +12,9 @@ interface Props {
   /** The game's moves (its main line), SAN. */
   moves: string[];
   match: RepertoireMatch;
+  /** A click: the board where the line left the chapter, here. */
+  onShow: (m: LineMatch) => void;
+  /** A double click: the chapter on the Repertoire page. */
   onOpen: (m: LineMatch) => void;
 }
 
@@ -75,7 +78,7 @@ export function matchCount(matches: LineMatch[]): { books: number; chapters: num
   return { books: new Set(into.map((m) => m.book_id)).size, chapters: into.length };
 }
 
-export default function RepertoireMatchPanel({ moves, match: { color, pick, matches, error }, onOpen }: Props) {
+export default function RepertoireMatchPanel({ moves, match: { color, pick, matches, error }, onShow, onOpen }: Props) {
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       <div className="px-3 py-1 shrink-0 flex items-center gap-2 text-label-sm text-on-surface-variant border-b border-outline/40">
@@ -90,7 +93,7 @@ export default function RepertoireMatchPanel({ moves, match: { color, pick, matc
             </button>
           ))}
         </div>
-        <span className="ml-auto text-outline">click: the chapter, where the game left it</span>
+        <span className="ml-auto text-outline">click: where the game left it · double-click: the chapter</span>
       </div>
       {error ? (
         <div className="p-3 text-center text-error text-body-sm">{error}</div>
@@ -105,8 +108,8 @@ export default function RepertoireMatchPanel({ moves, match: { color, pick, matc
           {matches.map((m) => m.left_book ? (
             // A book the game left before any of its chapters: what the
             // book plays there, its first chapter on a click.
-            <button key={m.chapter_id} onClick={() => onOpen(m)}
-              title={`The game left this book before any of its chapters. Open “${m.chapter_name}” on the Repertoire page, where it left`}
+            <button key={m.chapter_id} onClick={() => onShow(m)} onDoubleClick={() => onOpen(m)}
+              title={`The game left this book before any of its chapters. Click: the board where it left; double-click: “${m.chapter_name}” on the Repertoire page, there`}
               className="w-full flex flex-col px-3 py-1.5 text-left text-body-sm rounded-sm text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard">
               <span className="truncate w-full">{m.book_name}</span>
               <span className="text-label-sm truncate w-full">
@@ -116,8 +119,8 @@ export default function RepertoireMatchPanel({ moves, match: { color, pick, matc
               </span>
             </button>
           ) : (
-            <button key={m.chapter_id} onClick={() => onOpen(m)}
-              title={`Open “${m.chapter_name}” on the Repertoire page, where the game left it`}
+            <button key={m.chapter_id} onClick={() => onShow(m)} onDoubleClick={() => onOpen(m)}
+              title={`Click: the board where the game left the chapter; double-click: “${m.chapter_name}” on the Repertoire page, there`}
               className="w-full flex flex-col px-3 py-1.5 text-left text-body-sm rounded-sm text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard">
               <span className="truncate w-full">{m.book_name}</span>
               <span className="text-label-sm text-on-surface-variant truncate w-full">{m.chapter_name}</span>

@@ -97,6 +97,27 @@ export function cursorAtPosition(game: AnnotatedGame, key: string, keyOf: (fen: 
   return find(game.mainLine, []);
 }
 
+/** The cursor after the first `ply` moves of `sans` (SAN, from the start),
+ *  followed through the game's main line and variations; null when the tree
+ *  does not have them all. */
+export function cursorAlong(game: AnnotatedGame, sans: string[], ply: number): { steps: PathStep[]; index: number } | null {
+  const bare = (san: string) => san.replace(/[+#!?]+$/, "");
+  let line = game.mainLine;
+  let steps: PathStep[] = [];
+  let index = 0;
+  for (const san of sans.slice(0, ply)) {
+    const next = line[index];
+    if (!next) return null;
+    if (bare(next.san) === bare(san)) { index += 1; continue; }
+    const v = next.variations.findIndex((l) => l[0] && bare(l[0].san) === bare(san));
+    if (v < 0) return null;
+    steps = [...steps, { node: index, varIdx: v }];
+    line = next.variations[v];
+    index = 1;
+  }
+  return { steps, index };
+}
+
 /** Where a game left a chapter, in the variation the game took: its moves
  *  (SAN, from the start) followed through the chapter's lines and
  *  variations, to the deepest position with the key `key`. When the game
