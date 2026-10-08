@@ -208,7 +208,6 @@ export interface LineMatch {
   book_name: string;
   chapter_id: number;
   chapter_name: string;
-  overview: boolean;
   ply: number;
   followed: "left" | "end" | "ended";
   left_by: "you" | "opponent" | null;

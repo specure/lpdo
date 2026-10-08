@@ -1786,7 +1786,6 @@ pub struct LineMatch {
     pub book_name: String,
     pub chapter_id: i64,
     pub chapter_name: String,
-    pub overview: bool,
     /// How far the line went in the chapter: the half-moves played to the
     /// deepest of its positions the line reached, by any move order.
     pub ply: i64,
@@ -1812,9 +1811,9 @@ pub struct LineMatch {
 /// The chapters of the books of `color` a line of moves (SAN, from the
 /// start) went into, deepest first: in each book, of the chapters it went
 /// into — reached a position of theirs no other chapter of the book has,
-/// as "Your games" counts them ([`place`]) — those it went furthest in; an
-/// overview only when it went further there than in any other chapter.
-/// Then the books it went into none of the chapters of, one row each
+/// as "Your games" counts them ([`place`]) — those it went furthest in.
+/// Overview chapters are left out: they go over the others' moves, so they
+/// only repeat them. Then the books it went into none of the chapters of, one row each
 /// (`left_book`). A move that cannot be played ends the line.
 pub fn match_line(conn: &Connection, sans: &[String], color: &str) -> Result<Vec<LineMatch>> {
     let color = valid_color(color)?;
@@ -1854,6 +1853,7 @@ pub fn match_line(conn: &Connection, sans: &[String], color: &str) -> Result<Vec
         c.overview = set.unwrap_or_else(|| looks_like_overview(&c.name));
         c.moves.entry(z).or_default().insert(strip_marks(&next).to_string());
     }
+    chapters.retain(|_, c| !c.overview);
 
     // Per chapter, the line's positions it has — one it has a move from, or
     // the one after it when that move is the line's (the end of a line
@@ -1880,43 +1880,36 @@ pub fn match_line(conn: &Connection, sans: &[String], color: &str) -> Result<Vec
                 ("left", Some(if side_to_move == color { "you" } else { "opponent" }), Some(move_label(deepest as i64, moves[deepest])))
             } else { ("end", None, None) };
         found.push((LineMatch {
-            book_id: c.book.0, book_name: c.book.1.clone(), chapter_id: *id, chapter_name: c.name.clone(), overview: c.overview,
+            book_id: c.book.0, book_name: c.book.1.clone(), chapter_id: *id, chapter_name: c.name.clone(),
             ply: deepest as i64, followed, left_by, mv, at_key: keys[deepest].clone(), left_book: false, book_has: Vec::new(),
         }, (c.book.2, c.ord)));
     }
-    // In how many of its book's chapters each of the line's positions is —
-    // the overviews not counted: they go over the others' moves.
+    // In how many of its book's chapters each of the line's positions is.
     let mut count: std::collections::HashMap<(i64, i64), usize> = std::collections::HashMap::new();
     for (id, c) in &chapters {
-        if c.overview { continue; }
         for z in &has[id] { *count.entry((c.book.0, *z)).or_default() += 1; }
     }
-    let went_into = |id: i64, book: i64| !chapters[&id].overview && has[&id].iter().any(|z| count[&(book, *z)] == 1);
+    let went_into = |id: i64, book: i64| has[&id].iter().any(|z| count[&(book, *z)] == 1);
 
-    // In each book, the chapters it went into, furthest; an overview further
-    // than every chapter; else the book's own row.
-    let mut best: std::collections::HashMap<i64, (i64, i64, i64)> = std::collections::HashMap::new();
+    // In each book, the chapters it went into, furthest; else the book's own row.
+    let mut best: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
     for (m, _) in &found {
-        let b = best.entry(m.book_id).or_insert((0, 0, 0));
-        if m.overview { b.2 = b.2.max(m.ply) } else {
-            b.0 = b.0.max(m.ply);
-            if went_into(m.chapter_id, m.book_id) { b.1 = b.1.max(m.ply) }
-        }
+        let b = best.entry(m.book_id).or_insert(0);
+        if went_into(m.chapter_id, m.book_id) { *b = (*b).max(m.ply) }
     }
     let mut book_rows: Vec<Row> = Vec::new();
     let mut by_book: std::collections::BTreeMap<i64, Vec<Row>> = std::collections::BTreeMap::new();
     for f in found { by_book.entry(f.0.book_id).or_default().push(f); }
     let mut kept: Vec<Row> = Vec::new();
     for (book, mut ms) in by_book {
-        let (regular, into, overview) = best[&book];
+        let into = best[&book];
         let before = kept.len();
         for (m, o) in ms.iter() {
-            let keep = if m.overview { m.ply == overview && overview > regular } else { into > 0 && m.ply == into && went_into(m.chapter_id, book) };
-            if keep { kept.push((m.clone(), *o)); }
+            if into > 0 && m.ply == into && went_into(m.chapter_id, book) { kept.push((m.clone(), *o)); }
         }
         if kept.len() > before { continue; }
         // None: the book's row, at the first chapter that went as far.
-        ms.sort_by_key(|(m, o)| (std::cmp::Reverse(m.ply), m.overview, *o));
+        ms.sort_by_key(|(m, o)| (std::cmp::Reverse(m.ply), *o));
         let (mut m, o) = ms.swap_remove(0);
         let at = zs[m.ply as usize];
         let mut book_has: Vec<String> = chapters.values().filter(|c| c.book.0 == book)
@@ -2470,6 +2463,9 @@ mod tests {
         // Advance left at 3.Nc3, the quickstarter no further than the Winawer.
         assert_eq!(found("e4 e6 d4 d5 Nc3 Bb4 a3", "black"), vec![(winawer, 6, "end", None, None)]);
         assert_eq!(found("e4 e6 d4 d5 e5", "black"), vec![(advance, 5, "ended", None, None)]);
+        // The quickstarter goes on with 4.e5, further than any chapter: an
+        // overview is never listed.
+        assert_eq!(found("e4 e6 d4 d5 Nc3 Bb4 e5 c5", "black"), vec![(winawer, 6, "end", None, None)]);
         assert_eq!(found("e4 e6 d4 Nf6", "black"), vec![(advance, 3, "left", Some("you"), Some("2...Nf6".to_string()))]);
         // The other colour's books; none for a line they do not have.
         assert_eq!(found("e4 e6 d4 d5 e5", "white"), vec![(e4, 3, "end", None, None)]);

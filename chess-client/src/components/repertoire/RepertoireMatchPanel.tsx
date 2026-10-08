@@ -120,7 +120,7 @@ export default function RepertoireMatchPanel({ moves, match: { color, pick, matc
               title={`Open “${m.chapter_name}” on the Repertoire page, where the game left it`}
               className="w-full flex flex-col px-3 py-1.5 text-left text-body-sm rounded-sm text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard">
               <span className="truncate w-full">{m.book_name}</span>
-              <span className={`text-label-sm text-on-surface-variant truncate w-full ${m.overview ? "italic" : ""}`}>{m.chapter_name}</span>
+              <span className="text-label-sm text-on-surface-variant truncate w-full">{m.chapter_name}</span>
               <span className="text-label-sm text-on-surface-variant truncate w-full">
                 in the chapter to {moveAt(moves, m.ply)}
                 {m.followed === "left" && m.move ? (
