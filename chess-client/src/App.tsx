@@ -14,8 +14,8 @@ import LocalGameList from "./components/local/LocalGameList";
 import GamesPage, { PLAYERS_RAIL_KEY } from "./components/GamesPage";
 import PlayerProfileModal from "./components/PlayerProfileModal";
 import MergePlayersDialog from "./components/MergePlayersDialog";
-import RepertoirePage from "./components/RepertoirePage";
-import { getChapter, documentOf, type ChapterDocument } from "./lib/repertoire";
+import RepertoirePage, { type RepertoireOpen } from "./components/RepertoirePage";
+import { getChapter, documentOf, type ChapterDocument, type LineMatch } from "./lib/repertoire";
 import { buildPlayback } from "./lib/useGamePgn";
 
 /** An Analysis tab for a repertoire chapter (#327), fetched afresh. */
@@ -410,6 +410,12 @@ export default function App() {
    *  board, and the rail is a stack to work through, not a database — so when
    *  the games do not all fit, none is opened and the number that would not
    *  fit is returned, for the caller to say so. 0 means they are all open. */
+  /** A chapter a game went into (the Analysis page's Repertoire tab), opened
+   *  on the Repertoire page where the game left it. */
+  function openRepertoireChapter(m: LineMatch) {
+    setRepertoireOpen((r) => ({ chapterId: m.chapter_id, key: m.at_key, seq: (r?.seq ?? 0) + 1 }));
+    setMode("repertoire");
+  }
   async function openManyInAnalysis(games: GameSummary[]): Promise<number> {
     const open = analysisTabsRef.current;
     const fresh = games.filter((g, i) => !open.some((t) => t.key === `g${g.id}`) && games.findIndex((x) => x.id === g.id) === i);
@@ -506,6 +512,8 @@ export default function App() {
   }, [analysisTabs, activeAnalysisKey]);
   const [showSetup, setShowSetup] = useState(false);
   const [showAddGame, setShowAddGame] = useState(false);
+  // A chapter asked for from Analysis, until the Repertoire page has opened it.
+  const [repertoireOpen, setRepertoireOpen] = useState<RepertoireOpen | null>(null);
   const [mode, setMode] = useState<"home" | "players" | "prep" | "games" | "analysis" | "repertoire" | "local" | "maintenance">("home");
   // When set, focuses the player search input on the next render (used so the
   // Home screen's "Search a player" card can switch tabs and focus in one step).
@@ -1160,7 +1168,7 @@ export default function App() {
           analysisCapacity={ANALYSIS_TAB_CAP}
         />
       ) : mode === "repertoire" ? (
-        <RepertoirePage onOpenGame={openManyInAnalysis} />
+        <RepertoirePage onOpenGame={openManyInAnalysis} open={repertoireOpen} onOpened={() => setRepertoireOpen(null)} />
       ) : mode === "analysis" ? (
         <AnalysisPage
           tabs={analysisTabs}
@@ -1174,6 +1182,7 @@ export default function App() {
           onTabState={updateAnalysisTab}
           onGameMutated={onGameMutated}
           onOpenProfile={setProfilePlayer}
+          onOpenRepertoire={openRepertoireChapter}
         />
       ) : null}
       {profilePlayer && (

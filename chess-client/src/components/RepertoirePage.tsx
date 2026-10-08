@@ -26,11 +26,21 @@ import { parsePgnTree } from "../lib/parsePgnTree";
 import { serializeMovetext } from "../lib/serializeMovetext";
 import { stripFens } from "../lib/stripFens";
 import type { CursorPath } from "../lib/moveTreeNav";
+import { cursorAtPosition } from "../lib/repertoireLines";
+import { positionKey } from "../trainer/buildPackage";
 
 interface Props {
   /** Open games (a related game from the Games tab) in the Analysis page. */
   onOpenGame: (games: GameSummary[]) => Promise<number>;
+  /** A chapter to open, at a position (Analysis, a game's Repertoire tab);
+   *  `onOpened` once it is. */
+  open?: RepertoireOpen | null;
+  onOpened?: () => void;
 }
+
+/** A chapter asked for from elsewhere, and where to put its board: the
+ *  position's key (`positionKey`). */
+export interface RepertoireOpen { chapterId: number; key: string; seq: number }
 
 const field = "h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface";
 const tonal = "h-7 px-3 inline-flex items-center rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110 disabled:opacity-50 transition-all duration-short3 ease-standard whitespace-nowrap";
@@ -110,7 +120,7 @@ function openLink(url: string) {
   openUrl(full).catch(() => window.open(full, "_blank", "noopener"));
 }
 
-export default function RepertoirePage({ onOpenGame }: Props) {
+export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
   const [books, setBooks] = useState<BookWithChapters[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -179,6 +189,37 @@ export default function RepertoirePage({ onOpenGame }: Props) {
       setTab({ ...tab, game: { ...tab.game, white: c.name, black: owner.name, event: owner.name }, document: { ...tab.document, chapterName: c.name, bookName: owner.name, color: owner.color, analysedAt: c.analysed_at } });
     }
   }, [books, tab]);
+
+  // A chapter asked for (a game's Repertoire tab in Analysis): its board put
+  // where the game left it — kept as the chapter's view, which the board
+  // reads when the chapter loads; the chapter already on the board reads it
+  // again.
+  useEffect(() => {
+    if (!open) return;
+    let gone = false;
+    void (async () => {
+      let bookId: number | null = null;
+      try {
+        const c = await getChapter(open.chapterId);
+        bookId = c.book.id;
+        const at = cursorAtPosition(parsePgnTree(c.pgn), open.key, positionKey);
+        const prev = readViews()[open.chapterId];
+        if (at) saveView(open.chapterId, { fen: null, cursor: at, flipped: typeof prev?.flipped === "boolean" ? prev.flipped : c.book.color === "black" });
+        if (gone) return;
+        if (at && open.chapterId === chapterId) {
+          setTab((t) => (t && t.key === `c${open.chapterId}` ? { ...t, fen: null, cursor: at } : t));
+          setDocReload((n) => n + 1);
+        }
+      } catch { /* gone: the chapter as it is */ }
+      if (gone) return;
+      setChapterId(open.chapterId);
+      if (bookId != null) setSelectedBook(bookId);
+      setBookPicked(false);
+      onOpened?.();
+    })();
+    return () => { gone = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open?.seq]);
 
   /** Run a change, then read everything again. */
   async function run(f: () => Promise<unknown>) {
