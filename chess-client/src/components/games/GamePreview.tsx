@@ -7,6 +7,7 @@ import GameMoreMenu, { MenuEntry } from "./GameMoreMenu";
 import MiniBoard from "./MiniBoard";
 import MoveList from "./MoveList";
 import { DetailsPanel, DetailsToggleButton } from "../GameBoard";
+import { myColorIn } from "../MyStatsWidget";
 
 // A game previewed in place: its header (with Details and the More menu), the
 // board and the moves, the board over the moves in a resizable split. One
@@ -66,6 +67,13 @@ export default function GamePreview({
 }) {
   const [variationFen, setVariationFen] = useState<string | null>(null);
   const [flipped, setFlipped] = useRemembered("previewFlipped");
+  // One of the user's own games: the board from their side — flipped by
+  // hand after, until the next game. Others' games keep it as left.
+  const mine = game ? myColorIn({ ...game, white_id: loaded?.detail?.white_id, black_id: loaded?.detail?.black_id }) : null;
+  useEffect(() => {
+    if (mine) setFlipped(() => mine === "black");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game?.id, mine]);
   const [detailsOpen, setDetailsOpen] = useRemembered("previewDetailsOpen");
   const split = useDefaultLayout({ id: layoutId, storage: localStorage });
 

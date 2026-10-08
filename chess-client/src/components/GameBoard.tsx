@@ -1267,9 +1267,9 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
   const history = useMemo<EngineHistory | undefined>(() => {
     if (movesEditor.active) return undefined;
     if (useAnnotated && annotatedGame) {
-      return { startFen: annotatedGame.startFen, sans: sansToCursor(breadcrumbs, activeLine, activeIndex) };
+      return { startFen: annotatedGame.startFen, sans: sansToCursor(breadcrumbs, activeLine, activeIndex), line: sansToCursor(breadcrumbs, activeLine, activeLine.length) };
     }
-    return { startFen: fens[0] ?? "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", sans: moves.slice(0, currentIndex).map((m) => m.san) };
+    return { startFen: fens[0] ?? "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", sans: moves.slice(0, currentIndex).map((m) => m.san), line: moves.map((m) => m.san) };
   }, [movesEditor.active, useAnnotated, annotatedGame, breadcrumbs, activeLine, activeIndex, fens, moves, currentIndex]);
 
   useEffect(() => {

@@ -258,7 +258,12 @@ export default function AnalysisPage({
   // The Repertoire tab is a game's: the chapters it went into.
   const repertoireMatch = !!active && !active.document && !!onOpenRepertoire;
   const shownTab: RightTab = ((tab === "lines" || tab === "mine") && !repertoireChapter) || (tab === "repertoire" && !repertoireMatch) ? "reference" : tab;
-  const gameMoves = useMemo(() => active?.loaded.moves.map((m) => m.san) ?? [], [active?.loaded.moves]);
+  // The line on the board — the game, or the variation the board is in —
+  // else, until the board has said, the game's moves.
+  const boardLine = history?.line;
+  const gameMoves = useMemo(() => boardLine ?? active?.loaded.moves.map((m) => m.san) ?? [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [boardLine?.join(" "), active?.loaded.moves]);
   const match = useRepertoireMatch(gameMoves, active?.game.white ?? "", active?.game.black ?? "", repertoireMatch);
   const matched = match.matches && matchCount(match.matches);
 

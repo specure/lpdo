@@ -112,7 +112,14 @@ export function jobEventsUrl(jobId: string): string {
 export type EngineKind = "stockfish" | "lc0";
 
 /** How a position arose: the game's start and the SAN moves from it. */
-export interface EngineHistory { startFen: string; sans: string[] }
+export interface EngineHistory {
+  startFen: string;
+  sans: string[];
+  /** The whole line the position is on, from the start to its end — the
+   *  game, or the variation (or trial line) the board is in. Not for the
+   *  engines: the Repertoire tab matches it. */
+  line?: string[];
+}
 
 /** Absolute SSE URL for the local engine's analysis of a position (#309). */
 export function engineAnalyseUrl(fen: string, lines: number, history?: EngineHistory, engine: EngineKind = "stockfish", target?: number, fresh = false): string {

@@ -21,6 +21,17 @@ export function loadMyPlayer(): PlayerInfo | null {
   }
 }
 
+/** The colour the user (the player set on Home) had in a game — by the
+ *  players' ids where the game has them, else by name — or null when it is
+ *  not one of theirs. */
+export function myColorIn(game: { white: string; black: string; white_id?: number; black_id?: number }): "white" | "black" | null {
+  const me = loadMyPlayer();
+  if (!me) return null;
+  if (game.white_id === me.id || game.white === me.name) return "white";
+  if (game.black_id === me.id || game.black === me.name) return "black";
+  return null;
+}
+
 /** Re-resolve a (possibly stale) player against the current DB by a STABLE key —
  *  fide_id when known, else exact name. Recent players persist a surrogate `id`
  *  that a purge+reimport invalidates (the same person gets a new id), so trusting
