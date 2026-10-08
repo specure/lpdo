@@ -208,12 +208,17 @@ export interface LineMatch {
   book_name: string;
   chapter_id: number;
   chapter_name: string;
-  overview: boolean;
   ply: number;
   followed: "left" | "end" | "ended";
   left_by: "you" | "opponent" | null;
   move: string | null;
   at_key: string;
+  /** The line went into none of the book's chapters, only through moves
+   *  they all share: one row for the book, `chapter_id` the first that went
+   *  as far, `book_has` the book's moves where the line left ("3.Nf3").
+   *  Absent from older servers. */
+  left_book?: boolean;
+  book_has?: string[];
 }
 /** The chapters of the books of `color` a line of moves (SAN, from the
  *  start) went into, deepest first — in each book the ones it went furthest in. */

@@ -69,7 +69,10 @@ export function useRepertoireMatch(moves: string[], white: string, black: string
 
 /** "1 book · 2 chapters" — what the tab's "1/2" says. */
 export function matchCount(matches: LineMatch[]): { books: number; chapters: number } {
-  return { books: new Set(matches.map((m) => m.book_id)).size, chapters: matches.length };
+  // A book the game only started — left before any of its chapters — is
+  // listed, not counted.
+  const into = matches.filter((m) => !m.left_book);
+  return { books: new Set(into.map((m) => m.book_id)).size, chapters: into.length };
 }
 
 export default function RepertoireMatchPanel({ moves, match: { color, pick, matches, error }, onOpen }: Props) {
@@ -99,12 +102,25 @@ export default function RepertoireMatchPanel({ moves, match: { color, pick, matc
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto py-1">
-          {matches.map((m) => (
+          {matches.map((m) => m.left_book ? (
+            // A book the game left before any of its chapters: what the
+            // book plays there, its first chapter on a click.
+            <button key={m.chapter_id} onClick={() => onOpen(m)}
+              title={`The game left this book before any of its chapters. Open “${m.chapter_name}” on the Repertoire page, where it left`}
+              className="w-full flex flex-col px-3 py-1.5 text-left text-body-sm rounded-sm text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard">
+              <span className="truncate w-full">{m.book_name}</span>
+              <span className="text-label-sm truncate w-full">
+                {m.followed === "left" && m.move
+                  ? <>{m.move.includes("...") ? "Black" : "White"} left the book at {m.move}{m.book_has?.length ? <> · the book has {m.book_has.join(", ")}</> : null}</>
+                  : <>in the book's common moves to {moveAt(moves, m.ply)}</>}
+              </span>
+            </button>
+          ) : (
             <button key={m.chapter_id} onClick={() => onOpen(m)}
               title={`Open “${m.chapter_name}” on the Repertoire page, where the game left it`}
               className="w-full flex flex-col px-3 py-1.5 text-left text-body-sm rounded-sm text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12 transition-colors duration-short3 ease-standard">
               <span className="truncate w-full">{m.book_name}</span>
-              <span className={`text-label-sm text-on-surface-variant truncate w-full ${m.overview ? "italic" : ""}`}>{m.chapter_name}</span>
+              <span className="text-label-sm text-on-surface-variant truncate w-full">{m.chapter_name}</span>
               <span className="text-label-sm text-on-surface-variant truncate w-full">
                 in the chapter to {moveAt(moves, m.ply)}
                 {m.followed === "left" && m.move ? (
