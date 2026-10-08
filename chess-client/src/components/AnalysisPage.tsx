@@ -19,7 +19,7 @@ import { saveChapterMoves, type ChapterDocument, type LineMatch } from "../lib/r
 import LinesPanel from "./repertoire/LinesPanel";
 import MyGamesPanel from "./repertoire/MyGamesPanel";
 import RepertoireMatchPanel, { matchCount, useRepertoireMatch } from "./repertoire/RepertoireMatchPanel";
-import type { ChapterLine } from "../lib/repertoireLines";
+import { cursorAlong, type ChapterLine } from "../lib/repertoireLines";
 
 // The Analysis board (#220): the editable, multi-game workbench. Several games
 // open at once as mini-board tabs (A). The active game is edited in a full
@@ -541,7 +541,7 @@ export default function AnalysisPage({
                 playRequest={playRequest}
                 menuExtras={railExtras}
                 chapter={chapterDoc}
-                cursorRequest={active.document ? cursorRequest : null}
+                cursorRequest={cursorRequest}
                 onLineStep={active.document ? lineStep : undefined}
                 reloadKey={active.document ? documentReload + linesSaved : undefined}
               />
@@ -611,7 +611,13 @@ export default function AnalysisPage({
                 </div>
 
                 {shownTab === "repertoire" && active && onOpenRepertoire ? (
-                  <RepertoireMatchPanel moves={gameMoves} match={match} onOpen={(m) => onOpenRepertoire(m, gameMoves)} />
+                  <RepertoireMatchPanel moves={gameMoves} match={match}
+                    onShow={(m) => {
+                      // Not within a trial line's own moves: going there would drop it.
+                      const at = active.loaded.tree && cursorAlong(active.loaded.tree, gameMoves, m.ply);
+                      if (at) requestCursor(at);
+                    }}
+                    onOpen={(m) => onOpenRepertoire(m, gameMoves)} />
                 ) : shownTab === "mine" && repertoireChapter && active?.document ? (
                   <div className="flex-1 min-h-0 flex flex-col">
                     <MyGamesPanel
