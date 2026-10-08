@@ -3,7 +3,7 @@ import { Chess } from "chess.js";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { apiUrl, engineAnalyseUrl, type EngineHistory, type EngineKind } from "../api";
 import ExternalLinkIcon from "./ExternalLinkIcon";
-import { PvLine, pvToSan, fmtLichess, moverScore, moveMark, evalColor } from "./CloudEngine";
+import { PvCell, pvToSan, fmtLichess, moverScore, moveMark, evalColor } from "./CloudEngine";
 import type { EngineMove } from "./HintArrows";
 import { gamePositions, repetitionAt, repetitionSettings } from "../lib/repetition";
 
@@ -391,7 +391,6 @@ export default function LocalEngine({
         {repliesOn && (
           <div className="flex items-baseline gap-2 text-label-sm text-on-surface-variant px-2 mb-1 select-none">
             <span className="flex-1 min-w-0"></span>
-            <span className="w-12 text-right cursor-help underline decoration-dotted underline-offset-2" title="The opponent's legal replies after this move.">Replies</span>
             <span className="w-12 text-right cursor-help underline decoration-dotted underline-offset-2" title="Replies close to the opponent's best (the threshold is set under Maintenance → Engines). Low ⇒ forcing.">Strong</span>
             <span className={kind === "lc0" ? "w-32" : "w-14"}></span>
           </div>
@@ -407,7 +406,7 @@ export default function LocalEngine({
             ) : null;
           }
           const l = lines[i];
-          const { child, rs: rc } = l;
+          const { rs: rc } = l;
           const deepTitle = l.deepDepth != null
             ? `From the analysis of the position after this move: ${kind === "lc0" ? `${fmtNodes(l.deepNodes ?? 0)} nodes` : `depth ${l.deepDepth}`}`
             : undefined;
@@ -416,15 +415,10 @@ export default function LocalEngine({
           <div key={l.multipv}
             className={`w-full flex items-baseline gap-2 px-2 py-1 rounded-sm hover:bg-on-surface/8 transition-colors duration-short3 ease-standard ${repeat != null ? "opacity-60" : ""}`}
             title={repeat != null ? `The line comes back to a position already on the board at its move ${Math.ceil(repeat / 2)} (${repeat} half-moves in)` : undefined}>
-            <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface-variant">
-              <PvLine startFen={fen} sans={pvToSan(fen, l.pv_uci)} onPick={onPlayLine} mark={moveMark(markBest, markScores[i], markThreshold, neutralThreshold)} />
-            </div>
-            {repliesOn && (
-              <>
-                <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface-variant">{child ? legalReplies(child) : "—"}</span>
-                <StrongCell rc={rc} waiting={!paused} />
-              </>
-            )}
+            <PvCell startFen={fen} sans={pvToSan(fen, l.pv_uci)} onPick={onPlayLine} mark={moveMark(markBest, markScores[i], markThreshold, neutralThreshold)} />
+            {/* Only Strong: the count of legal replies says little here — the
+                cloud engines keep it beside their own figures. */}
+            {repliesOn && <StrongCell rc={rc} waiting={!paused} />}
             {kind === "lc0" && l.wdl
               ? <span title={deepTitle}><WdlCell wdl={l.wdl} /></span>
               : (
@@ -476,11 +470,6 @@ interface ReplyState {
   line_nodes?: number;
   /** The count is a lower bound: every line of the deeper analysis is strong. */
   at_least?: boolean;
-}
-
-/** The opponent's legal replies in `fen`. */
-function legalReplies(fen: string): number {
-  try { return new Chess(fen).moves().length; } catch { return 0; }
 }
 
 /** The Strong column: the count; while counting, how far it has got; "…"

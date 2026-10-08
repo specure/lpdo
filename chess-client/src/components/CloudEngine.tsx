@@ -91,13 +91,47 @@ export function PvLine({ startFen, sans, onPick, mark }: { startFen: string; san
           className={`${onPick ? "cursor-pointer hover:text-primary" : ""} ${i === 0 ? "font-semibold text-on-surface" : ""}`}
           onClick={onPick ? (e) => { e.stopPropagation(); onPick(sans.slice(0, i + 1)); } : undefined}
         >{s}</span>
-        {i === 0 && mark && <span className={`font-semibold ${mark === "?" ? "text-error" : "text-primary"}`}>{mark}</span>}{" "}
+        {i === 0 && mark && <span className={`font-semibold ${mark === "?" ? "text-error" : "text-primary"}`}>{mark}</span>}
       </span>,
+      " ",
     );
     if (!white) n += 1;
     white = !white;
   });
   return <>{toks}</>;
+}
+
+/** An engine's line in its row: one line, cut to fit — and, hovered while
+ *  cut, the whole of it in a card under the row (above it near the bottom
+ *  of the window). The card only shows: the moves stay clickable in the row. */
+export function PvCell(props: { startFen: string; sans: string[]; onPick?: (prefix: string[]) => void; mark?: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [at, setAt] = useState<DOMRect | null>(null);
+  const show = () => {
+    const el = ref.current;
+    if (el && el.scrollWidth > el.clientWidth + 1) setAt(el.getBoundingClientRect());
+  };
+  const below = at && at.bottom + 160 < window.innerHeight;
+  const width = at ? Math.min(Math.max(at.width, 360), window.innerWidth - 16) : 0;
+  return (
+    <div ref={ref} onMouseEnter={show} onMouseLeave={() => setAt(null)}
+      className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface-variant">
+      <PvLine {...props} />
+      {/* In the page's tree, not a portal: the theme's colours are set on
+          the app's root, not the body. Fixed, so the row's clipping does not
+          cut it. */}
+      {at && (
+        <div
+          style={{
+            position: "fixed", width, left: Math.max(8, Math.min(at.left, window.innerWidth - width - 8)),
+            ...(below ? { top: at.bottom + 4 } : { bottom: window.innerHeight - at.top + 4 }),
+          }}
+          className="z-50 pointer-events-none px-2 py-1 rounded-md border border-outline/40 bg-surface-container-high shadow-xl font-mono text-body-sm text-on-surface-variant whitespace-normal break-words">
+          <PvLine startFen={props.startFen} sans={props.sans} mark={props.mark} />
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** Lichess eval (White-relative): "+0.14", "-2.36", "M1" / "-M1". */
@@ -600,9 +634,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine, onEn
                 const sans = [m.san, ...(engineLines[m.uci] ?? [])]; // move + continuation (lazy)
                 return (
                   <div key={m.uci || m.san} className="w-full flex items-baseline gap-2 px-2 py-1 rounded-sm hover:bg-on-surface/8 transition-colors duration-short3 ease-standard">
-                    <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface-variant">
-                      <PvLine startFen={fen} sans={sans} onPick={onPlayLine} mark={nn && nn.mark && nn.mark !== "*" ? nn.mark : undefined} />
-                    </div>
+                    <PvCell startFen={fen} sans={sans} onPick={onPlayLine} mark={nn && nn.mark && nn.mark !== "*" ? nn.mark : undefined} />
                     <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface-variant">{nn ? Number(nn.opp) : "—"}</span>
                     <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface">{nn ? Number(nn.oppStrong) : "—"}</span>
                     <span className={`shrink-0 w-14 text-right tabular-nums font-mono text-body-sm ${evalColor(m.mate ?? m.scoreCp)}`}>{fmtEval(m, fen.split(" ")[1] !== "b")}</span>
@@ -646,9 +678,7 @@ export default function CloudEngine({ fen, history, watchLabel, onPlayLine, onEn
                   const st = lichessStats[l.pvUci[0]];
                   return (
                     <div key={i} className="w-full flex items-baseline gap-2 px-2 py-1 rounded-sm hover:bg-on-surface/8 transition-colors duration-short3 ease-standard">
-                      <div className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-body-sm text-on-surface-variant">
-                        <PvLine startFen={fen} sans={sans} onPick={onPlayLine} mark={moveMark(lmBest, lmScores[i], lichessStrongCp, lichessNeutralCp)} />
-                      </div>
+                      <PvCell startFen={fen} sans={sans} onPick={onPlayLine} mark={moveMark(lmBest, lmScores[i], lichessStrongCp, lichessNeutralCp)} />
                       {lichessShowStats && <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface-variant">{st ? st.replies : "—"}</span>}
                       {lichessShowStats && <span className="shrink-0 w-12 text-right tabular-nums text-body-sm text-on-surface">{st ? st.strong : "—"}</span>}
                       <span className={`shrink-0 w-14 text-right tabular-nums font-mono text-body-sm ${evalColor(lmScores[i])}`}>{fmtLichess(l)}</span>
