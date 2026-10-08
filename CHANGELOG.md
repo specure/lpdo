@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-09
+
 ### Added
 - **Comments and variations in the game preview** (Players, Games and the
   Analysis board's related games) — the move list shows a game's comments,
@@ -37,12 +39,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Details in the game preview** — the preview's header has the Analysis
   board's **Details**: the game's full headers, its visibility and
   collections, changeable there.
+- **A game's repertoire** — on a game in Analysis, a **Repertoire** tab lists
+  the chapters of your books the game went into: White's or Black's books (a
+  switch; your own colour when you played the game), in each book the
+  chapters it played on in — past the moves they all share, by any move
+  order — with how far and who deviated where. A book the game only started
+  is one grey row ("White left the book at 3.Nc3 · the book has 3.Nf3");
+  overview chapters are left out. The tab shows how many ("Repertoire · 2");
+  inside a variation or a trial line it follows that line. A click puts the
+  board on the critical position — the last one in the book, just before the
+  move that left it; a double click opens the chapter on the Repertoire page,
+  its board there. (#365, #367, #368, #370)
+- **Your games from your side** — one of your games (the player set on
+  Home) shows with your colour at the bottom: in the game preview (My games,
+  Players, Games) and when opened in Analysis. (#367)
+- **The whole engine line on hover** — a line too long for its row shows in
+  full in a card when hovered, for every engine. (#369)
+- **Overview chapters** — a quickstarter, an introduction or an overview,
+  told by its name or set by hand in the chapters' menu, takes none of your
+  games from the other chapters; what it lists is a setting under
+  Maintenance → Repertoire. (#362)
+- **A game that transposes to another chapter** counts only for the chapter
+  it went into, or — a setting under Maintenance → Repertoire — shows in both,
+  the one it left saying "transposed at 6.Nc3 to …". (#363)
+- **Model or reference game, by hand** — a book's model games can be made
+  reference games and back (several at once), where the comments tell it
+  wrong. (#351)
+- **A Backup tab** under Maintenance: a collection's and the repertoire's
+  backups in one place, one folder, both as zipped PGN. (#352)
+- **My games in the top bar**, and **Browse games** and **Analysis board**
+  cards on Home: both list the same places in the same order. (#353)
+- **F2 on a chapter** selects its name, ready to type over. (#349)
+- **Remove FENs** for model and reference games too. (#354)
+- More annotation signs in the move list: $44 (compensation) and other
+  common ChessBase NAGs (=∞, ⟳, ⇆, ⊕, ∆, N). (#346)
 
 ### Changed
 - **Navigation buttons** of the game preview and the position explorer look
   like the Analysis board's, instead of orange ⏮ ⏭ emoji.
 - **Open in Analysis** moved into the game preview's **More** menu, which
   now sits at the far right, after **Details**.
+- **Trial lines** — a step back takes back only the last move tried, as on a
+  physical board (#356); a move the line already has is followed instead of
+  starting a trial line that repeats it (#364).
+- **The daily backup's status** says when — "Last saved today at 12:41 PM" —
+  not only which day. (#357)
+- **Merging chapters**: a conflict names the chapters each version came from,
+  not the target where it had nothing there (#355); a "Please wait" cover
+  holds the page while the chapters are read (#347).
+- **Stockfish and Lc0** show the Strong count only — the opponent's legal
+  replies said little; chessdb and Lichess keep both. (#369)
+- Panels keep their widths on the Repertoire, Players, Games and PGNs pages
+  (#350); chapter and book rows keep their spacing while arranged (#348).
 
 ### Fixed
 - Scrolling the game list fast could load the same page twice and list its
@@ -50,6 +98,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Removing duplicate games** keeps the copy with the most comments and
   variations a person wrote, not the longest one — a broadcast's clock times
   no longer outweigh your notes — and the copy kept is public if either was.
+- **Importing a PGN with null moves** into the repertoire — ChessBase's `--`,
+  a pass (a resignation written as "47. -- 0-1") — stopped the whole import
+  as "not a legal move". A pass now goes with the rest of the line it is in.
+  (#345, #366)
+- Folding the Books or Chapters panel no longer throws away an edit of the
+  lines in progress. (#354)
 
 ## [0.22.1] - 2026-10-02
 
@@ -1383,7 +1437,8 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.22.1...HEAD
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/specure/lpdo/compare/v0.22.1...v0.23.0
 [0.22.1]: https://github.com/specure/lpdo/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/specure/lpdo/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/specure/lpdo/compare/v0.20.0...v0.21.0
