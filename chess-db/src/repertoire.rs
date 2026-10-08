@@ -360,6 +360,74 @@ pub fn movetext_of(pgn: &str) -> String {
     out.trim().to_string()
 }
 
+/// The movetext without its null moves — ChessBase's `--` (and `Z0`), a
+/// pass: a chapter has none, so each goes with the rest of the line it is
+/// in ("47. -- 0-1", a resignation, loses the `--`; "(23... Qc5 24. -- d3+)"
+/// ends at 23...Qc5), its move number with it, and a variation left empty
+/// goes too.
+fn drop_null_moves(movetext: &str) -> String {
+    let is_null = |t: &str| {
+        let t = t.trim_start_matches(|c: char| c.is_ascii_digit()).trim_start_matches('.');
+        t == "--" || t == "Z0"
+    };
+    let is_result = |t: &str| matches!(t, "1-0" | "0-1" | "1/2-1/2" | "*");
+    let is_number = |t: &str| !t.is_empty() && t.trim_end_matches('.').chars().all(|c| c.is_ascii_digit()) && t.ends_with('.');
+    let mut out = String::new();
+    // Where each open variation's "(" is in `out`; the depth being dropped.
+    let mut opens: Vec<usize> = Vec::new();
+    let mut skip: Option<usize> = None;
+    let mut chars = movetext.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '{' => {
+                let end = movetext[i..].find('}').map_or(movetext.len(), |e| i + e + 1);
+                if skip.is_none() { out.push_str(&movetext[i..end]); }
+                while chars.peek().is_some_and(|(j, _)| *j < end) { chars.next(); }
+            }
+            ';' => {
+                let end = movetext[i..].find('\n').map_or(movetext.len(), |e| i + e);
+                if skip.is_none() { out.push_str(&movetext[i..end]); }
+                while chars.peek().is_some_and(|(j, _)| *j < end) { chars.next(); }
+            }
+            '(' => {
+                opens.push(out.len());
+                if skip.is_none() { out.push('('); }
+            }
+            ')' => {
+                let depth = opens.len();
+                let open = opens.pop();
+                if skip == Some(depth) { skip = None; }
+                if skip.is_some() { continue; }
+                // A variation the null move left empty.
+                match open {
+                    Some(o) if out[o + 1..].split_whitespace().all(is_number) => out.truncate(o),
+                    _ => out.push(')'),
+                }
+            }
+            c if c.is_whitespace() => { if skip.is_none() { out.push(c); } }
+            _ => {
+                let end = movetext[i..].find(|c: char| c.is_whitespace() || "{}();".contains(c)).map_or(movetext.len(), |e| i + e);
+                let token = &movetext[i..end];
+                while chars.peek().is_some_and(|(j, _)| *j < end) { chars.next(); }
+                if skip.is_some() {
+                    if skip == Some(0) && is_result(token) { skip = None; out.push_str(token); }
+                    continue;
+                }
+                if is_null(token) {
+                    // Its move number goes with it.
+                    let kept = out.trim_end().len();
+                    let last = out[..kept].rsplit(|c: char| c.is_whitespace() || c == '(').next().unwrap_or("");
+                    if is_number(last) { out.truncate(kept - last.len()); }
+                    skip = Some(opens.len());
+                    continue;
+                }
+                out.push_str(token);
+            }
+        }
+    }
+    out.trim().to_string()
+}
+
 /// A chapter's name from an imported game's headers: a Lichess study's
 /// `[ChapterName]`, the chapter part of its `[Event "Study: Chapter"]`, the
 /// players where they are names, else the event — or none.
@@ -660,7 +728,7 @@ pub fn add_chapters_as(conn: &Connection, book_id: i64, name: Option<&str>, pgn:
     crate::db::with_tx(conn, || {
         let mut out = Vec::new();
         for (i, game) in games.iter().enumerate() {
-            let movetext = movetext_of(game);
+            let movetext = drop_null_moves(&movetext_of(game));
             let walk = walk(&movetext).with_context(|| format!("game {} of the PGN", i + 1))?;
             let count: i64 = conn.query_row("SELECT COUNT(*) FROM repertoire_chapters WHERE book_id = ?", duckdb::params![book_id], |r| r.get(0))?;
             let cname = match name.map(str::trim).filter(|n| !n.is_empty()) {
@@ -763,7 +831,7 @@ fn import_books_in(conn: &Connection, pgn: &str, file: Option<&str>) -> Result<V
                 book.active = false;
             }
             for (i, g) in gs.iter().enumerate() {
-                let movetext = movetext_of(g);
+                let movetext = drop_null_moves(&movetext_of(g));
                 let walk = walk(&movetext).with_context(|| format!("“{name}”, chapter {}", i + 1))?;
                 let cname = header_name(g).unwrap_or_else(|| format!("Chapter {}", i + 1));
                 let active = tag(g, "LpdoChapterActive").as_deref() != Some("false");
@@ -2355,6 +2423,21 @@ mod tests {
         let m = &match_line(&conn, &line("e4 e6 d4 d5 e5"), "black").unwrap()[0];
         assert_eq!((m.book_name.as_str(), m.chapter_name.as_str()), ("French", "Advance"));
         assert_eq!(m.at_key, "rnbqkbnr/ppp2ppp/4p3/3pP3/3P4/8/PPP2PPP/RNBQKBNR b KQkq");
+    }
+
+    #[test]
+    fn null_moves_go_with_the_rest_of_their_line() {
+        let d = |m: &str| drop_null_moves(m).split_whitespace().collect::<Vec<_>>().join(" ");
+        // A resignation as ChessBase writes it.
+        assert_eq!(d("1. e4 e5 2. Nf3 Nc6 {resigns:} 3. -- 0-1"), "1. e4 e5 2. Nf3 Nc6 {resigns:} 0-1");
+        // In a variation: it ends there, the game goes on.
+        assert_eq!(d("1. e4 e5 (1... c5 2. -- d6 (2... Nc6) 3. d4) 2. Nf3 *"), "1. e4 e5 (1... c5 ) 2. Nf3 *");
+        // A variation that is only the null move goes; a comment with "--" stays.
+        assert_eq!(d("1. d4 {Bauernopfer--Variante: (x)} d5 (1... -- 2. c4) 2. c4 *"), "1. d4 {Bauernopfer--Variante: (x)} d5 2. c4 *");
+        assert_eq!(d("1. e4 e5 2. Nf3 2...-- 3. d4 1-0"), "1. e4 e5 2. Nf3 1-0");
+        // A ";" comment keeps its line.
+        assert_eq!(drop_null_moves("1. e4 ; best by test\n1... e5 *"), "1. e4 ; best by test\n1... e5 *");
+        assert!(walk(&drop_null_moves("1. e4 e5 (1... c5 2. -- d6) 2. Nf3 3. -- 0-1")).is_ok());
     }
 
     #[test]
