@@ -343,10 +343,10 @@ function RepliesSettings({ kind, settings, busy, onSave }: {
       <label className="flex items-start gap-2 text-body-sm text-on-surface cursor-pointer">
         <input type="checkbox" checked={on} disabled={busy} onChange={(e) => onSave({ replies: e.target.checked })} className="accent-primary mt-1" />
         <span>
-          Replies &amp; Strong
+          Strong replies
           <span className="block text-label-sm text-on-surface-variant">
             {kind === "stockfish"
-              ? "For each candidate move, a helper Stockfish counts the opponent's replies and how many are close to the best — low means forcing. Each helper takes one thread and counts one candidate; the main search keeps the other threads, and the helpers share the hash below."
+              ? "For each candidate move, a helper Stockfish counts how many of the opponent's replies are close to the best — low means forcing. Each helper takes one thread and counts one candidate; the main search keeps the other threads, and the helpers share the hash below."
               : "For each candidate move, a second Lc0 runs a short search and counts the replies it finds close to the best. It loads another copy of the network onto the graphics card."}
           </span>
         </span>
