@@ -312,6 +312,8 @@ interface Props {
   /** Open a player's profile (as on the Players page) from the names above
    *  the board. Without it the names carry no Profile button. */
   onOpenProfile?: (player: PlayerInfo) => void;
+  /** A chapter: drill it (#327) — a Drill button beside Edit lines. */
+  onDrill?: () => void;
   /** Reports when the moves editor enters/leaves edit mode, so the host can
    * suspend list-level arrow-key navigation while editing. */
   onEditingChange?: (editing: boolean) => void;
@@ -539,9 +541,10 @@ async function exportGameToPgn(detail: GameDetail): Promise<void> {
 // progress used by soft-delete / restore.
 function GameActionsBar({
   detail, onDetailChanged, onStartEditMoves, detailsOpen, onToggleDetails, unsavedEdits = false,
-  fen, lineSans, ply, startFen, onExportPdf, onPrint, menuExtras, chapter,
+  fen, lineSans, ply, startFen, onExportPdf, onPrint, menuExtras, chapter, onDrill,
 }: {
   detail: GameDetail;
+  onDrill?: () => void;
   menuExtras?: MenuEntry[];
   /** A repertoire chapter (#327): only editing the moves, and the position
    *  on Lichess or the clipboard — no headers, collections, delete, print. */
@@ -655,6 +658,12 @@ function GameActionsBar({
         >
           {chapter ? "Edit lines…" : "Edit game…"}
         </button>
+        {chapter && onDrill && (
+          <button onClick={onDrill} disabled={!detail.pgn} className={tonalBtn}
+            title="Practise the chapter: the opponent's moves are played, you enter yours">
+            Drill
+          </button>
+        )}
         {/* Exports, Lichess, the clipboard, and the game's own address when
             its PGN names one — together, so the bar keeps to one row. */}
         <GameMoreMenu
@@ -840,7 +849,7 @@ export function DetailsPanel({
   );
 }
 
-export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange, menuExtras, hintArrows = [], arrowControls, chapter, cursorRequest, onLineStep, reloadKey, onOpenProfile }: Props) {
+export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackToPosition, onGameMutated, onEditingChange, onPositionChange, flipped: flippedProp, onFlippedChange, initialCursor, moveListHost, playRequest, onScratchChange, menuExtras, hintArrows = [], arrowControls, chapter, cursorRequest, onLineStep, reloadKey, onOpenProfile, onDrill }: Props) {
   // Where the moves go: the chapter's route, or the game's.
   const saveMoves = useCallback(
     (id: number, movetext: string) => (chapter ? chapter.save(movetext) : saveMovetextViaServer(id, movetext)),
@@ -1930,6 +1939,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
             lineSans={useAnnotated ? sansToCursor(breadcrumbs, activeLine, activeLine.length) : moves.map((m) => m.san)}
             ply={useAnnotated ? sansToCursor(breadcrumbs, activeLine, activeIndex).length : currentIndex}
             onDetailChanged={() => { setDetailReloadKey((k) => k + 1); onGameMutated?.(); }}
+            onDrill={onDrill}
             onStartEditMoves={() => {
               if (!annotatedGame) return;
               // A scratch line comes along into the edit: its moves become

@@ -77,6 +77,8 @@ interface Props {
   /** Open a chapter a game went into on the Repertoire page (the Repertoire
    *  tab, on a game — not on a chapter). */
   onOpenRepertoire?: (m: LineMatch, moves: string[]) => void;
+  /** Drill a chapter (the Repertoire page). */
+  onDrill?: (chapterId: number) => void;
   /** Open a related game as a new tab. Resolves to 0, or to how many did not
    *  fit (the rail is full) — then it stayed closed. */
   onOpenGame: (games: GameSummary[]) => Promise<number>;
@@ -109,7 +111,7 @@ export interface LeadingPanel {
 
 export default function AnalysisPage({
   tabs, activeKey, onActivate, onClose, onCloseMany, onMove, capacity, onOpenGame, onTabState, onGameMutated, onOpenProfile,
-  leadingPanels, layoutId = "analysis-main", emptyState, myGamesBook, onPickChapter, documentReload = 0, onOpenRepertoire,
+  leadingPanels, layoutId = "analysis-main", emptyState, myGamesBook, onPickChapter, documentReload = 0, onOpenRepertoire, onDrill,
 }: Props) {
   const lead = leadingPanels && leadingPanels.length > 0 ? leadingPanels : null;
   const leadIds = lead ? lead.map((p) => p.id) : ["rail"];
@@ -545,6 +547,7 @@ export default function AnalysisPage({
                 chapter={chapterDoc}
                 cursorRequest={cursorRequest}
                 onLineStep={active.document ? lineStep : undefined}
+                onDrill={active.document && !active.document.model && onDrill ? () => onDrill(active.document!.id) : undefined}
                 reloadKey={active.document ? documentReload + linesSaved : undefined}
               />
             )}

@@ -553,7 +553,10 @@ pace.
    and the database's figures (done: `GET /repertoire/chapters/{id}/stats`,
    `chess-client/src/trainer/`); the analysis job — figures stored, Stockfish
    at the ends of lines and on one's own moves; training on the desktop —
-   sessions, study and drill — in the code the phone will share; (b) the phone trainer, chapters sent by animated QR code
+   sessions, study and drill — in the code the phone will share (the drill
+   done: **Drill** beside a chapter's Edit lines, `trainer/drill.ts`,
+   `DrillView.tsx`; the session by coverage, cards in the browser's storage);
+   (b) the phone trainer, chapters sent by animated QR code
    or file, with an optional focus; (c) later, with a native app, results
    synced back and sessions suggested from them.
 
