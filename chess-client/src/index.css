@@ -1,4 +1,7 @@
 @import "tailwindcss";
+/* Scan src/ for classes whichever build imports this — the phone trainer's
+   (vite.trainer.config.ts) has its root elsewhere. */
+@source ".";
 
 /* =========================================================================
    Material 3 Expressive — Dark scheme tokens

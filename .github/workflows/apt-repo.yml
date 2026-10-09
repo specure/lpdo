@@ -24,8 +24,10 @@ on:
 permissions:
   contents: write   # push to the gh-pages branch
 
+# One push to gh-pages at a time — shared with trainer.yml, which publishes
+# the phone trainer to the same branch.
 concurrency:
-  group: apt-repo
+  group: gh-pages
   cancel-in-progress: false
 
 jobs:

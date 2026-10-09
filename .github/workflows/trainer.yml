@@ -1,0 +1,70 @@
+# Phone trainer (#327) — publish the static web app to GitHub Pages:
+#   https://specure.github.io/lpdo/trainer/
+#
+# Built from chess-client (vite.trainer.config.ts → dist-trainer/) and copied
+# into the gh-pages branch's trainer/ folder; the rest of the branch (the APT
+# repository) is checked out and published as it is. Runs when the trainer's
+# code changes on main, or by hand.
+name: Phone trainer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "chess-client/src/trainer/**"
+      - "chess-client/src/trainer-app/**"
+      - "chess-client/trainer/**"
+      - "chess-client/vite.trainer.config.ts"
+      - "chess-client/src/index.css"
+      - "chess-client/package-lock.json"
+      - ".github/workflows/trainer.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # push to the gh-pages branch
+
+# One push to gh-pages at a time — shared with apt-repo.yml.
+concurrency:
+  group: gh-pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: src
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: src/chess-client/package-lock.json
+
+      - name: Build the trainer
+        working-directory: src/chess-client
+        run: |
+          npm ci
+          npm run trainer:build
+
+      - name: Check out existing gh-pages
+        uses: actions/checkout@v7
+        with:
+          ref: gh-pages
+          path: gh-pages
+
+      - name: Put the trainer in place
+        run: |
+          rm -rf gh-pages/trainer
+          cp -r src/chess-client/dist-trainer gh-pages/trainer
+          touch gh-pages/.nojekyll
+
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./gh-pages
+          publish_branch: gh-pages
+          force_orphan: false
+          commit_message: "trainer: publish ${{ github.sha }}"

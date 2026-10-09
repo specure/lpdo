@@ -4,8 +4,7 @@
 // phone trainer shares. The cards are kept in this browser's storage.
 
 import { useEffect, useMemo, useState } from "react";
-import { getChapter, getChapterStats } from "../../lib/repertoire";
-import { buildPackage } from "../../trainer/buildPackage";
+import { chapterPackage } from "../../lib/practicePackage";
 import type { LpdoChapter } from "../../trainer/format";
 import { localCardStore } from "../../trainer/drill";
 import DrillView from "../../trainer/DrillView";
@@ -19,14 +18,8 @@ export default function DrillDialog({ chapterId, onClose }: { chapterId: number;
     let gone = false;
     void (async () => {
       try {
-        const [c, stats] = await Promise.all([getChapter(chapterId), getChapterStats(chapterId)]);
-        if (gone) return;
-        setPkg(buildPackage({
-          chapter: { id: c.id, name: c.name, updated_at: c.updated_at, pgn: c.pgn },
-          book: { name: c.book.name, author: c.book.author, color: c.book.color },
-          stats: stats.positions,
-          noComments: true,
-        }));
+        const pkg = await chapterPackage(chapterId, { noComments: true });
+        if (!gone) setPkg(pkg);
       } catch (e) { if (!gone) setError(String(e)); }
     })();
     return () => { gone = true; };

@@ -556,7 +556,9 @@ pace.
    sessions, study and drill — in the code the phone will share (the drill
    done: **Drill** beside a chapter's Edit lines, `trainer/drill.ts`,
    `DrillView.tsx`; the session by coverage, cards in the browser's storage);
-   (b) the phone trainer, chapters sent by animated QR code
+   (b) the phone trainer (the web app done: `chess-client/src/trainer-app/`,
+   `vite.trainer.config.ts`, published by `.github/workflows/trainer.yml` to
+   GitHub Pages `/trainer/`; chapters by file — **Save for phone…**), chapters sent by animated QR code
    or file, with an optional focus; (c) later, with a native app, results
    synced back and sessions suggested from them.
 
