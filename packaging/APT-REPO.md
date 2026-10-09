@@ -27,6 +27,21 @@ From then on:
 sudo apt update && sudo apt upgrade
 ```
 
+**After upgrading Ubuntu** (e.g. to 26.04) LPDO may stop updating: the release
+upgrade turns third-party sources off — `lpdo.list` becomes
+`lpdo.list.disabled` when it cannot be converted to the new `.sources` format —
+so `apt upgrade` silently keeps the old version. Add the repository back (the
+key is still there):
+
+```bash
+printf 'Types: deb\nURIs: https://specure.github.io/lpdo\nSuites: stable\nComponents: main\nSigned-By: /usr/share/keyrings/lpdo.gpg\n' \
+  | sudo tee /etc/apt/sources.list.d/lpdo.sources
+sudo rm -f /etc/apt/sources.list.d/lpdo.list.disabled
+sudo apt update && sudo apt upgrade
+```
+
+`apt-cache policy lpdo-server` shows whether apt sees the repository.
+
 Upgrading from a **pre-0.5.0** monolithic `lpdo` (the `/usr/bin/chess-db`
 file-conflict, #208/#215) is now handled automatically — `lpdo-cli` declares
 `Replaces`/`Conflicts: lpdo (<< 0.5.0)`, so apt removes the old package and takes
