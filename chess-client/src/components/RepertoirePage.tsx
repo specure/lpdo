@@ -20,6 +20,7 @@ import { buildPlayback } from "../lib/useGamePgn";
 import { apiUrl } from "../api";
 import AnalysisPage, { type AnalysisTab } from "./AnalysisPage";
 import MergeChaptersDialog from "./repertoire/MergeChaptersDialog";
+import DrillDialog from "./repertoire/DrillDialog";
 import RenameChaptersDialog from "./repertoire/RenameChaptersDialog";
 import { mergeChapters, resolveMerge, type MergeChoices } from "../lib/mergeChapters";
 import { parsePgnTree } from "../lib/parsePgnTree";
@@ -146,6 +147,8 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
   const [docReload, setDocReload] = useState(0);
   useEffect(() => setBookPicked(false), [selectedBook]);
   // Chapters being merged: the lines already merged, the conflicts to choose.
+  // The chapter being drilled.
+  const [drilling, setDrilling] = useState<number | null>(null);
   const [merging, setMerging] = useState<{
     target: ChapterSummary; others: ChapterSummary[]; labels: string[]; result: ReturnType<typeof mergeChapters>;
   } | null>(null);
@@ -527,6 +530,7 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
   const layoutId = `repertoire-${booksFolded ? "b" : "B"}${chaptersFolded ? "c" : "C"}`;
   return (<>
     {preparingMerge && <PleaseWait text="Merging the chapters…" />}
+    {drilling != null && <DrillDialog chapterId={drilling} onClose={() => setDrilling(null)} />}
     {merging && (
       <MergeChaptersDialog
         target={merging.labels[0]}
@@ -549,6 +553,7 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
       myGamesBook={bookPicked && book ? { id: book.id, chapters: chaptersOf(book).map((c) => ({ id: c.id, name: c.name })) } : null}
       onPickChapter={(id) => { setChapterId(id); setBookPicked(false); }}
       documentReload={docReload}
+      onDrill={setDrilling}
       leadingPanels={[
         booksFolded ? { id: "books", node: booksPanel, size: "3", strip: true } : { id: "books", node: booksPanel, size: "14", min: "9", max: "30" },
         chaptersFolded ? { id: "chapters", node: chaptersPanel, size: "3", strip: true } : { id: "chapters", node: chaptersPanel, size: "16", min: "10", max: "34" },
