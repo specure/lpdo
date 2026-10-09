@@ -91,8 +91,10 @@ export default function DrillBoard({ fen, orientation, active, onMove, promotion
               squareStyles: styles,
               onPieceDrop: ({ sourceSquare, targetSquare }) => !!sourceSquare && !!targetSquare && play(sourceSquare, targetSquare),
               onSquareClick: ({ square }) => click(square),
-              darkSquareStyle: { backgroundColor: "var(--color-board-position-dark)" },
-              lightSquareStyle: { backgroundColor: "var(--color-board-position-light)" },
+              // The game board's fixed colours: the position board's light square
+              // follows the theme, which the phone sets on the page's root.
+              darkSquareStyle: { backgroundColor: "var(--color-board-game-dark)" },
+              lightSquareStyle: { backgroundColor: "var(--color-board-game-light)" },
             }}
           />
         </BoardErrorBoundary>

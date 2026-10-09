@@ -230,6 +230,36 @@ removed; editing a comment, removing FENs or reordering variations does not
 count. In the **Lines** tab, a line the analysis lacks is marked "not
 analysed"; the header says how many are.
 
+## Drilling a chapter
+
+**Drill**, beside a chapter's **Edit lines…**, practises it: the opponent's
+moves are played — chosen at random by how often they are played — and you
+enter yours on the board (click the piece, then its square, or drag). A wrong
+move shows the book's move with the database's figures ("The book move is
+c4 — 7% of games, scores 55%") and an arrow; you then play it. The lines are
+the most played first, until they take in a share of the games that stay in
+the chapter (**Lines**: 50, 75 — the default — 90 or 100%).
+
+Each of your decisions is a card, the same in every chapter it turns up in:
+answered right it comes back later and later (1, 3, 7, 14, 30, then 60 days),
+missed it comes back in the same session. A line goes on while a card in it
+is due, and the session while any is; then **Keep drilling** goes on
+regardless.
+
+### On the phone
+
+The **LPDO Trainer** is the same drill on your phone, offline:
+<https://specure.github.io/lpdo/trainer/>. Open it once in Safari (or
+Chrome), then **Share → Add to Home Screen** and use it from there — on an
+iPhone only that keeps its data reliably. Everything stays on the phone: no
+account, nothing sent anywhere.
+
+To send it a chapter: **Save for phone…** in the chapter's ⋯ menu saves
+`<book>-<chapter>.lpdo.json`; get the file onto the phone (mail, a cloud
+drive, a cable…) and open it in the trainer with **Add chapter**. Sending a
+chapter again replaces it there and keeps what you have learnt. The phone keeps
+its own cards — progress is not synced back to the desktop.
+
 ## What comes next
 
 Marks in the Reference tab and the opening tree for moves in the active

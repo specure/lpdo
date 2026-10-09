@@ -21,6 +21,7 @@ import { apiUrl } from "../api";
 import AnalysisPage, { type AnalysisTab } from "./AnalysisPage";
 import MergeChaptersDialog from "./repertoire/MergeChaptersDialog";
 import DrillDialog from "./repertoire/DrillDialog";
+import { chapterPackage } from "../lib/practicePackage";
 import RenameChaptersDialog from "./repertoire/RenameChaptersDialog";
 import { mergeChapters, resolveMerge, type MergeChoices } from "../lib/mergeChapters";
 import { parsePgnTree } from "../lib/parsePgnTree";
@@ -597,6 +598,16 @@ function ColorPick({ value, onChange }: { value: BookColor; onChange: (c: BookCo
 }
 
 type BookPatch = Parameters<typeof updateBook>[1];
+
+/** The chapter's practice package as a file for the phone trainer
+ *  (`<book>-<chapter>.lpdo.json`), opened there with Add chapter. */
+async function saveForPhone(chapterId: number, filename: string): Promise<string | null> {
+  try {
+    const pkg = await chapterPackage(chapterId);
+    const ok = await saveTextFile(filename.replace(/[^\w.-]+/g, "_") + ".lpdo.json", JSON.stringify(pkg), { name: "LPDO chapter", extensions: ["json"] });
+    return ok ? "Saved for the phone: open it in the LPDO Trainer with Add chapter" : null;
+  } catch (e) { return `Could not save: ${e instanceof Error ? e.message : String(e)}`; }
+}
 
 async function exportPgn(path: string, filename: string): Promise<string | null> {
   try {
@@ -1198,6 +1209,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
             { label: "Import model games…", onClick: () => pickFilesAs(true), disabled: busy },
             { label: `Rename ${one}… (F2)`, separated: true, onClick: () => chapter && setRenaming(chapter.id), disabled: none },
             { label: `Export ${one} PGN…`, onClick: () => chapter && void exportPgn(chapterPgnPath(chapter.id), `${book.name}-${chapter.name}`).then(setNote), disabled: none },
+            ...(kind === "chapters" ? [{ label: "Save for phone…", onClick: () => chapter && void saveForPhone(chapter.id, `${book.name}-${chapter.name}`).then(setNote), disabled: none }] : []),
             several
               ? { label: `Delete ${multi.length} ${many}…`, onClick: () => setConfirmDeleteMany(true), disabled: busy }
               : { label: `Delete ${one}…`, onClick: () => setConfirmDelete(true), disabled: none },
