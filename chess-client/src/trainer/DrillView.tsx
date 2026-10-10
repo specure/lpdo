@@ -16,13 +16,14 @@
 // trainer.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { hasComments, type LpdoChapter, type PNode } from "./format";
+import { bareSan, hasComments, type LpdoChapter, type PNode } from "./format";
 import {
   NEW_PER_DAY_CHOICES, buildDrill, cardCounts, describeBookMove, fenAfter, introduce, matchOwn, newPerDay,
   newToday, nextMoves, nextStep, opponentMove, review, saveNewPerDay, saveNewToday, sideToMove,
   type Card, type CardStore, type NewToday,
 } from "./drill";
-import DrillBoard from "./DrillBoard";
+import DrillBoard, { BRANCH_COLOR, HINT_COLOR } from "./DrillBoard";
+import { DRAW_COLORS } from "../lib/parseAnnotations";
 import MoveStats from "./MoveStats";
 
 interface Props {
@@ -65,6 +66,20 @@ const STEP_ICONS = {
 };
 
 const COVERAGES = [0.5, 0.75, 0.9, 1];
+
+/** The chapter's other moves drawn as arrows in a review, the most played;
+ *  the rest are only listed. */
+const BRANCH_ARROWS = 3;
+
+/** A review's arrows: the book's (its arrows and circles on the move just
+ *  played) or the moves here (the line's and the chapter's others) — one at
+ *  a time, the two together being a muddle. The choice is kept. */
+type Layer = "book" | "moves";
+const LAYER_KEY = "lpdoReviewArrows";
+const readLayer = (): Layer | null => { try { const v = localStorage.getItem(LAYER_KEY); return v === "book" || v === "moves" ? v : null; } catch { return null; } };
+
+/** A PGN colour code ("G", "R"…) as the desktop draws it. */
+const bookColor = (code: string) => (DRAW_COLORS.find((d) => d.code === code) ?? DRAW_COLORS[0]).rgba;
 const squares = (uci: string) => ({ from: uci.slice(0, 2), to: uci.slice(2, 4) });
 
 export default function DrillView({ chapter, store, onClose }: Props) {
@@ -93,6 +108,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
   const [replaying, setReplaying] = useState<PNode[] | null>(null);
   // The line reviewed (stepped through), not tested again.
   const [reviewing, setReviewing] = useState(false);
+  const [layer, setLayer] = useState<Layer | null>(readLayer);
   const board = useRef<HTMLDivElement>(null);
   const swipe = useRef<{ x: number; y: number; t: number; onBoard: boolean } | null>(null);
 
@@ -307,6 +323,34 @@ export default function DrillView({ chapter, store, onClose }: Props) {
   const promotions = Object.fromEntries(nextMoves(drill, path).filter((n) => n.uci.length === 5).map((n) => [n.uci.slice(0, 4), n.uci[4]]));
   const s = drill.session;
   const hint = (phase === "show" || phase === "missed") && target ? squares(target.uci) : null;
+  // In a review, where the chapter branches: the line's move and the
+  // chapter's others here (not those switched off), the most played first.
+  const here = path.length ? path[path.length - 1].children : chapter.tree;
+  const shareHere = (n: PNode) => statsBefore()?.moves.find(([san]) => bareSan(san) === bareSan(n.san))?.[1] ?? 0;
+  const branches = phase === "review" && target
+    ? here.filter((n) => n !== target && !n.off).sort((a, b) => shareHere(b) - shareHere(a))
+    : [];
+  const movesLayer = branches.length > 0 && !!target;
+  // The book's arrows and circles on the move just played.
+  const lastPlayedNode = path.length ? path[path.length - 1] : null;
+  const bookArrows = reviewing && lastPlayedNode ? (lastPlayedNode.arrows ?? []).map((c) => ({ from: c.slice(1, 3), to: c.slice(3, 5), color: bookColor(c[0]) })) : [];
+  const bookCircles = reviewing && lastPlayedNode ? (lastPlayedNode.circles ?? []).map((c) => ({ square: c.slice(1, 3), color: bookColor(c[0]) })) : [];
+  const bookLayer = bookArrows.length + bookCircles.length > 0;
+  // Both: the kept choice, else the book's (the author's own); one: that one.
+  const shown: Layer | null = bookLayer && movesLayer ? (layer ?? "book") : bookLayer ? "book" : movesLayer ? "moves" : null;
+  const arrows = shown === "book" ? bookArrows
+    : shown === "moves" && target
+      // The line's last: drawn on top.
+      ? [...branches.slice(0, BRANCH_ARROWS).map((n) => ({ ...squares(n.uci), color: BRANCH_COLOR })), { ...squares(target.uci), color: HINT_COLOR }]
+      : [];
+  const pickLayer = (l: Layer) => { setLayer(l); try { localStorage.setItem(LAYER_KEY, l); } catch { /* per-device convenience only */ } };
+  /** Another of the chapter's moves here reviewed instead: on down its main
+   *  continuation, from this position. */
+  const reviewBranch = (n: PNode) => {
+    const moves = [...path, n];
+    for (let next = moves[moves.length - 1].children.find((c) => !c.off); next; next = next.children.find((c) => !c.off)) moves.push(next);
+    reviewLine(moves, path.length);
+  };
   const budgetUsed = perDay > 0 && today.met >= budget;
   const boardActive = phase === "own" || phase === "show" || phase === "missed";
 
@@ -394,7 +438,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
         <div className="flex-1 min-h-0 min-w-0 flex p-2">
           <div ref={board} className="flex-1 min-h-0 min-w-0 flex">
           <DrillBoard fen={fen} orientation={color} active={boardActive} onMove={onMove}
-            promotions={promotions} lastMove={lastMove} hint={hint} />
+            promotions={promotions} lastMove={lastMove} hint={hint} arrows={arrows} circles={shown === "book" ? bookCircles : []} />
           </div>
         </div>
         {/* Below the board (portrait): a fixed height, whatever it says — a
@@ -431,6 +475,36 @@ export default function DrillView({ chapter, store, onClose }: Props) {
             <LineText moves={replaying ?? lastLine?.moves ?? path} missed={lastLine?.missed ?? missedPlies}
               at={replaying ? path.length - 1 : undefined}
               onPick={replaying ? (i) => step(i + 1) : lastLine ? (i) => reviewLine(lastLine.moves, i + 1) : undefined} />
+          )}
+          {/* The chapter's other moves here, in their arrows' colour: one
+              tapped is reviewed instead. */}
+          {/* Both kinds of arrows here: which to draw. */}
+          {bookLayer && movesLayer && (
+            <div className="flex items-center gap-2 text-label-md">
+              <span className="text-on-surface-variant">Arrows</span>
+              <div className="inline-flex rounded-full border border-outline/40 overflow-hidden">
+                {(["book", "moves"] as const).map((l) => (
+                  <button key={l} onClick={() => pickLayer(l)}
+                    className={`h-7 px-3 ${shown === l ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8"}`}>
+                    {l === "book" ? "Book" : "Moves"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {movesLayer && target && (
+            <div className="text-label-md flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="text-on-surface-variant">Here the line plays</span>
+              <span className="font-mono font-semibold" style={{ color: HINT_COLOR }}>{target.san}</span>
+              <span className="text-on-surface-variant">· also in the chapter:</span>
+              {/* The most played drawn (in their colour when the moves are
+                  shown); the rest only listed. */}
+              {branches.map((n, i) => (
+                <button key={n.uci} onClick={() => reviewBranch(n)} title="Review this one instead"
+                  className={`font-mono font-semibold underline-offset-2 hover:underline ${shown === "moves" && i < BRANCH_ARROWS ? "" : "text-on-surface-variant"}`}
+                  style={shown === "moves" && i < BRANCH_ARROWS ? { color: BRANCH_COLOR } : undefined}>{n.san}</button>
+              ))}
+            </div>
           )}
           {reviewing && !withComments && (
             <div className="text-label-sm text-on-surface-variant">Sent without its comments — send it again with comments to see them here.</div>

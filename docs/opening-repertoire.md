@@ -272,7 +272,13 @@ in red, for one of two:
   moves played in its position: the three most played with their share and
   score, the line's move marked ("1…e5 — 2nd most played", "rare — 3% of
   games"), from the database's figures the chapter carries — on the phone too,
-  offline. At the end, Stockfish's evaluation (below).
+  offline. Where the chapter branches, the line's move shows as a green arrow
+  and the chapter's other moves there as blue ones (the three most played;
+  the rest listed under the board) — a move tapped there reviews that one
+  instead. Where the book drew its own arrows and circles they show too, in
+  their colours; where it has both, **Arrows: Book · Moves** picks which —
+  the book's first, then whichever you chose last. At the end, Stockfish's
+  evaluation (below).
 
 Or **Next line** — at the end, or any time during either. **The last line: ↺
 Test again · Review** does the same for the line just done at any time. (On
