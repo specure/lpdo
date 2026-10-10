@@ -744,9 +744,11 @@ export default function App() {
   return (
     <div className={`flex flex-col h-screen bg-surface text-on-surface${scheme === "light" ? " light" : ""}${hc ? " hc" : ""}`}>
       {/* Header — M3 Expressive top app bar */}
-      <header className="flex items-center justify-between px-4 h-14 bg-surface-container shrink-0">
-        <span className="text-title-lg tracking-tight">LPDO</span>
-        <div className="flex items-center gap-3">
+      {/* Labels never wrap ("My games" on two lines); a window too narrow
+          for them all scrolls the bar sideways rather than squeeze them. */}
+      <header className="flex items-center justify-between gap-4 px-4 h-14 bg-surface-container shrink-0 overflow-x-auto">
+        <span className="text-title-lg tracking-tight shrink-0">LPDO</span>
+        <div className="flex items-center gap-3 shrink-0">
           {/* Icon buttons — circular with state-layer overlays */}
           <div className="flex items-center gap-1">
             <button
@@ -788,7 +790,7 @@ export default function App() {
               same order, as the cards on Home. "My games" is not a mode of its
               own: it is Players with the profile player picked, and lights up
               (instead of Players) while that player is the one shown. */}
-          <div className="inline-flex items-center h-9 rounded-full border border-outline overflow-hidden">
+          <div className="shrink-0 inline-flex items-center h-9 rounded-full border border-outline overflow-hidden">
             {NAV.map(([m, label]) => {
               const active = m === "mygames" ? onMyGames : m === "players" ? mode === "players" && !onMyGames : mode === m;
               const disabled = m === "mygames" && myPlayer === null;
@@ -798,7 +800,7 @@ export default function App() {
                   onClick={() => (m === "mygames" ? void handleMyGames() : setMode(m))}
                   disabled={disabled}
                   title={disabled ? "Set your player on the Home page first" : undefined}
-                  className={`px-4 h-full text-label-lg transition-colors duration-short3 ease-standard ${
+                  className={`px-3.5 h-full text-label-lg whitespace-nowrap transition-colors duration-short3 ease-standard ${
                     active
                       ? "bg-secondary-container text-on-secondary-container"
                       : disabled
@@ -815,7 +817,7 @@ export default function App() {
           {/* Filled button — primary action */}
           <button
             onClick={() => setShowAddGame(true)}
-            className="inline-flex items-center h-9 px-4 rounded-full bg-primary text-on-primary text-label-lg hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard"
+            className="shrink-0 inline-flex items-center h-9 px-4 rounded-full bg-primary text-on-primary text-label-lg whitespace-nowrap hover:brightness-110 active:brightness-95 transition-all duration-short3 ease-standard"
             title="Add games to the database — from scratch, paste, or PGN file"
           >+ Add games</button>
 
@@ -823,7 +825,7 @@ export default function App() {
               Maintenance view (a mode, not a modal). */}
           <button
             onClick={() => { setMode("maintenance"); refreshServerStatus(); }}
-            className={`inline-flex items-center h-9 px-4 rounded-full text-label-lg transition-all duration-short3 ease-standard ${
+            className={`shrink-0 inline-flex items-center h-9 px-4 rounded-full text-label-lg whitespace-nowrap transition-all duration-short3 ease-standard ${
               mode === "maintenance"
                 ? "bg-secondary text-on-secondary"
                 : "bg-secondary-container text-on-secondary-container hover:brightness-110"

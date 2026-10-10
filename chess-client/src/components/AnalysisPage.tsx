@@ -576,7 +576,7 @@ export default function AnalysisPage({
           <Group orientation="vertical" className="h-full w-full flex" defaultLayout={sideCol.defaultLayout} onLayoutChanged={sideCol.onLayoutChanged}>
             <Panel id="side-games" defaultSize="50" minSize="15">
               <div className={panel}>
-                <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b border-outline/40">
+                <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b border-outline/40 overflow-x-auto">
                   {([
                     // Reference and Games are two views of the same games, so they
                     // sit together; the cloud engine is a different question.
@@ -595,7 +595,7 @@ export default function AnalysisPage({
                       key={t.key}
                       title={t.title}
                       onClick={() => setTab(t.key)}
-                      className={`h-7 px-3 rounded-full text-label-md transition-colors duration-short3 ease-standard ${
+                      className={`h-7 px-3 rounded-full text-label-md whitespace-nowrap transition-colors duration-short3 ease-standard ${
                         shownTab === t.key ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12"
                       }`}
                     >
@@ -604,7 +604,7 @@ export default function AnalysisPage({
                   ))}
                   <button
                     onClick={() => setShowEngines((v) => !v)}
-                    className={`ml-auto h-7 px-3 rounded-full text-label-md transition-colors duration-short3 ease-standard ${
+                    className={`ml-auto h-7 px-3 rounded-full text-label-md whitespace-nowrap transition-colors duration-short3 ease-standard ${
                       showEngines ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8 active:bg-on-surface/12"
                     }`}
                     title={showEngines
