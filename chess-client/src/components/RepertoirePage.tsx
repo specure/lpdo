@@ -923,12 +923,18 @@ function BookDetails({ book, busy, canArrange, onArrange, f2Here, onUpdate, onDe
   );
 }
 
+/** One line of a ⋯ menu: a command; or — `heading` — the name of the
+ *  section below it, not a command (`asWritten`: a chapter's own name, not
+ *  in capitals — they would turn its moves' e5 into E5). `danger`: a
+ *  command that destroys (shown in red). */
+type MenuItem = { label: string; onClick?: () => void; disabled?: boolean; separated?: boolean; heading?: boolean; asWritten?: boolean; danger?: boolean };
+
 /** Commands behind one ⋯. `up`: opens upwards (at the foot of a panel);
  *  `right`: opens rightwards, for a ⋯ near the window's left edge. Placed
  *  against the window (fixed), so a panel's edge never cuts it off; a scroll
  *  closes it rather than leave it behind. */
 function Menu({ entries, title, up = false, right = false }: {
-  entries: { label: string; onClick: () => void; disabled?: boolean; separated?: boolean }[]; title: string; up?: boolean; right?: boolean;
+  entries: MenuItem[]; title: string; up?: boolean; right?: boolean;
 }) {
   const [at, setAt] = useState<DOMRect | null>(null);
   const open = at !== null;
@@ -961,10 +967,16 @@ function Menu({ entries, title, up = false, right = false }: {
         className={`${nav} text-body-sm`} title={title} aria-haspopup="menu" aria-expanded={open}>⋯</button>
       {open && (
         <div role="menu" style={place} className="fixed z-50 min-w-44 py-1 rounded-md bg-surface-container-high border border-outline/40 shadow-lg flex flex-col">
-          {entries.map((e) => (
-            <button key={e.label} role="menuitem" disabled={e.disabled}
-              onClick={() => { setAt(null); e.onClick(); }}
-              className={`text-left px-3 py-1.5 text-body-sm text-on-surface hover:bg-on-surface/8 disabled:opacity-40 disabled:hover:bg-transparent ${e.separated ? "border-t border-outline/40 mt-1 pt-2" : ""}`}>
+          {entries.map((e, i) => e.heading ? (
+            <div key={`h${i}`} role="presentation"
+              className={`px-3 pt-1.5 pb-0.5 max-w-80 truncate select-none ${e.asWritten ? "text-label-md font-medium text-on-surface-variant" : "text-label-sm uppercase tracking-wider text-on-surface-variant"} ${i > 0 ? "border-t border-outline/40 mt-1 pt-2" : ""}`}
+              title={e.label}>
+              {e.label}
+            </div>
+          ) : (
+            <button key={`${i}${e.label}`} role="menuitem" disabled={e.disabled}
+              onClick={() => { setAt(null); e.onClick?.(); }}
+              className={`text-left px-3 py-1.5 text-body-sm hover:bg-on-surface/8 disabled:opacity-40 disabled:hover:bg-transparent ${e.danger ? "text-error" : "text-on-surface"} ${e.separated ? "border-t border-outline/40 mt-1 pt-2" : ""}`}>
               {e.label}
             </button>
           ))}
@@ -1209,63 +1221,80 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
           <Menu title={models
             ? (chapter ? `${kind === "reference" ? "Reference" : "Model"} games; the one on the board — ${chapter.name}` : `${kind === "reference" ? "Reference" : "Model"} games: rearrange them; choose one for the rest`)
             : (chapter ? `Add chapters; the chapter on the board — ${chapter.name}` : "Add chapters, rearrange them; choose one for the rest")} entries={[
+            // In sections by what they act on — what is added, the chapter on
+            // the board (or the ones picked), the phone, all of them — and
+            // Delete last, apart and in red, where it is not hit by mistake.
+            { label: "Add", heading: true },
             ...(models ? [] : [
               { label: "New empty chapter", onClick: () => onAddEmpty(`Chapter ${book.chapters.length + 1}`), disabled: busy },
               { label: "Paste PGN…", onClick: () => setPasting("chapters"), disabled: busy },
               { label: "Import PGN files…", onClick: () => pickFilesAs(false), disabled: busy },
             ]),
-            { label: "Paste model games…", onClick: () => setPasting("models"), disabled: busy, separated: !models },
+            { label: "Paste model games…", onClick: () => setPasting("models"), disabled: busy },
             { label: "Import model games…", onClick: () => pickFilesAs(true), disabled: busy },
-            { label: `Rename ${one}… (F2)`, separated: true, onClick: () => chapter && setRenaming(chapter.id), disabled: none },
-            { label: `Export ${one} PGN…`, onClick: () => chapter && void exportPgn(chapterPgnPath(chapter.id), `${book.name}-${chapter.name}`).then(setNote), disabled: none },
-            // The phone trainer's, a section of their own.
-            ...(kind === "chapters" ? [
-              ...(onSendToPhone ? [{ label: "Send to phone…", separated: true, onClick: () => chapter && onSendToPhone(chapter.id, `${book.name}-${chapter.name}`), disabled: none }] : []),
-              { label: "Save for phone…", separated: !onSendToPhone, onClick: () => chapter && void saveForPhone(chapter.id, `${book.name}-${chapter.name}`).then(setNote), disabled: none },
-            ] : []),
-            several
-              ? { label: `Delete ${multi.length} ${many}…`, separated: kind === "chapters", onClick: () => setConfirmDeleteMany(true), disabled: busy }
-              : { label: `Delete ${one}…`, separated: kind === "chapters", onClick: () => setConfirmDelete(true), disabled: none },
-            several
-              ? { label: models ? `Make ${multi.length} chapters` : `Make ${multi.length} model games`, onClick: () => { onConvert(multi); setPicked([]); }, disabled: busy }
-              : { label: models ? "Make it a chapter" : "Make it a model game", onClick: () => chapter && onConvert([chapter.id]), disabled: none },
-            // A model game told by its comments — a finish after the last move
-            // makes one — set as the other kind by hand, or left to them again.
-            ...(models && onSetKind ? [
+            // The chapter on the board — its name the section's — or the ones picked.
+            ...(several || chapter ? [
+              { label: several ? `${multi.length} selected ${many}` : chapter!.name, heading: true, asWritten: !several },
               several
-                ? { label: kind === "models" ? `Make ${multi.length} reference games` : `Make ${multi.length} model games`, onClick: () => { onSetKind(multi, kind !== "models"); setPicked([]); }, disabled: busy }
-                : { label: kind === "models" ? "Make it a reference game" : "Make it a model game", onClick: () => chapter && onSetKind([chapter.id], kind !== "models"), disabled: none },
-              ...(!several && chapter?.annotated_set ? [{ label: "Model or reference: by its comments", onClick: () => onSetKind([chapter.id], null), disabled: none }] : []),
-            ] : []),
-            // An overview — a quickstarter, an introduction — takes none of
-            // one's games from the other chapters; told by its name, or set.
-            ...(!models && onSetOverview ? (() => {
-              const allOverviews = several && multi.every((id) => book.chapters.find((c) => c.id === id)?.overview);
-              return [
+                ? { label: `Rename ${multi.length} ${many}… (F2)`, onClick: () => { setRenamingAll(multi); setRenaming(null); }, disabled: busy }
+                : { label: "Rename… (F2)", onClick: () => chapter && setRenaming(chapter.id), disabled: none },
+              several
+                ? { label: models ? `Make ${multi.length} chapters` : `Make ${multi.length} model games`, onClick: () => { onConvert(multi); setPicked([]); }, disabled: busy }
+                : { label: models ? "Make it a chapter" : "Make it a model game", onClick: () => chapter && onConvert([chapter.id]), disabled: none },
+              // A model game told by its comments — a finish after the last move
+              // makes one — set as the other kind by hand, or left to them again.
+              ...(models && onSetKind ? [
                 several
-                  ? { label: allOverviews ? `Make ${multi.length} regular chapters` : `Make ${multi.length} overview chapters`, onClick: () => { onSetOverview(multi, !allOverviews); setPicked([]); }, disabled: busy }
-                  : { label: chapter?.overview ? "Make it a regular chapter" : "Make it an overview chapter", onClick: () => chapter && onSetOverview([chapter.id], !chapter.overview), disabled: none },
-                ...(!several && chapter?.overview_set ? [{ label: "Overview or not: by its name", onClick: () => onSetOverview([chapter.id], null), disabled: none }] : []),
-              ];
-            })() : []),
-            several
-              ? { label: `Rename ${multi.length} ${many}… (F2)`, onClick: () => { setRenamingAll(multi); setRenaming(null); }, disabled: busy, separated: true }
-              : { label: `Rename ${many}…`, onClick: () => { setRenamingAll(book.chapters.map((c) => c.id)); setRenaming(null); }, disabled: busy || book.chapters.length === 0, separated: true },
+                  ? { label: kind === "models" ? `Make ${multi.length} reference games` : `Make ${multi.length} model games`, onClick: () => { onSetKind(multi, kind !== "models"); setPicked([]); }, disabled: busy }
+                  : { label: kind === "models" ? "Make it a reference game" : "Make it a model game", onClick: () => chapter && onSetKind([chapter.id], kind !== "models"), disabled: none },
+                ...(!several && chapter?.annotated_set ? [{ label: "Model or reference: by its comments", onClick: () => onSetKind([chapter.id], null), disabled: none }] : []),
+              ] : []),
+              // An overview — a quickstarter, an introduction — takes none of
+              // one's games from the other chapters; told by its name, or set.
+              ...(!models && onSetOverview ? (() => {
+                const allOverviews = several && multi.every((id) => book.chapters.find((c) => c.id === id)?.overview);
+                return [
+                  several
+                    ? { label: allOverviews ? `Make ${multi.length} regular chapters` : `Make ${multi.length} overview chapters`, onClick: () => { onSetOverview(multi, !allOverviews); setPicked([]); }, disabled: busy }
+                    : { label: chapter?.overview ? "Make it a regular chapter" : "Make it an overview chapter", onClick: () => chapter && onSetOverview([chapter.id], !chapter.overview), disabled: none },
+                  ...(!several && chapter?.overview_set ? [{ label: "Overview or not: by its name", onClick: () => onSetOverview([chapter.id], null), disabled: none }] : []),
+                ];
+              })() : []),
+              ...(models ? [] : [
+                several
+                  ? { label: `Merge ${multi.length} chapters…`, onClick: () => { onMerge(multi); setPicked([]); setRenaming(null); }, disabled: busy }
+                  : null,
+                several
+                  ? { label: `Analyse ${multi.length} chapters`, onClick: () => onAnalyse(multi), disabled: busy || analysing }
+                  : { label: "Analyse", onClick: () => chapter && onAnalyse([chapter.id]), disabled: none || analysing },
+              ].filter((e) => e !== null)),
+              // FENs left in the comments by other tools' exports — in model
+              // and reference games as much as in chapters.
+              several
+                ? { label: `Remove FENs in ${multi.length} ${many}…`, disabled: busy, onClick: () => setFens({ ids: multi, what: `the ${multi.length} selected ${many}` }) }
+                : { label: "Remove FENs from comments…", disabled: none, onClick: () => chapter && setFens({ ids: [chapter.id], what: `“${chapter.name}”` }) },
+              ...(several ? [] : [{ label: "Export PGN…", onClick: () => chapter && void exportPgn(chapterPgnPath(chapter.id), `${book.name}-${chapter.name}`).then(setNote), disabled: none }]),
+            ] : []),
+            // The phone trainer's: the chapter on the board.
+            ...(kind === "chapters" && chapter && !several ? [
+              { label: "Phone", heading: true },
+              ...(onSendToPhone ? [{ label: "Send to phone…", onClick: () => onSendToPhone(chapter.id, `${book.name}-${chapter.name}`), disabled: busy }] : []),
+              { label: "Save for phone…", onClick: () => void saveForPhone(chapter.id, `${book.name}-${chapter.name}`).then(setNote), disabled: busy },
+            ] : []),
+            { label: `All ${many}`, heading: true },
+            { label: `Rename ${many}…`, onClick: () => { setRenamingAll(book.chapters.map((c) => c.id)); setRenaming(null); }, disabled: busy || book.chapters.length === 0 },
             { label: `Rearrange ${many} (M)`, onClick: () => { setArranging(true); setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
             ...(models && onOrder ? [{ label: "Reverse the order", onClick: () => onOrder(book.chapters.map((c) => c.id).reverse()), disabled: busy || book.chapters.length < 2 }] : []),
             ...(models ? [] : [
-            several
-              ? { label: `Merge ${multi.length} chapters…`, onClick: () => { onMerge(multi); setPicked([]); setRenaming(null); }, disabled: busy }
-              : { label: "Merge chapters…", onClick: () => { setSelecting(current != null && chapter ? [current] : []); anchor.current = chapter ? current : null; setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
-            { label: "Analyse chapter", onClick: () => chapter && onAnalyse([chapter.id]), disabled: none || analysing, separated: true },
-            { label: "Analyse all chapters", onClick: () => onAnalyse(book.chapters.map((c) => c.id)), disabled: busy || analysing || book.chapters.length === 0 },
+              { label: "Merge chapters…", onClick: () => { setSelecting(current != null && chapter ? [current] : []); anchor.current = chapter ? current : null; setRenaming(null); }, disabled: busy || book.chapters.length < 2 },
+              { label: "Analyse all chapters", onClick: () => onAnalyse(book.chapters.map((c) => c.id)), disabled: busy || analysing || book.chapters.length === 0 },
             ]),
-            // FENs left in the comments by other tools' exports — in model and
-            // reference games as much as in chapters.
-            { label: "Remove FENs from comments…", separated: true, disabled: none,
-              onClick: () => chapter && setFens({ ids: [chapter.id], what: `“${chapter.name}”` }) },
             { label: `Remove FENs in all ${many}…`, disabled: busy || book.chapters.length === 0,
               onClick: () => setFens({ ids: book.chapters.map((c) => c.id), what: `the book's ${many}` }) },
+            // Last, apart, in red.
+            ...(several
+              ? [{ label: `Delete ${multi.length} ${many}…`, separated: true, danger: true, onClick: () => setConfirmDeleteMany(true), disabled: busy }]
+              : chapter ? [{ label: `Delete ${one}…`, separated: true, danger: true, onClick: () => setConfirmDelete(true), disabled: none }] : []),
           ]} />
         )}
       </div>
