@@ -95,27 +95,55 @@ impl ConnActor {
 
 /// A pool of read connections (clones of the same DuckDB instance) so query
 /// handlers run concurrently with a running write job (in-process MVCC).
+///
+/// Work goes to the connection with the least waiting on it: a read-only job
+/// holds its connection for as long as it runs, and a plain round-robin would
+/// queue every few requests behind it.
 #[derive(Clone)]
 pub struct ReadPool {
     actors: Arc<Vec<ConnActor>>,
+    /// Per connection, the closures sent and not yet finished.
+    load: Arc<Vec<AtomicUsize>>,
     next: Arc<AtomicUsize>,
+}
+
+/// Counts a closure off its connection's load when it finishes (or unwinds).
+struct Unload(Arc<Vec<AtomicUsize>>, usize);
+
+impl Drop for Unload {
+    fn drop(&mut self) {
+        self.0[self.1].fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl ReadPool {
     pub fn new(conns: Vec<Connection>) -> Self {
         let actors: Vec<ConnActor> = conns.into_iter().map(ConnActor::new).collect();
         assert!(!actors.is_empty(), "read pool needs at least one connection");
-        ReadPool { actors: Arc::new(actors), next: Arc::new(AtomicUsize::new(0)) }
+        let load = actors.iter().map(|_| AtomicUsize::new(0)).collect();
+        ReadPool { actors: Arc::new(actors), load: Arc::new(load), next: Arc::new(AtomicUsize::new(0)) }
     }
 
-    /// Round-robin a read closure onto one of the pooled connections.
+    /// The least loaded connection, counted as one more: ties taken in turn,
+    /// so idle connections still share the work.
+    fn pick(&self) -> (usize, Unload) {
+        let n = self.actors.len();
+        let start = self.next.fetch_add(1, Ordering::Relaxed);
+        let i = (0..n).map(|k| (start + k) % n)
+            .min_by_key(|&i| self.load[i].load(Ordering::Relaxed))
+            .expect("read pool needs at least one connection");
+        self.load[i].fetch_add(1, Ordering::Relaxed);
+        (i, Unload(self.load.clone(), i))
+    }
+
+    /// Run a read closure on the least busy of the pooled connections.
     pub async fn run<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&Connection) -> R + Send + 'static,
         R: Send + 'static,
     {
-        let i = self.next.fetch_add(1, Ordering::Relaxed) % self.actors.len();
-        self.actors[i].run(f).await
+        let (i, unload) = self.pick();
+        self.actors[i].run(move |conn| { let _unload = unload; f(conn) }).await
     }
 
     /// Fire-and-forget a closure on one of the pooled connections — used to run
@@ -124,8 +152,8 @@ impl ReadPool {
     where
         F: FnOnce(&Connection) + Send + 'static,
     {
-        let i = self.next.fetch_add(1, Ordering::Relaxed) % self.actors.len();
-        self.actors[i].spawn_fn(f);
+        let (i, unload) = self.pick();
+        self.actors[i].spawn_fn(move |conn| { let _unload = unload; f(conn) });
     }
 
     fn len(&self) -> usize {
@@ -593,6 +621,10 @@ fn blocks_maintenance(job_type: &str) -> bool {
             | "index_positions" | "normalise"
     )
 }
+
+/// The longest Stockfish spends on one line end of a repertoire chapter
+/// (see [`crate::engine::Background::search`]); depth 24 takes seconds.
+const LINE_END_MAX: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Read-only jobs only read the database (e.g. backup reads games and writes a
 /// PGN file). They run on the read pool so they don't queue behind a long write
@@ -1513,6 +1545,9 @@ fn run_job(
             let mut engine: Option<crate::engine::Background> = None;
             let mut no_engine: Option<String> = None;
             let mut evaluated = 0u64;
+            // Line ends Stockfish could not take to the depth in the time
+            // given: kept at the depth reached, tried again another time.
+            let mut short = 0u64;
             for (i, id) in ids.iter().enumerate() {
                 if reporter.is_cancelled() { return Ok(()); }
                 // Named, so the Activity panel says which chapter it is.
@@ -1551,12 +1586,16 @@ fn run_job(
                     reporter.progress(part, n * 1000, format!("{chapter}: Stockfish, depth {depth} — line end {} of {}", done + 1, todo.len()));
                     let fen = &todo[done];
                     let cancelled = || reporter.is_cancelled() || busy();
-                    match rt.block_on(bg.search(fen, depth, cancelled)) {
+                    match rt.block_on(bg.search(fen, depth, LINE_END_MAX, cancelled)) {
                         // Made way (or cancelled): the same position again.
                         Ok(None) => continue,
                         Ok(Some(snap)) => {
                             crate::engine::save_eval(conn, bg.kind, &bg.ident, &crate::engine::position_key(fen), &snap)?;
                             evaluated += 1;
+                            if snap.depth < depth {
+                                short += 1;
+                                reporter.log(format!("{chapter}: line end {} stopped at depth {} after {} s: {fen}", done + 1, snap.depth, LINE_END_MAX.as_secs()));
+                            }
                         }
                         Err(e) => return Err(anyhow!("Stockfish: {e}")),
                     }
@@ -1564,11 +1603,16 @@ fn run_job(
                 }
             }
             let what = if n == 1 { format!("‘{}’", crate::repertoire::chapter_title(conn, ids[0])?) } else { format!("{n} chapters") };
+            let short = match short {
+                0 => String::new(),
+                1 => format!(" (1 stopped short, at {} s)", LINE_END_MAX.as_secs()),
+                k => format!(" ({k} stopped short, at {} s)", LINE_END_MAX.as_secs()),
+            };
             reporter.done(match (depth, &no_engine) {
                 (0, _) => format!("{what} analysed."),
                 (_, Some(e)) => format!("{what} analysed, without Stockfish: {e}."),
                 _ if evaluated == 0 => format!("{what} analysed · the line ends already evaluated."),
-                _ => format!("{what} analysed · Stockfish on {evaluated} line {}, depth {depth}.", if evaluated == 1 { "end" } else { "ends" }),
+                _ => format!("{what} analysed · Stockfish on {evaluated} line {}, depth {depth}{short}.", if evaluated == 1 { "end" } else { "ends" }),
             });
         }
         "backup" => {
@@ -2195,6 +2239,31 @@ mod snapshot_tests {
 
         drop(conn);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod read_pool_tests {
+    use super::*;
+
+    /// A job holding one connection for as long as it runs: the reads that
+    /// follow go to the others, none waits behind it.
+    #[tokio::test]
+    async fn reads_go_round_a_connection_held_by_a_job() {
+        let conn = Connection::open_in_memory().unwrap();
+        let readers = (0..4).map(|_| conn.try_clone().unwrap()).collect();
+        let reads = ReadPool::new(readers);
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        reads.spawn_fn(move |_| { let _ = held.recv(); });
+        for _ in 0..12 {
+            let r = tokio::time::timeout(std::time::Duration::from_secs(5),
+                reads.run(|c| c.query_row("SELECT 42", [], |r| r.get::<_, i64>(0)).unwrap())).await;
+            assert_eq!(r.expect("a read queued behind the job"), 42);
+        }
+        release.send(()).unwrap();
+        // Done, the connection takes reads again.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(reads.load.iter().all(|l| l.load(Ordering::Relaxed) == 0));
     }
 }
 

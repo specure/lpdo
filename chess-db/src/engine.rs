@@ -2278,11 +2278,14 @@ pub struct Background {
 impl Background {
     /// Search `fen` to `depth`, single line: the deepest complete result,
     /// scores from White's point of view. `interrupt` is asked every second;
-    /// when it says so the search is stopped and none returned.
-    pub async fn search(&mut self, fen: &str, depth: u32, interrupt: impl Fn() -> bool) -> Result<Option<Snapshot>, String> {
+    /// when it says so the search is stopped and none returned. At most
+    /// `max` long: some positions run away with many threads (an English
+    /// line end kept Stockfish 19 at depth 23 for hours with 12 threads, and
+    /// took ten seconds with two), and then the depth reached is the result.
+    pub async fn search(&mut self, fen: &str, depth: u32, max: Duration, interrupt: impl Fn() -> bool) -> Result<Option<Snapshot>, String> {
         send(&mut self.stdin, "setoption name MultiPV value 1").await?;
         send(&mut self.stdin, &format!("position fen {fen}")).await?;
-        send(&mut self.stdin, &format!("go depth {depth}")).await?;
+        send(&mut self.stdin, &format!("go depth {depth} movetime {}", max.as_millis())).await?;
         let white = fen.split_whitespace().nth(1) != Some("b");
         let (mut best, mut nodes, mut stopped) = (None::<(u32, Line)>, 0u64, false);
         loop {
@@ -2750,14 +2753,19 @@ mod background_tests {
         let mut bg = engine.background().await.unwrap();
         // Black to move, White a queen up: good for White whoever moves.
         let fen = "rnb1kbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 3";
-        let snap = bg.search(fen, 14, || false).await.unwrap().unwrap();
+        let snap = bg.search(fen, 14, Duration::from_secs(60), || false).await.unwrap().unwrap();
         assert_eq!(snap.depth, 14);
         assert!(snap.lines[0].eval_cp.unwrap_or(0) > 500 || snap.lines[0].mate.is_some_and(|m| m > 0), "{:?}", snap.lines[0]);
         let t = std::time::Instant::now();
-        let none = bg.search("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 60, || t.elapsed() > Duration::from_secs(2)).await.unwrap();
+        let none = bg.search("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 60, Duration::from_secs(60), || t.elapsed() > Duration::from_secs(2)).await.unwrap();
         assert!(none.is_none());
         // The process goes on after an interruption.
-        assert!(bg.search(fen, 8, || false).await.unwrap().is_some());
+        assert!(bg.search(fen, 8, Duration::from_secs(60), || false).await.unwrap().is_some());
+        // Out of time: the depth reached, short of the one asked.
+        let t = std::time::Instant::now();
+        let short = bg.search("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 60, Duration::from_secs(1), || false).await.unwrap().unwrap();
+        assert!(short.depth > 0 && short.depth < 60, "{}", short.depth);
+        assert!(t.elapsed() < Duration::from_secs(10));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
