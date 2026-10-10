@@ -53,6 +53,9 @@ export interface PNode {
   off?: true;
   /** The position after the move. */
   stats?: Stats;
+  /** At a line's end: Stockfish's evaluation of the position after the move
+   *  (White's side), from the analysis job — `name` the engine ("Stockfish 19"). */
+  engine?: { eval: Eval; depth: number; name: string };
   /** One's own games through the position after the move. */
   mine?: Mine;
   /** The moves from the position after this one, in the chapter's order —
@@ -91,6 +94,22 @@ export function hasComments(c: LpdoChapter): boolean {
   if (c.start.comment) return true;
   const walk = (ns: PNode[]): boolean => ns.some((n) => !!n.comment || !!n.pre || walk(n.children));
   return walk(c.tree);
+}
+
+/** The ends of the package's lines (switched-off ones left out): how many,
+ *  and how many carry Stockfish's evaluation (the analysis job's). */
+export function lineEndEvals(c: LpdoChapter): { ends: number; evaluated: number } {
+  let ends = 0, evaluated = 0;
+  const walk = (ns: PNode[]) => {
+    for (const n of ns) {
+      if (n.off) continue;
+      const on = n.children.filter((k) => !k.off);
+      if (on.length) walk(on);
+      else { ends++; if (n.engine) evaluated++; }
+    }
+  };
+  walk(c.tree);
+  return { ends, evaluated };
 }
 
 /** A package's problems, or none — for one read from a file or a scan. */

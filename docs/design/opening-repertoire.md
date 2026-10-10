@@ -223,8 +223,11 @@ offered on the phone as a ready session.
 What the phone gets is worked out beforehand, in a **background job** on
 the server — **Analyse…** in a chapter's ⋯ menu, or a book's for all its
 chapters — with its progress on the chapter and a Cancel, as the server's
-other jobs. **Nothing runs by itself**: the analysis, and refreshing it
-later, are always started by hand — running it again fetches the figures
+other jobs. It runs **by itself** too (since the Stockfish pass): the server
+starts it for a chapter of an active book left alone 15 minutes (a setting;
+off in Maintenance) whose figures are missing or out of date, or whose line
+ends want Stockfish — one at a time, never beside another job. Started by hand,
+the analysis and refreshing it later work as before — running it again fetches the figures
 anew and evaluates what is missing (or below stronger settings than before).
 **Send to phone** only reads what is stored: instant, and it says how
 complete the chapter is ("analysed: 110 of 110 positions").
@@ -489,8 +492,23 @@ back:
   involved. Measured on real chapters: "21 3...Nc6" (20 lines, 176
   positions) is 9.7 KB compressed — ~35 frames, about 5 s at the steady
   setting below; the largest, 43–45 lines and ~600 positions, 41 KB —
-  ~145 frames, 15–20 s; without comments half that. Worth trimming later
-  (fewer moves a position) if the large ones are sent often.
+  ~145 frames, 15–20 s; without comments half that. Trimmed since: a
+  position's figures keep only the three most played moves and down to the
+  last the book plays there (what the phone uses; a book move's rank stays
+  right) — 10–23% smaller.
+
+  The fountain code has a cost the prototype did not show: its encoder
+  sends each part plain once, then only mixed parts, and by the time the
+  phone is held to the code the plain ones are gone. A reading then takes
+  1.3–1.9 × as many distinct parts as the chapter is cut in (measured with
+  the real decoder; repeating the plain parts only helped when no frame is
+  missed). The trainer's bar counts distinct parts against 1.5 × that, or
+  the parts decoded when more — the library's own estimate counted repeats
+  too against 1.75 × and stopped at 40–80%. The code is shown at 560 px
+  (the measured size; it was 420), drawn in the screen's own pixels so a
+  scaled display does not blur it. The scan screen shows the camera's
+  picture, ms a search and how often one finds a code, to tell a slow
+  reading's cause.
 - **A file** — a chapter or a whole book (a book of 26 chapters is a few
   hundred KB: minutes of scanning, so books go this way only), and for
   sending a chapter to someone: the desktop saves `<name>.lpdo.json`; the
@@ -556,6 +574,12 @@ pace.
    sessions, study and drill — in the code the phone will share (the drill
    done: **Drill** beside a chapter's Edit lines, `trainer/drill.ts`,
    `DrillView.tsx`; the session by coverage, cards in the browser's storage);
+   Stockfish at the ends of lines done: the analysis job, after the figures,
+   runs a Stockfish process of its own (`engine::Background`) to the
+   settings' `line_end_depth` (default 24) on every line end not kept as deep,
+   keeps them in `engine_evals` (shared with the Engine panel), and stops a
+   search for the panel's, resuming when it is idle; the figures carry them
+   (`PositionStat.engine`), the package too (`PNode.engine`);
    (b) the phone trainer (the web app done: `chess-client/src/trainer-app/`,
    `vite.trainer.config.ts`, published by `.github/workflows/trainer.yml` to
    GitHub Pages `/trainer/`; chapters by file — **Save for phone…** — and by

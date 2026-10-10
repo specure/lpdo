@@ -154,6 +154,11 @@ pub struct PositionRow {
     pub key: String,
     pub after_zobrist: i64,
     pub after_key: String,
+    /// The position after the move as a FEN — for the engine.
+    pub after_fen: String,
+    /// The last move of a line (or of a variation): where a line ends, even
+    /// when the position goes on in another line.
+    pub ends_line: bool,
     /// No move switched off on the way here (the chapter's own switch is
     /// applied on top).
     pub active: bool,
@@ -190,6 +195,7 @@ struct Walker {
 impl Walker {
     fn close_frame(&mut self) {
         if let Some(f) = self.frames.pop() {
+            if let Some(i) = f.last_row { self.rows[i].ends_line = true; }
             if f.moves > 0 {
                 self.lines += 1;
                 if f.off { self.lines_off += 1; }
@@ -227,6 +233,8 @@ impl Visitor for Walker {
         self.rows.push(PositionRow {
             zobrist, ply: f.ply, next_move: canonical, mover, active: !f.off,
             key: position_key(&before), after_zobrist, after_key: position_key(&f.pos),
+            after_fen: Fen::from_position(&f.pos, EnPassantMode::Legal).to_string(),
+            ends_line: false,
         });
         f.prev = Some(before);
         f.prev_off = f.off;
@@ -541,6 +549,14 @@ pub fn get_book(conn: &Connection, id: i64) -> Result<Book> {
 fn get_chapter_summary(conn: &Connection, id: i64) -> Result<ChapterSummary> {
     conn.query_row(&format!("SELECT {CHAPTER_COLS} FROM repertoire_chapters WHERE id = ?"), duckdb::params![id], chapter_row)
         .map_err(|_| anyhow!("chapter {id} not found"))
+}
+
+/// "Book · Chapter", as a job's messages name a chapter.
+pub fn chapter_title(conn: &Connection, id: i64) -> Result<String> {
+    conn.query_row(
+        "SELECT b.name, c.name FROM repertoire_chapters c JOIN repertoire_books b ON b.id = c.book_id WHERE c.id = ?",
+        duckdb::params![id], |r| Ok(format!("{} · {}", r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+    ).map_err(|_| anyhow!("chapter {id} not found"))
 }
 
 pub fn list(conn: &Connection) -> Result<Vec<BookWithChapters>> {
@@ -1113,6 +1129,23 @@ pub struct PositionStat {
     /// played first.
     pub moves: Vec<MoveStat>,
     pub eval: Option<Eval>,
+    /// At the end of a line: Stockfish's evaluation, as deep as kept — by the
+    /// analysis job, or the Engine panel. Attached when the figures are
+    /// served, not kept with them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<LineEndEval>,
+}
+
+/// Stockfish's evaluation of a line's end, from White's side.
+#[derive(Clone, Debug, Serialize, serde::Deserialize, PartialEq)]
+pub struct LineEndEval {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cp: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mate: Option<i32>,
+    pub depth: u32,
+    /// The engine's name ("Stockfish 19").
+    pub engine: String,
 }
 
 /// A chapter's stored analysis (see [`analyse_chapter`]), or the figures
@@ -1192,7 +1225,7 @@ pub fn chapter_stats(conn: &Connection, id: i64) -> Result<Vec<PositionStat>> {
             .filter(|(i, m)| *i < TOP_MOVES || ours.contains(&m.san))
             .map(|(_, m)| m)
             .collect();
-        PositionStat { key: keys.remove(&z).unwrap_or_default(), zobrist: format!("{:016x}", z as u64), games, moves, eval: evals.get(&z).cloned() }
+        PositionStat { key: keys.remove(&z).unwrap_or_default(), zobrist: format!("{:016x}", z as u64), games, moves, eval: evals.get(&z).cloned(), engine: None }
     }).collect())
 }
 
@@ -1937,6 +1970,114 @@ pub fn match_line(conn: &Connection, sans: &[String], color: &str) -> Result<Vec
     Ok(found.into_iter().map(|(m, _)| m).collect())
 }
 
+// ── The ends of the lines: Stockfish (#327) ─────────────────────────────────
+
+/// The ends of a chapter's lines — where a line (or a variation) stops, even
+/// when the position goes on in another — of the lines not switched off:
+/// their key (the client's) and FEN, once each.
+pub fn line_ends(conn: &Connection, id: i64) -> Result<Vec<(String, String)>> {
+    let pgn = get_chapter(conn, id)?.pgn;
+    let w = walk(&movetext_of(&pgn))?;
+    let mut seen = std::collections::HashSet::new();
+    Ok(w.rows.iter()
+        .filter(|r| r.active && r.ends_line && seen.insert(r.after_zobrist))
+        .map(|r| (r.after_key.clone(), r.after_fen.clone()))
+        .collect())
+}
+
+/// The deepest Stockfish evaluation kept for each of these FENs (by the
+/// engine's own position key), any version: (FEN, evaluation).
+fn kept_evals(conn: &Connection, fens: &[String]) -> Result<std::collections::HashMap<String, LineEndEval>> {
+    let mut out = std::collections::HashMap::new();
+    if fens.is_empty() { return Ok(out); }
+    let by_key: std::collections::HashMap<String, &String> = fens.iter().map(|f| (crate::engine::position_key(f), f)).collect();
+    let list = by_key.keys().map(|k| format!("'{}'", k.replace('\'', "''"))).collect::<Vec<_>>().join(",");
+    let mut st = conn.prepare(&format!(
+        "SELECT position, engine, depth, lines FROM engine_evals
+         WHERE kind = 'stockfish' AND position IN ({list})
+         QUALIFY row_number() OVER (PARTITION BY position ORDER BY depth DESC, nodes DESC) = 1"))?;
+    let mut rows = st.query([])?;
+    while let Some(r) = rows.next()? {
+        let (position, engine, depth, lines): (String, String, i64, String) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
+        let Ok(ls) = serde_json::from_str::<Vec<crate::engine::Line>>(&lines) else { continue };
+        let Some(best) = ls.into_iter().min_by_key(|l| l.multipv) else { continue };
+        if let Some(fen) = by_key.get(&position) {
+            out.insert((*fen).clone(), LineEndEval { cp: best.eval_cp, mate: best.mate, depth: depth as u32, engine });
+        }
+    }
+    Ok(out)
+}
+
+/// The line ends' Stockfish evaluations put on the chapter's figures.
+pub fn attach_line_end_evals(conn: &Connection, id: i64, positions: &mut [PositionStat]) -> Result<()> {
+    let ends = line_ends(conn, id)?;
+    let fens: Vec<String> = ends.iter().map(|(_, f)| f.clone()).collect();
+    let evals = kept_evals(conn, &fens)?;
+    let by_key: std::collections::HashMap<&str, &LineEndEval> = ends.iter()
+        .filter_map(|(k, f)| evals.get(f).map(|e| (k.as_str(), e))).collect();
+    for p in positions.iter_mut() {
+        if let Some(e) = by_key.get(p.key.as_str()) { p.engine = Some((*e).clone()); }
+    }
+    Ok(())
+}
+
+/// The line ends that still want Stockfish at `depth` — none kept by this
+/// engine as deep — as FENs.
+pub fn line_ends_to_evaluate(conn: &Connection, id: i64, ident: &str, depth: u32) -> Result<Vec<String>> {
+    let ends = line_ends(conn, id)?;
+    let mut out = Vec::new();
+    for (_, fen) in ends {
+        let key = crate::engine::position_key(&fen);
+        let kept: Option<i64> = conn.query_row(
+            "SELECT depth FROM engine_evals WHERE engine = ? AND position = ?", duckdb::params![ident, key], |r| r.get(0)).ok();
+        if kept.is_none_or(|d| (d as u32) < depth) { out.push(fen); }
+    }
+    Ok(out)
+}
+
+// ── Analysing by itself ─────────────────────────────────────────────────────
+
+/// The chapter's figures are as the chapter is: analysed, its positions
+/// unchanged since (a comment edited does not count).
+pub fn figures_current(conn: &Connection, id: i64) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT a.positions_hash IS NOT DISTINCT FROM c.positions_hash
+         FROM repertoire_chapters c JOIN repertoire_analysis a ON a.chapter_id = c.id WHERE c.id = ?",
+        duckdb::params![id], |r| r.get::<_, bool>(0)).unwrap_or(false))
+}
+
+/// The line ends without a Stockfish evaluation as deep as `depth`, any
+/// version of it.
+pub fn line_ends_missing(conn: &Connection, id: i64, depth: u32) -> Result<usize> {
+    let fens: Vec<String> = line_ends(conn, id)?.into_iter().map(|(_, f)| f).collect();
+    let kept = kept_evals(conn, &fens)?;
+    Ok(fens.iter().filter(|f| kept.get(*f).is_none_or(|e| e.depth < depth)).count())
+}
+
+/// The chapters the server would analyse by itself, in the books' order:
+/// those of the active books, switched on, not model games, left alone
+/// `quiet_min` minutes — whose figures are missing or out of date, or (with
+/// `depth`) whose line ends want Stockfish. `done` remembers, by chapter and
+/// version, those found complete, so the ends of the lines are not read again
+/// every time.
+pub fn chapters_to_analyse(conn: &Connection, quiet_min: u32, depth: u32, done: &mut std::collections::HashSet<(i64, String, u32)>) -> Result<Vec<(i64, String)>> {
+    let mut st = conn.prepare(&format!(
+        "SELECT c.id, CAST(c.updated_at AS VARCHAR),
+                (SELECT a.positions_hash IS NOT DISTINCT FROM c.positions_hash FROM repertoire_analysis a WHERE a.chapter_id = c.id) AS current
+         FROM repertoire_chapters c JOIN repertoire_books b ON b.id = c.book_id
+         WHERE COALESCE(b.active, TRUE) AND c.active AND NOT COALESCE(c.model, FALSE)
+           AND c.updated_at < CAST(NOW() AS TIMESTAMP) - INTERVAL {quiet_min} MINUTE
+         ORDER BY b.ord, b.id, c.ord, c.id"))?;
+    let rows: Vec<(i64, String, Option<bool>)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<duckdb::Result<_>>()?;
+    let mut out = Vec::new();
+    for (id, updated, current) in rows {
+        if current != Some(true) { out.push((id, updated)); continue; }
+        if depth == 0 || done.contains(&(id, updated.clone(), depth)) { continue; }
+        if line_ends_missing(conn, id, depth)? > 0 { out.push((id, updated)); } else { done.insert((id, updated, depth)); }
+    }
+    Ok(out)
+}
+
 // ── Settings ─────────────────────────────────────────────────────────────────
 
 /// The repertoire's settings, on the Maintenance page; kept in
@@ -1950,10 +2091,26 @@ pub struct RepertoireSettings {
     pub overview_games: OverviewGames,
     /// Where a game that went from one chapter into another counts.
     pub transposed_games: TransposedGames,
+    /// Stockfish at the ends of a chapter's lines, by the analysis job: to
+    /// this depth; 0 for none.
+    pub line_end_depth: u32,
+    /// The server analyses a chapter by itself once it has been left alone
+    /// this many minutes (see [`chapters_to_analyse`]).
+    pub auto_analyse: bool,
+    pub auto_analyse_after_min: u32,
 }
 
+/// The default depth at the ends of lines: a steady verdict on an opening
+/// line, seconds a position.
+pub const LINE_END_DEPTH: u32 = 24;
+
 impl Default for RepertoireSettings {
-    fn default() -> Self { Self { own_games_months: 12, overview_games: OverviewGames::default(), transposed_games: TransposedGames::default() } }
+    fn default() -> Self {
+        Self {
+            own_games_months: 12, overview_games: OverviewGames::default(), transposed_games: TransposedGames::default(),
+            line_end_depth: LINE_END_DEPTH, auto_analyse: true, auto_analyse_after_min: 15,
+        }
+    }
 }
 
 /// Where a game counts that reached one chapter's own positions and then
@@ -2000,6 +2157,8 @@ pub fn settings() -> RepertoireSettings {
 
 pub fn set_settings(mut new: RepertoireSettings) -> Result<RepertoireSettings, String> {
     new.own_games_months = new.own_games_months.min(600);
+    new.line_end_depth = new.line_end_depth.min(60);
+    new.auto_analyse_after_min = new.auto_analyse_after_min.clamp(1, 24 * 60);
     if let Some(file) = SETTINGS_FILE.get() {
         let json = serde_json::to_string_pretty(&new).map_err(|e| e.to_string())?;
         std::fs::write(file, json).map_err(|e| format!("{}: {e}", file.display()))?;
@@ -2509,6 +2668,59 @@ mod tests {
         ]);
         // Into Part 2's QGD, past the moves its chapters share.
         assert_eq!(found("d4 Nf6 c4 e6 Nf3 d5 Nc3 Be7 Bg5")[0], (qgd, 8, false, None, vec![]));
+    }
+
+    #[test]
+    fn the_ends_of_the_lines() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let book = create_book(&conn, "French", "black", None, None, None).unwrap();
+        // Two lines end (3...c5, 3...Bb4); the switched-off 3.Nd2 does not count.
+        let id = add_chapters(&conn, book.id, Some("c"), Some("1. e4 e6 2. d4 d5 3. e5 (3. Nc3 Bb4) (3. Nd2 { [%rep off] } c5) c5 *"), None).unwrap().remove(0).id;
+        let ends = line_ends(&conn, id).unwrap();
+        assert_eq!(ends.len(), 2, "{ends:?}");
+        assert!(ends.iter().all(|(k, f)| f.starts_with(k.as_str())));
+        // A variation ending where another line goes on (a transposition) ends
+        // there too: the client counts it so.
+        let t = add_chapters(&conn, book.id, Some("t"), Some("1. e4 (1. d4 e6 2. e4 d5) e6 2. d4 d5 3. Nc3 Bb4 *"), None).unwrap().remove(0).id;
+        assert_eq!(line_ends(&conn, t).unwrap().len(), 2);
+        assert_eq!(line_ends_to_evaluate(&conn, id, "Stockfish 19", 20).unwrap().len(), 2);
+        // One kept at depth 22: only the other is left to do, and it is put on the figures.
+        let snap = crate::engine::Snapshot { gen: 0, depth: 22, nodes: 1, nps: 0, lines: vec![crate::engine::Line { multipv: 1, eval_cp: Some(35), mate: None, pv_uci: vec!["g1f3".into()], wdl: None }], done: true, cached: false, engine: None, error: None };
+        crate::engine::save_eval(&conn, crate::engine::Kind::Stockfish, "Stockfish 19", &crate::engine::position_key(&ends[0].1), &snap).unwrap();
+        assert_eq!(line_ends_to_evaluate(&conn, id, "Stockfish 19", 20).unwrap().len(), 1);
+        assert_eq!(line_ends_to_evaluate(&conn, id, "Stockfish 19", 24).unwrap().len(), 2, "deeper wanted: both again");
+        let mut positions = chapter_stats(&conn, id).unwrap();
+        attach_line_end_evals(&conn, id, &mut positions).unwrap();
+        let e = positions.iter().find_map(|p| p.engine.clone()).expect("an evaluation on the figures");
+        assert_eq!((e.cp, e.depth, e.engine.as_str()), (Some(35), 22, "Stockfish 19"));
+    }
+
+    #[test]
+    fn the_chapters_left_alone_to_analyse() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let book = create_book(&conn, "French", "black", None, None, None).unwrap();
+        let id = add_chapters(&conn, book.id, Some("c"), Some("1. e4 e6 2. d4 d5 3. e5 (3. Nc3 Bb4) c5 *"), None).unwrap().remove(0).id;
+        let off = add_chapters(&conn, book.id, Some("off"), Some("1. e4 e6 2. d3 *"), None).unwrap().remove(0).id;
+        update_chapter(&conn, off, ChapterPatch { active: Some(false), ..Default::default() }).unwrap();
+        let mut done = std::collections::HashSet::new();
+        let ids = |l: Vec<(i64, String)>| l.into_iter().map(|(i, _)| i).collect::<Vec<_>>();
+        // Just changed: not yet.
+        assert!(chapters_to_analyse(&conn, 15, 24, &mut done).unwrap().is_empty());
+        conn.execute("UPDATE repertoire_chapters SET updated_at = updated_at - INTERVAL 20 MINUTE", []).unwrap();
+        assert_eq!(ids(chapters_to_analyse(&conn, 15, 24, &mut done).unwrap()), vec![id], "never analysed; the one switched off left out");
+        analyse_chapter(&conn, id).unwrap();
+        assert!(figures_current(&conn, id).unwrap());
+        assert!(chapters_to_analyse(&conn, 15, 0, &mut done).unwrap().is_empty(), "figures current, no Stockfish wanted");
+        assert_eq!(ids(chapters_to_analyse(&conn, 15, 24, &mut done).unwrap()), vec![id], "the line ends want Stockfish");
+        for (_, fen) in line_ends(&conn, id).unwrap() {
+            let snap = crate::engine::Snapshot { gen: 0, depth: 24, nodes: 1, nps: 0, lines: vec![crate::engine::Line { multipv: 1, eval_cp: Some(20), mate: None, pv_uci: vec!["a2a3".into()], wdl: None }], done: true, cached: false, engine: None, error: None };
+            crate::engine::save_eval(&conn, crate::engine::Kind::Stockfish, "Stockfish 19", &crate::engine::position_key(&fen), &snap).unwrap();
+        }
+        assert!(chapters_to_analyse(&conn, 15, 24, &mut done).unwrap().is_empty());
+        assert_eq!(done.len(), 1, "remembered as complete");
+        assert_eq!(ids(chapters_to_analyse(&conn, 15, 30, &mut done).unwrap()), vec![id], "deeper wanted");
     }
 
     #[test]

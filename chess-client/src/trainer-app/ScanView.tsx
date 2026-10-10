@@ -20,6 +20,9 @@ export default function ScanView({ onDone, onCancel }: Props) {
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState("Starting the camera…");
   const [error, setError] = useState<string | null>(null);
+  // How the reading goes, to tell what slows it: the camera's picture, how
+  // long a search takes, how many find a code.
+  const [detail, setDetail] = useState("");
 
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -43,20 +46,33 @@ export default function ScanView({ onDone, onCancel }: Props) {
       return jsQR(img.data, out, out, { inversionAttempts: "dontInvert" })?.data ?? null;
     };
 
+    let scans = 0, found = 0, spent = 0;
     const loop = async () => {
       const v = video.current;
       if (!running || !v || !rx) return;
       if (v.readyState >= 2) {
+        const t = performance.now();
         const text = await read(v).catch(() => null);
+        spent += performance.now() - t;
+        scans++;
         if (text) {
+          found++;
           rx.receive(text);
           setProgress(rx.progress());
           setStatus("Reading — hold steady");
           if (rx.done()) {
             running = false;
+            setStatus("Received");
+            // The full bar a moment, before the chapter opens.
+            await new Promise((r) => setTimeout(r, 300));
             try { onDone(await rx.chapter()); } catch (e) { setError(String(e instanceof Error ? e.message : e)); }
             return;
           }
+        }
+        if (scans % 10 === 0) {
+          const { read: got, of } = rx.parts();
+          setDetail(`Camera ${v.videoWidth}×${v.videoHeight} · ${Math.round(spent / scans)} ms a search · ${Math.round((found / scans) * 100)}% find a code`
+            + (of ? ` · ${got} parts read, the chapter is ${of}` : ""));
         }
       }
       if ("requestVideoFrameCallback" in v) v.requestVideoFrameCallback(() => void loop());
@@ -101,6 +117,7 @@ export default function ScanView({ onDone, onCancel }: Props) {
           <div className="h-full bg-white transition-[width] duration-200" style={{ width: `${Math.round(progress * 100)}%` }} />
         </div>
         <div className={`text-body-md ${error ? "text-red-300" : ""}`}>{error ?? `${status}${progress > 0 ? ` · ${Math.round(progress * 100)}%` : ""}`}</div>
+        {detail && !error && <div className="text-label-sm text-white/50">{detail}</div>}
         <button onClick={onCancel} className="h-10 px-5 rounded-full bg-white/15 text-label-lg">Cancel</button>
       </div>
     </div>

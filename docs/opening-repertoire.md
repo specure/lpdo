@@ -269,6 +269,25 @@ chapter saved as a file, or sent with **Include the chapter's comments**
 ticked in **Send to phone…**; the trainer's list says which: "with comments"
 or "no comments".)
 
+At the end of a replayed line the drill shows Stockfish's evaluation of the
+line's last position — "End of the line: +0.35 · Stockfish 19, depth 24". It is
+worked out on the computer: **Analyse chapter** (or **Analyse all chapters**)
+evaluates the end of every line with the server's Stockfish, in the
+background, to the depth set under Maintenance → Repertoire (**Stockfish at
+the ends of the lines**: 24 by default, a few seconds a position; 0 for none).
+Positions already evaluated as deep are not done again; while the Engine panel
+analyses, the job waits. Send or save the chapter for the phone after the
+analysis, for the phone to have the evaluations.
+
+You need not start it: the server analyses the chapters of the active books
+by itself — a chapter new or with its moves changed, once nobody has changed it
+for 15 minutes — one at a time, never beside another job, Stockfish at a lower
+priority. The first time it goes through every active chapter, which takes a
+while; then only the ones you change. **Analyse chapters by themselves** under
+Maintenance → Repertoire switches it off, or sets the minutes. The Activity
+panel names the chapter in progress, and keeps the chapters analysed this way,
+one after another, as a single entry — **Show all** lists them.
+
 ### On the phone
 
 The **LPDO Trainer** is the same drill on your phone, offline:
@@ -279,7 +298,10 @@ account, nothing sent anywhere.
 
 To send it a chapter: **Send to phone…** in the chapter's ⋯ menu shows it as
 a moving QR code; tap **Scan** in the trainer and hold the camera on it until
-the bar is full — a few seconds; no network is involved. Or **Save for
+the bar is full — a few seconds, longer with the comments (the dialog says
+about how long); no network is involved. Hold the phone so the code fills the
+square; the line under the bar says how the reading goes (how often a picture
+finds a code — low means too far, at an angle, or a glare). Or **Save for
 phone…** saves `<book>-<chapter>.lpdo.json`: get the file onto the phone
 (mail, a cloud drive, a cable…) and open it in the trainer with **File**.
 Sending a chapter again replaces it there and keeps what you have learnt. The

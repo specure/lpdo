@@ -369,23 +369,9 @@ impl EvalStore {
     /// kept (the rule of `deeper`). In the background.
     fn save(&self, kind: Kind, ident: &str, position: &str, snap: &Snapshot) {
         if snap.lines.is_empty() { return; }
-        let Ok(lines) = serde_json::to_string(&snap.lines) else { return };
-        let further = match kind {
-            Kind::Lc0 => "excluded.nodes > engine_evals.nodes",
-            Kind::Stockfish => "(excluded.depth > engine_evals.depth OR (excluded.depth = engine_evals.depth AND excluded.nodes > engine_evals.nodes))",
-        };
-        let sql = format!(
-            "INSERT INTO engine_evals (engine, kind, position, depth, nodes, multipv, lines, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, now())
-             ON CONFLICT (engine, position) DO UPDATE SET
-               depth = excluded.depth, nodes = excluded.nodes, multipv = excluded.multipv,
-               lines = excluded.lines, updated_at = excluded.updated_at
-             WHERE excluded.multipv >= engine_evals.multipv AND {further}"
-        );
-        let (ident, position, kind_s) = (ident.to_string(), position.to_string(), kind_name(kind));
-        let (depth, nodes, multipv) = (snap.depth as i64, snap.nodes as i64, snap.lines.len() as i64);
+        let (ident, position, snap) = (ident.to_string(), position.to_string(), snap.clone());
         self.reads.spawn_fn(move |conn| {
-            if let Err(e) = conn.execute(&sql, duckdb::params![ident, kind_s, position, depth, nodes, multipv, lines]) {
+            if let Err(e) = save_eval(conn, kind, &ident, &position, &snap) {
                 eprintln!("engine results: could not keep a result: {e}");
             }
         });
@@ -455,6 +441,27 @@ impl EvalStore {
                 .map(|n| n as u64).map_err(|e| e.to_string())
         }).await
     }
+}
+
+/// Keep `snap` for `ident` and `position` in `engine_evals` if it goes
+/// further than what is kept there.
+pub(crate) fn save_eval(conn: &duckdb::Connection, kind: Kind, ident: &str, position: &str, snap: &Snapshot) -> duckdb::Result<()> {
+    if snap.lines.is_empty() { return Ok(()); }
+    let lines = serde_json::to_string(&snap.lines).unwrap_or_else(|_| "[]".to_string());
+    let further = match kind {
+        Kind::Lc0 => "excluded.nodes > engine_evals.nodes",
+        Kind::Stockfish => "(excluded.depth > engine_evals.depth OR (excluded.depth = engine_evals.depth AND excluded.nodes > engine_evals.nodes))",
+    };
+    let sql = format!(
+        "INSERT INTO engine_evals (engine, kind, position, depth, nodes, multipv, lines, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, now())
+         ON CONFLICT (engine, position) DO UPDATE SET
+           depth = excluded.depth, nodes = excluded.nodes, multipv = excluded.multipv,
+           lines = excluded.lines, updated_at = excluded.updated_at
+         WHERE excluded.multipv >= engine_evals.multipv AND {further}"
+    );
+    conn.execute(&sql, duckdb::params![ident, kind_name(kind), position, snap.depth as i64, snap.nodes as i64, snap.lines.len() as i64, lines])?;
+    Ok(())
 }
 
 fn kind_name(kind: Kind) -> &'static str {
@@ -687,7 +694,7 @@ fn deeper(kind: Kind, new: &Snapshot, old: &Snapshot) -> bool {
 
 /// A position's key: placement, side, castling and en passant — the move
 /// counters do not change the evaluation.
-fn position_key(fen: &str) -> String {
+pub(crate) fn position_key(fen: &str) -> String {
     fen.split_whitespace().take(4).collect::<Vec<_>>().join(" ")
 }
 
@@ -2213,6 +2220,107 @@ fn parse_info(t: &str) -> Option<Info> {
     Some(info)
 }
 
+// ── Background analysis (#327) ───────────────────────────────────────────────
+// The repertoire's analysis job evaluates the ends of a chapter's lines with
+// Stockfish, deep, on a process of its own (the settings of the server's
+// Stockfish), making way for the Engine panel: a search the panel's would
+// compete with is stopped, and done again once the panel is idle.
+
+static STOCKFISH: std::sync::OnceLock<Arc<Engine>> = std::sync::OnceLock::new();
+
+/// The server's Stockfish, for its jobs. Set once when the server starts.
+pub fn register_stockfish(engine: Arc<Engine>) {
+    let _ = STOCKFISH.set(engine);
+}
+
+pub fn stockfish() -> Option<Arc<Engine>> {
+    STOCKFISH.get().cloned()
+}
+
+impl Engine {
+    /// The Engine panel is searching (not frozen at its depth, not idle):
+    /// background work makes way.
+    pub fn busy(&self) -> bool {
+        let s = self.search.lock().unwrap();
+        s.searching && !s.frozen
+    }
+
+    /// A process of this engine of its own, for background work.
+    pub async fn background(&self) -> Result<Background, String> {
+        let settings = self.settings.lock().await.clone();
+        if !settings.enabled { return Err("Stockfish is switched off (Maintenance → Engines)".to_string()); }
+        let path = settings.path.clone().or_else(|| self.found().0.into_iter().next())
+            .ok_or_else(|| "No chess engine found on the server.".to_string())?;
+        let (child, stdin, stdout, name) = start(&path, &settings, self.kind).await?;
+        // Background work: a lower priority, so the computer stays responsive.
+        #[cfg(unix)]
+        if let Some(pid) = child.id() {
+            // SAFETY: setpriority only changes the scheduling priority of the child.
+            unsafe { libc::setpriority(libc::PRIO_PROCESS as _, pid as _, 10); }
+        }
+        Ok(Background { _child: child, stdin, stdout, kind: self.kind, ident: name, partial: String::new() })
+    }
+}
+
+/// A background engine process (see [`Engine::background`]); it ends when
+/// dropped.
+pub struct Background {
+    _child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    pub kind: Kind,
+    /// The engine's name, as its results are kept under ("Stockfish 19").
+    pub ident: String,
+    /// A line read in part when a wait for it ended.
+    partial: String,
+}
+
+impl Background {
+    /// Search `fen` to `depth`, single line: the deepest complete result,
+    /// scores from White's point of view. `interrupt` is asked every second;
+    /// when it says so the search is stopped and none returned.
+    pub async fn search(&mut self, fen: &str, depth: u32, interrupt: impl Fn() -> bool) -> Result<Option<Snapshot>, String> {
+        send(&mut self.stdin, "setoption name MultiPV value 1").await?;
+        send(&mut self.stdin, &format!("position fen {fen}")).await?;
+        send(&mut self.stdin, &format!("go depth {depth}")).await?;
+        let white = fen.split_whitespace().nth(1) != Some("b");
+        let (mut best, mut nodes, mut stopped) = (None::<(u32, Line)>, 0u64, false);
+        loop {
+            match tokio::time::timeout(Duration::from_secs(1), self.stdout.read_line(&mut self.partial)).await {
+                // Nothing yet: a moment to make way. What was read stays in
+                // `partial`, and the next read completes the line.
+                Err(_) => {
+                    if !stopped && interrupt() { send(&mut self.stdin, "stop").await?; stopped = true; }
+                    continue;
+                }
+                Ok(Err(e)) => return Err(e.to_string()),
+                Ok(Ok(0)) => return Err("the engine ended".to_string()),
+                Ok(Ok(_)) => {}
+            }
+            let line = std::mem::take(&mut self.partial);
+            let t = line.trim();
+            if t.starts_with("bestmove") { break; }
+            if let Some(info) = parse_info(t) {
+                if let Some(n) = info.nodes { nodes = n; }
+                if let (Some(d), Some(mut l)) = (info.depth, info.line) {
+                    if l.multipv == 1 {
+                        if !white {
+                            l.eval_cp = l.eval_cp.map(|c| -c);
+                            l.mate = l.mate.map(|m| -m);
+                            l.wdl = l.wdl.map(|[w, d, b]| [b, d, w]);
+                        }
+                        best = Some((d, l));
+                    }
+                }
+            }
+        }
+        if stopped { return Ok(None); }
+        Ok(best.map(|(d, l)| Snapshot {
+            gen: 0, depth: d, nodes, nps: 0, lines: vec![l], done: true, cached: false, engine: None, error: None,
+        }))
+    }
+}
+
 /// Physical processor cores. Linux counts distinct (package, core) pairs in
 /// /proc/cpuinfo (every logical one where it lists no core ids), macOS asks
 /// sysctl; elsewhere, or if that fails, two hardware threads per core are
@@ -2623,6 +2731,33 @@ done
         // Choosing an engine outside the standard locations is refused.
         assert!(engine.configure(Some("/bin/sh".into()), None, None).await.is_err());
         engine.shutdown().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod background_tests {
+    use super::*;
+
+    /// With Stockfish on the machine: a search to a depth, from White's side;
+    /// one interrupted gives nothing.
+    #[tokio::test]
+    async fn a_background_search_and_one_interrupted() {
+        let dir = std::env::temp_dir().join(format!("lpdo-bg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let engine = Engine::new(&dir);
+        if engine.found().0.is_empty() { eprintln!("no Stockfish here: skipped"); return; }
+        let mut bg = engine.background().await.unwrap();
+        // Black to move, White a queen up: good for White whoever moves.
+        let fen = "rnb1kbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 3";
+        let snap = bg.search(fen, 14, || false).await.unwrap().unwrap();
+        assert_eq!(snap.depth, 14);
+        assert!(snap.lines[0].eval_cp.unwrap_or(0) > 500 || snap.lines[0].mate.is_some_and(|m| m > 0), "{:?}", snap.lines[0]);
+        let t = std::time::Instant::now();
+        let none = bg.search("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 60, || t.elapsed() > Duration::from_secs(2)).await.unwrap();
+        assert!(none.is_none());
+        // The process goes on after an interruption.
+        assert!(bg.search(fen, 8, || false).await.unwrap().is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

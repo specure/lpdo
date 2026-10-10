@@ -1608,13 +1608,13 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
           ) : (
             <span className="text-label-sm text-on-surface-variant tabular-nums shrink-0" title={counts}>{c.lines}{c.lines_off ? `−${c.lines_off}` : ""}</span>
           )}
-          {/* Analysed for practice: a dot in a column of its own at the end,
-              an empty slot when not, so neither the counts nor the dots move. */}
-          {!c.model && <span className="shrink-0 w-2 flex justify-center"
-            title={analysedOn ? (stale ? `Changed since the analysis of ${analysedOn} — analyse again for the new moves` : `Analysed ${analysedOn}`) : "Not analysed"}>
+          {/* Analysed for practice: a checkmark in a column of its own at the
+              end — in another colour when the moves changed since — an empty
+              slot when not, so neither the counts nor the marks move. */}
+          {!c.model && <span className="shrink-0 w-3 flex justify-center text-label-md leading-none"
+            title={analysedOn ? (stale ? `Changed since the analysis of ${analysedOn} — analysed again by itself, or analyse it` : `Analysed ${analysedOn}`) : "Not analysed yet"}>
             {analysedOn && (
-              <span aria-label={stale ? "changed since analysed" : "analysed"}
-                className={`w-1.5 h-1.5 rounded-full ${stale ? "bg-tertiary" : "bg-primary"}`} />
+              <span aria-label={stale ? "changed since analysed" : "analysed"} className={stale ? "text-tertiary" : "text-primary"}>✓</span>
             )}
           </span>}
         </>

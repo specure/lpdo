@@ -907,6 +907,57 @@ const TRANSPOSED_GAMES: { value: TransposedGames; label: string; hint: string }[
   { value: "show", label: "Show the transposition in the respective chapter", hint: "both list it; the one it left says where it went" },
 ];
 
+/** Chapters analysed by the server itself (#327), once left alone a while. */
+function AutoAnalyse({ on, minutes, onSave }: { on: boolean; minutes: number; onSave: (p: { auto_analyse?: boolean; auto_analyse_after_min?: number }) => void }) {
+  const [value, setValue] = useState(String(minutes));
+  useEffect(() => setValue(String(minutes)), [minutes]);
+  const n = parseInt(value, 10);
+  return (
+    <div className="space-y-1 pt-2">
+      <div className="flex items-center gap-2 text-body-sm text-on-surface flex-wrap">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" checked={on} onChange={(e) => onSave({ auto_analyse: e.target.checked })} className="accent-primary" />
+          <span>Analyse chapters by themselves, once left alone for</span>
+        </label>
+        <input type="number" min={1} max={1440} value={value} disabled={!on} onChange={(e) => setValue(e.target.value)}
+          {...commitOn(() => { if (Number.isFinite(n) && n >= 1 && n !== minutes) onSave({ auto_analyse_after_min: n }); })}
+          className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums disabled:opacity-50" />
+        <span>minutes</span>
+      </div>
+      <p className="text-label-sm text-on-surface-variant">
+        The server analyses the chapters of the active books by itself — the database's figures, and Stockfish at the
+        ends of the lines — when a chapter is new or its moves changed, once nobody has changed it for this long; one
+        at a time, never beside another job, and waiting while the Engine panel analyses. The first time it goes
+        through every active chapter, which takes a while; then only the ones you change.
+      </p>
+    </div>
+  );
+}
+
+/** Stockfish at the ends of the lines (#327): the analysis job's depth. */
+function LineEndDepth({ depth, onSave }: { depth: number; onSave: (d: number) => void }) {
+  const [value, setValue] = useState(String(depth));
+  useEffect(() => setValue(String(depth)), [depth]);
+  const n = parseInt(value, 10);
+  return (
+    <div className="space-y-1 pt-2">
+      <div className="flex items-center gap-2 text-body-sm text-on-surface flex-wrap">
+        <span>Stockfish at the ends of the lines: depth</span>
+        <input type="number" min={0} max={60} value={value} onChange={(e) => setValue(e.target.value)}
+          {...commitOn(() => { if (Number.isFinite(n) && n >= 0 && n <= 60 && n !== depth) onSave(n); })}
+          className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
+        {depth !== 0 && <button onClick={() => onSave(0)} className="h-7 px-2 rounded-full text-label-md text-primary hover:bg-primary/8">Off</button>}
+      </div>
+      <p className="text-label-sm text-on-surface-variant">
+        Analyse chapter (and Analyse all chapters) evaluates the end of every line with the server's Stockfish to this
+        depth, in the background — the drill shows it when a line is replayed to its end. Each takes a few seconds at
+        24, the default; 0 for none. Positions already evaluated as deep are not done again, so raising it later only
+        works on what is shallower. While the Engine panel analyses, the job waits.
+      </p>
+    </div>
+  );
+}
+
 function RepertoireSection() {
   const [settings, setSettings] = useState<RepertoireSettings | null>(null);
   const [value, setValue] = useState("");
@@ -992,6 +1043,13 @@ function RepertoireSection() {
                 2.g3 c5 3.c4 through a 1.Nf3 chapter into a 1.c4 c5 one. It went into the chapter it reached last.
               </p>
             </fieldset>
+          )}
+          {settings.auto_analyse !== undefined && (
+            <AutoAnalyse on={settings.auto_analyse} minutes={settings.auto_analyse_after_min ?? 15}
+              onSave={(patch) => void save(patch)} />
+          )}
+          {settings.line_end_depth !== undefined && (
+            <LineEndDepth depth={settings.line_end_depth} onSave={(d) => void save({ line_end_depth: d })} />
           )}
           {note && <p className="text-body-sm text-success">{note}</p>}
         </div>
