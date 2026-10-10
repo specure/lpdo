@@ -1507,14 +1507,19 @@ fn run_job(
             // settings: a process of its own, started when first needed,
             // making way for the Engine panel (see engine::Background).
             let depth = crate::repertoire::settings().line_end_depth;
+            // Started by the server itself (a chapter left alone): figures
+            // still current are not worked out again.
+            let auto = p.get("auto").and_then(|v| v.as_bool()).unwrap_or(false);
             let mut engine: Option<crate::engine::Background> = None;
             let mut no_engine: Option<String> = None;
             let mut evaluated = 0u64;
             for (i, id) in ids.iter().enumerate() {
                 if reporter.is_cancelled() { return Ok(()); }
                 let chapter = format!("chapter {} of {n}", i + 1);
-                reporter.progress(i as u64, n, format!("Analysing {chapter}: the database's figures…"));
-                crate::repertoire::analyse_chapter(conn, *id)?;
+                if !(auto && crate::repertoire::figures_current(conn, *id)?) {
+                    reporter.progress(i as u64, n, format!("Analysing {chapter}: the database's figures…"));
+                    crate::repertoire::analyse_chapter(conn, *id)?;
+                }
                 if depth == 0 || no_engine.is_some() { continue; }
                 if engine.is_none() {
                     let started = match crate::engine::stockfish() {

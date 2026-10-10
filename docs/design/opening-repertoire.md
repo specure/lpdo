@@ -223,8 +223,11 @@ offered on the phone as a ready session.
 What the phone gets is worked out beforehand, in a **background job** on
 the server — **Analyse…** in a chapter's ⋯ menu, or a book's for all its
 chapters — with its progress on the chapter and a Cancel, as the server's
-other jobs. **Nothing runs by itself**: the analysis, and refreshing it
-later, are always started by hand — running it again fetches the figures
+other jobs. It runs **by itself** too (since the Stockfish pass): the server
+starts it for a chapter of an active book left alone 15 minutes (a setting;
+off in Maintenance) whose figures are missing or out of date, or whose line
+ends want Stockfish — one at a time, never beside another job. Started by hand,
+the analysis and refreshing it later work as before — running it again fetches the figures
 anew and evaluates what is missing (or below stronger settings than before).
 **Send to phone** only reads what is stored: instant, and it says how
 complete the chapter is ("analysed: 110 of 110 positions").

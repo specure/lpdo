@@ -2069,6 +2069,43 @@ async fn job_events_handler(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
+// ── Analysing repertoire chapters by themselves (#327) ──────────────────────
+
+/// Once a minute: with the setting on and no job queued or running, the next
+/// chapter that wants analysing — left alone the settings' minutes, its
+/// figures missing or out of date, or its line ends wanting Stockfish — goes
+/// to the analysis job, one at a time. A chapter is tried once a version per
+/// run of the server: one cancelled, or without a Stockfish to finish it, is
+/// not started again and again.
+fn spawn_auto_analyse(state: AppState) {
+    tokio::spawn(async move {
+        let mut tried: std::collections::HashSet<(i64, String)> = std::collections::HashSet::new();
+        let mut complete: std::collections::HashSet<(i64, String, u32)> = std::collections::HashSet::new();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            let s = crate::repertoire::settings();
+            if !s.auto_analyse { continue; }
+            if state.jobs.list().iter().any(|j| j.status == "queued" || j.status == "running") { continue; }
+            // Stockfish only when it can run: else the figures alone.
+            let depth = if s.line_end_depth > 0 && state.engine.on().await { s.line_end_depth } else { 0 };
+            let (quiet, mut done) = (s.auto_analyse_after_min, std::mem::take(&mut complete));
+            let (found, done) = state.reads.run(move |conn| {
+                let r = crate::repertoire::chapters_to_analyse(conn, quiet, depth, &mut done);
+                (r, done)
+            }).await;
+            complete = done;
+            let next = match found {
+                Ok(list) => list.into_iter().find(|c| !tried.contains(c)),
+                Err(e) => { eprintln!("repertoire: could not look for chapters to analyse: {e:#}"); None }
+            };
+            if let Some((id, updated)) = next {
+                tried.insert((id, updated));
+                state.jobs.submit("repertoire_analyse".to_string(), serde_json::json!({ "chapters": [id], "auto": true }));
+            }
+        }
+    });
+}
+
 // ── Local engines (#309) ──────────────────────────────────────────────────────
 // Stockfish and Lc0. Every endpoint takes `engine=lc0` for the second one;
 // without it, Stockfish — so clients from before Lc0 keep working.
@@ -2930,6 +2967,7 @@ pub async fn run(
     crate::cloud_eval::set_store(reads.clone());
     lc0.set_store(crate::engine::EvalStore::new(reads.clone()));
     let state = AppState { reads, writer, jobs, db_path, setup, engine, lc0 };
+    spawn_auto_analyse(state.clone());
 
     // A leftover sentinel means a prior first-run setup didn't finish cleanly. The
     // unbootable case was already handled by the startup safety-net (which wipes +

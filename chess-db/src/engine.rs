@@ -2252,6 +2252,12 @@ impl Engine {
         let path = settings.path.clone().or_else(|| self.found().0.into_iter().next())
             .ok_or_else(|| "No chess engine found on the server.".to_string())?;
         let (child, stdin, stdout, name) = start(&path, &settings, self.kind).await?;
+        // Background work: a lower priority, so the computer stays responsive.
+        #[cfg(unix)]
+        if let Some(pid) = child.id() {
+            // SAFETY: setpriority only changes the scheduling priority of the child.
+            unsafe { libc::setpriority(libc::PRIO_PROCESS as _, pid as _, 10); }
+        }
         Ok(Background { _child: child, stdin, stdout, kind: self.kind, ident: name, partial: String::new() })
     }
 }

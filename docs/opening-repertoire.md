@@ -279,6 +279,13 @@ Positions already evaluated as deep are not done again; while the Engine panel
 analyses, the job waits. Send or save the chapter for the phone after the
 analysis, for the phone to have the evaluations.
 
+You need not start it: the server analyses the chapters of the active books
+by itself — a chapter new or with its moves changed, once nobody has changed it
+for 15 minutes — one at a time, never beside another job, Stockfish at a lower
+priority. The first time it goes through every active chapter, which takes a
+while; then only the ones you change. **Analyse chapters by themselves** under
+Maintenance → Repertoire switches it off, or sets the minutes.
+
 ### On the phone
 
 The **LPDO Trainer** is the same drill on your phone, offline:
