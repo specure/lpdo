@@ -106,7 +106,7 @@ export function trunk(chapter: LpdoChapter, path: PNode[] = []): PNode[] {
   }
 }
 
-/** Distinct own-move positions in these lines: the drill's decisions. */
+/** Distinct own-move positions in these lines: the moves the drill asks. */
 export function decisions(lines: Line[], color: Side): number {
   const seen = new Set<PNode>();
   for (const l of lines) {

@@ -22,6 +22,9 @@ export default function SendToPhoneDialog({ chapterId, onClose, onSaveFile }: Pr
   const [pkg, setPkg] = useState<LpdoChapter | null>(null);
   const [frames, setFrames] = useState<Frames | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The chapter's comments go too when asked: the drill's replay shows them,
+  // but they make the code about twice as long to read.
+  const [comments, setComments] = useState(false);
   const code = useRef<HTMLCanvasElement>(null);
   const link = useRef<HTMLCanvasElement>(null);
 
@@ -29,15 +32,14 @@ export default function SendToPhoneDialog({ chapterId, onClose, onSaveFile }: Pr
     let gone = false;
     void (async () => {
       try {
-        // No comments: the drill does not show them, and the code is half
-        // as long without.
-        const p = await chapterPackage(chapterId, { noComments: true });
+        setFrames(null);
+        const p = await chapterPackage(chapterId, { noComments: !comments });
         const f = await encodeChapter(p);
         if (!gone) { setPkg(p); setFrames(f); }
       } catch (e) { if (!gone) setError(String(e instanceof Error ? e.message : e)); }
     })();
     return () => { gone = true; };
-  }, [chapterId]);
+  }, [chapterId, comments]);
 
   // The loop of codes.
   useEffect(() => {
@@ -80,6 +82,10 @@ export default function SendToPhoneDialog({ chapterId, onClose, onSaveFile }: Pr
               <li>On your phone, open the <b>LPDO Trainer</b> and tap <b>Scan</b>.</li>
               <li>Point the camera at the code and hold it steady until the bar is full — a few seconds.</li>
             </ol>
+            <label className="flex items-start gap-2 text-body-sm cursor-pointer">
+              <input type="checkbox" checked={comments} onChange={(e) => setComments(e.target.checked)} className="accent-primary mt-0.5" />
+              <span>Include the chapter's comments <span className="text-on-surface-variant">— shown when you replay a line; about twice as long to scan</span></span>
+            </label>
             {frames && (
               <div className="text-label-md text-on-surface-variant">
                 {(frames.bytes / 1024).toFixed(1)} KB in {frames.fragments} parts · about {Math.ceil(frames.fragments / FRAMES_PER_SECOND * 1.3)} s to read
