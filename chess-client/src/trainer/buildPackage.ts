@@ -15,6 +15,8 @@ export interface PositionStat {
   games: number;
   moves: { san: string; games: number; score: number }[];
   eval: { cp: number } | { mate: number } | null;
+  /** At a line's end: Stockfish's evaluation, as kept (White's side). */
+  engine?: { cp?: number; mate?: number; depth: number; engine: string } | null;
 }
 
 /** One's own games, from the live lookup (GET /repertoire/chapters/{id}/mine). */
@@ -100,6 +102,10 @@ export function buildPackage(input: PackageInput): LpdoChapter {
     if (a.off) out.off = true;
     const stats = toStats(byKey.get(positionKey(n.fen)));
     if (stats) out.stats = stats;
+    const after = byKey.get(positionKey(n.fen))?.engine;
+    if (after && (after.cp != null || after.mate != null)) {
+      out.engine = { eval: after.mate != null ? { mate: after.mate } : { cp: after.cp! }, depth: after.depth, name: after.engine };
+    }
     const mine = mineByKey.get(positionKey(n.fen));
     if (mine) out.mine = mine;
     out.children = children(line, i + 1, n.fen);

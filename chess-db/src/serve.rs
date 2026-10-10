@@ -1390,9 +1390,14 @@ struct ChapterStatsQuery {
 async fn repertoire_chapter_stats_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<ChapterStatsQuery>) -> ApiResult<crate::repertoire::Analysis> {
     state.reads.run(move |conn| {
         let err = |e: anyhow::Error| (StatusCode::NOT_FOUND, format!("{e:#}"));
-        if let Some(a) = crate::repertoire::stored_analysis(conn, id).map_err(err)? { return Ok(Json(a)); }
+        // The ends of the lines with Stockfish's evaluation, as kept now.
+        let with_evals = |mut a: crate::repertoire::Analysis| {
+            let _ = crate::repertoire::attach_line_end_evals(conn, id, &mut a.positions);
+            a
+        };
+        if let Some(a) = crate::repertoire::stored_analysis(conn, id).map_err(err)? { return Ok(Json(with_evals(a))); }
         let positions = if q.stored.unwrap_or(false) { Vec::new() } else { crate::repertoire::chapter_stats(conn, id).map_err(err)? };
-        Ok(Json(crate::repertoire::Analysis { analysed_at: None, chapter_updated: None, positions }))
+        Ok(Json(with_evals(crate::repertoire::Analysis { analysed_at: None, chapter_updated: None, positions })))
     }).await
 }
 
@@ -2921,6 +2926,7 @@ pub async fn run(
     let lc0 = crate::engine::Engine::new_kind(db_path.parent().unwrap_or(std::path::Path::new(".")), crate::engine::Kind::Lc0);
     // The engines keep their results in the database (engine_evals).
     engine.set_store(crate::engine::EvalStore::new(reads.clone()));
+    crate::engine::register_stockfish(engine.clone());
     crate::cloud_eval::set_store(reads.clone());
     lc0.set_store(crate::engine::EvalStore::new(reads.clone()));
     let state = AppState { reads, writer, jobs, db_path, setup, engine, lc0 };

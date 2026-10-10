@@ -269,6 +269,16 @@ chapter saved as a file, or sent with **Include the chapter's comments**
 ticked in **Send to phone…**; the trainer's list says which: "with comments"
 or "no comments".)
 
+At the end of a replayed line the drill shows Stockfish's evaluation of the
+line's last position — "End of the line: +0.35 · Stockfish 19, depth 24". It is
+worked out on the computer: **Analyse chapter** (or **Analyse all chapters**)
+evaluates the end of every line with the server's Stockfish, in the
+background, to the depth set under Maintenance → Repertoire (**Stockfish at
+the ends of the lines**: 24 by default, a few seconds a position; 0 for none).
+Positions already evaluated as deep are not done again; while the Engine panel
+analyses, the job waits. Send or save the chapter for the phone after the
+analysis, for the phone to have the evaluations.
+
 ### On the phone
 
 The **LPDO Trainer** is the same drill on your phone, offline:

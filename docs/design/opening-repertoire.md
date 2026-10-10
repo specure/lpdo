@@ -556,6 +556,12 @@ pace.
    sessions, study and drill — in the code the phone will share (the drill
    done: **Drill** beside a chapter's Edit lines, `trainer/drill.ts`,
    `DrillView.tsx`; the session by coverage, cards in the browser's storage);
+   Stockfish at the ends of lines done: the analysis job, after the figures,
+   runs a Stockfish process of its own (`engine::Background`) to the
+   settings' `line_end_depth` (default 24) on every line end not kept as deep,
+   keeps them in `engine_evals` (shared with the Engine panel), and stops a
+   search for the panel's, resuming when it is idle; the figures carry them
+   (`PositionStat.engine`), the package too (`PNode.engine`);
    (b) the phone trainer (the web app done: `chess-client/src/trainer-app/`,
    `vite.trainer.config.ts`, published by `.github/workflows/trainer.yml` to
    GitHub Pages `/trainer/`; chapters by file — **Save for phone…** — and by

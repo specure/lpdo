@@ -1503,12 +1503,63 @@ fn run_job(
                 .unwrap_or_default();
             if ids.is_empty() { return Err(anyhow!("repertoire_analyse: 'chapters' required")); }
             let n = ids.len() as u64;
+            // Stockfish at the ends of the lines, to the depth of the
+            // settings: a process of its own, started when first needed,
+            // making way for the Engine panel (see engine::Background).
+            let depth = crate::repertoire::settings().line_end_depth;
+            let mut engine: Option<crate::engine::Background> = None;
+            let mut no_engine: Option<String> = None;
+            let mut evaluated = 0u64;
             for (i, id) in ids.iter().enumerate() {
                 if reporter.is_cancelled() { return Ok(()); }
-                reporter.progress(i as u64, n, format!("Analysing chapter {} of {n}…", i + 1));
+                let chapter = format!("chapter {} of {n}", i + 1);
+                reporter.progress(i as u64, n, format!("Analysing {chapter}: the database's figures…"));
                 crate::repertoire::analyse_chapter(conn, *id)?;
+                if depth == 0 || no_engine.is_some() { continue; }
+                if engine.is_none() {
+                    let started = match crate::engine::stockfish() {
+                        Some(sf) => rt.block_on(async { sf.background().await }),
+                        None => Err("no Stockfish on the server".to_string()),
+                    };
+                    match started {
+                        Ok(b) => engine = Some(b),
+                        Err(e) => { reporter.log(format!("No Stockfish for the ends of the lines: {e}")); no_engine = Some(e); continue; }
+                    }
+                }
+                let bg = engine.as_mut().expect("started above");
+                let todo = crate::repertoire::line_ends_to_evaluate(conn, *id, &bg.ident, depth)?;
+                let mut done = 0usize;
+                while done < todo.len() {
+                    if reporter.is_cancelled() { return Ok(()); }
+                    // The Engine panel searching: wait until it is idle.
+                    let panel = crate::engine::stockfish();
+                    let busy = || panel.as_ref().is_some_and(|p| p.busy());
+                    if busy() {
+                        reporter.progress(i as u64, n, format!("Analysing {chapter}: waiting while the Engine panel analyses…"));
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        continue;
+                    }
+                    reporter.progress(i as u64, n, format!("Analysing {chapter}: Stockfish, depth {depth} — line end {} of {}", done + 1, todo.len()));
+                    let fen = &todo[done];
+                    let cancelled = || reporter.is_cancelled() || busy();
+                    match rt.block_on(bg.search(fen, depth, cancelled)) {
+                        // Made way (or cancelled): the same position again.
+                        Ok(None) => continue,
+                        Ok(Some(snap)) => {
+                            crate::engine::save_eval(conn, bg.kind, &bg.ident, &crate::engine::position_key(fen), &snap)?;
+                            evaluated += 1;
+                        }
+                        Err(e) => return Err(anyhow!("Stockfish: {e}")),
+                    }
+                    done += 1;
+                }
             }
-            reporter.done(if n == 1 { "Chapter analysed.".to_string() } else { format!("{n} chapters analysed.") });
+            let what = if n == 1 { "Chapter analysed".to_string() } else { format!("{n} chapters analysed") };
+            reporter.done(match (depth, &no_engine) {
+                (0, _) => format!("{what}."),
+                (_, Some(e)) => format!("{what} — without Stockfish: {e}."),
+                _ => format!("{what}; Stockfish evaluated {evaluated} line {} at depth {depth}.", if evaluated == 1 { "end" } else { "ends" }),
+            });
         }
         "backup" => {
             let collection = p.get("collection").and_then(|v| v.as_str())
@@ -2219,3 +2270,46 @@ mod reopen_tests {
     }
 }
 
+
+#[cfg(test)]
+mod repertoire_analyse_tests {
+    use super::*;
+
+    /// The analysis job with Stockfish on the machine: the figures, then the
+    /// ends of the lines to the settings' depth, kept and on the figures.
+    #[test]
+    fn analyse_evaluates_the_ends_of_the_lines() {
+        let dir = std::env::temp_dir().join(format!("lpdo-analyse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let engine = crate::engine::Engine::new(&dir);
+        if engine.found().0.is_empty() { eprintln!("no Stockfish here: skipped"); return; }
+        crate::engine::register_stockfish(engine);
+        let db = dir.join("t.db");
+        let conn = crate::db::open(&db).unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let book = crate::repertoire::create_book(&conn, "French", "black", None, None, None).unwrap();
+        let id = crate::repertoire::add_chapters_as(&conn, book.id, Some("c"), Some("1. e4 e6 2. d4 d5 3. e5 (3. Nc3 Bb4) c5 *"), None, false).unwrap().remove(0).id;
+        let mut s = crate::repertoire::settings();
+        s.line_end_depth = 10;
+        crate::repertoire::set_settings(s).unwrap();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let reads = ReadPool::new(vec![conn.try_clone().unwrap()]);
+        let jm = Arc::new(JobManager::new(ConnActor::new(conn.try_clone().unwrap()), reads, rt.handle().clone(), db.clone()));
+        run_job("repertoire_analyse", &serde_json::json!({ "chapters": [id] }), &conn, &Reporter::silent(), rt.handle(), &db, &jm).unwrap();
+
+        let kept: i64 = conn.query_row("SELECT count(*) FROM engine_evals WHERE kind = 'stockfish' AND depth >= 10", [], |r| r.get(0)).unwrap();
+        assert_eq!(kept, 2, "both line ends evaluated");
+        let mut a = crate::repertoire::stored_analysis(&conn, id).unwrap().unwrap();
+        crate::repertoire::attach_line_end_evals(&conn, id, &mut a.positions).unwrap();
+        assert_eq!(a.positions.iter().filter(|p| p.engine.is_some()).count(), 2);
+        // Again: nothing left to do at that depth.
+        let ident: String = conn.query_row("SELECT any_value(engine) FROM engine_evals", [], |r| r.get(0)).unwrap();
+        assert!(crate::repertoire::line_ends_to_evaluate(&conn, id, &ident, 10).unwrap().is_empty());
+        let mut s = crate::repertoire::settings();
+        s.line_end_depth = crate::repertoire::LINE_END_DEPTH;
+        crate::repertoire::set_settings(s).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

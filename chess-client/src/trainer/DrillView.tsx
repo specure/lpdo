@@ -154,7 +154,11 @@ export default function DrillView({ chapter, store, onClose }: Props) {
   // next; else the next one, after a moment.
   useEffect(() => {
     if (phase !== "lineDone" || !cards) return;
-    setLastLine({ moves: path, missed: missedPlies });
+    // The line to replay: on to its end — where the run stopped (nothing
+    // further due) the chapter's main continuation, to the end of the line.
+    const moves = [...path];
+    for (let next = nextMoves(drill, moves)[0]; next; next = nextMoves(drill, moves)[0]) moves.push(next);
+    setLastLine({ moves, missed: missedPlies });
     if (missedPlies.length) { setPhase("lineEnd"); return; }
     const t = window.setTimeout(() => startLine(cards, anyLine), 1100);
     return () => window.clearTimeout(t);
@@ -344,6 +348,20 @@ export default function DrillView({ chapter, store, onClose }: Props) {
             <LineText moves={replaying ?? lastLine?.moves ?? path} missed={lastLine?.missed ?? missedPlies}
               at={replaying ? path.length - 1 : undefined} />
           )}
+          {/* At the line's end: Stockfish's verdict, kept by the analysis job. */}
+          {(phase === "lineEnd" || phase === "replayEnd") && lastLine && (() => {
+            const end = lastLine.moves[lastLine.moves.length - 1]?.engine;
+            return end ? (
+              <div className="text-body-sm">
+                End of the line: <span className="font-semibold tabular-nums">{"mate" in end.eval
+                  ? `${end.eval.mate > 0 ? "" : "−"}#${Math.abs(end.eval.mate)}`
+                  : `${end.eval.cp > 0 ? "+" : end.eval.cp < 0 ? "−" : ""}${(Math.abs(end.eval.cp) / 100).toFixed(2)}`}</span>
+                <span className="text-on-surface-variant"> · {end.name}, depth {end.depth}</span>
+              </div>
+            ) : (
+              <div className="text-label-sm text-on-surface-variant">No engine evaluation of the line's end yet — analyse the chapter on the computer (Stockfish at the ends of the lines).</div>
+            );
+          })()}
           {(phase === "lineEnd" || phase === "replayEnd") && cards && lastLine && (
             <div className="flex gap-2 flex-wrap">
               <button onClick={() => startReplay(lastLine.moves)} className={`${pill} bg-primary text-on-primary`}>

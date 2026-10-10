@@ -907,6 +907,30 @@ const TRANSPOSED_GAMES: { value: TransposedGames; label: string; hint: string }[
   { value: "show", label: "Show the transposition in the respective chapter", hint: "both list it; the one it left says where it went" },
 ];
 
+/** Stockfish at the ends of the lines (#327): the analysis job's depth. */
+function LineEndDepth({ depth, onSave }: { depth: number; onSave: (d: number) => void }) {
+  const [value, setValue] = useState(String(depth));
+  useEffect(() => setValue(String(depth)), [depth]);
+  const n = parseInt(value, 10);
+  return (
+    <div className="space-y-1 pt-2">
+      <div className="flex items-center gap-2 text-body-sm text-on-surface flex-wrap">
+        <span>Stockfish at the ends of the lines: depth</span>
+        <input type="number" min={0} max={60} value={value} onChange={(e) => setValue(e.target.value)}
+          {...commitOn(() => { if (Number.isFinite(n) && n >= 0 && n <= 60 && n !== depth) onSave(n); })}
+          className="w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums" />
+        {depth !== 0 && <button onClick={() => onSave(0)} className="h-7 px-2 rounded-full text-label-md text-primary hover:bg-primary/8">Off</button>}
+      </div>
+      <p className="text-label-sm text-on-surface-variant">
+        Analyse chapter (and Analyse all chapters) evaluates the end of every line with the server's Stockfish to this
+        depth, in the background — the drill shows it when a line is replayed to its end. Each takes a few seconds at
+        24, the default; 0 for none. Positions already evaluated as deep are not done again, so raising it later only
+        works on what is shallower. While the Engine panel analyses, the job waits.
+      </p>
+    </div>
+  );
+}
+
 function RepertoireSection() {
   const [settings, setSettings] = useState<RepertoireSettings | null>(null);
   const [value, setValue] = useState("");
@@ -992,6 +1016,9 @@ function RepertoireSection() {
                 2.g3 c5 3.c4 through a 1.Nf3 chapter into a 1.c4 c5 one. It went into the chapter it reached last.
               </p>
             </fieldset>
+          )}
+          {settings.line_end_depth !== undefined && (
+            <LineEndDepth depth={settings.line_end_depth} onSave={(d) => void save({ line_end_depth: d })} />
           )}
           {note && <p className="text-body-sm text-success">{note}</p>}
         </div>

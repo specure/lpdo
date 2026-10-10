@@ -239,6 +239,9 @@ export interface RepertoireSettings {
   /** Where a game counts that went from one chapter into another (absent
    *  from older servers). */
   transposed_games?: TransposedGames;
+  /** Stockfish at the ends of the lines, by the analysis job: its depth; 0
+   *  for none (absent from older servers). */
+  line_end_depth?: number;
 }
 export type OverviewGames = "none" | "unclaimed" | "every";
 export type TransposedGames = "show" | "target";

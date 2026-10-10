@@ -53,6 +53,9 @@ export interface PNode {
   off?: true;
   /** The position after the move. */
   stats?: Stats;
+  /** At a line's end: Stockfish's evaluation of the position after the move
+   *  (White's side), from the analysis job — `name` the engine ("Stockfish 19"). */
+  engine?: { eval: Eval; depth: number; name: string };
   /** One's own games through the position after the move. */
   mine?: Mine;
   /** The moves from the position after this one, in the chapter's order —
