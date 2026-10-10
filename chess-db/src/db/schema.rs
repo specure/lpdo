@@ -558,6 +558,10 @@ fn init_repertoire(conn: &Connection) -> Result<()> {
         -- out of date when they differ, not on any save (comments, FENs).
         ALTER TABLE repertoire_chapters ADD COLUMN IF NOT EXISTS positions_hash BIGINT;
         ALTER TABLE repertoire_analysis ADD COLUMN IF NOT EXISTS positions_hash BIGINT;
+        -- Complete: Stockfish has been at the ends of the lines too (the
+        -- analysis job writes the figures first); only then marked analysed.
+        -- Analyses from before it count as complete.
+        ALTER TABLE repertoire_analysis ADD COLUMN IF NOT EXISTS complete BOOLEAN DEFAULT TRUE;
         ALTER TABLE repertoire_books ADD COLUMN IF NOT EXISTS author VARCHAR;
         ALTER TABLE repertoire_books ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE;
         -- Model games: complete annotated games kept with a book to show its

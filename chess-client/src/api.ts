@@ -164,6 +164,11 @@ export function getJobs(): Promise<Job[]> {
   return apiGet<Job[]>("/jobs");
 }
 
+/** A window event the Activity view sends for every job it sees end (done,
+ *  failed or cancelled), `detail` the job — so a page can read again what a
+ *  job it did not start changed (the server's own chapter analysis). */
+export const JOB_SETTLED_EVENT = "lpdo:job-settled";
+
 // ── Deepen watches (chessdb depth, #221) ──────────────────────────────────────
 
 /** A background poller that notifies when chessdb revises a position's evaluations. */

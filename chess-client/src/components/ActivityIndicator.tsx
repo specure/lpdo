@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { getJobs, cancelJob, retryJob, getCloudWatches, deleteCloudWatch } from "../api";
+import { getJobs, cancelJob, retryJob, getCloudWatches, deleteCloudWatch, JOB_SETTLED_EVENT } from "../api";
 import type { Job } from "../types";
 import type { CloudWatch } from "../api";
 import { useLocalJobs, type LocalJob } from "../lib/backup";
@@ -380,15 +380,18 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
         setUnreachable(false);
         // Detect jobs that newly reached a terminal state and notify the host
         // once each (imports create/populate collections in the background).
-        const terminalNow = j
-          .filter((x) => x.status === "done" || x.status === "error" || x.status === "cancelled")
-          .map((x) => x.id);
+        const terminalNow = j.filter((x) => x.status === "done" || x.status === "error" || x.status === "cancelled");
         if (settledRef.current === null) {
-          settledRef.current = new Set(terminalNow); // seed: don't fire for old history
+          settledRef.current = new Set(terminalNow.map((x) => x.id)); // seed: don't fire for old history
         } else {
           const seen = settledRef.current;
           let fresh = false;
-          for (const id of terminalNow) if (!seen.has(id)) { seen.add(id); fresh = true; }
+          for (const x of terminalNow) {
+            if (seen.has(x.id)) continue;
+            seen.add(x.id);
+            fresh = true;
+            window.dispatchEvent(new CustomEvent<Job>(JOB_SETTLED_EVENT, { detail: x }));
+          }
           if (fresh) onSettledRef.current?.();
         }
         const now = Date.now();

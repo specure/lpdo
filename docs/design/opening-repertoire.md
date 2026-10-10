@@ -594,7 +594,13 @@ pace.
    `Background::search` gives a snapshot without lines for them, `None` only
    when interrupted, and the job moves on from an empty one; the job
    on a reader, which the pool then passes over while it is busy (reads go
-   to the least loaded connection); the figures carry them
+   to the least loaded connection); the figures are kept first, not
+   complete (`repertoire_analysis.complete`), and the chapter is marked
+   analysed (`finish_analysis`) once Stockfish is done with its line ends —
+   a run stopped before that leaves it to be finished, the figures not made
+   again; the Activity view sends `lpdo:job-settled` for every job it sees
+   end, and the Repertoire page reads its list again on a chapter
+   analysis's; the figures carry them
    (`PositionStat.engine`), the package too (`PNode.engine`);
    (b) the phone trainer (the web app done: `chess-client/src/trainer-app/`,
    `vite.trainer.config.ts`, published by `.github/workflows/trainer.yml` to

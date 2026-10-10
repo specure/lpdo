@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { GameSummary } from "../types";
+import type { GameSummary, Job } from "../types";
 import {
   addChapters, bookPgnPath, chapterPgnPath, createBook, deleteBook, deleteChapter, getChapter, listRepertoire,
   saveChapterMoves, updateBook, updateChapter, documentOf, analyseChapters, getBookGames, scorePct, importBooks, importBooksZip, restoreBooks, deleteChapters, orderChapters,
@@ -17,7 +17,7 @@ import { saveTextFile } from "../lib/exportPgn";
 import { useJobProgress } from "../hooks/useJobProgress";
 import { currentMyPlayer } from "./MyStatsWidget";
 import { buildPlayback } from "../lib/useGamePgn";
-import { apiUrl } from "../api";
+import { apiUrl, JOB_SETTLED_EVENT } from "../api";
 import AnalysisPage, { type AnalysisTab } from "./AnalysisPage";
 import MergeChaptersDialog from "./repertoire/MergeChaptersDialog";
 import DrillDialog from "./repertoire/DrillDialog";
@@ -323,6 +323,16 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
     if (wasAnalysing.current && !analysing) void load();
     wasAnalysing.current = analysing;
   }, [analysing, load]);
+  // The server's own analysis, a chapter at a time: each one ended puts its
+  // mark in the list.
+  useEffect(() => {
+    const onSettled = (e: Event) => {
+      const job = (e as CustomEvent<Job>).detail;
+      if (job.type === "repertoire_analyse" && job.status !== "error") void load();
+    };
+    window.addEventListener(JOB_SETTLED_EVENT, onSettled);
+    return () => window.removeEventListener(JOB_SETTLED_EVENT, onSettled);
+  }, [load]);
 
   // Merge the chapters into the topmost of them: its tree gains the others'
   // lines and comments, then they are deleted.
@@ -1612,7 +1622,7 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
               end — in another colour when the moves changed since — an empty
               slot when not, so neither the counts nor the marks move. */}
           {!c.model && <span className="shrink-0 w-3 flex justify-center text-label-md leading-none"
-            title={analysedOn ? (stale ? `Changed since the analysis of ${analysedOn} — analysed again by itself, or analyse it` : `Analysed ${analysedOn}`) : "Not analysed yet"}>
+            title={analysedOn ? (stale ? `Changed since the analysis of ${analysedOn} — analysed again in the background, or analyse it` : `Analysed ${analysedOn}`) : "Not analysed yet"}>
             {analysedOn && (
               <span aria-label={stale ? "changed since analysed" : "analysed"} className={stale ? "text-tertiary" : "text-primary"}>✓</span>
             )}
