@@ -96,6 +96,22 @@ export function hasComments(c: LpdoChapter): boolean {
   return walk(c.tree);
 }
 
+/** The ends of the package's lines (switched-off ones left out): how many,
+ *  and how many carry Stockfish's evaluation (the analysis job's). */
+export function lineEndEvals(c: LpdoChapter): { ends: number; evaluated: number } {
+  let ends = 0, evaluated = 0;
+  const walk = (ns: PNode[]) => {
+    for (const n of ns) {
+      if (n.off) continue;
+      const on = n.children.filter((k) => !k.off);
+      if (on.length) walk(on);
+      else { ends++; if (n.engine) evaluated++; }
+    }
+  };
+  walk(c.tree);
+  return { ends, evaluated };
+}
+
 /** A package's problems, or none — for one read from a file or a scan. */
 export function validate(x: unknown): string | null {
   const c = x as Partial<LpdoChapter> | null;

@@ -7,7 +7,8 @@ import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
 import { chapterPackage } from "../../lib/practicePackage";
 import { encodeChapter, FRAMES_PER_SECOND, type Frames } from "../../trainer/qrTransfer";
-import type { LpdoChapter } from "../../trainer/format";
+import { lineEndEvals, type LpdoChapter } from "../../trainer/format";
+import { analyseChapters } from "../../lib/repertoire";
 
 export const TRAINER_URL = "https://specure.github.io/lpdo/trainer/";
 
@@ -25,6 +26,8 @@ export default function SendToPhoneDialog({ chapterId, onClose, onSaveFile }: Pr
   // The chapter's comments go too when asked: the drill's replay shows them,
   // but they make the code about twice as long to read.
   const [comments, setComments] = useState(false);
+  // Analyse now: the job asked for.
+  const [analysing, setAnalysing] = useState<"no" | "asked" | "failed">("no");
   const code = useRef<HTMLCanvasElement>(null);
   const link = useRef<HTMLCanvasElement>(null);
 
@@ -86,6 +89,25 @@ export default function SendToPhoneDialog({ chapterId, onClose, onSaveFile }: Pr
               <input type="checkbox" checked={comments} onChange={(e) => setComments(e.target.checked)} className="accent-primary mt-0.5" />
               <span>Include the chapter's comments <span className="text-on-surface-variant">— shown when you replay a line; about twice as long to scan</span></span>
             </label>
+            {/* Not analysed through: the ends of some lines lack Stockfish. */}
+            {pkg && (() => {
+              const { ends, evaluated } = lineEndEvals(pkg);
+              if (!ends || evaluated >= ends) return null;
+              return (
+                <div className="rounded-md bg-warning-container text-on-warning-container p-2.5 text-body-sm space-y-1.5">
+                  <div>
+                    <b>Not fully analysed yet</b> — Stockfish has evaluated {evaluated} of {ends} line ends. The others show no
+                    evaluation at the end of a replay. The server analyses chapters by itself; send it again once it is done.
+                  </div>
+                  {analysing === "no" ? (
+                    <button onClick={() => { void analyseChapters([chapterId]).then(() => setAnalysing("asked"), () => setAnalysing("failed")); }}
+                      className="h-7 px-3 rounded-full bg-on-warning-container/10 text-label-md hover:bg-on-warning-container/15">Analyse now</button>
+                  ) : (
+                    <div className="text-label-md">{analysing === "asked" ? "Analysis started — see the activity panel (⟳)." : "Could not start the analysis."}</div>
+                  )}
+                </div>
+              );
+            })()}
             {frames && (
               <div className="text-label-md text-on-surface-variant">
                 {(frames.bytes / 1024).toFixed(1)} KB in {frames.fragments} parts · about {Math.ceil(frames.fragments / FRAMES_PER_SECOND * 1.3)} s to read

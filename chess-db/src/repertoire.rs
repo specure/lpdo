@@ -156,6 +156,9 @@ pub struct PositionRow {
     pub after_key: String,
     /// The position after the move as a FEN — for the engine.
     pub after_fen: String,
+    /// The last move of a line (or of a variation): where a line ends, even
+    /// when the position goes on in another line.
+    pub ends_line: bool,
     /// No move switched off on the way here (the chapter's own switch is
     /// applied on top).
     pub active: bool,
@@ -192,6 +195,7 @@ struct Walker {
 impl Walker {
     fn close_frame(&mut self) {
         if let Some(f) = self.frames.pop() {
+            if let Some(i) = f.last_row { self.rows[i].ends_line = true; }
             if f.moves > 0 {
                 self.lines += 1;
                 if f.off { self.lines_off += 1; }
@@ -230,6 +234,7 @@ impl Visitor for Walker {
             zobrist, ply: f.ply, next_move: canonical, mover, active: !f.off,
             key: position_key(&before), after_zobrist, after_key: position_key(&f.pos),
             after_fen: Fen::from_position(&f.pos, EnPassantMode::Legal).to_string(),
+            ends_line: false,
         });
         f.prev = Some(before);
         f.prev_off = f.off;
@@ -1959,15 +1964,15 @@ pub fn match_line(conn: &Connection, sans: &[String], color: &str) -> Result<Vec
 
 // ── The ends of the lines: Stockfish (#327) ─────────────────────────────────
 
-/// The ends of a chapter's lines — positions it has no move from — of the
-/// lines not switched off: their key (the client's) and FEN, once each.
+/// The ends of a chapter's lines — where a line (or a variation) stops, even
+/// when the position goes on in another — of the lines not switched off:
+/// their key (the client's) and FEN, once each.
 pub fn line_ends(conn: &Connection, id: i64) -> Result<Vec<(String, String)>> {
     let pgn = get_chapter(conn, id)?.pgn;
     let w = walk(&movetext_of(&pgn))?;
-    let from: std::collections::HashSet<i64> = w.rows.iter().map(|r| r.zobrist).collect();
     let mut seen = std::collections::HashSet::new();
     Ok(w.rows.iter()
-        .filter(|r| r.active && !from.contains(&r.after_zobrist) && seen.insert(r.after_zobrist))
+        .filter(|r| r.active && r.ends_line && seen.insert(r.after_zobrist))
         .map(|r| (r.after_key.clone(), r.after_fen.clone()))
         .collect())
 }
@@ -2667,6 +2672,10 @@ mod tests {
         let ends = line_ends(&conn, id).unwrap();
         assert_eq!(ends.len(), 2, "{ends:?}");
         assert!(ends.iter().all(|(k, f)| f.starts_with(k.as_str())));
+        // A variation ending where another line goes on (a transposition) ends
+        // there too: the client counts it so.
+        let t = add_chapters(&conn, book.id, Some("t"), Some("1. e4 (1. d4 e6 2. e4 d5) e6 2. d4 d5 3. Nc3 Bb4 *"), None).unwrap().remove(0).id;
+        assert_eq!(line_ends(&conn, t).unwrap().len(), 2);
         assert_eq!(line_ends_to_evaluate(&conn, id, "Stockfish 19", 20).unwrap().len(), 2);
         // One kept at depth 22: only the other is left to do, and it is put on the figures.
         let snap = crate::engine::Snapshot { gen: 0, depth: 22, nodes: 1, nps: 0, lines: vec![crate::engine::Line { multipv: 1, eval_cp: Some(35), mate: None, pv_uci: vec!["g1f3".into()], wdl: None }], done: true, cached: false, engine: None, error: None };
