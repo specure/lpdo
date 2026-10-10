@@ -1,13 +1,18 @@
 // The phone trainer's service worker (#327): offline once opened online.
-// The page itself is fetched afresh when online (so an update arrives on the
-// next start) and from the cache when not; the hashed assets, the icons and
-// the manifest are served from the cache once fetched — a new build has new
-// asset names. No requests leave for anywhere else.
+// Everything the app needs is stored when the worker installs — the build
+// writes the list of its files and a version below (vite.trainer.config.ts);
+// the first visit's page loaded them before the worker was there, so waiting
+// to store them as they are fetched would leave a first visit unable to start
+// offline. The page itself is fetched afresh when online (so an update
+// arrives on the next start) and from the cache when not. No requests leave
+// for anywhere else.
 
-const CACHE = "lpdo-trainer-v1";
+const VERSION = "dev"; // set by the build
+const PRECACHE = ["./"]; // set by the build
+const CACHE = `lpdo-trainer-${VERSION}`;
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(["./", "./manifest.webmanifest", "./icon-180.png", "./icon-192.png"])));
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(PRECACHE)));
   self.skipWaiting();
 });
 
