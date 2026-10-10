@@ -10,7 +10,7 @@ import type { LpdoChapter } from "../trainer/format";
 export async function chapterPackage(chapterId: number, opts: { noComments?: boolean } = {}): Promise<LpdoChapter> {
   const [c, stats] = await Promise.all([getChapter(chapterId), getChapterStats(chapterId)]);
   return buildPackage({
-    chapter: { id: c.id, name: c.name, updated_at: c.updated_at, pgn: c.pgn },
+    chapter: { id: c.id, name: c.name, updated_at: c.updated_at, pgn: c.pgn, ord: c.ord },
     book: { name: c.book.name, author: c.book.author, color: c.book.color },
     stats: stats.positions,
     noComments: opts.noComments,

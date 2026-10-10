@@ -26,7 +26,7 @@ export interface OwnGamesInput {
 }
 
 export interface PackageInput {
-  chapter: { id: number; name: string; updated_at: string | null; pgn: string };
+  chapter: { id: number; name: string; updated_at: string | null; pgn: string; ord?: number };
   book: { name: string; author: string | null; color: Side };
   stats: PositionStat[];
   /** One's own games, when one's player is known. */
@@ -117,7 +117,7 @@ export function buildPackage(input: PackageInput): LpdoChapter {
   return {
     format: FORMAT,
     version: VERSION,
-    chapter: { id: input.chapter.id, updated: input.chapter.updated_at },
+    chapter: { id: input.chapter.id, updated: input.chapter.updated_at, ...(input.chapter.ord != null ? { ord: input.chapter.ord } : {}) },
     sent: new Date().toISOString(),
     book: input.book,
     name: input.chapter.name,

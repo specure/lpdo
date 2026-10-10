@@ -168,7 +168,10 @@ export default function DrillView({ chapter, store, onClose }: Props) {
           <DrillBoard fen={fen} orientation={color} active={phase === "own" || phase === "missed"} onMove={onMove}
             promotions={promotions} lastMove={lastMove} hint={missed ? squares(missed.uci) : null} />
         </div>
-        <div className="shrink-0 md:w-72 p-3 flex flex-col gap-3 border-t md:border-t-0 md:border-l border-outline/40">
+        {/* Below the board (portrait): a fixed height, whatever it says — a
+            longer message must not shrink the board or move it. Beside it
+            (wider screens), its own column. */}
+        <div className="shrink-0 h-52 md:h-auto overflow-y-auto md:w-72 p-3 flex flex-col gap-3 border-t md:border-t-0 md:border-l border-outline/40">
           <div className={`text-title-sm ${phase === "missed" ? "text-error" : ""}`}>{status}</div>
           {note && <div className={`text-body-sm ${phase === "missed" ? "text-on-surface" : "text-success"}`}>{note}</div>}
           <div className="text-body-sm text-on-surface-variant space-y-1">

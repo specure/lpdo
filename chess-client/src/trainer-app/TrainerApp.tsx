@@ -14,6 +14,28 @@ const sentOn = (iso: string) => {
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 };
 
+/** A book's chapters in the book's order, whenever each was sent; a chapter
+ *  from a package without its place (made before it was sent) after those
+ *  with one, by name — "2…" before "10…". */
+function inBook(a: LpdoChapter, b: LpdoChapter): number {
+  const x = a.chapter.ord, y = b.chapter.ord;
+  if (x != null && y != null && x !== y) return x - y;
+  if ((x == null) !== (y == null)) return x == null ? 1 : -1;
+  return a.name.localeCompare(b.name, undefined, { numeric: true });
+}
+
+/** The chapters by book (and colour): the books alphabetically, each one's
+ *  chapters in its order. */
+function byBook(chapters: LpdoChapter[]) {
+  const groups = new Map<string, { book: string; color: LpdoChapter["book"]["color"]; chapters: LpdoChapter[] }>();
+  for (const c of chapters) {
+    const key = `${c.book.name}\u0000${c.book.color}`;
+    if (!groups.has(key)) groups.set(key, { book: c.book.name, color: c.book.color, chapters: [] });
+    groups.get(key)!.chapters.push(c);
+  }
+  return [...groups.values()];
+}
+
 /** On an iPhone, not opened from the home screen: its storage may be cleared. */
 const notInstalled = () =>
   /iPhone|iPad|iPod/.test(navigator.userAgent) && !(navigator as Navigator & { standalone?: boolean }).standalone
@@ -28,7 +50,7 @@ export default function TrainerApp() {
 
   const load = async () => {
     const [cs, cards] = await Promise.all([listChapters(), cardStore.all()]);
-    cs.sort((a, b) => a.book.name.localeCompare(b.book.name) || a.name.localeCompare(b.name));
+    cs.sort((a, b) => a.book.name.localeCompare(b.book.name) || inBook(a, b));
     setChapters(cs);
     setCards(cards);
   };
@@ -94,28 +116,37 @@ export default function TrainerApp() {
               file onto this phone, and add it here with <b>Add chapter</b>.</p>
           </div>
         ) : (
-          <ul className="divide-y divide-outline/30">
-            {chapters.map((c) => {
-              const n = cardCounts(buildDrill(c, 0.75), cards, now);
-              return (
-                <li key={c.chapter.id} className="flex items-center gap-2">
-                  <button onClick={() => setDrilling(c)} className="flex-1 min-w-0 text-left px-2 py-3 active:bg-on-surface/8 rounded-md">
-                    <div className="text-body-lg truncate">{c.name}</div>
-                    <div className="text-label-md text-on-surface-variant truncate">
-                      {c.book.name} · as {c.book.color === "white" ? "White" : "Black"} · sent {sentOn(c.sent)}
-                    </div>
-                    <div className="text-label-md mt-0.5">
-                      {n.due + n.fresh > 0
-                        ? <><span className="text-primary">{n.due} due</span> · {n.fresh} new · {n.total} decisions</>
-                        : <span className="text-success">all {n.total} known</span>}
-                    </div>
-                  </button>
-                  <button onClick={() => void remove(c)} aria-label={`Remove ${c.name}`}
-                    className="shrink-0 w-10 h-10 rounded-full text-on-surface-variant active:bg-on-surface/8">✕</button>
-                </li>
-              );
-            })}
-          </ul>
+          // Grouped by book — the book first, its chapters under it.
+          <div className="space-y-4">
+            {byBook(chapters).map(({ book, color, chapters: cs }) => (
+              <section key={`${book}\u0000${color}`}>
+                <h2 className="px-2 pt-1 pb-1.5 border-b border-outline/40">
+                  <span className="text-title-sm font-semibold">{book}</span>
+                  <span className="text-label-md text-on-surface-variant"> · as {color === "white" ? "White" : "Black"}</span>
+                </h2>
+                <ul className="divide-y divide-outline/30">
+                  {cs.map((c) => {
+                    const n = cardCounts(buildDrill(c, 0.75), cards, now);
+                    return (
+                      <li key={c.chapter.id} className="flex items-center gap-2">
+                        <button onClick={() => setDrilling(c)} className="flex-1 min-w-0 text-left px-2 py-2.5 active:bg-on-surface/8 rounded-md">
+                          <div className="text-body-lg truncate">{c.name}</div>
+                          <div className="text-label-md mt-0.5 truncate">
+                            {n.due + n.fresh > 0
+                              ? <><span className="text-primary">{n.due} due</span> · {n.fresh} new · {n.total} decisions</>
+                              : <span className="text-success">all {n.total} known</span>}
+                            <span className="text-on-surface-variant"> · sent {sentOn(c.sent)}</span>
+                          </div>
+                        </button>
+                        <button onClick={() => void remove(c)} aria-label={`Remove ${c.name}`}
+                          className="shrink-0 w-10 h-10 rounded-full text-on-surface-variant active:bg-on-surface/8">✕</button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            ))}
+          </div>
         )}
       </main>
       <footer className="px-4 py-3 text-label-sm text-on-surface-variant">
