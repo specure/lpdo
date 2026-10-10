@@ -18,7 +18,8 @@ export default function DrillDialog({ chapterId, onClose }: { chapterId: number;
     let gone = false;
     void (async () => {
       try {
-        const pkg = await chapterPackage(chapterId, { noComments: true });
+        // With the chapter's comments: a replay shows them.
+        const pkg = await chapterPackage(chapterId);
         if (!gone) setPkg(pkg);
       } catch (e) { if (!gone) setError(String(e)); }
     })();

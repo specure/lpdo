@@ -76,7 +76,7 @@ export default function DrillBoard({ fen, orientation, active, onMove, promotion
   }
 
   return (
-    <div ref={box} className="flex-1 min-h-0 min-w-0 w-full flex items-center justify-center overflow-hidden">
+    <div ref={box} data-fen={fen} className="flex-1 min-h-0 min-w-0 w-full flex items-center justify-center overflow-hidden">
       <div style={{ width: size, height: size, flexShrink: 0 }}>
         <BoardErrorBoundary>
           <Chessboard

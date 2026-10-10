@@ -255,6 +255,14 @@ of the session says how many are left ("71 new left in these lines — about 5
 days at 15 a day"). Moves due again are always asked. **Keep drilling** goes on
 regardless of the schedule.
 
+A line where you missed a move stops at its end, shown as text with the miss
+in red: **Replay this line** plays the same moves again from the start — the
+opponent's the same, every one of yours asked, the chapter's comments under
+the board — and counts nothing, right or wrong; **Replay again** as often as it
+helps, or **Next line**. **↺ Replay last line** replays the line just done at
+any time. (On the phone the comments come with a chapter saved as a file, or
+sent with **Include the chapter's comments** ticked in **Send to phone…**.)
+
 ### On the phone
 
 The **LPDO Trainer** is the same drill on your phone, offline:
