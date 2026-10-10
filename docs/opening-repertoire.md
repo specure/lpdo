@@ -224,10 +224,12 @@ deviated at 5.Bf4"). A click puts the board on that position and previews
 the game under the list — at the move that left the chapter — as the Games
 tab does; a double-click opens the game.
 
-A dot beside a chapter in the list shows it was analysed (its tooltip says
-when), in another colour when its positions changed since — moves added or
-removed; editing a comment, removing FENs or reordering variations does not
-count. In the **Lines** tab, a line the analysis lacks is marked "not
+A ✓ beside a chapter in the list shows it was analysed (its tooltip says
+when) — the database's figures and Stockfish at the ends of the lines both
+done; it appears as each chapter is finished, the server's own analysis
+included, with the page open. In another colour when its positions changed
+since — moves added or removed; editing a comment, removing FENs or
+reordering variations does not count. In the **Lines** tab, a line the analysis lacks is marked "not
 analysed"; the header says how many are.
 
 ## Drilling a chapter

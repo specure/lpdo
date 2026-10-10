@@ -534,8 +534,8 @@ fn chapter_row(r: &duckdb::Row<'_>) -> duckdb::Result<ChapterSummary> {
 }
 
 const CHAPTER_COLS: &str = "id, book_id, ord, name, active, lines, lines_off, CAST(updated_at AS VARCHAR),
-    (SELECT CAST(a.analysed_at AS VARCHAR) FROM repertoire_analysis a WHERE a.chapter_id = repertoire_chapters.id),
-    (SELECT a.positions_hash IS DISTINCT FROM repertoire_chapters.positions_hash FROM repertoire_analysis a WHERE a.chapter_id = repertoire_chapters.id),
+    (SELECT CAST(a.analysed_at AS VARCHAR) FROM repertoire_analysis a WHERE a.chapter_id = repertoire_chapters.id AND COALESCE(a.complete, TRUE)),
+    (SELECT a.positions_hash IS DISTINCT FROM repertoire_chapters.positions_hash FROM repertoire_analysis a WHERE a.chapter_id = repertoire_chapters.id AND COALESCE(a.complete, TRUE)),
     COALESCE(model, FALSE), COALESCE(result, '*'),
     COALESCE(model, FALSE) AND COALESCE(annotated, regexp_matches(
         regexp_replace(pgn, '\\[%(clk|emt|eval|tqu)[^\\]]*\\]', '', 'g'), '\\{\\s*[^}\\s]')),
@@ -546,7 +546,7 @@ pub fn get_book(conn: &Connection, id: i64) -> Result<Book> {
         .map_err(|_| anyhow!("book {id} not found"))
 }
 
-fn get_chapter_summary(conn: &Connection, id: i64) -> Result<ChapterSummary> {
+pub(crate) fn get_chapter_summary(conn: &Connection, id: i64) -> Result<ChapterSummary> {
     conn.query_row(&format!("SELECT {CHAPTER_COLS} FROM repertoire_chapters WHERE id = ?"), duckdb::params![id], chapter_row)
         .map_err(|_| anyhow!("chapter {id} not found"))
 }
@@ -2070,7 +2070,7 @@ pub fn line_ends_missing(conn: &Connection, id: i64, depth: u32) -> Result<usize
 pub fn chapters_to_analyse(conn: &Connection, quiet_min: u32, depth: u32, done: &mut std::collections::HashSet<(i64, String, u32)>) -> Result<Vec<(i64, String)>> {
     let mut st = conn.prepare(&format!(
         "SELECT c.id, CAST(c.updated_at AS VARCHAR),
-                (SELECT a.positions_hash IS NOT DISTINCT FROM c.positions_hash FROM repertoire_analysis a WHERE a.chapter_id = c.id) AS current
+                (SELECT a.positions_hash IS NOT DISTINCT FROM c.positions_hash AND COALESCE(a.complete, TRUE) FROM repertoire_analysis a WHERE a.chapter_id = c.id) AS current
          FROM repertoire_chapters c JOIN repertoire_books b ON b.id = c.book_id
          WHERE COALESCE(b.active, TRUE) AND c.active AND NOT COALESCE(c.model, FALSE)
            AND c.updated_at < CAST(NOW() AS TIMESTAMP) - INTERVAL {quiet_min} MINUTE
@@ -2177,8 +2177,9 @@ pub fn set_settings(mut new: RepertoireSettings) -> Result<RepertoireSettings, S
 // ── Stored analyses ──────────────────────────────────────────────────────────
 
 /// Analyse a chapter for practice and keep the result: the figures of
-/// [`chapter_stats`], from the chapter as it is now. Made again only when
-/// asked — never by itself.
+/// [`chapter_stats`], from the chapter as it is now — not complete (no mark
+/// in the list) until [`finish_analysis`], once Stockfish has been at the
+/// ends of the lines too.
 pub fn analyse_chapter(conn: &Connection, id: i64) -> Result<()> {
     let updated: String = conn.query_row(
         "SELECT CAST(updated_at AS VARCHAR) FROM repertoire_chapters WHERE id = ?", duckdb::params![id], |r| r.get(0))
@@ -2186,9 +2187,19 @@ pub fn analyse_chapter(conn: &Connection, id: i64) -> Result<()> {
     let positions = chapter_stats(conn, id)?;
     let hash: Option<i64> = conn.query_row("SELECT positions_hash FROM repertoire_chapters WHERE id = ?", duckdb::params![id], |r| r.get(0))?;
     conn.execute(
-        "INSERT OR REPLACE INTO repertoire_analysis (chapter_id, chapter_updated, player_id, analysed_at, positions, positions_hash)
-         VALUES (?, CAST(? AS TIMESTAMP), NULL, CAST(NOW() AS TIMESTAMP), ?, ?)",
+        "INSERT OR REPLACE INTO repertoire_analysis (chapter_id, chapter_updated, player_id, analysed_at, positions, positions_hash, complete)
+         VALUES (?, CAST(? AS TIMESTAMP), NULL, CAST(NOW() AS TIMESTAMP), ?, ?, FALSE)",
         duckdb::params![id, updated, serde_json::to_string(&positions)?, hash],
+    )?;
+    Ok(())
+}
+
+/// The chapter's analysis is complete — the figures, and Stockfish at the
+/// ends of the lines as far as it went: analysed now, its mark in the list.
+pub fn finish_analysis(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE repertoire_analysis SET complete = TRUE, analysed_at = CAST(NOW() AS TIMESTAMP) WHERE chapter_id = ?",
+        duckdb::params![id],
     )?;
     Ok(())
 }
@@ -2377,6 +2388,9 @@ mod tests {
         analyse_chapter(&conn, ch.id).unwrap();
         let a = stored_analysis(&conn, ch.id).unwrap().unwrap();
         assert_eq!(a.positions.len(), 3);
+        // The figures alone: no mark yet — Stockfish is still to come.
+        assert_eq!(get_chapter_summary(&conn, ch.id).unwrap().analysed_at, None);
+        finish_analysis(&conn, ch.id).unwrap();
         let s = get_chapter_summary(&conn, ch.id).unwrap();
         assert!(s.analysed_at.is_some());
         assert_eq!(s.analysis_stale, Some(false), "analysed as the chapter is now");
@@ -2390,6 +2404,7 @@ mod tests {
         // chapter's moves and the analysis's positions — up to date again
         // once analysed as it is.
         analyse_chapter(&conn, ch.id).unwrap();
+        finish_analysis(&conn, ch.id).unwrap();
         conn.execute_batch("UPDATE repertoire_chapters SET positions_hash = NULL; UPDATE repertoire_analysis SET positions_hash = NULL;").unwrap();
         fill_positions_hashes(&conn).unwrap();
         assert_eq!(get_chapter_summary(&conn, ch.id).unwrap().analysis_stale, Some(false), "filled in alike");
@@ -2719,6 +2734,8 @@ mod tests {
         assert_eq!(ids(chapters_to_analyse(&conn, 15, 24, &mut done).unwrap()), vec![id], "never analysed; the one switched off left out");
         analyse_chapter(&conn, id).unwrap();
         assert!(figures_current(&conn, id).unwrap());
+        assert_eq!(ids(chapters_to_analyse(&conn, 15, 0, &mut done).unwrap()), vec![id], "the figures, not finished (stopped before Stockfish)");
+        finish_analysis(&conn, id).unwrap();
         assert!(chapters_to_analyse(&conn, 15, 0, &mut done).unwrap().is_empty(), "figures current, no Stockfish wanted");
         assert_eq!(ids(chapters_to_analyse(&conn, 15, 24, &mut done).unwrap()), vec![id], "the line ends want Stockfish");
         for (_, fen) in line_ends(&conn, id).unwrap() {

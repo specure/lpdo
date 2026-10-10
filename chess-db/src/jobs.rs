@@ -1557,57 +1557,62 @@ fn run_job(
                     reporter.progress(i as u64 * 1000, n * 1000, format!("{chapter}: the database's figures…"));
                     crate::repertoire::analyse_chapter(conn, *id)?;
                 }
-                if depth == 0 || no_engine.is_some() { continue; }
-                if engine.is_none() {
-                    let started = match crate::engine::stockfish() {
-                        Some(sf) => rt.block_on(async { sf.background().await }),
-                        None => Err("no Stockfish on the server".to_string()),
-                    };
-                    match started {
-                        Ok(b) => engine = Some(b),
-                        Err(e) => { reporter.log(format!("No Stockfish for the ends of the lines: {e}")); no_engine = Some(e); continue; }
-                    }
-                }
-                let bg = engine.as_mut().expect("started above");
-                let todo = crate::repertoire::line_ends_to_evaluate(conn, *id, &bg.ident, depth)?;
-                let mut done = 0usize;
-                while done < todo.len() {
-                    if reporter.is_cancelled() { return Ok(()); }
-                    // The bar moves with the line ends, not only per chapter.
-                    let part = (i as u64) * 1000 + (done as u64) * 1000 / todo.len() as u64;
-                    // The Engine panel searching: wait until it is idle.
-                    let panel = crate::engine::stockfish();
-                    let busy = || panel.as_ref().is_some_and(|p| p.busy());
-                    if busy() {
-                        reporter.progress(part, n * 1000, format!("{chapter}: waiting while the Engine panel analyses…"));
-                        std::thread::sleep(std::time::Duration::from_secs(2));
-                        continue;
-                    }
-                    reporter.progress(part, n * 1000, format!("{chapter}: Stockfish, depth {depth} — line end {} of {}", done + 1, todo.len()));
-                    let fen = &todo[done];
-                    let cancelled = || reporter.is_cancelled() || busy();
-                    match rt.block_on(bg.search(fen, depth, LINE_END_MAX, cancelled)) {
-                        // Made way (or cancelled): the same position again.
-                        Ok(None) => continue,
-                        // Nothing in it for the engine (no legal moves): on to
-                        // the next. Such ends are not asked for any more
-                        // (line_ends_for_engine); this keeps the job from
-                        // asking again for ever should one get through.
-                        Ok(Some(snap)) if snap.lines.is_empty() => {
-                            reporter.log(format!("{chapter}: line end {} has no legal moves, nothing to evaluate: {fen}", done + 1));
+                // Stockfish at the ends of the lines, then the chapter is
+                // analysed — its mark in the list, not before.
+                'stockfish: {
+                    if depth == 0 || no_engine.is_some() { break 'stockfish; }
+                    if engine.is_none() {
+                        let started = match crate::engine::stockfish() {
+                            Some(sf) => rt.block_on(async { sf.background().await }),
+                            None => Err("no Stockfish on the server".to_string()),
+                        };
+                        match started {
+                            Ok(b) => engine = Some(b),
+                            Err(e) => { reporter.log(format!("No Stockfish for the ends of the lines: {e}")); no_engine = Some(e); break 'stockfish; }
                         }
-                        Ok(Some(snap)) => {
-                            crate::engine::save_eval(conn, bg.kind, &bg.ident, &crate::engine::position_key(fen), &snap)?;
-                            evaluated += 1;
-                            if snap.depth < depth {
-                                short += 1;
-                                reporter.log(format!("{chapter}: line end {} stopped at depth {} after {} s: {fen}", done + 1, snap.depth, LINE_END_MAX.as_secs()));
+                    }
+                    let bg = engine.as_mut().expect("started above");
+                    let todo = crate::repertoire::line_ends_to_evaluate(conn, *id, &bg.ident, depth)?;
+                    let mut done = 0usize;
+                    while done < todo.len() {
+                        if reporter.is_cancelled() { return Ok(()); }
+                        // The bar moves with the line ends, not only per chapter.
+                        let part = (i as u64) * 1000 + (done as u64) * 1000 / todo.len() as u64;
+                        // The Engine panel searching: wait until it is idle.
+                        let panel = crate::engine::stockfish();
+                        let busy = || panel.as_ref().is_some_and(|p| p.busy());
+                        if busy() {
+                            reporter.progress(part, n * 1000, format!("{chapter}: waiting while the Engine panel analyses…"));
+                            std::thread::sleep(std::time::Duration::from_secs(2));
+                            continue;
+                        }
+                        reporter.progress(part, n * 1000, format!("{chapter}: Stockfish, depth {depth} — line end {} of {}", done + 1, todo.len()));
+                        let fen = &todo[done];
+                        let cancelled = || reporter.is_cancelled() || busy();
+                        match rt.block_on(bg.search(fen, depth, LINE_END_MAX, cancelled)) {
+                            // Made way (or cancelled): the same position again.
+                            Ok(None) => continue,
+                            // Nothing in it for the engine (no legal moves): on to
+                            // the next. Such ends are not asked for any more
+                            // (line_ends_for_engine); this keeps the job from
+                            // asking again for ever should one get through.
+                            Ok(Some(snap)) if snap.lines.is_empty() => {
+                                reporter.log(format!("{chapter}: line end {} has no legal moves, nothing to evaluate: {fen}", done + 1));
                             }
+                            Ok(Some(snap)) => {
+                                crate::engine::save_eval(conn, bg.kind, &bg.ident, &crate::engine::position_key(fen), &snap)?;
+                                evaluated += 1;
+                                if snap.depth < depth {
+                                    short += 1;
+                                    reporter.log(format!("{chapter}: line end {} stopped at depth {} after {} s: {fen}", done + 1, snap.depth, LINE_END_MAX.as_secs()));
+                                }
+                            }
+                            Err(e) => return Err(anyhow!("Stockfish: {e}")),
                         }
-                        Err(e) => return Err(anyhow!("Stockfish: {e}")),
+                        done += 1;
                     }
-                    done += 1;
                 }
+                crate::repertoire::finish_analysis(conn, *id)?;
             }
             let what = if n == 1 { format!("‘{}’", crate::repertoire::chapter_title(conn, ids[0])?) } else { format!("{n} chapters") };
             let short = match short {
@@ -2389,6 +2394,7 @@ mod repertoire_analyse_tests {
 
         let kept: i64 = conn.query_row("SELECT count(*) FROM engine_evals WHERE kind = 'stockfish' AND depth >= 10", [], |r| r.get(0)).unwrap();
         assert_eq!(kept, 2, "both line ends evaluated");
+        assert!(crate::repertoire::get_chapter_summary(&conn, id).unwrap().analysed_at.is_some(), "marked analysed, Stockfish done");
         let mut a = crate::repertoire::stored_analysis(&conn, id).unwrap().unwrap();
         crate::repertoire::attach_line_end_evals(&conn, id, &mut a.positions).unwrap();
         assert_eq!(a.positions.iter().filter(|p| p.engine.is_some()).count(), 2);
