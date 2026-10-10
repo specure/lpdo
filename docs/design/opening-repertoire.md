@@ -584,7 +584,11 @@ pace.
    runs a Stockfish process of its own (`engine::Background`) to the
    settings' `line_end_depth` (default 24) on every line end not kept as deep,
    keeps them in `engine_evals` (shared with the Engine panel), and stops a
-   search for the panel's, resuming when it is idle; the figures carry them
+   search for the panel's, resuming when it is idle — each search at most
+   2 minutes (`LINE_END_MAX`; with 12 threads some positions never reach the
+   depth), kept at the depth reached and tried again another time; the job
+   on a reader, which the pool then passes over while it is busy (reads go
+   to the least loaded connection); the figures carry them
    (`PositionStat.engine`), the package too (`PNode.engine`);
    (b) the phone trainer (the web app done: `chess-client/src/trainer-app/`,
    `vite.trainer.config.ts`, published by `.github/workflows/trainer.yml` to

@@ -293,7 +293,8 @@ evaluates the end of every line with the server's Stockfish, in the
 background, to the depth set under Maintenance → Repertoire (**Stockfish at
 the ends of the lines**: 24 by default, a few seconds a position; 0 for none).
 Positions already evaluated as deep are not done again; while the Engine panel
-analyses, the job waits. Send or save the chapter for the phone after the
+analyses, the job waits. A position Stockfish cannot take to the depth in
+2 minutes keeps the depth it reached, and the job says so ("1 stopped short"). Send or save the chapter for the phone after the
 analysis, for the phone to have the evaluations.
 
 You need not start it: the server analyses the chapters of the active books
