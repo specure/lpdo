@@ -492,8 +492,23 @@ back:
   involved. Measured on real chapters: "21 3...Nc6" (20 lines, 176
   positions) is 9.7 KB compressed — ~35 frames, about 5 s at the steady
   setting below; the largest, 43–45 lines and ~600 positions, 41 KB —
-  ~145 frames, 15–20 s; without comments half that. Worth trimming later
-  (fewer moves a position) if the large ones are sent often.
+  ~145 frames, 15–20 s; without comments half that. Trimmed since: a
+  position's figures keep only the three most played moves and down to the
+  last the book plays there (what the phone uses; a book move's rank stays
+  right) — 10–23% smaller.
+
+  The fountain code has a cost the prototype did not show: its encoder
+  sends each part plain once, then only mixed parts, and by the time the
+  phone is held to the code the plain ones are gone. A reading then takes
+  1.3–1.9 × as many distinct parts as the chapter is cut in (measured with
+  the real decoder; repeating the plain parts only helped when no frame is
+  missed). The trainer's bar counts distinct parts against 1.5 × that, or
+  the parts decoded when more — the library's own estimate counted repeats
+  too against 1.75 × and stopped at 40–80%. The code is shown at 560 px
+  (the measured size; it was 420), drawn in the screen's own pixels so a
+  scaled display does not blur it. The scan screen shows the camera's
+  picture, ms a search and how often one finds a code, to tell a slow
+  reading's cause.
 - **A file** — a chapter or a whole book (a book of 26 chapters is a few
   hundred KB: minutes of scanning, so books go this way only), and for
   sending a chapter to someone: the desktop saves `<name>.lpdo.json`; the

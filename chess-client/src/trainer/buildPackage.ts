@@ -52,13 +52,24 @@ function toStats(s: PositionStat | undefined): Stats | undefined {
   const total = s.moves.reduce((n, m) => n + m.games, 0) || 1;
   const out: Stats = {
     games: s.games,
-    moves: s.moves.map((m) => [m.san, round(m.games / total), round(m.score)]),
+    moves: s.moves.map((m): [string, number, number] => [m.san, round(m.games / total), round(m.score)]).sort((a, b) => b[1] - a[1]),
   };
   if (s.eval) out.eval = s.eval;
   return out;
 }
 
 const round = (x: number) => Math.round(x * 1000) / 1000;
+
+/** The moves the phone uses of a position's figures, most played first: the
+ *  three most played (the replay's bars) and down to the last the book plays
+ *  there — a book move's rank stays right; the rest is only longer to scan. */
+function trimMoves(stats: Stats | undefined, book: PNode[]) {
+  if (!stats) return;
+  const sans = new Set(book.map((n) => bareSan(n.san)));
+  let last = 2;
+  stats.moves.forEach(([san], i) => { if (sans.has(bareSan(san))) last = Math.max(last, i); });
+  stats.moves = stats.moves.slice(0, last + 1);
+}
 
 export function buildPackage(input: PackageInput): LpdoChapter {
   const game = parsePgnTree(input.chapter.pgn);
@@ -109,6 +120,7 @@ export function buildPackage(input: PackageInput): LpdoChapter {
     const mine = mineByKey.get(positionKey(n.fen));
     if (mine) out.mine = mine;
     out.children = children(line, i + 1, n.fen);
+    trimMoves(out.stats, out.children);
     return out;
   }
 
@@ -117,6 +129,8 @@ export function buildPackage(input: PackageInput): LpdoChapter {
   if (intro) start.comment = intro;
   const startStats = toStats(byKey.get(positionKey(START_FEN)));
   if (startStats) start.stats = startStats;
+  const tree = children(game.mainLine, 0, game.startFen);
+  trimMoves(start.stats, tree);
   const startMine = mineByKey.get(positionKey(START_FEN));
   if (startMine) start.mine = startMine;
 
@@ -130,6 +144,6 @@ export function buildPackage(input: PackageInput): LpdoChapter {
     focus: input.focus?.map(bareSan) ?? null,
     ...(input.mine ? { mine: { color: input.mine.color, since: input.mine.since, games: input.mine.games } } : {}),
     start,
-    tree: children(game.mainLine, 0, game.startFen),
+    tree,
   };
 }

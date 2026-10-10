@@ -38,7 +38,8 @@ async function pipe(bytes: Uint8Array, stream: CompressionStream | Decompression
 /** The frames of a chapter, endlessly: `next()` gives the text of the next
  *  QR code. */
 export interface Frames {
-  /** Distinct fragments: about how many frames a perfect reading needs. */
+  /** The parts the chapter is cut in: a reading takes about PARTS_NEEDED ×
+   *  as many frames, more when the phone misses some. */
   fragments: number;
   /** The compressed size, in bytes. */
   bytes: number;
@@ -59,22 +60,42 @@ export async function encodeChapter(chapter: LpdoChapter, fragmentBytes = FRAGME
  *  strangers ignored) until `done`, then `chapter()`. */
 export interface Receiver {
   receive(text: string): void;
-  /** 0–1. */
+  /** 0–1: the distinct parts read against about what it takes, or the
+   *  parts decoded when more. */
   progress(): number;
+  /** Distinct parts read, and the parts the chapter is cut in (0 before the
+   *  first). */
+  parts(): { read: number; of: number };
   done(): boolean;
   /** The chapter read — or an error saying what is wrong. */
   chapter(): Promise<LpdoChapter>;
 }
 
+/** Distinct parts a reading takes, typically, per part the chapter is cut
+ *  in. */
+export const PARTS_NEEDED = 1.5;
+
 export async function receiver(): Promise<Receiver> {
   const { URDecoder } = await loadBcur();
   const dec = new URDecoder();
+  // The library's own estimate counts every reading, the same frame read
+  // twice too, against 1.75 × the parts: it stopped at 40–80%. Distinct
+  // parts instead, against what it takes: the mixed parts the loop shows
+  // after the first pass carry less each — measured, 1.3–1.9 × the parts
+  // (docs/design/opening-repertoire.md).
+  const seen = new Set<number>();
+  let of = 0;
   return {
     receive(text) {
       if (!/^UR:/i.test(text)) return;
-      try { dec.receivePart(text.toLowerCase()); } catch { /* a part of another code */ }
+      // "UR:BYTES/12-45/…": part 12 of 45 (a chapter in one code has none).
+      const m = /^UR:[^/]+\/(\d+)-(\d+)\//i.exec(text);
+      try {
+        if (dec.receivePart(text.toLowerCase()) && m) { seen.add(+m[1]); of = +m[2]; }
+      } catch { /* a part of another code */ }
     },
-    progress: () => (dec.isComplete() ? 1 : dec.estimatedPercentComplete()),
+    progress: () => (dec.isComplete() ? 1 : of ? Math.max(dec.getProgress(), Math.min(0.97, seen.size / (of * PARTS_NEEDED))) : 0),
+    parts: () => ({ read: seen.size, of }),
     done: () => dec.isComplete(),
     async chapter() {
       if (!dec.isSuccess()) throw new Error(`The code could not be read: ${dec.resultError()}`);

@@ -298,7 +298,10 @@ account, nothing sent anywhere.
 
 To send it a chapter: **Send to phone…** in the chapter's ⋯ menu shows it as
 a moving QR code; tap **Scan** in the trainer and hold the camera on it until
-the bar is full — a few seconds; no network is involved. Or **Save for
+the bar is full — a few seconds, longer with the comments (the dialog says
+about how long); no network is involved. Hold the phone so the code fills the
+square; the line under the bar says how the reading goes (how often a picture
+finds a code — low means too far, at an angle, or a glare). Or **Save for
 phone…** saves `<book>-<chapter>.lpdo.json`: get the file onto the phone
 (mail, a cloud drive, a cable…) and open it in the trainer with **File**.
 Sending a chapter again replaces it there and keeps what you have learnt. The

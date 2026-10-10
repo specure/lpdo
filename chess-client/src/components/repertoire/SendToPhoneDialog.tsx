@@ -6,11 +6,15 @@
 import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
 import { chapterPackage } from "../../lib/practicePackage";
-import { encodeChapter, FRAMES_PER_SECOND, type Frames } from "../../trainer/qrTransfer";
+import { encodeChapter, FRAMES_PER_SECOND, PARTS_NEEDED, type Frames } from "../../trainer/qrTransfer";
 import { lineEndEvals, type LpdoChapter } from "../../trainer/format";
 import { analyseChapters } from "../../lib/repertoire";
 
 export const TRAINER_URL = "https://specure.github.io/lpdo/trainer/";
+
+/** The code's side in CSS pixels — what the transfer was measured with on an
+ *  iPhone (docs/design/opening-repertoire.md); smaller is read less often. */
+const CODE_PX = 560;
 
 interface Props {
   chapterId: number;
@@ -48,7 +52,10 @@ export default function SendToPhoneDialog({ chapterId, onClose, onSaveFile }: Pr
   useEffect(() => {
     if (!frames || !code.current) return;
     const canvas = code.current;
-    const tick = () => { void QRCode.toCanvas(canvas, frames.next(), { errorCorrectionLevel: "L", width: 420, margin: 2 }); };
+    // Drawn in the screen's own pixels: scaled up by the display (125%,
+    // 150%…) its modules' edges blur, and the phone misses more frames.
+    const width = Math.round(CODE_PX * (window.devicePixelRatio || 1));
+    const tick = () => { void QRCode.toCanvas(canvas, frames.next(), { errorCorrectionLevel: "L", width, margin: 2 }); };
     tick();
     const t = window.setInterval(tick, 1000 / FRAMES_PER_SECOND);
     return () => window.clearInterval(t);
@@ -66,7 +73,7 @@ export default function SendToPhoneDialog({ chapterId, onClose, onSaveFile }: Pr
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-on-surface/40" onClick={onClose}>
-      <div className="bg-surface-container-high rounded-xl shadow-2xl w-[44rem] max-w-[94vw] max-h-[94vh] overflow-y-auto p-5 flex flex-col gap-4"
+      <div className="bg-surface-container-high rounded-xl shadow-2xl w-[56rem] max-w-[94vw] max-h-[94vh] overflow-y-auto p-5 flex flex-col gap-4"
         onClick={(e) => e.stopPropagation()}>
         <div>
           <div className="text-title-md text-on-surface">Send to phone</div>
@@ -75,9 +82,9 @@ export default function SendToPhoneDialog({ chapterId, onClose, onSaveFile }: Pr
           </div>
         </div>
         <div className="flex gap-5 flex-wrap">
-          <div className="w-[420px] h-[420px] max-w-full flex items-center justify-center bg-white rounded-md">
+          <div className="w-[560px] max-w-full aspect-square flex items-center justify-center bg-white rounded-md">
             {error ? <span className="text-error text-body-sm p-4">{error}</span>
-              : <canvas ref={code} className={frames ? "" : "hidden"} />}
+              : <canvas ref={code} className={frames ? "!w-full !h-full" : "hidden"} />}
             {!frames && !error && <span className="text-body-sm text-neutral-500">…</span>}
           </div>
           <div className="flex-1 min-w-[14rem] flex flex-col gap-3 text-body-sm text-on-surface">
@@ -110,7 +117,7 @@ export default function SendToPhoneDialog({ chapterId, onClose, onSaveFile }: Pr
             })()}
             {frames && (
               <div className="text-label-md text-on-surface-variant">
-                {(frames.bytes / 1024).toFixed(1)} KB in {frames.fragments} parts · about {Math.ceil(frames.fragments / FRAMES_PER_SECOND * 1.3)} s to read
+                {(frames.bytes / 1024).toFixed(1)} KB in {frames.fragments} parts · about {Math.ceil(frames.fragments * PARTS_NEEDED / FRAMES_PER_SECOND)} s to read, held steady
               </div>
             )}
             <div className="mt-auto flex items-end gap-3">
