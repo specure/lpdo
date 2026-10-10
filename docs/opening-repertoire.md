@@ -269,6 +269,12 @@ chapter saved as a file, or sent with **Include the chapter's comments**
 ticked in **Send to phone…**; the trainer's list says which: "with comments"
 or "no comments".)
 
+A replay can also be stepped through: **⏮ ◀ ▶ ⏭** under the board (on the
+computer the arrow keys, Home and End), a swipe on the phone — to the left a
+move on, to the right a move back — or a move tapped in the line's text, at
+its end too. Then nothing is asked and the opponent waits; **Play from here**
+asks your moves again from that position.
+
 At the end of a replayed line the drill shows Stockfish's evaluation of the
 line's last position — "End of the line: +0.35 · Stockfish 19, depth 24". It is
 worked out on the computer: **Analyse chapter** (or **Analyse all chapters**)

@@ -9,7 +9,9 @@
 // figures, to be played; its card comes back in the session. A line with a
 // miss stops at its end: replayed — the same moves again, every one of
 // one's own asked, the chapter's comments shown, nothing counted — or the
-// next. Shared by the desktop (the Repertoire page) and the phone trainer.
+// next. A replay can be stepped through as well (⏮ ◀ ▶ ⏭, the arrow keys, a
+// swipe on the phone): then nothing is asked until Play from here. Shared by
+// the desktop (the Repertoire page) and the phone trainer.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { hasComments, type LpdoChapter, type PNode } from "./format";
@@ -34,18 +36,30 @@ interface Props {
 type Phase = "loading" | "own" | "show" | "missed" | "auto" | "opponent" | "lineDone" | "lineEnd" | "replayEnd" | "sessionDone";
 
 /** A line as text, "1.c4 e5 2.g3 Nc6 …": the moves missed marked, and the
- *  one the replay is at. */
-function LineText({ moves, missed, at }: { moves: PNode[]; missed: number[]; at?: number }) {
+ *  one the replay is at; a move tapped goes there (`onPick`, its index). */
+function LineText({ moves, missed, at, onPick }: { moves: PNode[]; missed: number[]; at?: number; onPick?: (i: number) => void }) {
   return (
     <div className="font-mono text-label-md leading-relaxed">
       {moves.map((m, i) => (
-        <span key={i} className={`${missed.includes(i) ? "text-error font-semibold" : ""} ${at === i ? "underline underline-offset-2" : ""}`}>
-          {i % 2 === 0 ? `${i / 2 + 1}.` : i === 0 ? "1…" : ""}{m.san}{" "}
+        <span key={i}>
+          {i % 2 === 0 ? `${i / 2 + 1}.` : i === 0 ? "1…" : ""}
+          <span onClick={onPick && (() => onPick(i))}
+            className={`${missed.includes(i) ? "text-error font-semibold" : ""} ${at === i ? "underline underline-offset-2" : ""} ${onPick ? "cursor-pointer rounded-sm hover:bg-on-surface/8" : ""}`}>
+            {m.san}
+          </span>{" "}
         </span>
       ))}
     </div>
   );
 }
+
+/** The replay's steps, drawn: as characters iOS shows them as emoji. */
+const STEP_ICONS = {
+  first: "M6 5h2v14H6zM19 5v14L9 12z",
+  back: "M17 5v14L6 12z",
+  on: "M7 5v14l11-7z",
+  last: "M5 5v14l10-7zM16 5h2v14h-2z",
+};
 
 const COVERAGES = [0.5, 0.75, 0.9, 1];
 const squares = (uci: string) => ({ from: uci.slice(0, 2), to: uci.slice(2, 4) });
@@ -73,6 +87,10 @@ export default function DrillView({ chapter, store, onClose }: Props) {
   const [missedPlies, setMissedPlies] = useState<number[]>([]);
   const [lastLine, setLastLine] = useState<{ moves: PNode[]; missed: number[] } | null>(null);
   const [replaying, setReplaying] = useState<PNode[] | null>(null);
+  // A replay stepped through: moves neither asked nor played by themselves.
+  const [browsing, setBrowsing] = useState(false);
+  const board = useRef<HTMLDivElement>(null);
+  const swipe = useRef<{ x: number; y: number; t: number; onBoard: boolean } | null>(null);
 
   useEffect(() => { void store.all().then(setCards); }, [store]);
 
@@ -104,6 +122,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
   const startLine = (cs: Record<string, Card>, any: boolean, t: NewToday = today) => {
     answered.current = new Set();
     setReplaying(null);
+    setBrowsing(false);
     setMissedPlies([]);
     const first = phaseAt([], cs, any, t, null);
     // Nothing to do from the start: the session is over.
@@ -115,9 +134,44 @@ export default function DrillView({ chapter, store, onClose }: Props) {
   /** The line again from its start: the same moves, nothing counted. */
   const startReplay = (moves: PNode[]) => {
     setReplaying(moves);
+    setBrowsing(false);
     setNote(null);
     go([], cards ?? {}, anyLine, today, moves);
   };
+
+  /** The line from its end, stepped through — at the move tapped. */
+  const browseLine = (moves: PNode[], at: number) => {
+    setReplaying(moves);
+    setBrowsing(true);
+    setNote(null);
+    go(moves.slice(0, at), cards ?? {}, anyLine, today, moves);
+  };
+
+  /** A step through the replay, to the ply `to` (clamped): from then on,
+   *  nothing asked. */
+  const step = (to: number) => {
+    if (!replaying) return;
+    const at = Math.max(0, Math.min(replaying.length, to));
+    setBrowsing(true);
+    setNote(null);
+    if (at !== path.length) go(replaying.slice(0, at));
+  };
+
+  // The arrow keys, Home and End step through a replay.
+  useEffect(() => {
+    if (!replaying) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLElement && e.target.closest("input, select, textarea")) return;
+      const to = e.key === "ArrowLeft" ? path.length - 1 : e.key === "ArrowRight" ? path.length + 1
+        : e.key === "Home" ? 0 : e.key === "End" ? replaying.length : null;
+      if (to === null) return;
+      e.preventDefault();
+      step(to);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replaying, path]);
 
   // A new session: the cards read, or the lines changed.
   useEffect(() => {
@@ -131,6 +185,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
   // The opponent's move, after a moment; a known move, quickly.
   useEffect(() => {
     if (!cards) return;
+    if (phase === "opponent" && replaying && browsing) return;
     if (phase === "opponent" && replaying && target) {
       const t = window.setTimeout(() => go([...path, target]), 450);
       return () => window.clearTimeout(t);
@@ -148,7 +203,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
       return () => window.clearTimeout(t);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, path]);
+  }, [phase, path, browsing]);
 
   // The line done: kept, to replay; with a miss it waits — replay it, or the
   // next; else the next one, after a moment.
@@ -247,8 +302,10 @@ export default function DrillView({ chapter, store, onClose }: Props) {
   const s = drill.session;
   const hint = (phase === "show" || phase === "missed") && target ? squares(target.uci) : null;
   const budgetUsed = perDay > 0 && today.met >= budget;
+  const boardActive = !browsing && (phase === "own" || phase === "show" || phase === "missed");
 
   const status = phase === "loading" ? "Reading your cards…"
+    : browsing && phase !== "replayEnd" ? "Stepping through the line"
     : phase === "own" ? "Your move"
     : phase === "show" ? "New move — play it"
     : phase === "missed" ? "Play the book move"
@@ -273,7 +330,26 @@ export default function DrillView({ chapter, store, onClose }: Props) {
   };
 
   return (
-    <div className="h-full w-full flex flex-col bg-surface text-on-surface">
+    <div className="h-full w-full flex flex-col bg-surface text-on-surface touch-pan-y overscroll-x-none"
+      // A swipe in a replay steps a move: to the left on, to the right back
+      // (as turning a page). Not one begun on a piece to be moved. The
+      // browser leaves sideways swipes alone here (pan-y): a swipe to the
+      // right was going back a page in Chrome.
+      onTouchStart={(e) => {
+        const t = e.touches[0];
+        const onBoard = !!board.current?.contains(e.target as Node);
+        swipe.current = replaying && e.touches.length === 1 ? { x: t.clientX, y: t.clientY, t: Date.now(), onBoard } : null;
+      }}
+      onTouchEnd={(e) => {
+        const s0 = swipe.current;
+        swipe.current = null;
+        if (!s0 || !replaying) return;
+        if (s0.onBoard && boardActive) return;
+        const t = e.changedTouches[0];
+        const dx = t.clientX - s0.x, dy = t.clientY - s0.y;
+        if (Math.abs(dx) < 40 || Math.abs(dx) < 2 * Math.abs(dy) || Date.now() - s0.t > 800) return;
+        step(path.length + (dx < 0 ? 1 : -1));
+      }}>
       <div className="shrink-0 flex items-center gap-x-3 gap-y-1 px-3 py-2 border-b border-outline/40 flex-wrap">
         <div className="min-w-0">
           <div className="text-body-md truncate">{chapter.name}</div>
@@ -309,8 +385,10 @@ export default function DrillView({ chapter, store, onClose }: Props) {
 
       <div className="flex-1 min-h-0 flex flex-col md:flex-row">
         <div className="flex-1 min-h-0 min-w-0 flex p-2">
-          <DrillBoard fen={fen} orientation={color} active={phase === "own" || phase === "show" || phase === "missed"} onMove={onMove}
+          <div ref={board} className="flex-1 min-h-0 min-w-0 flex">
+          <DrillBoard fen={fen} orientation={color} active={boardActive} onMove={onMove}
             promotions={promotions} lastMove={lastMove} hint={hint} />
+          </div>
         </div>
         {/* Below the board (portrait): a fixed height, whatever it says — a
             longer message must not shrink the board or move it. Beside it
@@ -324,6 +402,30 @@ export default function DrillView({ chapter, store, onClose }: Props) {
                 <button onClick={() => startLine(cards, anyLine)} className="ml-auto text-label-md text-primary hover:underline">Next line →</button>
               )}
             </div>
+          )}
+          {/* Stepping through the replay. */}
+          {replaying && (
+            <div className="flex items-center gap-1">
+              {([["first", 0, "To the start (Home)"], ["back", path.length - 1, "A move back (←)"], ["on", path.length + 1, "A move on (→)"], ["last", replaying.length, "To the end (End)"]] as const).map(([icon, to, title], i) => {
+                const off = i < 2 ? path.length === 0 : path.length >= replaying.length;
+                return (
+                  <button key={icon} onClick={() => step(to)} disabled={off} title={title} aria-label={title}
+                    className="h-10 flex-1 max-w-14 inline-flex items-center justify-center rounded-md bg-surface-container text-on-surface hover:bg-on-surface/8 disabled:opacity-35">
+                    <svg viewBox="0 0 24 24" className="w-5 h-5 fill-current" aria-hidden="true"><path d={STEP_ICONS[icon]} /></svg>
+                  </button>
+                );
+              })}
+              {browsing && phase !== "replayEnd" && (
+                <button onClick={() => { setBrowsing(false); setNote(null); }} title="Your moves asked again, from this position"
+                  className="ml-auto h-8 px-3 rounded-full text-label-md text-primary hover:bg-primary/8">Play from here</button>
+              )}
+            </div>
+          )}
+          {/* The line as text: at its end, and while it is replayed — a move tapped goes there. */}
+          {(replaying || phase === "lineEnd") && (
+            <LineText moves={replaying ?? lastLine?.moves ?? path} missed={lastLine?.missed ?? missedPlies}
+              at={replaying ? path.length - 1 : undefined}
+              onPick={replaying ? (i) => step(i + 1) : lastLine ? (i) => browseLine(lastLine.moves, i + 1) : undefined} />
           )}
           {replaying && !withComments && (
             <div className="text-label-sm text-on-surface-variant">Sent without its comments — send it again with comments to see them here.</div>
@@ -342,11 +444,6 @@ export default function DrillView({ chapter, store, onClose }: Props) {
             <MoveStats move={lastPlayed} ply={path.length - 1}
               stats={path.length >= 2 ? path[path.length - 2].stats : chapter.start.stats}
               own={sideToMove(path.slice(0, -1)) === color} />
-          )}
-          {/* The line as text: at its end, and while it is replayed. */}
-          {(replaying || phase === "lineEnd") && (
-            <LineText moves={replaying ?? lastLine?.moves ?? path} missed={lastLine?.missed ?? missedPlies}
-              at={replaying ? path.length - 1 : undefined} />
           )}
           {/* At the line's end: Stockfish's verdict, kept by the analysis job. */}
           {(phase === "lineEnd" || phase === "replayEnd") && lastLine && (() => {
