@@ -1218,13 +1218,14 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
             { label: "Import model games…", onClick: () => pickFilesAs(true), disabled: busy },
             { label: `Rename ${one}… (F2)`, separated: true, onClick: () => chapter && setRenaming(chapter.id), disabled: none },
             { label: `Export ${one} PGN…`, onClick: () => chapter && void exportPgn(chapterPgnPath(chapter.id), `${book.name}-${chapter.name}`).then(setNote), disabled: none },
+            // The phone trainer's, a section of their own.
             ...(kind === "chapters" ? [
-              ...(onSendToPhone ? [{ label: "Send to phone…", onClick: () => chapter && onSendToPhone(chapter.id, `${book.name}-${chapter.name}`), disabled: none }] : []),
-              { label: "Save for phone…", onClick: () => chapter && void saveForPhone(chapter.id, `${book.name}-${chapter.name}`).then(setNote), disabled: none },
+              ...(onSendToPhone ? [{ label: "Send to phone…", separated: true, onClick: () => chapter && onSendToPhone(chapter.id, `${book.name}-${chapter.name}`), disabled: none }] : []),
+              { label: "Save for phone…", separated: !onSendToPhone, onClick: () => chapter && void saveForPhone(chapter.id, `${book.name}-${chapter.name}`).then(setNote), disabled: none },
             ] : []),
             several
-              ? { label: `Delete ${multi.length} ${many}…`, onClick: () => setConfirmDeleteMany(true), disabled: busy }
-              : { label: `Delete ${one}…`, onClick: () => setConfirmDelete(true), disabled: none },
+              ? { label: `Delete ${multi.length} ${many}…`, separated: kind === "chapters", onClick: () => setConfirmDeleteMany(true), disabled: busy }
+              : { label: `Delete ${one}…`, separated: kind === "chapters", onClick: () => setConfirmDelete(true), disabled: none },
             several
               ? { label: models ? `Make ${multi.length} chapters` : `Make ${multi.length} model games`, onClick: () => { onConvert(multi); setPicked([]); }, disabled: busy }
               : { label: models ? "Make it a chapter" : "Make it a model game", onClick: () => chapter && onConvert([chapter.id]), disabled: none },
