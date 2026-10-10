@@ -3,10 +3,11 @@
 // chapters and the cards stay in the phone's storage. See
 // docs/design/opening-repertoire.md, "Taking chapters to the phone".
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { validate, type LpdoChapter } from "../trainer/format";
 import { buildDrill, cardCounts, type Card } from "../trainer/drill";
 import DrillView from "../trainer/DrillView";
+import ScanView from "./ScanView";
 import { cardStore, deleteChapter, keepData, listChapters, loadPrefs, saveChapter, savePrefs, type Prefs } from "./db";
 
 const sentOn = (iso: string) => {
@@ -71,15 +72,28 @@ export default function TrainerApp() {
     void loadPrefs().then(setPrefs).catch(() => setPrefs({ favourites: [], favouritesOnly: false, color: "both" }));
   }, []);
 
+  /** A chapter received: saved — over the one held, if it was sent before. */
+  const add = useCallback(async (pkg: LpdoChapter) => {
+    const had = (await listChapters()).some((c) => c.chapter.id === pkg.chapter.id);
+    await saveChapter(pkg);
+    await load();
+    setNote({ text: `${had ? "Updated" : "Added"} “${pkg.name}”` });
+  }, []);
+
+  const [scanning, setScanning] = useState(false);
+  // Stable, so the scan's camera is not started again on every render.
+  const scanned = useCallback((pkg: LpdoChapter) => {
+    setScanning(false);
+    void add(pkg).catch((e) => setNote({ text: String(e), error: true }));
+  }, [add]);
+  const stopScan = useCallback(() => setScanning(false), []);
+
   async function addFile(f: File) {
     try {
       const pkg = JSON.parse(await f.text()) as LpdoChapter;
       const problem = validate(pkg);
       if (problem) throw new Error(`${f.name}: ${problem}`);
-      const had = chapters?.some((c) => c.chapter.id === pkg.chapter.id);
-      await saveChapter(pkg);
-      await load();
-      setNote({ text: `${had ? "Updated" : "Added"} “${pkg.name}”` });
+      await add(pkg);
     } catch (e) {
       setNote({ text: e instanceof SyntaxError ? `${f.name} is not a chapter file` : String(e instanceof Error ? e.message : e), error: true });
     }
@@ -90,6 +104,8 @@ export default function TrainerApp() {
     await deleteChapter(c);
     await load();
   }
+
+  if (scanning) return <ScanView onDone={scanned} onCancel={stopScan} />;
 
   if (drilling) {
     return (
@@ -112,7 +128,9 @@ export default function TrainerApp() {
         <img src="./icon-192.png" alt="" className="w-8 h-8 rounded-md" />
         <h1 className="text-title-md flex-1">LPDO Trainer</h1>
         <button onClick={() => file.current?.click()}
-          className="h-9 px-4 rounded-full bg-primary text-on-primary text-label-lg">Add chapter</button>
+          className="h-9 px-4 rounded-full bg-secondary-container text-on-secondary-container text-label-lg">File</button>
+        <button onClick={() => { setNote(null); setScanning(true); }}
+          className="h-9 px-4 rounded-full bg-primary text-on-primary text-label-lg">Scan</button>
         <input ref={file} type="file" accept=".json,application/json" className="hidden"
           onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void addFile(f); }} />
       </header>
@@ -133,8 +151,9 @@ export default function TrainerApp() {
         ) : chapters.length === 0 ? (
           <div className="p-4 space-y-2 text-body-md text-on-surface-variant">
             <p>No chapters on this phone yet.</p>
-            <p>In LPDO on your computer, choose <b>Save for phone…</b> in a chapter's menu on the Repertoire page, get the
-              file onto this phone, and add it here with <b>Add chapter</b>.</p>
+            <p>In LPDO on your computer, choose <b>Send to phone…</b> in a chapter's menu on the Repertoire page and tap
+              <b> Scan</b> here, the camera on the code.</p>
+            <p>Or <b>Save for phone…</b> there, get the file onto this phone, and open it here with <b>File</b>.</p>
           </div>
         ) : (<>
           {/* Which chapters: one colour's books or both, the favourites only. */}

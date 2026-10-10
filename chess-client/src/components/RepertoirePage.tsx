@@ -21,6 +21,7 @@ import { apiUrl } from "../api";
 import AnalysisPage, { type AnalysisTab } from "./AnalysisPage";
 import MergeChaptersDialog from "./repertoire/MergeChaptersDialog";
 import DrillDialog from "./repertoire/DrillDialog";
+import SendToPhoneDialog from "./repertoire/SendToPhoneDialog";
 import { chapterPackage } from "../lib/practicePackage";
 import RenameChaptersDialog from "./repertoire/RenameChaptersDialog";
 import { mergeChapters, resolveMerge, type MergeChoices } from "../lib/mergeChapters";
@@ -148,8 +149,9 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
   const [docReload, setDocReload] = useState(0);
   useEffect(() => setBookPicked(false), [selectedBook]);
   // Chapters being merged: the lines already merged, the conflicts to choose.
-  // The chapter being drilled.
+  // The chapter being drilled; the one being sent to the phone.
   const [drilling, setDrilling] = useState<number | null>(null);
+  const [sending, setSending] = useState<{ id: number; filename: string } | null>(null);
   const [merging, setMerging] = useState<{
     target: ChapterSummary; others: ChapterSummary[]; labels: string[]; result: ReturnType<typeof mergeChapters>;
   } | null>(null);
@@ -477,6 +479,7 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
             onPick={(id) => { setChapterId(id); setBookPicked(false); }}
             bookPicked={bookPicked} onPickBook={setBookPicked}
             onMerge={startMerge}
+            onSendToPhone={(id, filename) => setSending({ id, filename })}
             onAnalyse={startAnalysis} analysing={analysing}
             onRemoveFens={removeFens} onCountFens={countFens}
             onRenameMany={(changes) => run(async () => { for (const c of changes) await updateChapter(c.id, { name: c.name }); })}
@@ -532,6 +535,10 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
   return (<>
     {preparingMerge && <PleaseWait text="Merging the chapters…" />}
     {drilling != null && <DrillDialog chapterId={drilling} onClose={() => setDrilling(null)} />}
+    {sending && (
+      <SendToPhoneDialog chapterId={sending.id} onClose={() => setSending(null)}
+        onSaveFile={() => { const s = sending; setSending(null); void saveForPhone(s.id, s.filename).then((n) => n && setError(n.startsWith("Could not") ? n : null)); }} />
+    )}
     {merging && (
       <MergeChaptersDialog
         target={merging.labels[0]}
@@ -969,7 +976,7 @@ function Menu({ entries, title, up = false, right = false }: {
 
 /** The book's chapters, with one menu for the chapter on the board and a
  *  mode for putting them in order. */
-function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onCountFens, onRenameMany, onChapter, onDeleteChapter, onDeleteChapters, onAddEmpty, onImport, f2Here, arrowsHere, kind = "chapters", onImportModels, onConvert, onOrder, onSetKind, onSetOverview }: {
+function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onCountFens, onRenameMany, onChapter, onDeleteChapter, onDeleteChapters, onAddEmpty, onImport, f2Here, arrowsHere, kind = "chapters", onImportModels, onConvert, onOrder, onSetKind, onSetOverview, onSendToPhone }: {
   /** Which list: the chapters, or — with their own heading and commands —
    *  the model games (`book.chapters` holds the one or the other). */
   kind?: "chapters" | "models" | "reference";
@@ -1003,6 +1010,8 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
   /** Chapters set as overviews (true) or not (false) whatever their names;
    *  null: told by their names again. */
   onSetOverview?: (ids: number[], overview: boolean | null) => void;
+  /** Send a chapter to the phone trainer by QR code. */
+  onSendToPhone?: (id: number, filename: string) => void;
   /** Adding chapters: an empty one, or from PGN (pasted, or files). */
   onAddEmpty: (name: string) => void;
   onImport: (items: ImportItem[]) => void;
@@ -1209,7 +1218,10 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
             { label: "Import model games…", onClick: () => pickFilesAs(true), disabled: busy },
             { label: `Rename ${one}… (F2)`, separated: true, onClick: () => chapter && setRenaming(chapter.id), disabled: none },
             { label: `Export ${one} PGN…`, onClick: () => chapter && void exportPgn(chapterPgnPath(chapter.id), `${book.name}-${chapter.name}`).then(setNote), disabled: none },
-            ...(kind === "chapters" ? [{ label: "Save for phone…", onClick: () => chapter && void saveForPhone(chapter.id, `${book.name}-${chapter.name}`).then(setNote), disabled: none }] : []),
+            ...(kind === "chapters" ? [
+              ...(onSendToPhone ? [{ label: "Send to phone…", onClick: () => chapter && onSendToPhone(chapter.id, `${book.name}-${chapter.name}`), disabled: none }] : []),
+              { label: "Save for phone…", onClick: () => chapter && void saveForPhone(chapter.id, `${book.name}-${chapter.name}`).then(setNote), disabled: none },
+            ] : []),
             several
               ? { label: `Delete ${multi.length} ${many}…`, onClick: () => setConfirmDeleteMany(true), disabled: busy }
               : { label: `Delete ${one}…`, onClick: () => setConfirmDelete(true), disabled: none },
