@@ -259,9 +259,15 @@ A line where you missed a move stops at its end, shown as text with the miss
 in red: **Replay this line** plays the same moves again from the start — the
 opponent's the same, every one of yours asked, the chapter's comments under
 the board — and counts nothing, right or wrong; **Replay again** as often as it
-helps, or **Next line**. **↺ Replay last line** replays the line just done at
-any time. (On the phone the comments come with a chapter saved as a file, or
-sent with **Include the chapter's comments** ticked in **Send to phone…**.)
+helps, or **Next line** — at the end, or any time during the replay. **↺ Replay
+last line** replays the line just done at any time. During a replay each move
+shows how it stands among the moves played in its position: the three most
+played with their share and score, the line's move marked ("1…e5 — 2nd most
+played", "rare — 3% of games"), from the database's figures the chapter
+carries — on the phone too, offline. (On the phone the comments come with a
+chapter saved as a file, or sent with **Include the chapter's comments**
+ticked in **Send to phone…**; the trainer's list says which: "with comments"
+or "no comments".)
 
 ### On the phone
 
