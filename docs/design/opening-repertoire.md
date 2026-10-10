@@ -586,7 +586,13 @@ pace.
    keeps them in `engine_evals` (shared with the Engine panel), and stops a
    search for the panel's, resuming when it is idle — each search at most
    2 minutes (`LINE_END_MAX`; with 12 threads some positions never reach the
-   depth), kept at the depth reached and tried again another time; the job
+   depth), kept at the depth reached and tried again another time; line
+   ends with no legal moves (checkmate, stalemate) are not asked for
+   (`line_ends_for_engine`, and the client's `lineEndEvals` leaves them out
+   too): Stockfish answers them at once without a line, which the job took
+   for an interruption and asked again, 19 times a second, for hours —
+   `Background::search` gives a snapshot without lines for them, `None` only
+   when interrupted, and the job moves on from an empty one; the job
    on a reader, which the pool then passes over while it is busy (reads go
    to the least loaded connection); the figures carry them
    (`PositionStat.engine`), the package too (`PNode.engine`);

@@ -294,7 +294,9 @@ background, to the depth set under Maintenance → Repertoire (**Stockfish at
 the ends of the lines**: 24 by default, a few seconds a position; 0 for none).
 Positions already evaluated as deep are not done again; while the Engine panel
 analyses, the job waits. A position Stockfish cannot take to the depth in
-2 minutes keeps the depth it reached, and the job says so ("1 stopped short"). Send or save the chapter for the phone after the
+2 minutes keeps the depth it reached, and the job says so ("1 stopped short").
+A line that ends in checkmate or stalemate has nothing to evaluate; the drill
+says so at its end. Send or save the chapter for the phone after the
 analysis, for the phone to have the evaluations.
 
 You need not start it: the server analyses the chapters of the active books

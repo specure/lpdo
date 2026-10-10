@@ -2023,10 +2023,17 @@ pub fn attach_line_end_evals(conn: &Connection, id: i64, positions: &mut [Positi
 
 /// The line ends that still want Stockfish at `depth` — none kept by this
 /// engine as deep — as FENs.
+/// The ends of the lines with a move to look for, as FENs: checkmate and
+/// stalemate have nothing for Stockfish — it answers them at once, without
+/// a line, which the analysis job once took for an interruption and asked
+/// again, for ever.
+fn line_ends_for_engine(conn: &Connection, id: i64) -> Result<Vec<String>> {
+    Ok(line_ends(conn, id)?.into_iter().map(|(_, f)| f).filter(|f| crate::engine::legal_moves(f) > 0).collect())
+}
+
 pub fn line_ends_to_evaluate(conn: &Connection, id: i64, ident: &str, depth: u32) -> Result<Vec<String>> {
-    let ends = line_ends(conn, id)?;
     let mut out = Vec::new();
-    for (_, fen) in ends {
+    for fen in line_ends_for_engine(conn, id)? {
         let key = crate::engine::position_key(&fen);
         let kept: Option<i64> = conn.query_row(
             "SELECT depth FROM engine_evals WHERE engine = ? AND position = ?", duckdb::params![ident, key], |r| r.get(0)).ok();
@@ -2049,7 +2056,7 @@ pub fn figures_current(conn: &Connection, id: i64) -> Result<bool> {
 /// The line ends without a Stockfish evaluation as deep as `depth`, any
 /// version of it.
 pub fn line_ends_missing(conn: &Connection, id: i64, depth: u32) -> Result<usize> {
-    let fens: Vec<String> = line_ends(conn, id)?.into_iter().map(|(_, f)| f).collect();
+    let fens = line_ends_for_engine(conn, id)?;
     let kept = kept_evals(conn, &fens)?;
     Ok(fens.iter().filter(|f| kept.get(*f).is_none_or(|e| e.depth < depth)).count())
 }
@@ -2926,6 +2933,21 @@ mod tests {
         assert!(p.contains("[Annotator \"Doe, J.\"]\n[Orientation \"black\"]"));
         assert!(!compose_pgn("B", Some(" "), 1, "Ch", "white", "").contains("Annotator"));
         assert!(p.ends_with("\n\n1. e4 *\n"));
+    }
+
+    /// A line that ends in checkmate has nothing for Stockfish: not among
+    /// the ends to evaluate, not missing (the job would ask for ever).
+    #[test]
+    fn a_mated_line_end_is_not_for_the_engine() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let book = create_book(&conn, "Scholar", "white", None, None, None).unwrap();
+        let id = add_chapters_as(&conn, book.id, Some("Mate"), Some("1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 (3... g6 4. Qf3) 4. Qxf7# *"), None, false).unwrap().remove(0).id;
+        assert_eq!(line_ends(&conn, id).unwrap().len(), 2);
+        let todo = line_ends_to_evaluate(&conn, id, "Stockfish 19", 24).unwrap();
+        assert_eq!(todo.len(), 1);
+        assert!(todo[0].starts_with("r1bqkbnr/pppp1p1p/2n3p1/4p3/2B1P3/5Q2/"), "{}", todo[0]);
+        assert_eq!(line_ends_missing(&conn, id, 24).unwrap(), 1);
     }
 
     #[test]

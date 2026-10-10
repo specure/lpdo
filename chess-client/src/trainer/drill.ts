@@ -211,6 +211,13 @@ export function fenAfter(d: Drill, path: PNode[]): string {
   return board.fen();
 }
 
+/** How a line's last position ends the game, if it does — nothing there for
+ *  Stockfish to evaluate (the server leaves such ends out). */
+export function lineOver(d: Drill, moves: PNode[]): "checkmate" | "stalemate" | null {
+  const board = new Chess(fenAfter(d, moves));
+  return board.isCheckmate() ? "checkmate" : board.isStalemate() ? "stalemate" : null;
+}
+
 // ── New moves a day ──────────────────────────────────────────────────────────
 
 /** New moves a day, by default; 0 for no limit. */

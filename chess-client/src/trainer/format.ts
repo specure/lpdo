@@ -5,6 +5,8 @@
 // Everything under src/trainer/ works on this format alone — no server
 // calls, no app state — so the phone trainer can share it as it is.
 
+import { Chess } from "chess.js";
+
 export const FORMAT = "lpdo-chapter";
 export const VERSION = 1;
 
@@ -96,16 +98,21 @@ export function hasComments(c: LpdoChapter): boolean {
   return walk(c.tree);
 }
 
-/** The ends of the package's lines (switched-off ones left out): how many,
- *  and how many carry Stockfish's evaluation (the analysis job's). */
+/** The ends of the package's lines (switched-off ones left out, and those
+ *  ending the game — checkmate, stalemate — which have nothing for
+ *  Stockfish): how many, and how many carry Stockfish's evaluation (the
+ *  analysis job's). */
 export function lineEndEvals(c: LpdoChapter): { ends: number; evaluated: number } {
   let ends = 0, evaluated = 0;
+  const board = new Chess();
   const walk = (ns: PNode[]) => {
     for (const n of ns) {
       if (n.off) continue;
+      try { board.move(n.san); } catch { continue; /* the chapter's moves are legal */ }
       const on = n.children.filter((k) => !k.off);
       if (on.length) walk(on);
-      else { ends++; if (n.engine) evaluated++; }
+      else if (!board.isCheckmate() && !board.isStalemate()) { ends++; if (n.engine) evaluated++; }
+      board.undo();
     }
   };
   walk(c.tree);

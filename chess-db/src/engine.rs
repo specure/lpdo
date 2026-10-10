@@ -2278,7 +2278,9 @@ pub struct Background {
 impl Background {
     /// Search `fen` to `depth`, single line: the deepest complete result,
     /// scores from White's point of view. `interrupt` is asked every second;
-    /// when it says so the search is stopped and none returned. At most
+    /// when it says so the search is stopped and none returned — `None` means
+    /// that and nothing else: a position with no move to look for (checkmate,
+    /// stalemate: "bestmove (none)") gives a snapshot without lines. At most
     /// `max` long: some positions run away with many threads (an English
     /// line end kept Stockfish 19 at depth 23 for hours with 12 threads, and
     /// took ten seconds with two), and then the depth reached is the result.
@@ -2318,9 +2320,8 @@ impl Background {
             }
         }
         if stopped { return Ok(None); }
-        Ok(best.map(|(d, l)| Snapshot {
-            gen: 0, depth: d, nodes, nps: 0, lines: vec![l], done: true, cached: false, engine: None, error: None,
-        }))
+        let (depth, lines) = best.map_or((0, Vec::new()), |(d, l)| (d, vec![l]));
+        Ok(Some(Snapshot { gen: 0, depth, nodes, nps: 0, lines, done: true, cached: false, engine: None, error: None }))
     }
 }
 
@@ -2383,7 +2384,7 @@ fn parse_move_stats(rest: &str) -> Option<(String, u64, f64)> {
 }
 
 /// How many legal moves `fen` has (already validated by `clean_fen`).
-fn legal_moves(fen: &str) -> u32 {
+pub fn legal_moves(fen: &str) -> u32 {
     use shakmaty::{fen::Fen, CastlingMode, Position};
     fen.parse::<Fen>()
         .ok()
@@ -2766,6 +2767,13 @@ mod background_tests {
         let short = bg.search("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 60, Duration::from_secs(1), || false).await.unwrap().unwrap();
         assert!(short.depth > 0 && short.depth < 60, "{}", short.depth);
         assert!(t.elapsed() < Duration::from_secs(10));
+        // Checkmate: no move to look for — a snapshot without lines, at once;
+        // not None, which would mean interrupted (and the analysis job once
+        // asked again, for ever).
+        let t = std::time::Instant::now();
+        let mated = bg.search("r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 4", 24, Duration::from_secs(60), || false).await.unwrap().unwrap();
+        assert!(mated.lines.is_empty());
+        assert!(t.elapsed() < Duration::from_secs(5));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

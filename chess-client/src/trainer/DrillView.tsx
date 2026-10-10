@@ -18,7 +18,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { bareSan, hasComments, type LpdoChapter, type PNode } from "./format";
 import {
-  NEW_PER_DAY_CHOICES, buildDrill, cardCounts, describeBookMove, fenAfter, introduce, matchOwn, newPerDay,
+  NEW_PER_DAY_CHOICES, buildDrill, cardCounts, describeBookMove, fenAfter, introduce, lineOver, matchOwn, newPerDay,
   newToday, nextMoves, nextStep, opponentMove, review, saveNewPerDay, saveNewToday, sideToMove,
   type Card, type CardStore, type NewToday,
 } from "./drill";
@@ -534,6 +534,8 @@ export default function DrillView({ chapter, store, onClose }: Props) {
               the analysis job. */}
           {(phase === "lineEnd" || (phase === "replayEnd" && reviewing)) && lastLine && (() => {
             const end = lastLine.moves[lastLine.moves.length - 1]?.engine;
+            // Checkmate or stalemate: nothing for Stockfish there.
+            const over = end ? null : lineOver(drill, lastLine.moves);
             return end ? (
               <div className="text-body-sm">
                 End of the line: <span className="font-semibold tabular-nums">{"mate" in end.eval
@@ -541,6 +543,8 @@ export default function DrillView({ chapter, store, onClose }: Props) {
                   : `${end.eval.cp > 0 ? "+" : end.eval.cp < 0 ? "−" : ""}${(Math.abs(end.eval.cp) / 100).toFixed(2)}`}</span>
                 <span className="text-on-surface-variant"> · {end.name}, depth {end.depth}</span>
               </div>
+            ) : over ? (
+              <div className="text-body-sm">End of the line: <span className="font-semibold">{over}</span>.</div>
             ) : (
               <div className="text-label-sm text-on-surface-variant">No engine evaluation of the line's end yet — analyse the chapter on the computer (Stockfish at the ends of the lines).</div>
             );

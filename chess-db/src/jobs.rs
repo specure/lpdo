@@ -1589,6 +1589,13 @@ fn run_job(
                     match rt.block_on(bg.search(fen, depth, LINE_END_MAX, cancelled)) {
                         // Made way (or cancelled): the same position again.
                         Ok(None) => continue,
+                        // Nothing in it for the engine (no legal moves): on to
+                        // the next. Such ends are not asked for any more
+                        // (line_ends_for_engine); this keeps the job from
+                        // asking again for ever should one get through.
+                        Ok(Some(snap)) if snap.lines.is_empty() => {
+                            reporter.log(format!("{chapter}: line end {} has no legal moves, nothing to evaluate: {fen}", done + 1));
+                        }
                         Ok(Some(snap)) => {
                             crate::engine::save_eval(conn, bg.kind, &bg.ident, &crate::engine::position_key(fen), &snap)?;
                             evaluated += 1;
@@ -2368,7 +2375,9 @@ mod repertoire_analyse_tests {
         let conn = crate::db::open(&db).unwrap();
         crate::db::schema::init(&conn).unwrap();
         let book = crate::repertoire::create_book(&conn, "French", "black", None, None, None).unwrap();
-        let id = crate::repertoire::add_chapters_as(&conn, book.id, Some("c"), Some("1. e4 e6 2. d4 d5 3. e5 (3. Nc3 Bb4) c5 *"), None, false).unwrap().remove(0).id;
+        // A line ending in mate too: nothing to evaluate there, and no
+        // asking for ever (the job once looped on one).
+        let id = crate::repertoire::add_chapters_as(&conn, book.id, Some("c"), Some("1. e4 e6 (1... e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7#) 2. d4 d5 3. e5 (3. Nc3 Bb4) c5 *"), None, false).unwrap().remove(0).id;
         let mut s = crate::repertoire::settings();
         s.line_end_depth = 10;
         crate::repertoire::set_settings(s).unwrap();
