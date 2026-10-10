@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
-import { receiver, type Receiver } from "../trainer/qrTransfer";
+import { receiver, type QrTest, type Receiver } from "../trainer/qrTransfer";
 import type { LpdoChapter } from "../trainer/format";
 
 interface Props {
@@ -23,6 +23,9 @@ export default function ScanView({ onDone, onCancel }: Props) {
   // How the reading goes, to tell what slows it: the camera's picture, how
   // long a search takes, how many find a code.
   const [detail, setDetail] = useState("");
+  // A test of the transfer read (sent from Maintenance): how it went.
+  const [test, setTest] = useState<TestResult | null>(null);
+  const [round, setRound] = useState(0);
 
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -46,7 +49,7 @@ export default function ScanView({ onDone, onCancel }: Props) {
       return jsQR(img.data, out, out, { inversionAttempts: "dontInvert" })?.data ?? null;
     };
 
-    let scans = 0, found = 0, spent = 0;
+    let scans = 0, found = 0, spent = 0, first = 0;
     const loop = async () => {
       const v = video.current;
       if (!running || !v || !rx) return;
@@ -57,6 +60,7 @@ export default function ScanView({ onDone, onCancel }: Props) {
         scans++;
         if (text) {
           found++;
+          first ||= performance.now();
           rx.receive(text);
           setProgress(rx.progress());
           setStatus("Reading — hold steady");
@@ -65,7 +69,16 @@ export default function ScanView({ onDone, onCancel }: Props) {
             setStatus("Received");
             // The full bar a moment, before the chapter opens.
             await new Promise((r) => setTimeout(r, 300));
-            try { onDone(await rx.chapter()); } catch (e) { setError(String(e instanceof Error ? e.message : e)); }
+            const secs = (performance.now() - first) / 1000;
+            try {
+              const got = await rx.payload();
+              if (got.kind === "chapter") onDone(got.chapter);
+              else {
+                const { read: parts, of } = rx.parts();
+                setTest({ test: got.test, secs, parts, of, searchMs: spent / scans, found: found / scans, camera: `${v.videoWidth}×${v.videoHeight}` });
+                stream?.getTracks().forEach((t) => t.stop());
+              }
+            } catch (e) { setError(String(e instanceof Error ? e.message : e)); }
             return;
           }
         }
@@ -103,7 +116,9 @@ export default function ScanView({ onDone, onCancel }: Props) {
       running = false;
       stream?.getTracks().forEach((t) => t.stop());
     };
-  }, [onDone]);
+  }, [onDone, round]);
+
+  if (test) return <TestResultView r={test} onAgain={() => { setTest(null); setProgress(0); setDetail(""); setRound((n) => n + 1); }} onClose={onCancel} />;
 
   return (
     <div className="h-[100dvh] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] bg-black text-white flex flex-col">
@@ -119,6 +134,63 @@ export default function ScanView({ onDone, onCancel }: Props) {
         <div className={`text-body-md ${error ? "text-red-300" : ""}`}>{error ?? `${status}${progress > 0 ? ` · ${Math.round(progress * 100)}%` : ""}`}</div>
         {detail && !error && <div className="text-label-sm text-white/50">{detail}</div>}
         <button onClick={onCancel} className="h-10 px-5 rounded-full bg-white/15 text-label-lg">Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+interface TestResult {
+  test: QrTest;
+  /** From the first code read to the last part. */
+  secs: number;
+  /** Distinct parts read, and the parts it is cut in. */
+  parts: number;
+  of: number;
+  searchMs: number;
+  /** The share of searches that found a code. */
+  found: number;
+  camera: string;
+}
+
+/** A test of the transfer, read: nothing kept — how it went, and what to
+ *  change if it was slow. */
+function TestResultView({ r, onAgain, onClose }: { r: TestResult; onAgain: () => void; onClose: () => void }) {
+  const t = r.test;
+  const shown = Math.max(1, Math.round(r.secs * t.fps));
+  // Of the frames shown while reading, how many came through.
+  const caught = Math.min(1, r.parts / shown);
+  const kb = (t.filler.length * 0.75 / 1024).toFixed(1);
+  const advice = r.searchMs > 1000 / t.fps
+    ? `A search takes ${Math.round(r.searchMs)} ms, longer than a frame is shown (${Math.round(1000 / t.fps)} ms): fewer frames a second would miss fewer.`
+    : caught >= 0.7 ? "The phone reads nearly every frame: more bytes a frame or more frames a second may be faster still."
+    : caught >= 0.4 ? "A good reading."
+    : "Many frames missed: hold the phone closer and steadier, without glare on the screen — or try a larger code, fewer bytes a frame, or fewer frames a second.";
+  const row = (k: string, v: string) => (
+    <div className="flex justify-between gap-4 py-1 border-b border-outline/30"><span className="text-on-surface-variant">{k}</span><span className="tabular-nums text-right">{v}</span></div>
+  );
+  return (
+    <div className="h-[100dvh] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] bg-surface text-on-surface flex flex-col">
+      <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
+        <div>
+          <div className="text-title-md">Test received</div>
+          <div className="text-body-sm text-on-surface-variant">A test of the transfer — nothing is kept on the phone.</div>
+        </div>
+        <div className="text-display-sm tabular-nums">{r.secs.toFixed(1)} s</div>
+        <div className="text-body-sm">
+          {row("Size", `${kb} KB, in ${r.of} parts`)}
+          {row("Sent with", `${t.bytes} bytes a frame · ${t.fps} a second · ${t.size} px`)}
+          {row("Frames shown meanwhile", `about ${shown}`)}
+          {row("Parts read", `${r.parts} — ${Math.round(caught * 100)}% of the frames shown`)}
+          {row("Searches finding a code", `${Math.round(r.found * 100)}%`)}
+          {row("A search takes", `${Math.round(r.searchMs)} ms`)}
+          {row("Camera", r.camera)}
+        </div>
+        <p className="text-body-sm">{advice}</p>
+        <p className="text-label-sm text-on-surface-variant">The settings are on the computer: Maintenance → Sending to the phone.</p>
+      </div>
+      <div className="shrink-0 p-4 flex gap-2">
+        <button onClick={onAgain} className="h-10 px-5 rounded-full bg-primary text-on-primary text-label-lg">Test again</button>
+        <button onClick={onClose} className="h-10 px-5 rounded-full bg-secondary-container text-on-secondary-container text-label-lg">Close</button>
       </div>
     </div>
   );

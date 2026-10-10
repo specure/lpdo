@@ -1,6 +1,7 @@
 // The drill's board: one's own moves by click (the piece, then its square)
 // or by dragging; nothing asked of a server, so the phone can use it as it
-// is. The last move is marked; a hint shows as an arrow.
+// is. The last move is marked; a hint shows as an arrow, as do the moves a
+// review shows, and the book's arrows and circles.
 
 import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { Chessboard } from "react-chessboard";
@@ -20,12 +21,21 @@ interface Props {
   promotions?: Record<string, string>;
   lastMove?: { from: string; to: string } | null;
   hint?: { from: string; to: string } | null;
+  /** More arrows: from, to, colour. */
+  arrows?: { from: string; to: string; color: string }[];
+  /** Squares ringed (the book's circles). */
+  circles?: { square: string; color: string }[];
   id?: string;
 }
 
 const MIN = 200;
 
-export default function DrillBoard({ fen, orientation, active, onMove, promotions, lastMove, hint, id = "drill-board" }: Props) {
+/** The book's move: a hint, and the line's move in a review. */
+export const HINT_COLOR = "rgba(56, 142, 60, 0.85)";
+/** The chapter's other moves in a review. */
+export const BRANCH_COLOR = "rgba(30, 136, 229, 0.75)";
+
+export default function DrillBoard({ fen, orientation, active, onMove, promotions, lastMove, hint, arrows = [], circles = [], id = "drill-board" }: Props) {
   const box = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState(320);
   useLayoutEffect(() => {
@@ -68,6 +78,7 @@ export default function DrillBoard({ fen, orientation, active, onMove, promotion
   const styles: Record<string, CSSProperties> = {};
   const mark = "rgba(255, 213, 79, 0.45)";
   if (lastMove) { styles[lastMove.from] = { background: mark }; styles[lastMove.to] = { background: mark }; }
+  for (const c of circles) styles[c.square] = { ...styles[c.square], boxShadow: `inset 0 0 0 4px ${c.color}`, borderRadius: "50%" };
   if (selected) {
     styles[selected] = { background: "rgba(56, 142, 60, 0.45)" };
     for (const to of legalFrom(selected)) {
@@ -87,7 +98,10 @@ export default function DrillBoard({ fen, orientation, active, onMove, promotion
               allowDragging: active,
               allowDrawingArrows: false,
               clearArrowsOnPositionChange: false,
-              arrows: hint ? [{ startSquare: hint.from, endSquare: hint.to, color: "rgba(56, 142, 60, 0.85)" }] : [],
+              arrows: [
+                ...arrows.map((a) => ({ startSquare: a.from, endSquare: a.to, color: a.color })),
+                ...(hint ? [{ startSquare: hint.from, endSquare: hint.to, color: HINT_COLOR }] : []),
+              ],
               squareStyles: styles,
               onPieceDrop: ({ sourceSquare, targetSquare }) => !!sourceSquare && !!targetSquare && play(sourceSquare, targetSquare),
               onSquareClick: ({ square }) => click(square),

@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { QR_DEFAULTS, QR_LIMITS, qrSettings, saveQrSettings, type QrSettings } from "../lib/qrSettings";
+import PhoneTestDialog from "./repertoire/PhoneTestDialog";
 import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
 import ExternalLinkIcon from "./ExternalLinkIcon";
 import { REPETITION_ABOVE_KEY, REPETITION_APART_KEY, repetitionSettings } from "../lib/repetition";
@@ -1055,6 +1057,53 @@ function RepertoireSection() {
         </div>
       )}
       {error && <p className="text-body-sm text-error">{error}</p>}
+    </SectionCard>
+  );
+}
+
+/** Sending a chapter to the phone (#327): the QR codes' settings, per
+ *  computer, and a test of them with the phone. */
+function PhoneSection() {
+  const [s, setS] = useState<QrSettings>(qrSettings);
+  const [draft, setDraft] = useState(() => ({ bytes: String(s.bytes), fps: String(s.fps), size: String(s.size) }));
+  const [testing, setTesting] = useState(false);
+  const put = (next: QrSettings) => {
+    const saved = saveQrSettings(next);
+    setS(saved);
+    setDraft({ bytes: String(saved.bytes), fps: String(saved.fps), size: String(saved.size) });
+  };
+  const isDefault = s.bytes === QR_DEFAULTS.bytes && s.fps === QR_DEFAULTS.fps && s.size === QR_DEFAULTS.size;
+  const field = "w-20 h-8 px-2 rounded-sm bg-surface-container border border-outline/40 text-body-sm text-on-surface tabular-nums";
+  const input = (k: keyof QrSettings, label: string, unit: string, title: string) => (
+    <label className="flex items-center gap-2" title={title}>
+      <span>{label}</span>
+      <input type="number" min={QR_LIMITS[k][0]} max={QR_LIMITS[k][1]} value={draft[k]}
+        onChange={(e) => setDraft((d) => ({ ...d, [k]: e.target.value }))}
+        {...commitOn(() => { const n = Number(draft[k]); if (Number.isFinite(n) && n !== s[k]) put({ ...s, [k]: n }); else setDraft((d) => ({ ...d, [k]: String(s[k]) })); })}
+        className={field} />
+      <span className="text-on-surface-variant">{unit}</span>
+    </label>
+  );
+  return (
+    <SectionCard title="Sending to the phone" status={isDefault ? "default" : `${s.bytes} B · ${s.fps}/s · ${s.size} px`}>
+      <div className="space-y-2">
+        <div className="flex items-center gap-x-5 gap-y-2 text-body-sm text-on-surface flex-wrap">
+          {input("bytes", "Bytes a frame", "", `How much of the chapter each code carries (${QR_LIMITS.bytes.join("–")}): more makes fewer, denser codes — harder to read from afar`)}
+          {input("fps", "Frames a second", "", `How fast the codes change (${QR_LIMITS.fps.join("–")}): faster is quicker while the phone keeps up`)}
+          {input("size", "Code size", "px", `The code's side on the screen (${QR_LIMITS.size.join("–")}): larger is easier to read`)}
+          {!isDefault && <button onClick={() => put(QR_DEFAULTS)} className="h-7 px-2 rounded-full text-label-md text-primary hover:bg-primary/8">Defaults</button>}
+        </div>
+        <p className="text-label-sm text-on-surface-variant">
+          Send to phone… shows a chapter as a loop of QR codes for the LPDO Trainer to scan. The defaults — {QR_DEFAULTS.bytes} bytes
+          a frame, {QR_DEFAULTS.fps} frames a second, {QR_DEFAULTS.size} px — read steadily with an iPhone held to a monitor. Kept
+          on this computer: a different screen may want different ones.
+        </p>
+        <button onClick={() => setTesting(true)}
+          className="h-8 px-3 rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110">
+          Test with the phone…
+        </button>
+      </div>
+      {testing && <PhoneTestDialog settings={s} onClose={() => setTesting(false)} />}
     </SectionCard>
   );
 }
@@ -2577,6 +2626,7 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
             </TabLead>
             <div className={grid}>
               <RepertoireSection />
+              <PhoneSection />
             </div>
           </div>
 

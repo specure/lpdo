@@ -247,7 +247,9 @@ know and is not due is played by itself, quickly, so a line starts where there
 is something to practise.
 
 A move you have not met yet is **new**: it is shown first — the book's move
-with an arrow and its figures, which you play — and asked a little later in the
+with an arrow, and how it stands among the moves played there (the most
+played or a rare one, a surprise for the opponent, with each move's share and
+score), which you play — and asked a little later in the
 same session, then on the schedule. A day takes in only so many new moves of a
 chapter (**New a day**: 5, 10, 15 — the default — 25 or all); when they are
 used up and the session is done, **Learn 15 more today** adds more, and the end
@@ -256,20 +258,35 @@ days at 15 a day"). Moves due again are always asked. **Keep drilling** goes on
 regardless of the schedule.
 
 A line where you missed a move stops at its end, shown as text with the miss
-in red: **Replay this line** plays the same moves again from the start — the
-opponent's the same, every one of yours asked, the chapter's comments under
-the board — and counts nothing, right or wrong; **Replay again** as often as it
-helps, or **Next line** — at the end, or any time during the replay. **↺ Replay
-last line** replays the line just done at any time. During a replay each move
-shows how it stands among the moves played in its position: the three most
-played with their share and score, the line's move marked ("1…e5 — 2nd most
-played", "rare — 3% of games"), from the database's figures the chapter
-carries — on the phone too, offline. (On the phone the comments come with a
-chapter saved as a file, or sent with **Include the chapter's comments**
-ticked in **Send to phone…**; the trainer's list says which: "with comments"
-or "no comments".)
+in red, for one of two:
 
-At the end of a replayed line the drill shows Stockfish's evaluation of the
+- **Test again** — the same moves from the start: the opponent's played, every
+  one of yours asked, nothing of the line shown. A miss counts, as in the
+  drill: the move comes back sooner, and the session counts it (once a move);
+  a move right moves nothing on — you saw it a moment ago.
+- **Review the line** — step through it yourself: **⏮ ◀ ▶ ⏭** under the board
+  (on the computer the arrow keys, Home and End), a swipe on the phone — to
+  the left a move on, to the right a move back — or a move tapped in the
+  line's text (at the line's end too, to start there). Nothing is asked;
+  under the board the chapter's comments, and how each move stands among the
+  moves played in its position: the three most played with their share and
+  score, the line's move marked ("1…e5 — 2nd most played", "rare — 3% of
+  games"), from the database's figures the chapter carries — on the phone too,
+  offline. Where the chapter branches, the line's move shows as a green arrow
+  and the chapter's other moves there as blue ones (the three most played;
+  the rest listed under the board) — a move tapped there reviews that one
+  instead. Where the book drew its own arrows and circles they show too, in
+  their colours; where it has both, **Arrows: Book · Moves** picks which —
+  the book's first, then whichever you chose last. At the end, Stockfish's
+  evaluation (below).
+
+Or **Next line** — at the end, or any time during either. **The last line: ↺
+Test again · Review** does the same for the line just done at any time. (On
+the phone the comments come with a chapter saved as a file, or sent with
+**Include the chapter's comments** ticked in **Send to phone…**; the trainer's
+list says which: "with comments" or "no comments".)
+
+At the end of a line, and of a review, the drill shows Stockfish's evaluation of the
 line's last position — "End of the line: +0.35 · Stockfish 19, depth 24". It is
 worked out on the computer: **Analyse chapter** (or **Analyse all chapters**)
 evaluates the end of every line with the server's Stockfish, in the
@@ -301,7 +318,12 @@ a moving QR code; tap **Scan** in the trainer and hold the camera on it until
 the bar is full — a few seconds, longer with the comments (the dialog says
 about how long); no network is involved. Hold the phone so the code fills the
 square; the line under the bar says how the reading goes (how often a picture
-finds a code — low means too far, at an angle, or a glare). Or **Save for
+finds a code — low means too far, at an angle, or a glare).
+**Maintenance → Repertoire → Sending to the phone** sets the codes — bytes a
+frame, frames a second, the code's size; 400, 10 and 560 px by default — on
+this computer, and **Test with the phone…** tries them: the trainer knows the
+test, keeps nothing, and shows how long the reading took, how many of the
+frames shown it caught, and what to change. Or **Save for
 phone…** saves `<book>-<chapter>.lpdo.json`: get the file onto the phone
 (mail, a cloud drive, a cable…) and open it in the trainer with **File**.
 Sending a chapter again replaces it there and keeps what you have learnt. The
