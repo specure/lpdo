@@ -85,6 +85,14 @@ export interface LpdoChapter {
 /** SAN without check marks or annotation glyphs — how moves are compared. */
 export const bareSan = (san: string) => san.replace(/[+#!?]+$/, "");
 
+/** The package has the chapter's comments — sent with them (a chapter
+ *  without any, sent either way, reads as without). */
+export function hasComments(c: LpdoChapter): boolean {
+  if (c.start.comment) return true;
+  const walk = (ns: PNode[]): boolean => ns.some((n) => !!n.comment || !!n.pre || walk(n.children));
+  return walk(c.tree);
+}
+
 /** A package's problems, or none — for one read from a file or a scan. */
 export function validate(x: unknown): string | null {
   const c = x as Partial<LpdoChapter> | null;

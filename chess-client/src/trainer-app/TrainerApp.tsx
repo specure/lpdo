@@ -4,7 +4,7 @@
 // docs/design/opening-repertoire.md, "Taking chapters to the phone".
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { validate, type LpdoChapter } from "../trainer/format";
+import { hasComments, validate, type LpdoChapter } from "../trainer/format";
 import { buildDrill, cardCounts, type Card } from "../trainer/drill";
 import DrillView from "../trainer/DrillView";
 import ScanView from "./ScanView";
@@ -199,7 +199,9 @@ export default function TrainerApp() {
                             {n.due + n.fresh > 0
                               ? <><span className="text-primary">{n.due} due</span> · {n.fresh} new · {n.total} moves</>
                               : <span className="text-success">all {n.total} known</span>}
-                            <span className="text-on-surface-variant"> · sent {sentOn(c.sent)}</span>
+                          </div>
+                          <div className="text-label-sm text-on-surface-variant truncate">
+                            sent {sentOn(c.sent)} · {hasComments(c) ? "with comments" : "no comments"}
                           </div>
                         </button>
                         <button onClick={() => toggleFavourite(c.chapter.id)} aria-pressed={favourites.has(c.chapter.id)}

@@ -12,13 +12,14 @@
 // next. Shared by the desktop (the Repertoire page) and the phone trainer.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { LpdoChapter, PNode } from "./format";
+import { hasComments, type LpdoChapter, type PNode } from "./format";
 import {
   NEW_PER_DAY_CHOICES, buildDrill, cardCounts, describeBookMove, fenAfter, introduce, matchOwn, newPerDay,
   newToday, nextMoves, nextStep, opponentMove, review, saveNewPerDay, saveNewToday, sideToMove,
   type Card, type CardStore, type NewToday,
 } from "./drill";
 import DrillBoard from "./DrillBoard";
+import MoveStats from "./MoveStats";
 
 interface Props {
   chapter: LpdoChapter;
@@ -257,6 +258,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
   const lastPlayed = path.length ? path[path.length - 1] : null;
   const comment = replaying ? lastPlayed?.comment : phase === "missed" && !replaying ? target?.comment : undefined;
   const pill = "h-8 px-3 rounded-full text-label-md hover:brightness-110";
+  const withComments = useMemo(() => hasComments(chapter), [chapter]);
 
   const learnMore = () => {
     if (!cards) return;
@@ -309,8 +311,19 @@ export default function DrillView({ chapter, store, onClose }: Props) {
         {/* Below the board (portrait): a fixed height, whatever it says — a
             longer message must not shrink the board or move it. Beside it
             (wider screens), its own column. */}
-        <div className="shrink-0 h-52 md:h-auto overflow-y-auto md:w-72 p-3 flex flex-col gap-3 border-t md:border-t-0 md:border-l border-outline/40">
-          {replaying && <div className="text-label-md text-primary">Replay — not counted</div>}
+        <div className="shrink-0 h-60 md:h-auto overflow-y-auto md:w-72 p-3 flex flex-col gap-3 border-t md:border-t-0 md:border-l border-outline/40">
+          {replaying && (
+            <div className="flex items-center gap-2">
+              <span className="text-label-md text-primary">Replay — not counted</span>
+              {/* Out of the replay at any point, not only at its end. */}
+              {phase !== "replayEnd" && cards && (
+                <button onClick={() => startLine(cards, anyLine)} className="ml-auto text-label-md text-primary hover:underline">Next line →</button>
+              )}
+            </div>
+          )}
+          {replaying && !withComments && (
+            <div className="text-label-sm text-on-surface-variant">Sent without its comments — send it again with comments to see them here.</div>
+          )}
           <div className={`text-title-sm ${phase === "missed" ? "text-error" : phase === "show" ? "text-primary" : ""}`}>{status}</div>
           {phase === "show" && target && (
             <div className="text-body-sm">The book plays {describeBookMove(target, statsBefore())}</div>
@@ -319,6 +332,13 @@ export default function DrillView({ chapter, store, onClose }: Props) {
             <div className={`text-body-sm ${note.tone === "bad" ? "text-on-surface" : note.tone === "good" ? "text-success" : "text-on-surface-variant"}`}>{note.text}</div>
           )}
           {comment && <div className="text-body-sm italic text-on-surface-variant">{comment}</div>}
+          {/* In a replay: how the move just played stands among the moves
+              played there — one's own and the opponent's. */}
+          {replaying && lastPlayed && (
+            <MoveStats move={lastPlayed} ply={path.length - 1}
+              stats={path.length >= 2 ? path[path.length - 2].stats : chapter.start.stats}
+              own={sideToMove(path.slice(0, -1)) === color} />
+          )}
           {/* The line as text: at its end, and while it is replayed. */}
           {(replaying || phase === "lineEnd") && (
             <LineText moves={replaying ?? lastLine?.moves ?? path} missed={lastLine?.missed ?? missedPlies}
