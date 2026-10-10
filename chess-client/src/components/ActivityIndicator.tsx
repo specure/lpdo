@@ -59,11 +59,30 @@ function jobLabel(j: Job): string {
     case "players_export":     return "Export players";
     case "backup":             return p.collection ? `Backup ${p.collection}` : "Backup";
     case "repertoire_analyse": {
+      // Which chapter is in the job's message (the server names it).
+      if (isAutoAnalyse(j)) return "Repertoire chapter, analysed by itself";
       const n = (j.params as { chapters?: unknown[] } | undefined)?.chapters?.length ?? 0;
       return n === 1 ? "Analyse a repertoire chapter" : `Analyse ${n} repertoire chapters`;
     }
     default:                   return j.type;
   }
+}
+
+/** A chapter the server analysed by itself, once left alone. */
+function isAutoAnalyse(j: Job): boolean {
+  return j.type === "repertoire_analyse" && (j.params as { auto?: unknown } | undefined)?.auto === true;
+}
+
+/** The recent jobs, with each run of chapters the server analysed by itself
+ *  one entry — the latest on top — instead of a row each. */
+function groupRecent(recent: Job[]): Job[][] {
+  const out: Job[][] = [];
+  for (const j of recent) {
+    const last = out[out.length - 1];
+    if (last && isAutoAnalyse(j) && isAutoAnalyse(last[0]) && j.status === "done" && last[0].status === "done") last.push(j);
+    else out.push([j]);
+  }
+  return out;
 }
 
 function pct(j: Job): number {
@@ -205,6 +224,36 @@ function RecentRow({ job }: { job: Job }) {
             {formatAgo(job.ended_at)}
             {job.started_at ? ` · took ${formatDuration(job.ended_at - job.started_at)}` : ""}
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Chapters the server analysed by itself, one after another: one row
+ *  naming the latest, the others listed on request. */
+function AutoAnalyseRow({ jobs }: { jobs: Job[] }) {
+  const [open, setOpen] = useState(false);
+  const [latest] = jobs;
+  const first = jobs[jobs.length - 1];
+  return (
+    <div className="px-4 py-2 flex items-start gap-2">
+      <span className="text-base leading-5 shrink-0 text-success">✓</span>
+      <div className="min-w-0 flex-1">
+        <div className="text-body-sm text-on-surface">{jobs.length} repertoire chapters, analysed by themselves</div>
+        {latest.message && <div className="text-label-sm text-on-surface-variant line-clamp-2 break-words">Latest: {latest.message}</div>}
+        {latest.ended_at && (
+          <div className="text-label-sm text-on-surface-variant">
+            {formatAgo(latest.ended_at)}
+            {first.ended_at && first !== latest ? ` · the first ${formatAgo(first.ended_at)}` : ""}
+            {" · "}
+            <button onClick={() => setOpen((o) => !o)} className="text-primary hover:underline">{open ? "Hide" : "Show all"}</button>
+          </div>
+        )}
+        {open && (
+          <ul className="mt-1 space-y-0.5">
+            {jobs.map((j) => <li key={j.id} className="text-label-sm text-on-surface-variant break-words">{j.message}</li>)}
+          </ul>
         )}
       </div>
     </div>
@@ -483,7 +532,9 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
                 <>
                   <div className={sectionHead}>Recent</div>
                   <div className="pb-2">
-                    {recent.map((j) => <RecentRow key={j.id} job={j} />)}
+                    {groupRecent(recent).map((g) => g.length === 1
+                      ? <RecentRow key={g[0].id} job={g[0]} />
+                      : <AutoAnalyseRow key={g[0].id} jobs={g} />)}
                   </div>
                 </>
               )}

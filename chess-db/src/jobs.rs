@@ -1515,9 +1515,11 @@ fn run_job(
             let mut evaluated = 0u64;
             for (i, id) in ids.iter().enumerate() {
                 if reporter.is_cancelled() { return Ok(()); }
-                let chapter = format!("chapter {} of {n}", i + 1);
+                // Named, so the Activity panel says which chapter it is.
+                let title = crate::repertoire::chapter_title(conn, *id)?;
+                let chapter = if n == 1 { format!("‘{title}’") } else { format!("{} of {n}, ‘{title}’", i + 1) };
                 if !(auto && crate::repertoire::figures_current(conn, *id)?) {
-                    reporter.progress(i as u64, n, format!("Analysing {chapter}: the database's figures…"));
+                    reporter.progress(i as u64 * 1000, n * 1000, format!("{chapter}: the database's figures…"));
                     crate::repertoire::analyse_chapter(conn, *id)?;
                 }
                 if depth == 0 || no_engine.is_some() { continue; }
@@ -1536,15 +1538,17 @@ fn run_job(
                 let mut done = 0usize;
                 while done < todo.len() {
                     if reporter.is_cancelled() { return Ok(()); }
+                    // The bar moves with the line ends, not only per chapter.
+                    let part = (i as u64) * 1000 + (done as u64) * 1000 / todo.len() as u64;
                     // The Engine panel searching: wait until it is idle.
                     let panel = crate::engine::stockfish();
                     let busy = || panel.as_ref().is_some_and(|p| p.busy());
                     if busy() {
-                        reporter.progress(i as u64, n, format!("Analysing {chapter}: waiting while the Engine panel analyses…"));
+                        reporter.progress(part, n * 1000, format!("{chapter}: waiting while the Engine panel analyses…"));
                         std::thread::sleep(std::time::Duration::from_secs(2));
                         continue;
                     }
-                    reporter.progress(i as u64, n, format!("Analysing {chapter}: Stockfish, depth {depth} — line end {} of {}", done + 1, todo.len()));
+                    reporter.progress(part, n * 1000, format!("{chapter}: Stockfish, depth {depth} — line end {} of {}", done + 1, todo.len()));
                     let fen = &todo[done];
                     let cancelled = || reporter.is_cancelled() || busy();
                     match rt.block_on(bg.search(fen, depth, cancelled)) {
@@ -1559,11 +1563,12 @@ fn run_job(
                     done += 1;
                 }
             }
-            let what = if n == 1 { "Chapter analysed".to_string() } else { format!("{n} chapters analysed") };
+            let what = if n == 1 { format!("‘{}’", crate::repertoire::chapter_title(conn, ids[0])?) } else { format!("{n} chapters") };
             reporter.done(match (depth, &no_engine) {
-                (0, _) => format!("{what}."),
-                (_, Some(e)) => format!("{what} — without Stockfish: {e}."),
-                _ => format!("{what}; Stockfish evaluated {evaluated} line {} at depth {depth}.", if evaluated == 1 { "end" } else { "ends" }),
+                (0, _) => format!("{what} analysed."),
+                (_, Some(e)) => format!("{what} analysed, without Stockfish: {e}."),
+                _ if evaluated == 0 => format!("{what} analysed · the line ends already evaluated."),
+                _ => format!("{what} analysed · Stockfish on {evaluated} line {}, depth {depth}.", if evaluated == 1 { "end" } else { "ends" }),
             });
         }
         "backup" => {

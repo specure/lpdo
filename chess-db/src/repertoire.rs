@@ -551,6 +551,14 @@ fn get_chapter_summary(conn: &Connection, id: i64) -> Result<ChapterSummary> {
         .map_err(|_| anyhow!("chapter {id} not found"))
 }
 
+/// "Book · Chapter", as a job's messages name a chapter.
+pub fn chapter_title(conn: &Connection, id: i64) -> Result<String> {
+    conn.query_row(
+        "SELECT b.name, c.name FROM repertoire_chapters c JOIN repertoire_books b ON b.id = c.book_id WHERE c.id = ?",
+        duckdb::params![id], |r| Ok(format!("{} · {}", r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+    ).map_err(|_| anyhow!("chapter {id} not found"))
+}
+
 pub fn list(conn: &Connection) -> Result<Vec<BookWithChapters>> {
     let mut st = conn.prepare(&format!("SELECT {BOOK_COLS} FROM repertoire_books ORDER BY ord, id"))?;
     let books: Vec<Book> = st.query_map([], book_row)?.collect::<duckdb::Result<_>>()?;
