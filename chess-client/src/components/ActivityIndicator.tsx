@@ -60,7 +60,7 @@ function jobLabel(j: Job): string {
     case "backup":             return p.collection ? `Backup ${p.collection}` : "Backup";
     case "repertoire_analyse": {
       // Which chapter is in the job's message (the server names it).
-      if (isAutoAnalyse(j)) return "Repertoire chapter, analysed by itself";
+      if (isAutoAnalyse(j)) return "Background analysis of a repertoire chapter";
       const n = (j.params as { chapters?: unknown[] } | undefined)?.chapters?.length ?? 0;
       return n === 1 ? "Analyse a repertoire chapter" : `Analyse ${n} repertoire chapters`;
     }
@@ -240,7 +240,7 @@ function AutoAnalyseRow({ jobs }: { jobs: Job[] }) {
     <div className="px-4 py-2 flex items-start gap-2">
       <span className="text-base leading-5 shrink-0 text-success">✓</span>
       <div className="min-w-0 flex-1">
-        <div className="text-body-sm text-on-surface">{jobs.length} repertoire chapters, analysed by themselves</div>
+        <div className="text-body-sm text-on-surface">Background analysis of {jobs.length} repertoire chapters</div>
         {latest.message && <div className="text-label-sm text-on-surface-variant line-clamp-2 break-words">Latest: {latest.message}</div>}
         {latest.ended_at && (
           <div className="text-label-sm text-on-surface-variant">

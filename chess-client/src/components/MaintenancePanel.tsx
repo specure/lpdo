@@ -919,7 +919,7 @@ function AutoAnalyse({ on, minutes, onSave }: { on: boolean; minutes: number; on
       <div className="flex items-center gap-2 text-body-sm text-on-surface flex-wrap">
         <label className="flex items-center gap-2 cursor-pointer">
           <input type="checkbox" checked={on} onChange={(e) => onSave({ auto_analyse: e.target.checked })} className="accent-primary" />
-          <span>Analyse chapters by themselves, once left alone for</span>
+          <span>Analyse chapters in the background, once left alone for</span>
         </label>
         <input type="number" min={1} max={1440} value={value} disabled={!on} onChange={(e) => setValue(e.target.value)}
           {...commitOn(() => { if (Number.isFinite(n) && n >= 1 && n !== minutes) onSave({ auto_analyse_after_min: n }); })}
@@ -927,7 +927,7 @@ function AutoAnalyse({ on, minutes, onSave }: { on: boolean; minutes: number; on
         <span>minutes</span>
       </div>
       <p className="text-label-sm text-on-surface-variant">
-        The server analyses the chapters of the active books by itself — the database's figures, and Stockfish at the
+        The server analyses the chapters of the active books in the background — the database's figures, and Stockfish at the
         ends of the lines — when a chapter is new or its moves changed, once nobody has changed it for this long; one
         at a time, never beside another job, and waiting while the Engine panel analyses. The first time it goes
         through every active chapter, which takes a while; then only the ones you change.
