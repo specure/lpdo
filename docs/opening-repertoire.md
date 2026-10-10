@@ -240,11 +240,20 @@ c4 — 7% of games, scores 55%") and an arrow; you then play it. The lines are
 the most played first, until they take in a share of the games that stay in
 the chapter (**Lines**: 50, 75 — the default — 90 or 100%).
 
-Each of your decisions is a card, the same in every chapter it turns up in:
+Each of your moves is a card, the same in every chapter it turns up in:
 answered right it comes back later and later (1, 3, 7, 14, 30, then 60 days),
-missed it comes back in the same session. A line goes on while a card in it
-is due, and the session while any is; then **Keep drilling** goes on
-regardless.
+missed it comes back in the same session. Only what is due is asked: a move you
+know and is not due is played by itself, quickly, so a line starts where there
+is something to practise.
+
+A move you have not met yet is **new**: it is shown first — the book's move
+with an arrow and its figures, which you play — and asked a little later in the
+same session, then on the schedule. A day takes in only so many new moves of a
+chapter (**New a day**: 5, 10, 15 — the default — 25 or all); when they are
+used up and the session is done, **Learn 15 more today** adds more, and the end
+of the session says how many are left ("71 new left in these lines — about 5
+days at 15 a day"). Moves due again are always asked. **Keep drilling** goes on
+regardless of the schedule.
 
 ### On the phone
 

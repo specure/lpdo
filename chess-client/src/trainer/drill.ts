@@ -1,10 +1,12 @@
 // The drill (#327): the opponent's moves are played, chosen by how often
 // they are played; one's own moves are entered on the board. Each of one's
-// decisions is a card — keyed by position and move, so it is the same card
-// in every chapter and session it turns up in — on a spaced-repetition
+// moves is a card — keyed by position and move, so it is the same card in
+// every chapter and session it turns up in — on a spaced-repetition
 // schedule: a card missed comes back in the same session, one known comes
-// back later and later. See docs/design/opening-repertoire.md, "Training:
-// study and drill". Works on the package alone, so the phone shares it.
+// back later and later. A move never met is new: shown first, then asked;
+// a day takes in only so many new moves of a chapter (`newToday`). See
+// docs/design/opening-repertoire.md, "Training: study and drill". Works on
+// the package alone, so the phone shares it.
 
 import { Chess } from "chess.js";
 import { bareSan, type LpdoChapter, type PNode, type Side, type Stats } from "./format";
@@ -35,6 +37,14 @@ export function review(card: Card | undefined, correct: boolean, now: number): C
 }
 
 export const isDue = (card: Card | undefined, now: number) => !card || card.due <= now;
+
+/** A new move, shown for the first time: due again at once, so it is asked
+ *  later in the same session — then on the schedule. */
+export const introduce = (now: number): Card => ({ box: 0, due: now, right: 0, wrong: 0, last: now });
+
+/** Whether a move is to be practised now: met before and due, or new while
+ *  the day still takes new moves. */
+export const isWork = (card: Card | undefined, now: number, newAllowed: boolean) => (card ? card.due <= now : newAllowed);
 
 /** Where cards are kept: on the desktop the browser's storage, on the phone
  *  its database. */
@@ -117,11 +127,12 @@ export function nextMoves(d: Drill, path: PNode[]): PNode[] {
 /** Whose move it is after `path`. */
 export const sideToMove = (path: PNode[]): Side => (path.length % 2 === 0 ? "white" : "black");
 
-/** A card due — or new — at or below this move, on the session's lines. */
-export function hasWork(d: Drill, node: PNode, cards: Record<string, Card>, now: number): boolean {
+/** A move to practise at or below this one, on the session's lines: a
+ *  card due, or a new one while new moves are `newAllowed`. */
+export function hasWork(d: Drill, node: PNode, cards: Record<string, Card>, now: number, newAllowed = true): boolean {
   const key = d.cardOf.get(node);
-  if (key && isDue(cards[key], now)) return true;
-  return node.children.some((c) => d.inSession.has(c) && hasWork(d, c, cards, now));
+  if (key && isWork(cards[key], now, newAllowed)) return true;
+  return node.children.some((c) => d.inSession.has(c) && hasWork(d, c, cards, now, newAllowed));
 }
 
 /** The cards on the session's lines: how many, how many due now, how many
@@ -136,11 +147,33 @@ export function cardCounts(d: Drill, cards: Record<string, Card>, now: number) {
   return { total: keys.size, due, fresh };
 }
 
-/** The opponent's reply: one of the session's moves here that leads to work
- *  (any of them when `anyLine`), chosen at random by its share of the games;
- *  null when there is none — the line is done. */
-export function opponentMove(d: Drill, path: PNode[], cards: Record<string, Card>, now: number, anyLine: boolean, rnd = Math.random): PNode | null {
-  const moves = nextMoves(d, path).filter((n) => anyLine || hasWork(d, n, cards, now));
+/** What happens at a position (`path` its moves): the opponent to reply;
+ *  one's own move to answer (`ask`) or — new — to be shown first (`show`); a
+ *  move known and not due played by itself towards a move to practise
+ *  further on (`auto`); or the line done (nothing to practise below). With
+ *  `anyLine` every line and move counts, the schedule aside. */
+export type Step = { kind: "opponent" } | { kind: "ask" | "show" | "auto"; move: PNode } | { kind: "done" };
+
+export function nextStep(d: Drill, path: PNode[], cards: Record<string, Card>, now: number, newAllowed: boolean, anyLine: boolean): Step {
+  const moves = nextMoves(d, path);
+  if (!moves.length) return { kind: "done" };
+  if (sideToMove(path) !== d.color) {
+    if (!anyLine && !moves.some((n) => hasWork(d, n, cards, now, newAllowed))) return { kind: "done" };
+    return { kind: "opponent" };
+  }
+  const card = (n: PNode) => cards[d.cardOf.get(n) ?? ""];
+  if (anyLine) return { kind: card(moves[0]) ? "ask" : "show", move: moves[0] };
+  const ask = moves.find((n) => isWork(card(n), now, newAllowed));
+  if (ask) return { kind: card(ask) ? "ask" : "show", move: ask };
+  const on = moves.find((n) => hasWork(d, n, cards, now, newAllowed));
+  return on ? { kind: "auto", move: on } : { kind: "done" };
+}
+
+/** The opponent's reply: one of the session's moves here that leads to a
+ *  move to practise (any of them when `anyLine`), chosen at random by its
+ *  share of the games; null when there is none — the line is done. */
+export function opponentMove(d: Drill, path: PNode[], cards: Record<string, Card>, now: number, anyLine: boolean, newAllowed = true, rnd = Math.random): PNode | null {
+  const moves = nextMoves(d, path).filter((n) => anyLine || hasWork(d, n, cards, now, newAllowed));
   if (!moves.length) return null;
   const stats = path.length ? path[path.length - 1].stats : d.chapter.start.stats;
   const weights = moves.map((n) => {
@@ -177,3 +210,46 @@ export function fenAfter(d: Drill, path: PNode[]): string {
   try { board.move(last.san); } catch { /* the chapter's moves are legal */ }
   return board.fen();
 }
+
+// ── New moves a day ──────────────────────────────────────────────────────────
+
+/** New moves a day, by default; 0 for no limit. */
+export const NEW_PER_DAY = 15;
+export const NEW_PER_DAY_CHOICES = [5, 10, 15, 25, 0];
+
+/** Today's new moves of a chapter: how many were met, and how many more the
+ *  day was given ("Learn 15 more today"). Kept in this device's storage. */
+export interface NewToday { day: string; met: number; extra: number }
+
+const today = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+const DAY_KEY = "lpdoDrillNewToday";
+const PER_DAY_KEY = "lpdoDrillNewPerDay";
+
+function readDays(): Record<string, NewToday> {
+  try { return JSON.parse(localStorage.getItem(DAY_KEY) ?? "{}") ?? {}; } catch { return {}; }
+}
+
+export function newToday(chapterId: number): NewToday {
+  const t = readDays()[chapterId];
+  return t && t.day === today() ? t : { day: today(), met: 0, extra: 0 };
+}
+
+export function saveNewToday(chapterId: number, t: NewToday): void {
+  const all = readDays();
+  // Only today's are worth keeping.
+  for (const k of Object.keys(all)) if (all[k].day !== t.day) delete all[k];
+  all[chapterId] = t;
+  try { localStorage.setItem(DAY_KEY, JSON.stringify(all)); } catch { /* not kept */ }
+}
+
+export function newPerDay(): number {
+  try { const v = Number(localStorage.getItem(PER_DAY_KEY)); return localStorage.getItem(PER_DAY_KEY) !== null && Number.isFinite(v) ? v : NEW_PER_DAY; } catch { return NEW_PER_DAY; }
+}
+
+export function saveNewPerDay(n: number): void {
+  try { localStorage.setItem(PER_DAY_KEY, String(n)); } catch { /* not kept */ }
+}
+

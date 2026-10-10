@@ -197,7 +197,7 @@ export default function TrainerApp() {
                           <div className="text-body-lg truncate">{c.name}</div>
                           <div className="text-label-md mt-0.5 truncate">
                             {n.due + n.fresh > 0
-                              ? <><span className="text-primary">{n.due} due</span> · {n.fresh} new · {n.total} decisions</>
+                              ? <><span className="text-primary">{n.due} due</span> · {n.fresh} new · {n.total} moves</>
                               : <span className="text-success">all {n.total} known</span>}
                             <span className="text-on-surface-variant"> · sent {sentOn(c.sent)}</span>
                           </div>
