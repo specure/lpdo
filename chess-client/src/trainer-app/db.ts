@@ -1,7 +1,9 @@
-// The phone trainer's storage (#327): the chapters sent to it and the cards'
-// schedules, in the browser's IndexedDB — on the phone only, nothing sent
-// anywhere. A chapter sent again replaces the one held (by its id on the
-// desktop); the cards are keyed by position and move, so they stay.
+// The phone trainer's storage (#327): the chapters sent to it, the cards'
+// schedules and the list's settings (favourites, which colour), in the
+// browser's IndexedDB — on the phone only, nothing sent anywhere. A chapter
+// sent again replaces the one held (by its id on the desktop); the cards are
+// keyed by position and move, and the favourites by the chapter's id, so
+// they stay.
 
 import type { LpdoChapter } from "../trainer/format";
 import type { Card, CardStore } from "../trainer/drill";
@@ -9,16 +11,17 @@ import type { Card, CardStore } from "../trainer/drill";
 const DB = "lpdo-trainer";
 const CHAPTERS = "chapters";
 const CARDS = "cards";
+const PREFS = "prefs";
 
 let opened: Promise<IDBDatabase> | null = null;
 
 function db(): Promise<IDBDatabase> {
   opened ??= new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB, 1);
+    // Version 2: the settings' store.
+    const req = indexedDB.open(DB, 2);
     req.onupgradeneeded = () => {
       const d = req.result;
-      if (!d.objectStoreNames.contains(CHAPTERS)) d.createObjectStore(CHAPTERS);
-      if (!d.objectStoreNames.contains(CARDS)) d.createObjectStore(CARDS);
+      for (const s of [CHAPTERS, CARDS, PREFS]) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s);
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => { opened = null; reject(req.error); };
@@ -59,6 +62,19 @@ export const cardStore: CardStore = {
   all: () => entries<Card>(CARDS).then((es) => Object.fromEntries(es)),
   put: (key, card) => run(CARDS, "readwrite", (s) => s.put(card, key)).then(() => undefined),
 };
+
+/** The list's settings: the favourite chapters (by id), only those shown,
+ *  and which colour's books. */
+export interface Prefs {
+  favourites: number[];
+  favouritesOnly: boolean;
+  color: "white" | "black" | "both";
+}
+const DEFAULT_PREFS: Prefs = { favourites: [], favouritesOnly: false, color: "both" };
+
+export const loadPrefs = (): Promise<Prefs> =>
+  run<Partial<Prefs> | undefined>(PREFS, "readonly", (s) => s.get("list")).then((p) => ({ ...DEFAULT_PREFS, ...(p ?? {}) }));
+export const savePrefs = (p: Prefs) => run(PREFS, "readwrite", (s) => s.put(p, "list")).then(() => undefined);
 
 /** Ask the browser to keep the data — without it Safari may clear a site's
  *  storage after a while unused. Granted for an app on the home screen. */

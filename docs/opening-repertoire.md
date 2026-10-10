@@ -254,11 +254,17 @@ Chrome), then **Share → Add to Home Screen** and use it from there — on an
 iPhone only that keeps its data reliably. Everything stays on the phone: no
 account, nothing sent anywhere.
 
-To send it a chapter: **Save for phone…** in the chapter's ⋯ menu saves
-`<book>-<chapter>.lpdo.json`; get the file onto the phone (mail, a cloud
-drive, a cable…) and open it in the trainer with **Add chapter**. Sending a
-chapter again replaces it there and keeps what you have learnt. The phone keeps
-its own cards — progress is not synced back to the desktop.
+To send it a chapter: **Send to phone…** in the chapter's ⋯ menu shows it as
+a moving QR code; tap **Scan** in the trainer and hold the camera on it until
+the bar is full — a few seconds; no network is involved. Or **Save for
+phone…** saves `<book>-<chapter>.lpdo.json`: get the file onto the phone
+(mail, a cloud drive, a cable…) and open it in the trainer with **File**.
+Sending a chapter again replaces it there and keeps what you have learnt. The
+phone keeps its own cards — progress is not synced back to the desktop.
+
+In the trainer a book's chapters are listed under it, in the book's order;
+**☆** makes a chapter a favourite, and the list can show only the favourites,
+and only White's or Black's books.
 
 ## What comes next
 

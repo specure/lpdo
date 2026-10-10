@@ -558,7 +558,10 @@ pace.
    `DrillView.tsx`; the session by coverage, cards in the browser's storage);
    (b) the phone trainer (the web app done: `chess-client/src/trainer-app/`,
    `vite.trainer.config.ts`, published by `.github/workflows/trainer.yml` to
-   GitHub Pages `/trainer/`; chapters by file — **Save for phone…**), chapters sent by animated QR code
+   GitHub Pages `/trainer/`; chapters by file — **Save for phone…** — and by
+   animated QR code — **Send to phone…**, `trainer/qrTransfer.ts`: BC-UR,
+   400 bytes a frame at 10 a second, the package without comments; jsQR or
+   the browser's detector on the phone), chapters sent by animated QR code
    or file, with an optional focus; (c) later, with a native app, results
    synced back and sessions suggested from them.
 
