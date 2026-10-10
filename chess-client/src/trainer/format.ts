@@ -63,7 +63,10 @@ export interface PNode {
 export interface LpdoChapter {
   format: typeof FORMAT;
   version: typeof VERSION;
-  chapter: { id: number; updated: string | null };
+  /** Which chapter, which version; `ord`: its place in the book — the
+   *  phone lists a book's chapters in the book's order (absent from
+   *  packages made before it was sent). */
+  chapter: { id: number; updated: string | null; ord?: number };
   sent: string;
   book: { name: string; author: string | null; color: Side };
   name: string;
