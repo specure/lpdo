@@ -8,7 +8,8 @@
 
 import { validate, type LpdoChapter } from "./format";
 
-/** Bytes a frame, and frames a second — the steady setting measured. */
+/** Bytes a frame, and frames a second — the steady setting measured (the
+ *  desktop's own, set in Maintenance, are in lib/qrSettings). */
 export const FRAGMENT_BYTES = 400;
 export const FRAMES_PER_SECOND = 10;
 
@@ -46,10 +47,42 @@ export interface Frames {
   next(): string;
 }
 
-export async function encodeChapter(chapter: LpdoChapter, fragmentBytes = FRAGMENT_BYTES): Promise<Frames> {
+export function encodeChapter(chapter: LpdoChapter, fragmentBytes = FRAGMENT_BYTES): Promise<Frames> {
+  return encode(chapter, fragmentBytes);
+}
+
+/** A test of the transfer (Maintenance → Sending to the phone): not a
+ *  chapter — the trainer keeps nothing and shows how the reading went. */
+export interface QrTest {
+  format: "lpdo-qr-test";
+  version: 1;
+  sent: string;
+  /** The settings it was sent with. */
+  bytes: number;
+  fps: number;
+  size: number;
+  /** Random, so it compresses no more than a chapter does. */
+  filler: string;
+}
+
+export const TEST_FORMAT = "lpdo-qr-test";
+
+/** A test about `kb` KB compressed — a chapter's size — sent with these
+ *  settings. */
+export function encodeTest(kb: number, s: { bytes: number; fps: number; size: number }): Promise<Frames> {
+  // Base64 of random bytes: deflate takes it back to about the bytes.
+  const random = new Uint8Array(Math.round(kb * 1024));
+  crypto.getRandomValues(random);
+  let filler = "";
+  for (const b of random) filler += String.fromCharCode(b);
+  const test: QrTest = { format: TEST_FORMAT, version: 1, sent: new Date().toISOString(), bytes: s.bytes, fps: s.fps, size: s.size, filler: btoa(filler) };
+  return encode(test, s.bytes);
+}
+
+async function encode(payload: object, fragmentBytes: number): Promise<Frames> {
   const { UR, UREncoder } = await loadBcur();
   const { Buffer } = await import("buffer");
-  const raw = new TextEncoder().encode(JSON.stringify(chapter));
+  const raw = new TextEncoder().encode(JSON.stringify(payload));
   const compressed = await pipe(raw, new CompressionStream("deflate-raw"));
   const enc = new UREncoder(UR.fromBuffer(Buffer.from(compressed)), fragmentBytes);
   // Upper case: QR's alphanumeric mode packs it denser.
@@ -67,8 +100,9 @@ export interface Receiver {
    *  first). */
   parts(): { read: number; of: number };
   done(): boolean;
-  /** The chapter read — or an error saying what is wrong. */
-  chapter(): Promise<LpdoChapter>;
+  /** What was read: a chapter, or a test of the transfer — or an error
+   *  saying what is wrong. */
+  payload(): Promise<{ kind: "chapter"; chapter: LpdoChapter } | { kind: "test"; test: QrTest }>;
 }
 
 /** Distinct parts a reading takes, typically, per part the chapter is cut
@@ -97,14 +131,16 @@ export async function receiver(): Promise<Receiver> {
     progress: () => (dec.isComplete() ? 1 : of ? Math.max(dec.getProgress(), Math.min(0.97, seen.size / (of * PARTS_NEEDED))) : 0),
     parts: () => ({ read: seen.size, of }),
     done: () => dec.isComplete(),
-    async chapter() {
+    async payload() {
       if (!dec.isSuccess()) throw new Error(`The code could not be read: ${dec.resultError()}`);
       const compressed = new Uint8Array(dec.resultUR().decodeCBOR());
       const raw = await pipe(compressed, new DecompressionStream("deflate-raw"));
-      const pkg = JSON.parse(new TextDecoder().decode(raw)) as LpdoChapter;
+      const read = JSON.parse(new TextDecoder().decode(raw)) as { format?: string };
+      if (read.format === TEST_FORMAT) return { kind: "test" as const, test: read as QrTest };
+      const pkg = read as LpdoChapter;
       const problem = validate(pkg);
       if (problem) throw new Error(`The code is ${problem}`);
-      return pkg;
+      return { kind: "chapter" as const, chapter: pkg };
     },
   };
 }

@@ -2,7 +2,8 @@
 // (#327), from the database's figures the package carries — offline: the
 // most played moves there as bars with their share and score, the line's
 // move marked, and a word on it ("2nd most played", "rare — 3% of games").
-// Shown in the drill's replay, for one's own moves and the opponent's.
+// Shown when a new move is learnt, and in a review, for one's own moves and
+// the opponent's.
 
 import { bareSan, type Eval, type PNode, type Stats } from "./format";
 
@@ -32,8 +33,9 @@ export default function MoveStats({ move, ply, stats, own }: Props) {
   const shown = ranked.slice(0, 3);
   if (mine && at >= 3) shown.push(mine);
   const top = ranked[0][1] || 1;
-  const verdict = !mine ? "not among the moves played here"
-    : mine[1] < 0.05 ? `rare — ${pct(mine[1])} of games`
+  // One's own rare move: the opponent will seldom have met it.
+  const verdict = !mine ? `not among the moves played here${own ? " — a surprise" : ""}`
+    : mine[1] < 0.05 ? `rare — ${pct(mine[1])} of games${own ? ", a surprise" : ""}`
     : ordinal(at + 1);
   return (
     <div className="text-label-md space-y-1">

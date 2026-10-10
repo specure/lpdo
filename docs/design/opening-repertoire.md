@@ -508,7 +508,13 @@ back:
   (the measured size; it was 420), drawn in the screen's own pixels so a
   scaled display does not blur it. The scan screen shows the camera's
   picture, ms a search and how often one finds a code, to tell a slow
-  reading's cause.
+  reading's cause. The settings — bytes a frame, frames a second, the
+  code's size — are the desktop's, per computer (localStorage, as they
+  depend on its screen), in Maintenance → Repertoire, with a test: random
+  data of a chapter's size (`format: "lpdo-qr-test"`) the trainer reads as
+  it would a chapter, keeps nothing of, and reports on — the time from the
+  first code read, the parts read against the frames shown meanwhile, the
+  searches' speed and success, and a word on what to change.
 - **A file** — a chapter or a whole book (a book of 26 chapters is a few
   hundred KB: minutes of scanning, so books go this way only), and for
   sending a chapter to someone: the desktop saves `<name>.lpdo.json`; the
