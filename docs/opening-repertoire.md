@@ -303,10 +303,12 @@ You need not start it: the server analyses the chapters of the active books
 by itself — a chapter new or with its moves changed, once nobody has changed it
 for 15 minutes — one at a time, never beside another job, Stockfish at a lower
 priority. The first time it goes through every active chapter, which takes a
-while; then only the ones you change. **Analyse chapters by themselves** under
+while; then only the ones you change. **Analyse chapters in the background** under
 Maintenance → Repertoire switches it off, or sets the minutes. The Activity
-panel names the chapter in progress, and keeps the chapters analysed this way,
-one after another, as a single entry — **Show all** lists them.
+panel shows it as **Background analysis of a repertoire chapter**, naming the
+chapter, and keeps the chapters analysed this way, one after another, as a
+single entry — **Background analysis of 12 repertoire chapters**; **Show all**
+lists them.
 
 ### On the phone
 
