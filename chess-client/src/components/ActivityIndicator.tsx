@@ -293,6 +293,21 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
   // Seeded on first poll so pre-existing updated watches don't fire on mount.
   const firedSeenRef = useRef<Set<number> | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  // Where the panel opens: against the window (fixed), under the button — the
+  // top bar scrolls sideways when the window is narrow, and would clip a
+  // panel hanging from it.
+  const button = useRef<HTMLButtonElement>(null);
+  const [at, setAt] = useState<{ top: number; right: number } | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const r = button.current?.getBoundingClientRect();
+      if (r) setAt({ top: r.bottom + 8, right: Math.max(8, window.innerWidth - r.right) });
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [open]);
   // Per-job {time, value} anchor for a cumulative-rate ETA. Cumulative (since the
   // job was first seen running) is stable for a monotonic byte counter, and the
   // anchor resets if the value ever goes backwards (a new job reusing an id).
@@ -430,6 +445,7 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
   return (
     <div className="relative" ref={ref}>
       <button
+        ref={button}
         onClick={() => setOpen((o) => !o)}
         title="Background activity"
         aria-label="Background activity"
@@ -445,8 +461,9 @@ export default function ActivityIndicator({ onSettled }: { onSettled?: () => voi
         )}
       </button>
 
-      {open && (
-        <div className="absolute right-0 top-full mt-2 w-[26rem] max-h-[28rem] overflow-y-auto z-50 rounded-2xl border border-outline-variant bg-surface-container-high shadow-lg">
+      {open && at && (
+        <div style={{ position: "fixed", top: at.top, right: at.right }}
+          className="w-[26rem] max-w-[calc(100vw-1rem)] max-h-[28rem] overflow-y-auto z-50 rounded-2xl border border-outline-variant bg-surface-container-high shadow-lg">
           <div className="px-4 py-3 border-b border-outline-variant flex items-center justify-between">
             <span className="text-title-sm text-on-surface">Activity</span>
             <span className="text-label-sm text-on-surface-variant">
