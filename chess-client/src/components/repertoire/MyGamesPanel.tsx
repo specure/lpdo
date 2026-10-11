@@ -3,8 +3,8 @@
 // first, each with how far it followed the chapter and who left it. A click
 // puts the board where the game left the chapter; a double-click opens the
 // game. Only on the Repertoire page (a chapter is open). With the whole book
-// picked there instead, the book's games: each with the chapter it went into
-// (a click puts that chapter on the board) or the move that left the book.
+// picked there instead, the book's games — those its chapters have — each
+// with the chapter it went into (a click puts that chapter on the board).
 
 import { useEffect, useState } from "react";
 import { getBookGameList, getChapter, getChapterGames, type BookGame, type BookGameList, type ChapterGame, type ChapterGameList } from "../../lib/repertoire";
@@ -82,14 +82,6 @@ function followed(f: Pick<ChapterGame, "followed" | "left_by" | "move" | "at_ply
     : "the game ended in the chapter";
 }
 
-/** Who left the book, and where: the move's own number says whose it was
- *  ("3...Bb4": Black's). */
-function leftBook(move: string | null, meWhite: boolean) {
-  if (!move) return "deviated from the book";
-  const mine = move.includes("...") !== meWhite;
-  return <span className={mine ? "text-error" : ""}>{mine ? "you" : "your opponent"} deviated from the book at {move}</span>;
-}
-
 /** The whole book's games, each with the chapter it went into. */
 function BookGamesList({ book, reloadKey, onOpen, onPickChapter }: Props & { book: NonNullable<Props["book"]> }) {
   const [list, setList] = useState<BookGameList | null>(null);
@@ -120,14 +112,12 @@ function BookGamesList({ book, reloadKey, onOpen, onPickChapter }: Props & { boo
         <span className="ml-2 text-outline">click: its chapter · double-click: open</span>
       </div>
       {list.games.length === 0 ? (
-        <div className="p-3 text-center text-on-surface-variant text-body-sm">None of your games as {colour} reached this book's opening in {period}.</div>
+        <div className="p-3 text-center text-on-surface-variant text-body-sm">None of your games as {colour} went into this book's chapters in {period}.</div>
       ) : (
         <div className="flex-1 overflow-y-auto py-1">
           {list.games.map((g) => (
             <GameRow key={g.id} g={g} meWhite={meWhite} picked={picked === g.id}
-              how={g.chapters.length
-                ? <>{g.chapters.map(name).join(", ")}{g.follow && <> · {followed(g.follow)}</>}</>
-                : leftBook(g.left, meWhite)}
+              how={<>{g.chapters.map(name).join(", ")}{g.follow && <> · {followed(g.follow)}</>}</>}
               title={`${g.white} – ${g.black}, ${g.event ?? ""} ${g.date ?? ""}. Click: its chapter on the board; double-click: open the game.`}
               onClick={() => { setPicked(g.id); if (g.chapters[0] != null) onPickChapter?.(g.chapters[0]); }}
               onDoubleClick={() => onOpen(summary(g))} />

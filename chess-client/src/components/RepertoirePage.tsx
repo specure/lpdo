@@ -1502,8 +1502,8 @@ function RemoveFensDialog({ what, busy, count, onRemove, onClose }: {
 }
 
 /** The book's line in "Your games": which games count, and — a row like a
- *  chapter's, with the same columns — those in the book's opening. Picked,
- *  My games lists them all. */
+ *  chapter's, with the same columns — those that went into its chapters,
+ *  each once. Picked, My games lists them all. */
 function BookGamesSummary({ games, note, picked, onPick }: { games: BookGames | null; note: string | null; picked: boolean; onPick: () => void }) {
   if (note) return <div className="px-3 pb-1 text-label-sm text-on-surface-variant">{note}</div>;
   if (!games) return <div className="px-3 pb-1 text-label-sm text-on-surface-variant">Looking up your games…</div>;
@@ -1514,7 +1514,7 @@ function BookGamesSummary({ games, note, picked, onPick }: { games: BookGames | 
     <>
       <button onClick={onPick}
         className={`flex items-center gap-1.5 px-3 py-1 text-left border-t-2 border-transparent ${picked ? "bg-primary-container/40" : "hover:bg-on-surface/4"}`}
-        title={`Your games as ${colour}, ${period}, in this book's opening. Click: list them under My games.`}>
+        title={`Your games as ${colour}, ${period}, that went into this book's chapters. Click: list them under My games.`}>
         <span className="flex-1 min-w-0 flex flex-col">
           <span className={`truncate text-body-sm ${picked ? "text-on-surface font-medium" : "text-on-surface"}`}>The whole book</span>
           {b.games > 0 && <span className="text-label-sm text-on-surface-variant tabular-nums">+{b.w} ={b.d} −{b.l}</span>}
