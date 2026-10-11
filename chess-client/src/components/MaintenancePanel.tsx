@@ -10,7 +10,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { clearCrashLog, formatCrashLog, readCrashLog, type CrashEntry } from "../lib/crashLog";
 import { listen } from "@tauri-apps/api/event";
 import { useJobProgress } from "../hooks/useJobProgress";
-import { getRepertoireSettings, putRepertoireSettings, type OverviewGames, type RepertoireSettings, type TransposedGames } from "../lib/repertoire";
+import { getRepertoireSettings, putRepertoireSettings, type RepertoireSettings, type TransposedGames } from "../lib/repertoire";
 import {
   DEFAULT_BACKUP_DIR, DEFAULT_COLLECTION, backupCollection, backupFolder, rememberBackupCollection, rememberBackupFolder,
   saveBackup, useAutoBackup, whenAt, type BackupKind,
@@ -897,13 +897,7 @@ function LichessStats() {
 // position there (and chessdb keeps what it is asked), so past the opening the
 // server keeps positions to itself; the local engine analyses those.
 /** The repertoire's settings (#327): which of one's own games count in a
- *  chapter's practice figures, and which an overview chapter lists. */
-const OVERVIEW_GAMES: { value: OverviewGames; label: string; hint: string }[] = [
-  { value: "none", label: "None", hint: "games that reached no other chapter count as having left the book" },
-  { value: "unclaimed", label: "Unclaimed games only", hint: "games that went through it and reached no other chapter (default)" },
-  { value: "every", label: "Every game that passes the filter", hint: "every game through its moves, the other chapters' games too" },
-];
-
+ *  chapter's practice figures. */
 const TRANSPOSED_GAMES: { value: TransposedGames; label: string; hint: string }[] = [
   { value: "target", label: "Only show the game in the target chapter", hint: "the chapter it went into (default)" },
   { value: "show", label: "Show the transposition in the respective chapter", hint: "both list it; the one it left says where it went" },
@@ -979,7 +973,7 @@ function RepertoireSection() {
     setNote(null);
     try {
       const s = await putRepertoireSettings({ ...settings, ...patch });
-      if ((patch.overview_games && s.overview_games === undefined) || (patch.transposed_games && s.transposed_games === undefined)) {
+      if (patch.transposed_games && s.transposed_games === undefined) {
         throw new Error("The server cannot set this yet. Update the server.");
       }
       setSettings(s);
@@ -1010,25 +1004,13 @@ function RepertoireSection() {
             0 counts all of them; the default is 12. Your player is the one set on the Home page; your games are
             looked up each time, so a game added counts at once.
           </p>
-          {settings.overview_games !== undefined && (
-            <fieldset className="space-y-1 pt-1">
-              <legend className="text-body-sm text-on-surface pb-1">An overview chapter lists</legend>
-              {OVERVIEW_GAMES.map((o) => (
-                <label key={o.value} className="flex items-start gap-2 text-body-sm text-on-surface cursor-pointer">
-                  <input type="radio" name="overview-games" className="accent-primary mt-1 shrink-0"
-                    checked={settings.overview_games === o.value}
-                    onChange={() => void save({ overview_games: o.value })} />
-                  <span>{o.label} <span className="text-label-sm text-on-surface-variant">— {o.hint}</span></span>
-                </label>
-              ))}
-              <p className="text-label-sm text-on-surface-variant pt-1">
-                An overview chapter — an introduction, a quickstarter, an overview — goes over moves the other
-                chapters have. It never takes a game from them: a game counts for the chapter it reaches, as if the
-                overview were not there. A chapter is an overview when its name says so (Overview, Introduction,
-                Quickstarter, Summary…), shown in italics; set it either way in the chapters' menu.
-              </p>
-            </fieldset>
-          )}
+          <p className="text-label-sm text-on-surface-variant">
+            An overview chapter — an introduction, a quickstarter, an overview — goes over moves the other chapters
+            have, and none of your games count for it: a game counts for the chapter it reaches, as if the overview
+            were not there, and one that only went through the overview's moves is not the book's. A chapter is an
+            overview when its name says so (Overview, Introduction, Quickstarter, Summary…), shown in italics; set it
+            either way in the chapters' menu.
+          </p>
           {settings.transposed_games !== undefined && (
             <fieldset className="space-y-1 pt-1">
               <legend className="text-body-sm text-on-surface pb-1">When a game transposes to another chapter</legend>

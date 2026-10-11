@@ -207,7 +207,10 @@ book usually White's move that sets the chapter apart, 3.Nd2 for the
 Tarrasch — so your older games in the line count too, even when you
 deviated straight after (an earlier 3...c5 under a 3...a6 chapter: "you
 deviated at 3...c5"). A position several chapters share counts for none of
-them. Above the chapters, **The
+them. An overview chapter (shown in italics: an introduction, a
+quickstarter, an overview) counts no games: it goes over moves the other
+chapters have, so a game that only went through them — 1.d4 Nf6 2.c4 e6,
+then 3.Nc3 into the Nimzo of another book — is not this book's. Above the chapters, **The
 whole book** has the same columns for the games the chapters have, each
 counted once — a game that left the book before reaching any chapter is
 not among them; pick it, as a chapter, and the My games tab lists them all,

@@ -55,6 +55,15 @@ const nav = "w-6 h-6 inline-flex items-center justify-center rounded-full text-o
 const moveNav = `${nav} -my-1`;
 const box = "h-full overflow-hidden flex flex-col bg-surface-container-low border border-outline/40 rounded-md";
 const CHAPTER_KEY = "repertoireChapter";
+// The book shown, and whether its "whole book" line is picked: as left.
+const BOOK_KEY = "repertoireBook";
+const BOOK_PICKED_KEY = "repertoireBookPicked";
+function stored(key: string): number | null {
+  try { const v = Number(localStorage.getItem(key)); return Number.isFinite(v) && v > 0 ? v : null; } catch { return null; }
+}
+function store(key: string, v: string | null) {
+  try { if (v == null) localStorage.removeItem(key); else localStorage.setItem(key, v); } catch { /* not kept */ }
+}
 const BOOKS_FOLDED_KEY = "repertoireBooksCollapsed";
 const CHAPTERS_FOLDED_KEY = "repertoireChaptersCollapsed";
 
@@ -136,18 +145,24 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
   // chapter afresh to take it.
   const pendingCursor = useRef<{ chapterId: number; cursor: CursorPath } | null>(null);
   const [openLoad, setOpenLoad] = useState(0);
-  const [chapterId, setChapterId] = useState<number | null>(() => {
-    const v = Number(localStorage.getItem(CHAPTER_KEY));
-    return Number.isFinite(v) && v > 0 ? v : null;
-  });
-  const [selectedBook, setSelectedBook] = useState<number | null>(null);
+  const [chapterId, setChapterId] = useState<number | null>(() => stored(CHAPTER_KEY));
+  const [selectedBook, setSelectedBook] = useState<number | null>(() => stored(BOOK_KEY));
   // "Your games": the book's line picked instead of a chapter — My games then
   // lists the whole book's games (the chapter stays on the board).
-  const [bookPicked, setBookPicked] = useState(false);
+  const [bookPicked, setBookPicked] = useState(() => selectedBook != null && stored(BOOK_PICKED_KEY) === 1);
   // Bumped when the chapter on the board was changed here, outside the
   // editor (FENs removed, chapters merged into it): the board reads it again.
   const [docReload, setDocReload] = useState(0);
-  useEffect(() => setBookPicked(false), [selectedBook]);
+  // Another book shown: its line not picked. Not when the page comes back
+  // with the book it was left at.
+  const shownBook = useRef(selectedBook);
+  useEffect(() => {
+    if (shownBook.current === selectedBook) return;
+    if (shownBook.current != null) setBookPicked(false);
+    shownBook.current = selectedBook;
+  }, [selectedBook]);
+  useEffect(() => { store(BOOK_KEY, selectedBook == null ? null : String(selectedBook)); }, [selectedBook]);
+  useEffect(() => { store(BOOK_PICKED_KEY, bookPicked ? "1" : null); }, [bookPicked]);
   // Chapters being merged: the lines already merged, the conflicts to choose.
   // The chapter being drilled; the one being sent to the phone.
   const [drilling, setDrilling] = useState<number | null>(null);
@@ -167,13 +182,14 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
   useEffect(() => { void load(); }, [load]);
 
   // The book shown follows the chapter on the board — when another chapter
-  // is chosen (or the books first come), not on every reading of the books:
-  // a save while another book is shown (its details being edited) must not
-  // switch back to the chapter's.
+  // is chosen, not on every reading of the books: a save while another book
+  // is shown (its details being edited) must not switch back to the
+  // chapter's. When the books first come, the book the page was left at.
   const followed = useRef<number | null | undefined>(undefined);
   useEffect(() => {
     if (!books) return;
     const owner = chapterId != null ? books.find((b) => b.chapters.some((c) => c.id === chapterId)) : undefined;
+    if (followed.current === undefined && selectedBook != null && books.some((b) => b.id === selectedBook)) followed.current = chapterId;
     if (owner && followed.current !== chapterId) { followed.current = chapterId; setSelectedBook(owner.id); }
     else if (selectedBook == null || !books.some((b) => b.id === selectedBook)) setSelectedBook(owner?.id ?? books[0]?.id ?? null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -188,6 +204,7 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
     loadTab(chapterId)
       .then((t) => {
         if (gone) return;
+        setError((e) => (e?.startsWith("Could not load the chapter") ? null : e));
         // A position asked for (a game's Repertoire tab) outranks the one
         // the chapter was left at.
         const asked = pendingCursor.current;
@@ -198,9 +215,22 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
         }
         setTab((prev) => (prev?.key === t.key ? { ...t, fen: prev.fen, cursor: prev.cursor, flipped: prev.flipped } : t));
       })
-      .catch(() => { if (!gone) { setTab(null); setChapterId(null); localStorage.removeItem(CHAPTER_KEY); } });
-    return () => { gone = true; };
+      .catch((e) => {
+        if (gone) return;
+        // Not read — the server busy or restarting: kept, and tried again
+        // shortly. Dropped only once the books say it is gone (below).
+        setError(`Could not load the chapter: ${String(e instanceof Error ? e.message : e)}`);
+        retry = setTimeout(() => setOpenLoad((n) => n + 1), 3000);
+      });
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    return () => { gone = true; clearTimeout(retry); };
   }, [chapterId, openLoad]);
+  // The chapter on the board deleted (elsewhere, or before the page came
+  // back): dropped.
+  useEffect(() => {
+    if (books && chapterId != null && !books.some((b) => b.chapters.some((c) => c.id === chapterId))) dropChapter();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [books, chapterId]);
   // A rename, or a move to another book, reaches the tab's names.
   useEffect(() => {
     if (!tab || !books) return;
@@ -1589,7 +1619,7 @@ function ChapterRow({ chapter: c, busy, current, renaming, arranging, first, las
         <button onClick={selected !== undefined ? undefined : onPick}
           onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
           className={`flex-1 min-w-0 text-left text-body-sm truncate ${c.overview ? "italic" : ""} ${current ? "text-on-surface font-medium" : "text-on-surface hover:text-primary"}`}
-          title={c.model ? c.name : `${c.name} — ${counts}${c.overview ? " · an overview chapter: takes none of your games from the other chapters (Maintenance → Repertoire)" : ""}`}>
+          title={c.model ? c.name : `${c.name} — ${counts}${c.overview ? " · an overview chapter: none of your games count for it" : ""}`}>
           {c.name}
         </button>
       )}

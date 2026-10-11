@@ -174,8 +174,8 @@ chapter of the book has — stricter than "Your games", where reaching one is
 enough: 1.c4 e5 2.g3 is not in a book's 1...e5 chapter that has 2.Nc3, as the
 game went), those it went furthest in, by
 any move order, deepest first; overview chapters not at all (they repeat
-the others' moves — "Your games" on the Repertoire page still lists them as
-set under Maintenance). A book the game only started — left within
+the others' moves — nor does "Your games" on the Repertoire page count any
+game for them). A book the game only started — left within
 the moves all its chapters share (1.d4 Nf6 2.c4 e6 of a 3.Nf3 book, for a
 3.Nc3 game) — is one grey row, "left the book at 3.Nc3 · the book has
 3.Nf3", not counted on the tab. Each
