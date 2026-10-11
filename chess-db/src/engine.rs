@@ -464,6 +464,15 @@ pub(crate) fn save_eval(conn: &duckdb::Connection, kind: Kind, ident: &str, posi
     Ok(())
 }
 
+/// How many lines the result kept for `ident` and `position` has (1 when
+/// none): a result replaces it only with as many ([`save_eval`]) — the
+/// Engine panel's, usually several, outranked one deeper single line, and the
+/// analysis job's depth went unkept.
+pub(crate) fn kept_lines(conn: &duckdb::Connection, ident: &str, position: &str) -> usize {
+    conn.query_row("SELECT multipv FROM engine_evals WHERE engine = ? AND position = ?", duckdb::params![ident, position], |r| r.get::<_, i64>(0))
+        .map_or(1, |n| n.max(1) as usize)
+}
+
 fn kind_name(kind: Kind) -> &'static str {
     match kind { Kind::Stockfish => "stockfish", Kind::Lc0 => "lc0" }
 }
@@ -2276,20 +2285,24 @@ pub struct Background {
 }
 
 impl Background {
-    /// Search `fen` to `depth`, single line: the deepest complete result,
-    /// scores from White's point of view. `interrupt` is asked every second;
+    /// Search `fen` to `depth` with `lines` lines (as many as the position
+    /// has moves, if fewer): the deepest complete result — every line at
+    /// that depth — scores from White's point of view. `interrupt` is asked every second;
     /// when it says so the search is stopped and none returned — `None` means
     /// that and nothing else: a position with no move to look for (checkmate,
     /// stalemate: "bestmove (none)") gives a snapshot without lines. At most
     /// `max` long: some positions run away with many threads (an English
     /// line end kept Stockfish 19 at depth 23 for hours with 12 threads, and
     /// took ten seconds with two), and then the depth reached is the result.
-    pub async fn search(&mut self, fen: &str, depth: u32, max: Duration, interrupt: impl Fn() -> bool) -> Result<Option<Snapshot>, String> {
-        send(&mut self.stdin, "setoption name MultiPV value 1").await?;
+    pub async fn search(&mut self, fen: &str, depth: u32, lines: usize, max: Duration, interrupt: impl Fn() -> bool) -> Result<Option<Snapshot>, String> {
+        let want = lines.clamp(1, legal_moves(fen).max(1) as usize);
+        send(&mut self.stdin, &format!("setoption name MultiPV value {want}")).await?;
         send(&mut self.stdin, &format!("position fen {fen}")).await?;
         send(&mut self.stdin, &format!("go depth {depth} movetime {}", max.as_millis())).await?;
         let white = fen.split_whitespace().nth(1) != Some("b");
-        let (mut best, mut nodes, mut stopped) = (None::<(u32, Line)>, 0u64, false);
+        // The lines at the depth being reported, and the deepest set complete.
+        let (mut best, mut nodes, mut stopped) = (None::<(u32, Vec<Line>)>, 0u64, false);
+        let (mut at, mut set) = (0u32, vec![None::<Line>; want]);
         loop {
             match tokio::time::timeout(Duration::from_secs(1), self.stdout.read_line(&mut self.partial)).await {
                 // Nothing yet: a moment to make way. What was read stays in
@@ -2308,19 +2321,22 @@ impl Background {
             if let Some(info) = parse_info(t) {
                 if let Some(n) = info.nodes { nodes = n; }
                 if let (Some(d), Some(mut l)) = (info.depth, info.line) {
-                    if l.multipv == 1 {
+                    let k = l.multipv as usize;
+                    if (1..=want).contains(&k) {
                         if !white {
                             l.eval_cp = l.eval_cp.map(|c| -c);
                             l.mate = l.mate.map(|m| -m);
                             l.wdl = l.wdl.map(|[w, d, b]| [b, d, w]);
                         }
-                        best = Some((d, l));
+                        if d != at { at = d; set.iter_mut().for_each(|s| *s = None); }
+                        set[k - 1] = Some(l);
+                        if set.iter().all(Option::is_some) { best = Some((d, set.iter().flatten().cloned().collect())); }
                     }
                 }
             }
         }
         if stopped { return Ok(None); }
-        let (depth, lines) = best.map_or((0, Vec::new()), |(d, l)| (d, vec![l]));
+        let (depth, lines) = best.unwrap_or((0, Vec::new()));
         Ok(Some(Snapshot { gen: 0, depth, nodes, nps: 0, lines, done: true, cached: false, engine: None, error: None }))
     }
 }
@@ -2754,24 +2770,31 @@ mod background_tests {
         let mut bg = engine.background().await.unwrap();
         // Black to move, White a queen up: good for White whoever moves.
         let fen = "rnb1kbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 3";
-        let snap = bg.search(fen, 14, Duration::from_secs(60), || false).await.unwrap().unwrap();
+        let snap = bg.search(fen, 14, 1, Duration::from_secs(60), || false).await.unwrap().unwrap();
         assert_eq!(snap.depth, 14);
+        // Several lines: all of them at the depth, in order.
+        let three = bg.search(fen, 12, 3, Duration::from_secs(60), || false).await.unwrap().unwrap();
+        assert_eq!((three.depth, three.lines.iter().map(|l| l.multipv).collect::<Vec<_>>()), (12, vec![1, 2, 3]));
+        // More than the position has moves: as many as it has — four king
+        // moves out of a rook's check.
+        let few = bg.search("4k3/8/8/8/8/8/8/4R1K1 b - - 0 1", 8, 5, Duration::from_secs(60), || false).await.unwrap().unwrap();
+        assert_eq!((few.depth, few.lines.len()), (8, 4));
         assert!(snap.lines[0].eval_cp.unwrap_or(0) > 500 || snap.lines[0].mate.is_some_and(|m| m > 0), "{:?}", snap.lines[0]);
         let t = std::time::Instant::now();
-        let none = bg.search("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 60, Duration::from_secs(60), || t.elapsed() > Duration::from_secs(2)).await.unwrap();
+        let none = bg.search("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 60, 1, Duration::from_secs(60), || t.elapsed() > Duration::from_secs(2)).await.unwrap();
         assert!(none.is_none());
         // The process goes on after an interruption.
-        assert!(bg.search(fen, 8, Duration::from_secs(60), || false).await.unwrap().is_some());
+        assert!(bg.search(fen, 8, 1, Duration::from_secs(60), || false).await.unwrap().is_some());
         // Out of time: the depth reached, short of the one asked.
         let t = std::time::Instant::now();
-        let short = bg.search("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 60, Duration::from_secs(1), || false).await.unwrap().unwrap();
+        let short = bg.search("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 60, 1, Duration::from_secs(1), || false).await.unwrap().unwrap();
         assert!(short.depth > 0 && short.depth < 60, "{}", short.depth);
         assert!(t.elapsed() < Duration::from_secs(10));
         // Checkmate: no move to look for — a snapshot without lines, at once;
         // not None, which would mean interrupted (and the analysis job once
         // asked again, for ever).
         let t = std::time::Instant::now();
-        let mated = bg.search("r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 4", 24, Duration::from_secs(60), || false).await.unwrap().unwrap();
+        let mated = bg.search("r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 4", 24, 1, Duration::from_secs(60), || false).await.unwrap().unwrap();
         assert!(mated.lines.is_empty());
         assert!(t.elapsed() < Duration::from_secs(5));
         let _ = std::fs::remove_dir_all(&dir);
