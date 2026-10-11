@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { useDefaultLayout, type Layout } from "react-resizable-panels";
 
 // One rule for every divider in the app: it resizes the two panels it separates,
@@ -59,12 +60,25 @@ export function useNeighbourResize(panelIds: string[]) {
     /** Wire a divider: `<Separator {...rz.separator(i)} />`, `i` counting from 0,
      *  sitting between panelIds[i] and panelIds[i + 1].
      *
-     *  Capture-phase handlers on purpose: Separator spreads the props it is given
-     *  and *then* sets its own `onFocus`/`onBlur`, so the bubble-phase versions
-     *  are silently overwritten — the pin looked wired up and never fired. */
+     *  Capture-phase handlers for focus and blur on purpose: Separator spreads
+     *  the props it is given and *then* sets its own `onFocus`/`onBlur`, so the
+     *  bubble-phase versions are silently overwritten — the pin looked wired up
+     *  and never fired.
+     *
+     *  Not for enter and leave, though: React never dispatches
+     *  `onPointerEnterCapture` / `onPointerLeaveCapture` (enter and leave have
+     *  no capture phase in React DOM), so with those the pin was only ever
+     *  taken on pointer-down — mid-drag, which is exactly what aborts the drag.
+     *  Every divider needed a click to arm it and a second click to move it:
+     *  the first click left the separator focused, and the focus kept the pin
+     *  in place for the second. Separator sets no pointer handlers of its own,
+     *  so the plain ones reach it.
+     *
+     *  Flushed synchronously: a hover render is otherwise deferred, and a quick
+     *  press after entering could still land before the floors are in place. */
     separator: (i: number) => ({
-      onPointerEnterCapture: () => setHovered(i),
-      onPointerLeaveCapture: () => { if (!dragging.current) setHovered(null); },
+      onPointerEnter: () => flushSync(() => setHovered(i)),
+      onPointerLeave: () => { if (!dragging.current) setHovered(null); },
       onPointerDownCapture: () => { dragging.current = true; setHovered(i); },
       onPointerUpCapture: () => { dragging.current = false; },
       onLostPointerCaptureCapture: () => { dragging.current = false; setHovered(null); },
