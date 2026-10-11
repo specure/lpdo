@@ -19,6 +19,7 @@ import { currentMyPlayer } from "./MyStatsWidget";
 import { buildPlayback } from "../lib/useGamePgn";
 import { apiUrl, JOB_SETTLED_EVENT } from "../api";
 import AnalysisPage, { type AnalysisTab } from "./AnalysisPage";
+import Flyout, { PinButton } from "./Flyout";
 import MergeChaptersDialog from "./repertoire/MergeChaptersDialog";
 import DrillDialog from "./repertoire/DrillDialog";
 import SendToPhoneDialog from "./repertoire/SendToPhoneDialog";
@@ -139,8 +140,16 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
   const [busy, setBusy] = useState(false);
   const [booksFolded, setBooksFolded] = useFolded(BOOKS_FOLDED_KEY);
   const [chaptersFolded, setChaptersFolded] = useFolded(CHAPTERS_FOLDED_KEY);
+  // The folded books, out for a moment over the chapters (the strip that
+  // opened them, while open). A book is picked rarely and the chapters all the
+  // time, so the books spend their life folded and come out to pick from.
+  const [booksOut, setBooksOut] = useState<HTMLElement | null>(null);
   // The chapter on the board, as an Analysis tab of one.
   const [tab, setTab] = useState<AnalysisTab | null>(null);
+  // The strip is drawn anew when the board's view comes or goes, and gone
+  // when the books unfold: a flyout anchored to the old one would float loose.
+  const boardShown = tab != null;
+  useEffect(() => { setBooksOut(null); }, [boardShown, booksFolded]);
   // A position asked for in a chapter (see `open` below), and a load of the
   // chapter afresh to take it.
   const pendingCursor = useRef<{ chapterId: number; cursor: CursorPath } | null>(null);
@@ -462,11 +471,13 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
   const arrowsModels = useCallback(() => keysFor.current === "models", []);
   const f2Reference = useCallback(() => keysFor.current === "reference" || keysFor.current === "board", []);
   const arrowsReference = useCallback(() => keysFor.current === "reference", []);
-  const booksPanel = booksFolded ? <Strip label="Books" onOpen={() => setBooksFolded(false)} /> : (
+  // The books list: in its panel, or out of the strip in a flyout — where a
+  // pick closes it, and the pin unfolds the panel for good.
+  const booksList = (onFold: () => void, onPin?: () => void) => (
     <div className={box} onMouseDownCapture={() => { keysFor.current = "books"; }}>
       <BooksPanel
         books={books} selected={selectedBook} busy={busy} error={error} f2Here={f2Books}
-        onSelect={setSelectedBook} onFold={() => setBooksFolded(true)}
+        onSelect={(id) => { setSelectedBook(id); setBooksOut(null); }} onFold={onFold} onPin={onPin}
         onCreate={(b) => run(async () => { const nb = await createBook(b); setSelectedBook(nb.id); })}
         onUpdate={(id, patch) => run(() => updateBook(id, patch))}
         onImportBooks={importBookFiles}
@@ -483,6 +494,14 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
       />
     </div>
   );
+  const booksPanel = booksFolded ? (<>
+    <Strip label="Books" onOpen={(el) => setBooksOut((v) => (v ? null : el))} />
+    {booksOut && (
+      <Flyout anchor={booksOut} label="Books" onClose={() => setBooksOut(null)}>
+        {booksList(() => setBooksOut(null), () => { setBooksOut(null); setBooksFolded(false); })}
+      </Flyout>
+    )}
+  </>) : booksList(() => setBooksFolded(true));
   const chaptersPanel = chaptersFolded ? <Strip label={book ? book.name : "Chapters"} onOpen={() => setChaptersFolded(false)} /> : (
     <div className={box} onMouseDownCapture={() => { keysFor.current = "chapters"; }}>
       <div className="px-3 py-2 flex items-center gap-2 border-b border-outline/40 shrink-0">
@@ -632,10 +651,10 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
 // ── The panels ───────────────────────────────────────────────────────────────
 
 /** A folded panel: its name down the strip; a click opens it. */
-function Strip({ label, onOpen }: { label: string; onOpen: () => void }) {
+function Strip({ label, onOpen }: { label: string; onOpen: (strip: HTMLElement) => void }) {
   return (
     <button
-      onClick={onOpen}
+      onClick={(e) => onOpen(e.currentTarget)}
       className="h-full w-full flex flex-col items-center gap-2 pt-3 bg-surface-container-low border border-outline/40 rounded-md text-on-surface-variant hover:text-on-surface hover:bg-on-surface/4 transition-colors duration-short3 ease-standard overflow-hidden"
       title={`Show ${label === "Books" ? "the books" : "the chapters"}`}
     >
@@ -693,11 +712,13 @@ const gamesOf = (b: BookWithChapters) => b.chapters.filter((c) => c.model);
 const modelsOf = (b: BookWithChapters) => b.chapters.filter((c) => c.model && c.annotated !== false);
 const referencesOf = (b: BookWithChapters) => b.chapters.filter((c) => c.model && c.annotated === false);
 
-function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, onCreate, onUpdate, onImportBooks, onRestore, onDelete }: {
+function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, onPin, onCreate, onUpdate, onImportBooks, onRestore, onDelete }: {
   books: BookWithChapters[] | null; selected: number | null; busy: boolean; error: string | null;
   /** Whether F2 is the books' (they were clicked last): Edit… the selected one. */
   f2Here: () => boolean;
   onSelect: (id: number) => void; onFold: () => void;
+  /** Out of the strip in a flyout: unfold the panel for good. */
+  onPin?: () => void;
   onCreate: (b: { name: string; author: string | null; color: BookColor }) => void;
   onUpdate: (id: number, patch: BookPatch) => void;
   /** Books from LPDO's own PGN (a book exported, or a backup). */
@@ -781,6 +802,7 @@ function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, on
         <input ref={booksFileRef} type="file" multiple accept=".pgn,.zip,text/plain,application/zip" className="hidden" onChange={(e) => void pickBookFiles(e)} />
         <input ref={restoreFileRef} type="file" accept=".zip,.pgn,application/zip,text/plain" className="hidden"
           onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) setRestoring(f); }} />
+        {onPin && <PinButton onClick={onPin} title="Keep the books open beside the chapters" />}
         <button onClick={onFold} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide the books">«</button>
       </div>
       {error && <div className="px-3 py-1 text-body-sm text-error">{error}</div>}
