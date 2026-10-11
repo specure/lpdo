@@ -10,7 +10,7 @@ import AddGameDialog from "./components/AddGameDialog";
 import PrepView from "./components/prep/PrepView";
 import PrepPlayerList from "./components/prep/PrepPlayerList";
 import DirectoryBrowser from "./components/local/DirectoryBrowser";
-import Flyout from "./components/Flyout";
+import Flyout, { PinButton } from "./components/Flyout";
 import LocalGameList from "./components/local/LocalGameList";
 import GamesPage, { PLAYERS_RAIL_KEY } from "./components/GamesPage";
 import PlayerProfileModal from "./components/PlayerProfileModal";
@@ -907,7 +907,7 @@ export default function App() {
                     <div className="h-full flex flex-col overflow-hidden bg-surface-container-low border border-outline/40 rounded-md">
                       <div className="px-3 py-2 flex items-center gap-1 border-b border-outline/40">
                         <span className="flex-1 text-label-md text-on-surface-variant uppercase tracking-wider">Files</span>
-                        <button onClick={() => { setFilesOut(null); setFilesCollapsed(false); }} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-label-md" title="Keep the files open beside the games">Pin</button>
+                        <PinButton onClick={() => { setFilesOut(null); setFilesCollapsed(false); }} title="Keep the files open beside the games" />
                         <button onClick={() => setFilesOut(null)} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide files">«</button>
                       </div>
                       <div className="flex-1 min-h-0 overflow-hidden flex flex-col">

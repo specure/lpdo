@@ -19,7 +19,7 @@ import { currentMyPlayer } from "./MyStatsWidget";
 import { buildPlayback } from "../lib/useGamePgn";
 import { apiUrl, JOB_SETTLED_EVENT } from "../api";
 import AnalysisPage, { type AnalysisTab } from "./AnalysisPage";
-import Flyout from "./Flyout";
+import Flyout, { PinButton } from "./Flyout";
 import MergeChaptersDialog from "./repertoire/MergeChaptersDialog";
 import DrillDialog from "./repertoire/DrillDialog";
 import SendToPhoneDialog from "./repertoire/SendToPhoneDialog";
@@ -802,7 +802,7 @@ function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, on
         <input ref={booksFileRef} type="file" multiple accept=".pgn,.zip,text/plain,application/zip" className="hidden" onChange={(e) => void pickBookFiles(e)} />
         <input ref={restoreFileRef} type="file" accept=".zip,.pgn,application/zip,text/plain" className="hidden"
           onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) setRestoring(f); }} />
-        {onPin && <button onClick={onPin} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-label-md" title="Keep the books open beside the chapters">Pin</button>}
+        {onPin && <PinButton onClick={onPin} title="Keep the books open beside the chapters" />}
         <button onClick={onFold} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide the books">«</button>
       </div>
       {error && <div className="px-3 py-1 text-body-sm text-error">{error}</div>}
