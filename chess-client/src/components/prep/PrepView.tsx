@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
+import { hitTarget } from "../../lib/panelResize";
 import { invoke } from "@tauri-apps/api/core";
 import { GameSummary, PlayerInfo, PrepContext, ShortlistEntry } from "../../types";
 import TournamentList from "./TournamentList";
@@ -40,7 +41,7 @@ export default function PrepView({ onOpponentsReady, onShowGame }: Props) {
     <div className="flex flex-1 overflow-hidden bg-surface">
       {/* Tournament list | prep panel, as resizable siblings — two panels, so the
           divider trades between them and there is nothing else to disturb. */}
-      <Group
+      <Group resizeTargetMinimumSize={hitTarget}
         orientation="horizontal"
         className="flex-1 min-w-0 flex"
         defaultLayout={saved.defaultLayout}
@@ -61,7 +62,7 @@ export default function PrepView({ onOpponentsReady, onShowGame }: Props) {
       </div>
       </Panel>
 
-      <Separator className="w-1.5 bg-transparent hover:bg-primary/30 data-[separator=drag]:bg-primary/50 transition-colors" />
+      <Separator className="w-1.5 bg-transparent hover:bg-primary/30 data-[separator=active]:bg-primary/50 transition-colors" />
 
       {/* Right: prep panel or empty state */}
       <Panel id="prep" defaultSize="78" minSize="40">
