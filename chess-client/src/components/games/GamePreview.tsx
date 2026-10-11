@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
+import { hitTarget } from "../../lib/panelResize";
 import { GameSummary } from "../../types";
 import { LoadedGame } from "../../lib/useGamePgn";
 import GamePreviewHeader from "./GamePreviewHeader";
@@ -78,7 +79,7 @@ export default function GamePreview({
   const split = useDefaultLayout({ id: layoutId, storage: localStorage });
 
   return (
-    <Group orientation="vertical" className="h-full w-full flex" defaultLayout={split.defaultLayout} onLayoutChanged={split.onLayoutChanged}>
+    <Group resizeTargetMinimumSize={hitTarget} orientation="vertical" className="h-full w-full flex" defaultLayout={split.defaultLayout} onLayoutChanged={split.onLayoutChanged}>
       <Panel defaultSize={String(boardShare)} minSize="20">
         <div className={panelClass}>
           {game && (
@@ -132,7 +133,7 @@ export default function GamePreview({
           )}
         </div>
       </Panel>
-      <Separator className="h-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-state=drag]:bg-primary/50 transition-colors" />
+      <Separator className="h-1.5 bg-transparent hover:bg-primary/30 data-[separator=active]:bg-primary/50 transition-colors" />
       <Panel defaultSize={String(100 - boardShare)} minSize="12">
         <div className={panelClass}>
           {loaded ? (

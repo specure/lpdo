@@ -9,7 +9,7 @@ import type { MenuEntry } from "./games/GameMoreMenu";
 import GameBoard from "./GameBoard";
 import CloudEngine from "./CloudEngine";
 import { useGamePgn } from "../lib/useGamePgn";
-import { useNeighbourResize } from "../lib/panelResize";
+import { useNeighbourResize, hitTarget } from "../lib/panelResize";
 import { fetchPgns, savePgnFile } from "../lib/exportPgn";
 import type { EngineHistory } from "../api";
 import PrintDialog, { ExportableGame } from "./games/PrintDialog";
@@ -90,8 +90,8 @@ interface Props {
 }
 
 const panel = "bg-surface-container-low border border-outline/40 rounded-md overflow-hidden flex flex-col min-h-0 min-w-0 h-full w-full";
-const vHandle = "w-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-state=drag]:bg-primary/50 transition-colors";
-const hHandle = "h-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-state=drag]:bg-primary/50 transition-colors";
+const vHandle = "w-1.5 bg-transparent hover:bg-primary/30 data-[separator=active]:bg-primary/50 transition-colors";
+const hHandle = "h-1.5 bg-transparent hover:bg-primary/30 data-[separator=active]:bg-primary/50 transition-colors";
 const STARTPOS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 type RightTab = "reference" | "related" | "lines" | "mine" | "repertoire";
@@ -487,7 +487,7 @@ export default function AnalysisPage({
     <div className="flex flex-1 overflow-hidden p-1.5">
       {/* Rail | board | position intel. One group, so every divider follows the
           same rule: it resizes the two panels it separates and nothing else. */}
-      <Group orientation="horizontal" className="flex-1 min-w-0 flex" groupRef={group} defaultLayout={remembered} onLayoutChanged={keepLayout} onLayoutChange={rz.onLayout}>
+      <Group resizeTargetMinimumSize={hitTarget} orientation="horizontal" className="flex-1 min-w-0 flex" groupRef={group} defaultLayout={remembered} onLayoutChanged={keepLayout} onLayoutChange={rz.onLayout}>
       {/* A — open-game tabs (mini-board previews) */}
       {lead ? lead.map((p, i) => (
         <Fragment key={p.id}>
@@ -613,7 +613,7 @@ export default function AnalysisPage({
           defaultSize="30"
           minSize={rz.floor("side") ?? "18"}
         >
-          <Group orientation="vertical" className="h-full w-full flex" defaultLayout={sideCol.defaultLayout} onLayoutChanged={sideCol.onLayoutChanged}>
+          <Group resizeTargetMinimumSize={hitTarget} orientation="vertical" className="h-full w-full flex" defaultLayout={sideCol.defaultLayout} onLayoutChanged={sideCol.onLayoutChanged}>
             <Panel id="side-games" defaultSize="50" minSize="15">
               <div className={panel}>
                 <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b border-outline/40 overflow-x-auto">

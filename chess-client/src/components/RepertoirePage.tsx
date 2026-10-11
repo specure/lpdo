@@ -802,8 +802,10 @@ function BooksPanel({ books, selected, busy, error, f2Here, onSelect, onFold, on
         <input ref={booksFileRef} type="file" multiple accept=".pgn,.zip,text/plain,application/zip" className="hidden" onChange={(e) => void pickBookFiles(e)} />
         <input ref={restoreFileRef} type="file" accept=".zip,.pgn,application/zip,text/plain" className="hidden"
           onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) setRestoring(f); }} />
-        {onPin && <PinButton onClick={onPin} title="Keep the books open beside the chapters" />}
-        <button onClick={onFold} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide the books">«</button>
+        {onPin
+          ? <PinButton pinned={false} onClick={onPin} title="Keep the books open beside the chapters" />
+          : <PinButton pinned onClick={onFold} title="Unpin: fold the books to a strip" />}
+        {onPin && <button onClick={onFold} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide the books">«</button>}
       </div>
       {error && <div className="px-3 py-1 text-body-sm text-error">{error}</div>}
       {restoring && (

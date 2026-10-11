@@ -38,7 +38,7 @@ async function loadChapterTab(chapterId: number): Promise<AnalysisTab> {
 }
 import AnalysisPage, { AnalysisTab } from "./components/AnalysisPage";
 import { Group, Panel, Separator } from "react-resizable-panels";
-import { useNeighbourResize, usePanelLayout } from "./lib/panelResize";
+import { useNeighbourResize, usePanelLayout, hitTarget } from "./lib/panelResize";
 import { loadGamePgn } from "./lib/useGamePgn";
 import { CursorPath } from "./lib/moveTreeNav";
 import { setAppVersion as setCrashAppVersion, setCrashContext } from "./lib/crashLog";
@@ -320,7 +320,7 @@ function readCursor(raw: unknown): CursorPath | null {
   return { steps, index };
 }
 
-const vHandle = "w-1.5 bg-transparent hover:bg-primary/30 data-[separator=drag]:bg-primary/50 transition-colors";
+const vHandle = "w-1.5 bg-transparent hover:bg-primary/30 data-[separator=active]:bg-primary/50 transition-colors";
 
 const RECENT_PGN_KEY = "recentPgnFiles";
 const RECENT_PGN_MAX = 8;
@@ -865,7 +865,7 @@ export default function App() {
           directory, and the game list is what reports the file's game count. */}
       <div className={mode !== "local" ? "hidden" : "flex flex-1 overflow-hidden"}>
         <div className="flex-1 min-w-0 min-h-0 p-1.5">
-          <Group
+          <Group resizeTargetMinimumSize={hitTarget}
             orientation="horizontal"
             className="h-full w-full flex"
             defaultLayout={pgnDefaultLayout}
@@ -890,7 +890,7 @@ export default function App() {
                   </button>
                 ) : (<div className="px-3 py-2 flex items-center justify-between border-b border-outline/40">
                     <span className="text-label-md text-on-surface-variant uppercase tracking-wider">Files</span>
-                    <button onClick={() => setFilesCollapsed(true)} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide files">«</button>
+                    <PinButton pinned onClick={() => setFilesCollapsed(true)} title="Unpin: fold the files to a strip" />
                   </div>)}
                 {/* One browser at a time — here, or out in the flyout. */}
                 {!filesOut && (
@@ -907,7 +907,7 @@ export default function App() {
                     <div className="h-full flex flex-col overflow-hidden bg-surface-container-low border border-outline/40 rounded-md">
                       <div className="px-3 py-2 flex items-center gap-1 border-b border-outline/40">
                         <span className="flex-1 text-label-md text-on-surface-variant uppercase tracking-wider">Files</span>
-                        <PinButton onClick={() => { setFilesOut(null); setFilesCollapsed(false); }} title="Keep the files open beside the games" />
+                        <PinButton pinned={false} onClick={() => { setFilesOut(null); setFilesCollapsed(false); }} title="Keep the files open beside the games" />
                         <button onClick={() => setFilesOut(null)} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide files">«</button>
                       </div>
                       <div className="flex-1 min-h-0 overflow-hidden flex flex-col">

@@ -1,6 +1,14 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { useDefaultLayout, type Layout } from "react-resizable-panels";
+
+// Where a divider can be grabbed: the line itself, every `<Group>` gets this.
+// The library's default widens the target to 10px around a thinner divider —
+// and the cursor with it — while the pin above is taken from the divider
+// element: a drag begun in those outer pixels showed the resize cursor and
+// moved nothing. The 6px line is the whole target, so the cursor says where a
+// drag will work. (Coarse pointers keep the library's 20px: no hover there.)
+export const hitTarget = { coarse: 20, fine: 6 };
 
 // One rule for every divider in the app: it resizes the two panels it separates,
 // their total stays the same, and nothing else moves.
@@ -46,20 +54,65 @@ export function useNeighbourResize(panelIds: string[], strips: string[] = []) {
   // its own to report from, and a pin with nothing to pin to silently does
   // nothing, which is how the spill got through the first version of this.
   const sizes = useRef<Layout>({});
-  // A separator counts as "in use" from the moment the pointer is over it, and
-  // while it holds keyboard focus.
+  // A separator counts as "in use" while the pointer is within its hit
+  // target — judged here with the library's own rule (the element's box,
+  // widened to `hitTarget` if thinner, edges included) from the document's
+  // pointer moves — and while it holds keyboard focus.
   //
   // Hover, not pointer-down, because the pin works by changing panel min/max —
   // and changing a constraint *during* a drag aborts that drag: the two dividers
   // that pin a third panel highlighted but would not move, while every divider
   // in a two-panel group (nothing to pin) dragged normally. Pinning on hover
   // settles the constraints before the drag begins, so nothing changes under it.
+  //
+  // Not from the library's own hover state (`data-separator="hover"`): the
+  // pin's constraint change makes the group take its panels anew, which
+  // resets that state to inactive — and a pin that follows it undoes itself.
+  // Not from the element's pointer-enter either: at the line's exact edge the
+  // library counts the pointer in while the browser's hit test counts it out,
+  // so a drag begun there showed the resize cursor and moved nothing. (And
+  // never `onPointerEnterCapture`: React DOM does not dispatch it.)
   const [hovered, setHovered] = useState<number | null>(null);
   const [focused, setFocused] = useState<number | null>(null);
-  // Only to stop hover being dropped mid-drag: the pointer is captured and
-  // routinely leaves the separator while dragging.
-  const dragging = useRef(false);
   const active = hovered ?? focused;
+  const elements = useRef(new Map<number, HTMLElement>());
+  const dragging = useRef(false);
+  useEffect(() => {
+    let last: number | null = null;
+    const within = (r: DOMRect, x: number, y: number) => {
+      if (r.width === 0 || r.height === 0) return false;
+      const dx = Math.max(0, hitTarget.fine - r.width) / 2, dy = Math.max(0, hitTarget.fine - r.height) / 2;
+      return x >= r.left - dx && x <= r.right + dx && y >= r.top - dy && y <= r.bottom + dy;
+    };
+    const move = (e: PointerEvent) => {
+      // The pointer is captured and routinely leaves the separator mid-drag.
+      if (dragging.current) return;
+      let over: number | null = null;
+      for (const [i, el] of elements.current) {
+        if (within(el.getBoundingClientRect(), e.clientX, e.clientY)) { over = i; break; }
+      }
+      if (over === last) return;
+      last = over;
+      // Flushed synchronously: a render for a hover is otherwise deferred, and
+      // a quick press after entering could land before the floors are in place.
+      if (over !== null) flushSync(() => setHovered(over)); else setHovered(null);
+    };
+    const down = () => { if (last !== null) dragging.current = true; };
+    const up = () => { dragging.current = false; };
+    document.addEventListener("pointermove", move, true);
+    document.addEventListener("pointerdown", down, true);
+    document.addEventListener("pointerup", up, true);
+    document.addEventListener("pointercancel", up, true);
+    return () => {
+      document.removeEventListener("pointermove", move, true);
+      document.removeEventListener("pointerdown", down, true);
+      document.removeEventListener("pointerup", up, true);
+      document.removeEventListener("pointercancel", up, true);
+    };
+  }, []);
+  // One ref callback per divider, kept: a new one each render is called with
+  // null and then the element again, for nothing.
+  const refs = useRef(new Map<number, (el: HTMLDivElement | null) => void>());
 
   return {
     /** Feed the group's live layout back: `<Group onLayoutChange={rz.onLayout}>`. */
@@ -68,31 +121,19 @@ export function useNeighbourResize(panelIds: string[], strips: string[] = []) {
     /** Wire a divider: `<Separator {...rz.separator(i)} />`, `i` counting from 0,
      *  sitting between panelIds[i] and panelIds[i + 1].
      *
-     *  Capture-phase handlers for focus and blur on purpose: Separator spreads
-     *  the props it is given and *then* sets its own `onFocus`/`onBlur`, so the
-     *  bubble-phase versions are silently overwritten — the pin looked wired up
-     *  and never fired.
-     *
-     *  Not for enter and leave, though: React never dispatches
-     *  `onPointerEnterCapture` / `onPointerLeaveCapture` (enter and leave have
-     *  no capture phase in React DOM), so with those the pin was only ever
-     *  taken on pointer-down — mid-drag, which is exactly what aborts the drag.
-     *  Every divider needed a click to arm it and a second click to move it:
-     *  the first click left the separator focused, and the focus kept the pin
-     *  in place for the second. Separator sets no pointer handlers of its own,
-     *  so the plain ones reach it.
-     *
-     *  Flushed synchronously: a hover render is otherwise deferred, and a quick
-     *  press after entering could still land before the floors are in place. */
-    separator: (i: number) => ({
-      onPointerEnter: () => flushSync(() => setHovered(i)),
-      onPointerLeave: () => { if (!dragging.current) setHovered(null); },
-      onPointerDownCapture: () => { dragging.current = true; setHovered(i); },
-      onPointerUpCapture: () => { dragging.current = false; },
-      onLostPointerCaptureCapture: () => { dragging.current = false; setHovered(null); },
-      onFocusCapture: () => setFocused(i),
-      onBlurCapture: () => setFocused(null),
-    }),
+     *  Capture-phase focus handlers on purpose: Separator spreads the props it
+     *  is given and *then* sets its own `onFocus`/`onBlur`, so the bubble-phase
+     *  versions are silently overwritten — the pin looked wired up and never
+     *  fired. */
+    separator: (i: number) => {
+      let ref = refs.current.get(i);
+      if (!ref) { ref = (el) => { if (el) elements.current.set(i, el); else elements.current.delete(i); }; refs.current.set(i, ref); }
+      return {
+        elementRef: ref,
+        onFocusCapture: () => setFocused(i),
+        onBlurCapture: () => setFocused((f) => (f === i ? null : f)),
+      };
+    },
 
     /** A floor for panel `id` — its current size, as a percentage string — or
      *  null when it is free to shrink.

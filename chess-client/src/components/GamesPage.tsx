@@ -10,7 +10,7 @@ import PrintDialog, { ExportableGame } from "./games/PrintDialog";
 import { fetchPgns, savePgnFile } from "../lib/exportPgn";
 import GamePreview from "./games/GamePreview";
 import CloudEngine, { pvString } from "./CloudEngine";
-import { useNeighbourResize, usePanelLayout } from "../lib/panelResize";
+import { useNeighbourResize, usePanelLayout, hitTarget } from "../lib/panelResize";
 import { useGamePgn } from "../lib/useGamePgn";
 import { EMPTY_PLAYER_VIEW, loadPlayerViewState, savePlayerViewState } from "../lib/playerViewState";
 import { useArrowToggles, type CombinedMove } from "./HintArrows";
@@ -454,8 +454,8 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
   const panel = "bg-surface-container-low border border-outline/40 rounded-md overflow-hidden flex flex-col min-h-0 min-w-0 h-full w-full";
   const anyFilter = p1 || p2 || event || dateFrom || dateTo;
   // Resizable-panel dividers: thin, transparent, highlight on hover/drag.
-  const vHandle = "w-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-state=drag]:bg-primary/50 transition-colors";
-  const hHandle = "h-1.5 bg-transparent hover:bg-primary/30 data-[resize-handle-state=drag]:bg-primary/50 transition-colors";
+  const vHandle = "w-1.5 bg-transparent hover:bg-primary/30 data-[separator=active]:bg-primary/50 transition-colors";
+  const hHandle = "h-1.5 bg-transparent hover:bg-primary/30 data-[separator=active]:bg-primary/50 transition-colors";
 
   // Resizable game-list columns. White/Black/Result/Date/Round have user-draggable
   // widths (persisted); Event fills the remainder so no space is wasted.
@@ -549,7 +549,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
 
       {/* ── 6-area mosaic (resizable, nested panel groups) ────────────────────── */}
       <div className="flex-1 min-w-0 min-h-0 p-1.5">
-        <Group orientation="horizontal" className="h-full w-full flex" defaultLayout={cols.defaultLayout} onLayoutChanged={cols.onLayoutChanged} onLayoutChange={rz.onLayout}>
+        <Group resizeTargetMinimumSize={hitTarget} orientation="horizontal" className="h-full w-full flex" defaultLayout={cols.defaultLayout} onLayoutChanged={cols.onLayoutChanged} onLayoutChange={rz.onLayout}>
 
           {leadingPanel && (
             <Panel id="lead"
@@ -628,7 +628,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
           <Panel id="left"
                  defaultSize="30"
                  minSize={rz.floor("left") ?? "16"}>
-            <Group orientation="vertical" className="h-full w-full flex" defaultLayout={leftCol.defaultLayout} onLayoutChanged={leftCol.onLayoutChanged}>
+            <Group resizeTargetMinimumSize={hitTarget} orientation="vertical" className="h-full w-full flex" defaultLayout={leftCol.defaultLayout} onLayoutChanged={leftCol.onLayoutChanged}>
               {/* A — position board (board only) */}
               <Panel defaultSize="60" minSize="20">
                 <div className={panel}>
@@ -669,12 +669,12 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
           <Panel id="right"
                  defaultSize={`${rightDefault}%`}
                  minSize={rz.floor("right") ?? "30"}>
-            <Group orientation="vertical" className="h-full w-full flex" defaultLayout={rightCol.defaultLayout} onLayoutChanged={rightCol.onLayoutChanged}>
+            <Group resizeTargetMinimumSize={hitTarget} orientation="vertical" className="h-full w-full flex" defaultLayout={rightCol.defaultLayout} onLayoutChanged={rightCol.onLayoutChanged}>
               {/* B — the opening explorer, tied to the board's position: gone
                   with it in the list-only state. */}
               {!listOnly && (
               <Panel id="explorer" defaultSize="34" minSize="15">
-                <Group orientation="horizontal" className="h-full w-full flex" defaultLayout={explorer.defaultLayout} onLayoutChanged={explorer.onLayoutChanged}>
+                <Group resizeTargetMinimumSize={hitTarget} orientation="horizontal" className="h-full w-full flex" defaultLayout={explorer.defaultLayout} onLayoutChanged={explorer.onLayoutChanged}>
                   {/* B1 — position-related moves (the played line + nav) */}
                   <Panel defaultSize="33" minSize="15">
                     <div className={panel}>
@@ -738,7 +738,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
               {/* Bottom: D (game list) | E-F (mini board over move list). The
                   whole area in the list-only state. */}
               <Panel id="bottom" defaultSize={listOnly ? "100" : "66"} minSize="25">
-                <Group orientation="horizontal" className="h-full w-full flex" defaultLayout={bottom.defaultLayout} onLayoutChanged={bottom.onLayoutChanged}>
+                <Group resizeTargetMinimumSize={hitTarget} orientation="horizontal" className="h-full w-full flex" defaultLayout={bottom.defaultLayout} onLayoutChanged={bottom.onLayoutChanged}>
                   {/* D — game list (resizable columns) */}
                   <Panel defaultSize="62" minSize="25">
                     <div className={panel}>
