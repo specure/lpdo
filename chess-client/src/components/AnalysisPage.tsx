@@ -68,12 +68,12 @@ interface Props {
   emptyState?: ReactNode;
   /** The Repertoire page's whole book picked in "Your games": My games lists
    *  the book's games (with its chapters' names), and a game's chapter is
-   *  put on the board with `onPickChapter`. */
+   *  put on the board with `onPickChapter`, where the game left it. */
   myGamesBook?: { id: number; chapters: { id: number; name: string }[] } | null;
   /** Bumped by the host when the document's moves changed outside the
    *  editor — the board, Lines and My games read them again. */
   documentReload?: number;
-  onPickChapter?: (id: number) => void;
+  onPickChapter?: (id: number, cursor?: CursorPath) => void;
   /** Open a chapter a game went into on the Repertoire page (the Repertoire
    *  tab, on a game — not on a chapter). */
   onOpenRepertoire?: (m: LineMatch, moves: string[]) => void;
@@ -353,7 +353,10 @@ export default function AnalysisPage({
   // Move on and the Games tab's preview no longer belongs to what's listed
   // (My games' moves the board itself: it stays); switch tabs and neither.
   useEffect(() => { if (previewFrom === "related") setPreview(null); }, [effFen]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { setPreview(null); }, [activeKey]);
+  // Another tab, another game's preview gone — not the whole book's games,
+  // whose click puts another chapter on the board and previews the game.
+  const bookListed = !!myGamesBook;
+  useEffect(() => { if (!bookListed) setPreview(null); }, [activeKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const previewRelated = (g: GameSummary) => { setPreviewFrom("related"); setPreviewStart(0); setPreview(g); };
   const previewMine = (g: GameSummary, ply: number) => { setPreviewFrom("mine"); setPreviewStart(ply); setPreview(g); };
   // The previewed game under a list (Games, or My games): its header, the

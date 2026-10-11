@@ -4,9 +4,10 @@
 // puts the board where the game left the chapter; a double-click opens the
 // game. Only on the Repertoire page (a chapter is open). With the whole book
 // picked there instead, the book's games — those its chapters have — each
-// with the chapter it went into (a click puts that chapter on the board).
+// with the chapter it went into: a click puts that chapter on the board where
+// the game left it, and previews the game, as in a chapter's list.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getBookGameList, getChapter, getChapterGames, type BookGame, type BookGameList, type ChapterGame, type ChapterGameList } from "../../lib/repertoire";
 import { parsePgnTree, type AnnotatedGame } from "../../lib/parsePgnTree";
 import { cursorAtPosition } from "../../lib/repertoireLines";
@@ -23,9 +24,10 @@ interface Props {
   onOpen: (game: GameSummary) => void;
   /** Preview a game under the list, at a move (`ply`: half-moves played). */
   onPreview?: (game: GameSummary, ply: number) => void;
-  /** The whole book instead of the chapter, and putting a chapter on the board. */
+  /** The whole book instead of the chapter, and putting a chapter on the
+   *  board — at `cursor`, when given. */
   book?: { id: number; chapters: { id: number; name: string }[] } | null;
-  onPickChapter?: (id: number) => void;
+  onPickChapter?: (id: number, cursor?: CursorPath) => void;
 }
 
 const summary = (g: ChapterGame | BookGame): GameSummary => ({
@@ -83,10 +85,13 @@ function followed(f: Pick<ChapterGame, "followed" | "left_by" | "move" | "at_ply
 }
 
 /** The whole book's games, each with the chapter it went into. */
-function BookGamesList({ book, reloadKey, onOpen, onPickChapter }: Props & { book: NonNullable<Props["book"]> }) {
+function BookGamesList({ book, chapterId, reloadKey, onPick, onOpen, onPreview, onPickChapter }: Props & { book: NonNullable<Props["book"]> }) {
   const [list, setList] = useState<BookGameList | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [picked, setPicked] = useState<number | null>(null);
+  // The chapters' moves, read once each, to find where a game left one.
+  const trees = useRef(new Map<number, AnnotatedGame>());
+  useEffect(() => { trees.current.clear(); }, [reloadKey]);
   useEffect(() => {
     let gone = false;
     setNote(null);
@@ -105,11 +110,31 @@ function BookGamesList({ book, reloadKey, onOpen, onPickChapter }: Props & { boo
   const colour = meWhite ? "White" : "Black";
   const period = list.months ? `the last ${list.months} months` : "all your games";
   const name = (id: number) => book.chapters.find((c) => c.id === id)?.name ?? `chapter ${id}`;
+  // Its chapter on the board where the game left it — the one on the board
+  // only moved — and the game previewed there, the deviating move just
+  // played: as a click in a chapter's list.
+  const pick = async (g: BookGame) => {
+    setPicked(g.id);
+    const c = g.chapters[0];
+    if (c == null) return;
+    const f = g.follow;
+    let at: CursorPath | null = null;
+    if (f) {
+      try {
+        let tree = trees.current.get(c);
+        if (!tree) { tree = parsePgnTree((await getChapter(c)).pgn); trees.current.set(c, tree); }
+        at = cursorAtPosition(tree, f.at_key, positionKey);
+      } catch { /* the chapter as it was left */ }
+    }
+    if (c === chapterId) { if (at) onPick(at); }
+    else onPickChapter?.(c, at ?? undefined);
+    if (f) onPreview?.(summary(g), f.followed === "left" ? f.at_ply + 1 : f.at_ply);
+  };
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       <div className="px-3 py-1 shrink-0 text-label-sm text-on-surface-variant border-b border-outline/40" title="The period is set on the Maintenance page, Repertoire tab.">
         The whole book: {list.games.length} {list.games.length === 1 ? "game" : "games"} as {colour} · {period}
-        <span className="ml-2 text-outline">click: its chapter · double-click: open</span>
+        <span className="ml-2 text-outline">click: where it left its chapter, and the game below · double-click: open</span>
       </div>
       {list.games.length === 0 ? (
         <div className="p-3 text-center text-on-surface-variant text-body-sm">None of your games as {colour} went into this book's chapters in {period}.</div>
@@ -118,8 +143,8 @@ function BookGamesList({ book, reloadKey, onOpen, onPickChapter }: Props & { boo
           {list.games.map((g) => (
             <GameRow key={g.id} g={g} meWhite={meWhite} picked={picked === g.id}
               how={<>{g.chapters.map(name).join(", ")}{g.follow && <> · {followed(g.follow)}</>}</>}
-              title={`${g.white} – ${g.black}, ${g.event ?? ""} ${g.date ?? ""}. Click: its chapter on the board; double-click: open the game.`}
-              onClick={() => { setPicked(g.id); if (g.chapters[0] != null) onPickChapter?.(g.chapters[0]); }}
+              title={`${g.white} – ${g.black}, ${g.event ?? ""} ${g.date ?? ""}. Click: its chapter on the board where the game left it; double-click: open the game.`}
+              onClick={() => void pick(g)}
               onDoubleClick={() => onOpen(summary(g))} />
           ))}
         </div>
