@@ -312,10 +312,13 @@ resumes after — one's own analysis is never slowed.
   lists it in both instead, the one it left saying "transposed at 6.Nc3 to
   …". Positions several chapters
   share count for none: a Winawer after a 3.Nc3 three chapters have counts
-  for none of them; the games in the book's opening (the
-  positions every chapter has, reached by one's own move — after 1...e6, so
-  not a Sicilian after 1.e4); and those that **left the book**, by the move
-  that left (the deepest book position's next move, "3...Bb4"). Where one's
+  for none of them. The **whole book**'s row has the games that went into
+  any chapter, each once — the chapters' own lists, no more. (It first had
+  all the games in the book's opening — the positions every chapter has,
+  reached by one's own move, after 1...e6 — but the many that left before
+  any chapter only blurred its score.) Those that **left the book** are
+  still counted on the server, by the move that left (the deepest book
+  position's next move, "3...Bb4"). Where one's
   practice and the book part ways, and which chapter one scores worst in —
   the topics to train. The **My games** tab (a chapter's games,
   `GET /repertoire/chapters/{id}/games?player_id=`) lists them with how far

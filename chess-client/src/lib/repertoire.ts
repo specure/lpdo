@@ -131,9 +131,10 @@ export const getOwnGames = (chapterId: number, playerId: number) =>
 /** A score over some of one's games; `perf` with three rated opponents or more. */
 export interface Score { games: number; w: number; d: number; l: number; perf: number | null }
 /** One's own games across a book (live, ~0.1 s): per chapter, the games that
- *  reached one of its own positions by a move of one's own; the games in the
- *  book's opening, and those that left it, by the move that left. With the
- *  book's colour, from the period set on the Maintenance page. */
+ *  reached one of its own positions by a move of one's own; `in_book`, those
+ *  that went into any chapter, each once; `left`, the games in the book's
+ *  opening that went into none, by the move that left. With the book's
+ *  colour, from the period set on the Maintenance page. */
 export interface BookGames {
   color: BookColor;
   months: number;
@@ -181,8 +182,7 @@ export interface ChapterGameList {
 export const getChapterGames = (chapterId: number, playerId: number) =>
   apiGet<ChapterGameList>(`/repertoire/chapters/${chapterId}/games?player_id=${playerId}`);
 
-/** One of one's games in a book's opening: the chapters it counts for, or
- *  (none) the move that left the book. */
+/** One of one's games in a book's chapters: the chapters it counts for. */
 export interface BookGame {
   id: number;
   white: string;
@@ -196,7 +196,6 @@ export interface BookGame {
   chapters: number[];
   /** How far it followed its (first) chapter — as that chapter's list says. */
   follow: Pick<ChapterGame, "followed" | "left_by" | "move" | "at_key" | "at_ply"> | null;
-  left: string | null;
 }
 export interface BookGameList { color: BookColor; months: number; since: string | null; games: BookGame[]; ms: number }
 /** A chapter a game's line went into (Analysis, the Repertoire tab): how

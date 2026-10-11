@@ -208,10 +208,11 @@ Tarrasch — so your older games in the line count too, even when you
 deviated straight after (an earlier 3...c5 under a 3...a6 chapter: "you
 deviated at 3...c5"). A position several chapters share counts for none of
 them. Above the chapters, **The
-whole book** has the same columns for all your games in the book's opening
-(after 1...e6 in a French book); pick it, as a chapter, and the My games tab
-lists them all, each with the chapter it went into — or the move that left
-the book — a click putting that chapter on the board. The same period and
+whole book** has the same columns for the games the chapters have, each
+counted once — a game that left the book before reaching any chapter is
+not among them; pick it, as a chapter, and the My games tab lists them all,
+each with the chapter it went into, a click putting that chapter on the
+board. The same period and
 colour as everywhere: your games with the book's colour, from the last 12
 months (Maintenance → Repertoire).
 
