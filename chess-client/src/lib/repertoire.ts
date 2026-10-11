@@ -233,8 +233,6 @@ export const scorePct = (s: Score) => (s.games ? `${Math.round(((s.w + s.d / 2) 
 export interface RepertoireSettings {
   /** One's own games count from this many months back; 0 = all. */
   own_games_months: number;
-  /** Which of your games an overview chapter lists (absent from older servers). */
-  overview_games?: OverviewGames;
   /** Where a game counts that went from one chapter into another (absent
    *  from older servers). */
   transposed_games?: TransposedGames;
@@ -246,7 +244,6 @@ export interface RepertoireSettings {
   auto_analyse?: boolean;
   auto_analyse_after_min?: number;
 }
-export type OverviewGames = "none" | "unclaimed" | "every";
 export type TransposedGames = "show" | "target";
 export const getRepertoireSettings = () => apiGet<RepertoireSettings>("/repertoire/settings");
 export const putRepertoireSettings = (s: RepertoireSettings) => putJson<RepertoireSettings>("/repertoire/settings", s);

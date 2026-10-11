@@ -65,8 +65,8 @@ pub struct ChapterSummary {
     /// Whether `annotated` was set by hand, not told by the comments.
     pub annotated_set: bool,
     /// An overview chapter — an introduction, a quickstarter, an overview —
-    /// going over moves the other chapters have: it claims none of one's
-    /// games from them (see [`OverviewGames`]). Told by its name
+    /// going over moves the other chapters have: none of one's games count
+    /// for it, and its positions for no other chapter ([`place`]). Told by its name
     /// ([`looks_like_overview`]) unless set by hand.
     pub overview: bool,
     pub overview_set: bool,
@@ -1394,17 +1394,16 @@ struct Placement {
     months: u32,
     since: Option<String>,
     games: std::collections::HashMap<i64, MyGame>,
-    /// The book's chapters, in order, whether each is an overview, and the
-    /// games that count for each.
+    /// The book's chapters, in order, and the games that count for each —
+    /// none for an overview.
     chapters: Vec<i64>,
-    overview: Vec<bool>,
     per_chapter: Vec<Vec<i64>>,
     /// The games in the book's opening, and those of them that went into no
     /// chapter.
     in_book: Vec<i64>,
     left: Vec<i64>,
-    /// The games that went into one of the chapters, overviews included —
-    /// whether or not they reached the book's opening on the way.
+    /// The games that went into one of the chapters — whether or not they
+    /// reached the book's opening on the way.
     placed: Vec<i64>,
     /// Per game, the deepest position of the chapters it reached — not of
     /// an overview — (its ply) and the move played from it.
@@ -1475,7 +1474,6 @@ fn place(conn: &Connection, book_id: i64, player: i64) -> Result<Placement> {
     let mut out = Placement {
         color: book.color.clone(), months, since, games,
         chapters: chapters.iter().map(|(id, _)| *id).collect(),
-        overview: overview.clone(),
         per_chapter: vec![Vec::new(); n],
         in_book: Vec::new(), left: Vec::new(), placed: Vec::new(), deepest: std::collections::HashMap::new(),
         transposed: std::collections::HashMap::new(),
@@ -1527,20 +1525,9 @@ fn place(conn: &Connection, book_id: i64, player: i64) -> Result<Placement> {
         }
         for (i, _) in cs { out.per_chapter[i].push(g); }
     }
-    // The overviews: the book's games that went through one — those no
-    // other chapter claimed, or all of them, as the settings say.
-    let mode = settings().overview_games;
-    if mode != OverviewGames::None {
-        let claimed = placed.clone();
-        for (i, set) in sets.iter().enumerate().filter(|(i, _)| overview[*i]) {
-            let gs: Vec<i64> = out.in_book.iter().copied()
-                .filter(|g| mode == OverviewGames::Every || !claimed.contains(g))
-                .filter(|g| reached.get(g).is_some_and(|zs| zs.keys().any(|z| set.contains(z))))
-                .collect();
-            placed.extend(gs.iter().copied());
-            out.per_chapter[i] = gs;
-        }
-    }
+    // The overviews list none: a game that only went through the moves they
+    // go over — 1.d4 Nf6 2.c4 e6, then 3.Nc3 into another book's Nimzo — is
+    // not this book's. (They once took those no other chapter claimed.)
     out.left = out.in_book.iter().copied().filter(|g| !placed.contains(g)).collect();
     out.placed = placed.into_iter().collect();
     Ok(out)
@@ -1606,10 +1593,8 @@ pub fn book_games(conn: &Connection, book_id: i64, player: i64) -> Result<BookGa
     let pgns: std::collections::HashMap<i64, String> = st.query_map(duckdb::params![book_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<duckdb::Result<_>>()?;
     let mut first: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
     for g in &p.placed {
-        // An overview only when no other chapter has it.
-        let has = |(_, gs): &(&i64, &Vec<i64>)| gs.contains(g);
-        let mut regular = p.chapters.iter().zip(&p.per_chapter).zip(&p.overview).filter(|(_, o)| !**o).map(|(c, _)| c);
-        if let Some(c) = p.transposed.get(g).copied().or_else(|| regular.find(has).or_else(|| p.chapters.iter().zip(&p.per_chapter).find(has)).map(|(c, _)| *c)) {
+        let first_of = || p.chapters.iter().zip(&p.per_chapter).find(|(_, gs)| gs.contains(g)).map(|(c, _)| *c);
+        if let Some(c) = p.transposed.get(g).copied().or_else(first_of) {
             first.entry(c).or_default().push(*g);
         }
     }
@@ -2096,8 +2081,6 @@ pub fn chapters_to_analyse(conn: &Connection, quiet_min: u32, depth: u32, done: 
 pub struct RepertoireSettings {
     /// One's own games count from this many months back; 0 = all of them.
     pub own_games_months: u32,
-    /// Which of one's games an overview chapter lists.
-    pub overview_games: OverviewGames,
     /// Where a game that went from one chapter into another counts.
     pub transposed_games: TransposedGames,
     /// Stockfish at the ends of a chapter's lines, by the analysis job: to
@@ -2116,7 +2099,7 @@ pub const LINE_END_DEPTH: u32 = 24;
 impl Default for RepertoireSettings {
     fn default() -> Self {
         Self {
-            own_games_months: 12, overview_games: OverviewGames::default(), transposed_games: TransposedGames::default(),
+            own_games_months: 12, transposed_games: TransposedGames::default(),
             line_end_depth: LINE_END_DEPTH, auto_analyse: true, auto_analyse_after_min: 15,
         }
     }
@@ -2132,21 +2115,6 @@ pub enum TransposedGames {
     /// Only in the chapter it went into.
     #[default]
     Target,
-}
-
-/// Which of one's games an overview chapter lists. It never takes a game
-/// from the other chapters: its positions count for none of them when they
-/// claim their games ([`place`]).
-#[derive(Clone, Copy, Debug, Default, Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum OverviewGames {
-    /// None: those no other chapter claims left the book.
-    None,
-    /// Those that went through it and into no other chapter.
-    #[default]
-    Unclaimed,
-    /// Every one that went through it, other chapters' too.
-    Every,
 }
 
 static SETTINGS_FILE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
@@ -2535,34 +2503,32 @@ mod tests {
         conn.execute_batch(&sql).unwrap();
 
         let _turn = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let placed = |mode: OverviewGames| {
-            set_settings(RepertoireSettings { overview_games: mode, ..Default::default() }).unwrap();
+        set_settings(RepertoireSettings::default()).unwrap();
+        let placed = || {
             let b = book_games(&conn, book.id, 1).unwrap();
             let mut by: Vec<(i64, Vec<i64>)> = b.games.into_iter().map(|g| (g.id, g.chapters)).collect();
             by.sort();
             by
         };
-        // 3.Nc3 is the Steinitz's own: the quickstarter is not counted, and
-        // the 2.d3 game went into no chapter.
-        assert_eq!(placed(OverviewGames::None), vec![(1, vec![steinitz]), (3, vec![advance])]);
-        assert_eq!(placed(OverviewGames::Unclaimed), vec![(1, vec![steinitz]), (2, vec![quick]), (3, vec![advance])], "the default");
-        assert_eq!(placed(OverviewGames::Every), vec![(1, vec![quick, steinitz]), (2, vec![quick]), (3, vec![quick, advance])]);
-        // The Steinitz game follows the Steinitz even when the quickstarter
-        // lists it too.
+        // 3.Nc3 is the Steinitz's own: the quickstarter is not counted. The
+        // 2.d3 game went only through the quickstarter: into no chapter, and
+        // not in the whole book.
+        assert_eq!(placed(), vec![(1, vec![steinitz]), (3, vec![advance])]);
+        let mine = book_mine(&conn, book.id, 1).unwrap();
+        assert_eq!(mine.in_book.games, 2);
+        assert_eq!(mine.chapters.iter().find(|c| c.id == quick).unwrap().score.games, 0, "an overview lists none");
+        assert!(chapter_games(&conn, quick, 1).unwrap().games.is_empty());
         let bg = book_games(&conn, book.id, 1).unwrap();
         let f = bg.games.iter().find(|g| g.id == 1).unwrap().follow.as_ref().unwrap();
         assert_eq!(f.mv.as_deref(), Some("3...dxe4"));
-        assert_eq!(chapter_games(&conn, quick, 1).unwrap().games.len(), 3);
-        set_settings(RepertoireSettings::default()).unwrap();
 
         // Set by hand as a chapter like any: 3.Nc3 is shared again, the
         // game left the book. Exported so, and imported again so.
         update_chapter(&conn, quick, ChapterPatch { overview: Some(Some(false)), ..Default::default() }).unwrap();
         let c = get_chapter_summary(&conn, quick).unwrap();
         assert_eq!((c.overview, c.overview_set), (false, true));
-        assert!(!placed(OverviewGames::Unclaimed).iter().any(|(g, _)| *g == 1));
+        assert!(!placed().iter().any(|(g, _)| *g == 1));
         assert_eq!(book_mine(&conn, book.id, 1).unwrap().left_by, vec![("3...dxe4".to_string(), 1)]);
-        set_settings(RepertoireSettings::default()).unwrap();
         let pgn = book_pgn(&conn, book.id).unwrap();
         assert_eq!(pgn.matches("[LpdoOverview \"0\"]").count(), 1, "only the one set by hand");
         let again = import_books(&conn, &pgn, None).unwrap().remove(0);
