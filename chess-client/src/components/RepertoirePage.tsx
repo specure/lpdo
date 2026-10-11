@@ -599,7 +599,12 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
       onTabState={onTabState}
       onGameMutated={() => void load()}
       myGamesBook={bookPicked && book ? { id: book.id, chapters: chaptersOf(book).map((c) => ({ id: c.id, name: c.name })) } : null}
-      onPickChapter={(id) => { setChapterId(id); setBookPicked(false); }}
+      onPickChapter={(id, cursor) => {
+        // From the whole book's games: where the game left it, the list
+        // staying.
+        if (cursor) pendingCursor.current = { chapterId: id, cursor };
+        setChapterId(id);
+      }}
       documentReload={docReload}
       onDrill={setDrilling}
       leadingPanels={[
