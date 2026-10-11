@@ -31,7 +31,15 @@ import { useDefaultLayout, type Layout } from "react-resizable-panels";
 //
 // Only needed for groups of three or more; a two-panel group has nowhere to
 // spill, so its divider already obeys the rule.
-export function useNeighbourResize(panelIds: string[]) {
+//
+// One exception, wanted: a panel folded to a strip (fixed width, min == max)
+// is transparent. Either divider beside it trades between the nearest open
+// panels on each side — the books against the board when the chapters are a
+// strip — and the strip itself keeps its width. The library does this on its
+// own, since a fixed panel has nothing to give and the drag carries on past
+// it; the rule only has to leave those two panels free instead of flooring
+// them. `strips` names the panels folded right now.
+export function useNeighbourResize(panelIds: string[], strips: string[] = []) {
   // Live sizes, in a ref: they change on every frame of a drag and no render
   // depends on them until a pin is taken. Fed from the group's onLayoutChange,
   // which reports every panel — a panel still at its default has no onResize of
@@ -96,7 +104,13 @@ export function useNeighbourResize(panelIds: string[]) {
      *  highlighted and would not move. */
     floor: (id: string): string | null => {
       if (active === null) return null;
-      if (id === panelIds[active] || id === panelIds[active + 1]) return null;
+      // The two panels the divider trades between: the nearest on each side
+      // that is not a strip.
+      let left = active;
+      while (left > 0 && strips.includes(panelIds[left])) left--;
+      let right = active + 1;
+      while (right < panelIds.length - 1 && strips.includes(panelIds[right])) right++;
+      if (id === panelIds[left] || id === panelIds[right]) return null;
       const size = sizes.current[id];
       return typeof size === "number" ? String(size) : null;
     },
