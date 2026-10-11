@@ -107,6 +107,11 @@ export interface LeadingPanel {
   max?: string;
   /** Folded to a narrow strip (fixed width with nothing open). */
   strip?: boolean;
+  /** An open panel dragged past its minimum folds: the group snaps it to
+   *  `foldedSize` (the strip's width) and `onFold` is called, which puts the
+   *  strip in its place. Without these, the drag just stops at `min`. */
+  foldedSize?: string;
+  onFold?: () => void;
 }
 
 export default function AnalysisPage({
@@ -308,7 +313,7 @@ export default function AnalysisPage({
   // trades between exactly two of them. The move text used to live inside the
   // board panel, which is why dragging the intel divider resized the board and
   // left the move text alone.
-  const rz = useNeighbourResize([...leadIds, "board", "moves", "side"]);
+  const rz = useNeighbourResize([...leadIds, "board", "moves", "side"], (lead ?? []).filter((p) => p.strip).map((p) => p.id));
   const [moveHost, setMoveHost] = useState<HTMLDivElement | null>(null);
   const saved = useDefaultLayout({ id: layoutId, storage: localStorage });
   // Another layoutId — a panel folded or opened on the Repertoire page — sets
@@ -345,7 +350,15 @@ export default function AnalysisPage({
         next[p.id] = size;
       }
     }
-    g.setLayout(next);
+    // After the group has taken the new constraints, not before. The panels
+    // register them in their own effects, but the group reads them in a
+    // render of its own, flushed synchronously before anything paints — so
+    // this effect still runs against the old ones, and the layout was clamped
+    // to them: an unfolded panel stayed at the strip's width (it is
+    // collapsible, and that is its collapsed size) and a folding one was
+    // held at its old minimum. A microtask runs after that flush and before
+    // the paint.
+    queueMicrotask(() => { if (group.current === g) g.setLayout(next); });
   }, [layoutId]); // eslint-disable-line react-hooks/exhaustive-deps
   const sideCol = useDefaultLayout({ id: "analysis-side", storage: localStorage });
 
@@ -479,7 +492,20 @@ export default function AnalysisPage({
       {lead ? lead.map((p, i) => (
         <Fragment key={p.id}>
           {i > 0 && <Separator className={vHandle} {...rz.separator(i - 1)} />}
-          <Panel id={p.id} defaultSize={p.size} minSize={rz.floor(p.id) ?? p.min ?? p.size} maxSize={p.max ?? p.size}>
+          {/* Collapsible only while a divider of its own is in use: a drag two
+              panels away floors it, and a floored panel that could still
+              collapse would fold under a large spill instead of holding. */}
+          <Panel id={p.id} defaultSize={p.size} minSize={rz.floor(p.id) ?? p.min ?? p.size} maxSize={p.max ?? p.size}
+                 collapsible={!!p.onFold && !p.strip && rz.floor(p.id) === null}
+                 collapsedSize={p.onFold && !p.strip ? p.foldedSize : undefined}
+                 onResize={p.onFold && !p.strip ? (s, _id, prev) => {
+                   // Folded when it *went* to the strip's width — not when it is
+                   // first seen there: an unfolding panel is still at the strip's
+                   // width when its new constraints register (prev is undefined
+                   // then), and folding it back left the strip click doing nothing.
+                   const folded = Number(p.foldedSize) + 0.1;
+                   if (prev && prev.asPercentage > folded && s.asPercentage <= folded) p.onFold?.();
+                 } : undefined}>
             {p.node}
           </Panel>
         </Fragment>

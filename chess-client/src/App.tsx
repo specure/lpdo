@@ -548,7 +548,10 @@ export default function App() {
   // PGNs page panels: the two lists collapse to a strip but stay mounted, so
   // collapse is driven imperatively rather than by unmounting the panel.
   const showPgnGamesPanel = !!localSelectedFile && localGameCount !== 1;
-  const pgnRz = useNeighbourResize(showPgnGamesPanel ? ["files", "games", "board"] : ["files", "board"]);
+  const pgnRz = useNeighbourResize(
+    showPgnGamesPanel ? ["files", "games", "board"] : ["files", "board"],
+    [...(filesCollapsed ? ["files"] : []), ...(gameListCollapsed && showPgnGamesPanel ? ["games"] : [])],
+  );
   // This view is mounted the whole time and merely hidden, so the group measures
   // zero on mount and falls back to an equal split, ignoring each Panel's
   // defaultSize. An explicit starting layout does not depend on measurement.

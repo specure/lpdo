@@ -616,8 +616,10 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
       documentReload={docReload}
       onDrill={setDrilling}
       leadingPanels={[
-        booksFolded ? { id: "books", node: booksPanel, size: "3", strip: true } : { id: "books", node: booksPanel, size: "14", min: "9", max: "30" },
-        chaptersFolded ? { id: "chapters", node: chaptersPanel, size: "3", strip: true } : { id: "chapters", node: chaptersPanel, size: "16", min: "10", max: "34" },
+        booksFolded ? { id: "books", node: booksPanel, size: "3", strip: true }
+          : { id: "books", node: booksPanel, size: "14", min: "9", max: "30", foldedSize: "3", onFold: () => setBooksFolded(true) },
+        chaptersFolded ? { id: "chapters", node: chaptersPanel, size: "3", strip: true }
+          : { id: "chapters", node: chaptersPanel, size: "16", min: "10", max: "34", foldedSize: "3", onFold: () => setChaptersFolded(true) },
       ]}
       layoutId={layoutId}
       emptyState={books && books.length === 0
