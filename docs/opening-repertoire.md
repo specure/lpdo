@@ -48,7 +48,7 @@ or cannot be read, leaves the books as they were.
 A chapter is added to the selected book in one of three ways, from the ⋯
 above its chapters:
 
-- **New empty chapter**, then play the lines in with *Edit lines…*;
+- **New empty chapter** — it opens on the board with its name ready to type over — then play the lines in with *Edit lines…*;
 - **Paste PGN…** — a PGN with several games becomes several chapters, named
   from their headers (a Lichess study exports its chapters this way;
   otherwise the players, or the event);

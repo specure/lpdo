@@ -290,8 +290,15 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
 
   const book = books?.find((b) => b.id === selectedBook) ?? null;
 
-  const addEmpty = (bookId: number, name: string) =>
-    run(async () => { const [c] = await addChapters(bookId, { name }); if (c) setChapterId(c.id); });
+  // A new empty chapter goes on the board, its name ready to change. Only
+  // once the books are read again: before, the chapter was not among them,
+  // and was dropped as gone the moment it was put on the board.
+  const addEmpty = async (bookId: number, name: string) => {
+    let id: number | null = null;
+    await run(async () => { const [c] = await addChapters(bookId, { name }); id = c?.id ?? null; });
+    if (id != null) setChapterId(id);
+    return id;
+  };
   // Books from LPDO's own export (a book, or a backup): made again, each a
   // new book — never added to the one selected.
   const importBookFiles = (items: BookFile[]) => run(async () => {
@@ -319,11 +326,11 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
     }
   });
   /** `model`: the games are model games of the book. */
-  const importPgn = (bookId: number, items: { pgn: string; file?: string }[], model = false) => run(async () => {
+  const importPgn = async (bookId: number, items: { pgn: string; file?: string }[], model = false) => {
     // One file at a time, in the order picked: each adds its chapters at the
     // end. A file that fails stops the rest.
     let first: number | null = null;
-    try {
+    await run(async () => { try {
       for (const [i, it] of items.entries()) {
         setImporting({ i: i + 1, n: items.length, file: it.file ?? null });
         const cs = await addChapters(bookId, { ...it, model }).catch((e) => { throw new Error(it.file ? `${it.file}: ${String(e)}` : String(e)); });
@@ -335,9 +342,10 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
       }
     } finally {
       setImporting(null);
-    }
+    } });
+    // The first on the board once the books have it (as a new empty one).
     if (first != null && chapterId == null) setChapterId(first);
-  });
+  };
 
   // Analysing chapters for practice (#327): a background job on the server,
   // started only from here; the list is read again when it ends (a cancelled
@@ -548,7 +556,7 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
                 onRenameMany={(changes) => run(async () => { for (const c of changes) await updateChapter(c.id, { name: c.name }); })}
                 onChapter={(id, patch) => run(() => updateChapter(id, patch))}
                 onDeleteChapter={(id) => run(async () => { await deleteChapter(id); if (id === chapterId) dropChapter(); })}
-                onAddEmpty={() => {}} onImport={() => {}}
+                onAddEmpty={async () => null} onImport={() => {}}
                 onImportModels={(items) => importPgn(book.id, items, true)}
                 onConvert={(ids) => convert(ids, false)}
                 onOrder={(ids) => run(() => orderChapters(ids))}
@@ -1070,7 +1078,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
   /** Send a chapter to the phone trainer by QR code. */
   onSendToPhone?: (id: number, filename: string) => void;
   /** Adding chapters: an empty one, or from PGN (pasted, or files). */
-  onAddEmpty: (name: string) => void;
+  onAddEmpty: (name: string) => Promise<number | null>;
   onImport: (items: ImportItem[]) => void;
   /** Whether F2 is the chapters' (the books were not clicked last). */
   f2Here: () => boolean;
@@ -1271,7 +1279,7 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
             // Delete last, apart and in red, where it is not hit by mistake.
             { label: "Add", heading: true },
             ...(models ? [] : [
-              { label: "New empty chapter", onClick: () => onAddEmpty(`Chapter ${book.chapters.length + 1}`), disabled: busy },
+              { label: "New empty chapter", onClick: () => void onAddEmpty(`Chapter ${book.chapters.length + 1}`).then((id) => { if (id != null) { anchor.current = id; setPicked([id]); setRenaming(id); } }), disabled: busy },
               { label: "Paste PGN…", onClick: () => setPasting("chapters"), disabled: busy },
               { label: "Import PGN files…", onClick: () => pickFilesAs(false), disabled: busy },
             ]),

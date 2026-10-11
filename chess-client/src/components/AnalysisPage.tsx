@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Group, Panel, Separator, useDefaultLayout, useGroupRef } from "react-resizable-panels";
+import { Group, Panel, Separator, useDefaultLayout, useGroupRef, type Layout, type LayoutChangedMeta } from "react-resizable-panels";
 import { GameSummary, MoveStats, PlayerInfo } from "../types";
 import { LoadedGame } from "../lib/useGamePgn";
 import { CursorPath } from "../lib/moveTreeNav";
@@ -318,7 +318,18 @@ export default function AnalysisPage({
   // new constraints under the id; without one, the leading panels take their
   // default sizes and the board takes up the difference.
   const group = useGroupRef();
-  const remembered = saved.defaultLayout;
+  // A layout is only kept, and only used, when every leading panel is within
+  // its limits — a folded strip exactly its width. Switching the layoutId
+  // commits a layout from in between under the new id (measured: the books
+  // at 9 and the chapters at 10 with the books just folded to 3), and read
+  // back when the group came again — a chapter deleted or added — it made the
+  // folded strip three times as wide.
+  const fits = (l: Layout | undefined): l is Layout => !!l && (lead ?? []).every((p) => {
+    const v = l[p.id];
+    return typeof v === "number" && v >= Number(p.min ?? p.size) - 0.1 && v <= Number(p.max ?? p.size) + 0.1;
+  });
+  const remembered = fits(saved.defaultLayout) ? saved.defaultLayout : undefined;
+  const keepLayout = (l: Layout, meta: LayoutChangedMeta) => { if (fits(meta.requestedLayout ?? l)) saved.onLayoutChanged(l, meta); };
   const appliedLayout = useRef(layoutId);
   useLayoutEffect(() => {
     if (appliedLayout.current === layoutId) return;
@@ -450,7 +461,7 @@ export default function AnalysisPage({
         {/* As wide as in the layout with a game open (what was dragged last,
             else the default), so closing the last chapter doesn't squeeze them. */}
         {lead?.map((p) => (
-          <div key={p.id} className="shrink-0 min-h-0" style={{ width: `${saved.defaultLayout?.[p.id] ?? Number(p.size)}%` }}>{p.node}</div>
+          <div key={p.id} className="shrink-0 min-h-0" style={{ width: `${remembered?.[p.id] ?? Number(p.size)}%` }}>{p.node}</div>
         ))}
         <div className="flex-1 flex items-center justify-center text-on-surface-variant text-body-md px-6 text-center">
           {emptyState ?? 'Open a game from the Games or Players page ("Open in Analysis") to start analysing.'}
@@ -463,7 +474,7 @@ export default function AnalysisPage({
     <div className="flex flex-1 overflow-hidden p-1.5">
       {/* Rail | board | position intel. One group, so every divider follows the
           same rule: it resizes the two panels it separates and nothing else. */}
-      <Group orientation="horizontal" className="flex-1 min-w-0 flex" groupRef={group} defaultLayout={saved.defaultLayout} onLayoutChanged={saved.onLayoutChanged} onLayoutChange={rz.onLayout}>
+      <Group orientation="horizontal" className="flex-1 min-w-0 flex" groupRef={group} defaultLayout={remembered} onLayoutChanged={keepLayout} onLayoutChange={rz.onLayout}>
       {/* A — open-game tabs (mini-board previews) */}
       {lead ? lead.map((p, i) => (
         <Fragment key={p.id}>
