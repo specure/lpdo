@@ -7,6 +7,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-10-12
+
+### Added
+- **Drill a chapter** — **Drill** beside a chapter's *Edit lines…*: the
+  opponent's moves are played, yours are entered on the board. Lines are
+  chosen up to a share of the games that stay in the chapter (50 / 75 / 90 /
+  100%). A miss shows the book move with its share and score and an arrow, and
+  you play it. Each own move is a card: right → the next box (1, 3, 7, 14, 30,
+  60 days); missed → asked again in the session. Only what is to be practised
+  is asked — a move known and not due is played by itself; a move never met is
+  new: shown first with its figures, asked later in the session. **New a day**
+  (5, 10, 15, 25, all) per chapter; the session's end offers *Learn 15 more
+  today* and says what is left.
+- **Test again and review a line** — a line with a miss stops at its end, the
+  line as text with the miss marked. **Test again** plays it from the start
+  with your moves asked and nothing shown; **Review** steps through it by hand
+  (⏮ ◀ ▶ ⏭, the arrow keys, swipes on the phone, a move tapped in the line)
+  with the chapter's comments, the three most played moves in each position
+  with share and score, the book's arrows and circles (or the moves', *Arrows:
+  Book · Moves*) and, at the end, Stockfish's evaluation of the line's last
+  position. *Next line* any time.
+- **LPDO Trainer — the drill on the phone** — a web app at
+  https://specure.github.io/lpdo/trainer/ that works offline once opened (add
+  it to the Home Screen on an iPhone). Chapters are listed by book in the
+  book's order with what is due and new; ☆ favourites, *Favourites only*,
+  *White · Both · Black*. Chapters come from the desktop: **Send to phone…**
+  in a chapter's ⋯ menu plays the chapter as a loop of QR codes the phone
+  reads with **Scan**, with or without comments; or **Save for phone…** writes
+  a `.lpdo.json` file the trainer adds with **File**. A chapter sent again
+  keeps its progress.
+- **Stockfish at the ends of the lines** — the chapter analysis (*Analyse*,
+  *Analyse all* and the background analysis) has Stockfish evaluate every
+  line's last position after the database's figures, on the server:
+  Maintenance → Repertoire, *Stockfish at the ends of the lines: depth*, 24 by
+  default, 0 for off. The drill's review shows it. A chapter is marked ✓
+  analysed only once Stockfish is done, and the chapter list follows the
+  background analysis without a reload.
+- **Sending to the phone, adjustable** — Maintenance → Repertoire: bytes a
+  frame, frames a second and the code's size, per computer; **Test with the
+  phone…** measures how well the phone reads the codes and says what to
+  change.
+- **The Books and Files lists open in a flyout** — with the books folded on
+  the Repertoire page, or the file list on the PGNs page, a click on the strip
+  opens the list beside it, over the chapters, at a readable width. A pick
+  closes it, as do a click elsewhere, Escape or the strip again. The pin in
+  its header keeps the list open in the layout; in the open list the filled
+  pin folds it back to the strip.
+- **A drag past the minimum folds the panel** — dragging the books or the
+  chapters narrower than their minimum snaps them to their strip.
+- **New empty chapter opens ready to rename** — the chapter is on the board
+  with its name selected; typing replaces it, Enter saves.
+
+### Changed
+- **The chapters' ⋯ menu in sections** — Add; the chapter on the board (its
+  name as the heading, or "N selected chapters"); Phone; All chapters; and
+  Delete last, apart, in red. *Analyse* and *Remove FENs* also work on the
+  chapters picked.
+- **The whole book counts only the games its chapters have** — games that left
+  the book before reaching any chapter no longer count in "The whole book" in
+  Your games, and overview chapters (Introduction, Quickstarter, … Overview)
+  count no games.
+- **A whole-book game opens its chapter where it left it** — a click on one of
+  your games in the whole book's list puts its chapter on the board just
+  before the deviating move and previews the game there; the list stays.
+- **The Repertoire page comes back as left** — the book shown and "The whole
+  book" are remembered, not only the chapter. A chapter that fails to load
+  (the server busy or restarting) is retried every 3 s instead of forgotten.
+- **Panel dividers** — a divider resizes the two panels it separates and
+  nothing else, across a folded strip too: with the chapters folded, either
+  divider beside the strip trades the books against the board and the strip
+  keeps its width. The resize cursor shows on the line itself, where a drag
+  works.
+- **Activity panel** — the server's own chapter analysis reads "Background
+  analysis of a repertoire chapter"; Maintenance → Repertoire says "Analyse
+  chapters in the background, once left alone for … minutes".
+- **Top bar and Analysis tabs** — labels stay on one line; in a window too
+  narrow for the bar, it scrolls sideways instead of squeezing.
+- **APT repository** — `packaging/APT-REPO.md` says how to add the LPDO source
+  back after an Ubuntu release upgrade disables it.
+
+### Fixed
+- **Panel dividers moved only on the second attempt** — hover, press and drag
+  did nothing; a second press worked. One press-and-drag moves them now.
+- **Folded strips grew** to a panel's width after a chapter was added or
+  deleted, and a new empty chapter was dropped straight away, the page falling
+  back to the empty view.
+- **Unfolding a panel** landed it at its minimum width rather than the width
+  it had.
+- **The background analysis went over the same chapters again after every
+  server restart** — the job's deeper result at a line end was not kept over
+  the Engine panel's shallower one with more lines. The job asks for as many
+  lines as the kept result has.
+- **The server was slow during a background analysis** — one line end could
+  keep Stockfish busy for hours (each gets at most 2 minutes now, the depth
+  reached is kept); a line ending in checkmate looped the job (such ends are
+  no longer asked for); and the job held one of the read connections with
+  every fourth request queued behind it (reads go to the least loaded
+  connection).
+- **The activity panel seemed gone** — clipped by the top bar once the bar
+  learned to scroll sideways.
+
 ## [0.23.0] - 2026-10-09
 
 ### Added
@@ -1437,7 +1538,8 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/specure/lpdo/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/specure/lpdo/compare/v0.22.1...v0.23.0
 [0.22.1]: https://github.com/specure/lpdo/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/specure/lpdo/compare/v0.21.0...v0.22.0
