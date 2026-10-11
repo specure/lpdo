@@ -10,6 +10,7 @@ import AddGameDialog from "./components/AddGameDialog";
 import PrepView from "./components/prep/PrepView";
 import PrepPlayerList from "./components/prep/PrepPlayerList";
 import DirectoryBrowser from "./components/local/DirectoryBrowser";
+import Flyout from "./components/Flyout";
 import LocalGameList from "./components/local/LocalGameList";
 import GamesPage, { PLAYERS_RAIL_KEY } from "./components/GamesPage";
 import PlayerProfileModal from "./components/PlayerProfileModal";
@@ -544,6 +545,11 @@ export default function App() {
   }, [openLocalFile]);
   const [filesCollapsed, setFilesCollapsed] = useState(false);
   const [gameListCollapsed, setGameListCollapsed] = useState(false);
+  // The collapsed files, out for a moment over the games in a flyout (the
+  // strip that opened them, while open): a file is picked once and then
+  // worked in for a long while, like a repertoire book.
+  const [filesOut, setFilesOut] = useState<HTMLElement | null>(null);
+  useEffect(() => { setFilesOut(null); }, [filesCollapsed, mode]);
 
   // PGNs page panels: the two lists collapse to a strip but stay mounted, so
   // collapse is driven imperatively rather than by unmounting the panel.
@@ -875,7 +881,7 @@ export default function App() {
               <div className="h-full flex flex-col overflow-hidden bg-surface-container-low border border-outline/40 rounded-md">
                 {filesCollapsed ? (
                   <button
-                    onClick={() => setFilesCollapsed(false)}
+                    onClick={(e) => { const el = e.currentTarget; setFilesOut((v) => (v ? null : el)); }}
                     className="flex-1 flex flex-col items-center gap-2 pt-3 text-on-surface-variant hover:text-on-surface hover:bg-on-surface/4 transition-colors duration-short3 ease-standard"
                     title="Show files"
                   >
@@ -886,13 +892,34 @@ export default function App() {
                     <span className="text-label-md text-on-surface-variant uppercase tracking-wider">Files</span>
                     <button onClick={() => setFilesCollapsed(true)} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide files">«</button>
                   </div>)}
-                <div className={filesCollapsed ? "hidden" : "flex-1 min-h-0 overflow-hidden flex flex-col"}>
-                  <DirectoryBrowser
-                    selectedFile={localSelectedFile}
-                    onSelectFile={(path) => { setLocalSelectedFile(path); setLocalSelectedGame(null); setLocalGameCount(null); }}
-                    recentFiles={recentPgnFiles}
-                  />
-                </div>
+                {/* One browser at a time — here, or out in the flyout. */}
+                {!filesOut && (
+                  <div className={filesCollapsed ? "hidden" : "flex-1 min-h-0 overflow-hidden flex flex-col"}>
+                    <DirectoryBrowser
+                      selectedFile={localSelectedFile}
+                      onSelectFile={(path) => { setLocalSelectedFile(path); setLocalSelectedGame(null); setLocalGameCount(null); }}
+                      recentFiles={recentPgnFiles}
+                    />
+                  </div>
+                )}
+                {filesOut && (
+                  <Flyout anchor={filesOut} label="Files" onClose={() => setFilesOut(null)}>
+                    <div className="h-full flex flex-col overflow-hidden bg-surface-container-low border border-outline/40 rounded-md">
+                      <div className="px-3 py-2 flex items-center gap-1 border-b border-outline/40">
+                        <span className="flex-1 text-label-md text-on-surface-variant uppercase tracking-wider">Files</span>
+                        <button onClick={() => { setFilesOut(null); setFilesCollapsed(false); }} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-label-md" title="Keep the files open beside the games">Pin</button>
+                        <button onClick={() => setFilesOut(null)} className="h-7 px-2 inline-flex items-center rounded-full text-on-surface-variant hover:bg-on-surface/8 text-body-md" title="Hide files">«</button>
+                      </div>
+                      <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+                        <DirectoryBrowser
+                          selectedFile={localSelectedFile}
+                          onSelectFile={(path) => { setLocalSelectedFile(path); setLocalSelectedGame(null); setLocalGameCount(null); setFilesOut(null); }}
+                          recentFiles={recentPgnFiles}
+                        />
+                      </div>
+                    </div>
+                  </Flyout>
+                )}
               </div>
             </Panel>
 
