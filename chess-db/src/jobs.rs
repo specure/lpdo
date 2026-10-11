@@ -1589,7 +1589,10 @@ fn run_job(
                         reporter.progress(part, n * 1000, format!("{chapter}: Stockfish, depth {depth} — line end {} of {}", done + 1, todo.len()));
                         let fen = &todo[done];
                         let cancelled = || reporter.is_cancelled() || busy();
-                        match rt.block_on(bg.search(fen, depth, LINE_END_MAX, cancelled)) {
+                        // As many lines as the result kept (the Engine
+                        // panel's, say): fewer would not replace it.
+                        let lines = crate::engine::kept_lines(conn, &bg.ident, &crate::engine::position_key(fen));
+                        match rt.block_on(bg.search(fen, depth, lines, LINE_END_MAX, cancelled)) {
                             // Made way (or cancelled): the same position again.
                             Ok(None) => continue,
                             // Nothing in it for the engine (no legal moves): on to
@@ -2401,6 +2404,16 @@ mod repertoire_analyse_tests {
         // Again: nothing left to do at that depth.
         let ident: String = conn.query_row("SELECT any_value(engine) FROM engine_evals", [], |r| r.get(0)).unwrap();
         assert!(crate::repertoire::line_ends_to_evaluate(&conn, id, &ident, 10).unwrap().is_empty());
+        // The Engine panel's result for a line end, shallower but with three
+        // lines: the job's single deeper line could not replace it, and the
+        // chapter was analysed again after every restart. Now it asks for as
+        // many lines.
+        conn.execute("UPDATE engine_evals SET depth = 6, multipv = 3 WHERE position = (SELECT min(position) FROM engine_evals)", []).unwrap();
+        assert_eq!(crate::repertoire::line_ends_missing(&conn, id, 10).unwrap(), 1);
+        run_job("repertoire_analyse", &serde_json::json!({ "chapters": [id] }), &conn, &Reporter::silent(), rt.handle(), &db, &jm).unwrap();
+        assert_eq!(crate::repertoire::line_ends_missing(&conn, id, 10).unwrap(), 0, "kept this time");
+        let (depth, lines): (i64, i64) = conn.query_row("SELECT min(depth), max(multipv) FROM engine_evals", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert!(depth >= 10 && lines == 3, "{depth} {lines}");
         let mut s = crate::repertoire::settings();
         s.line_end_depth = crate::repertoire::LINE_END_DEPTH;
         crate::repertoire::set_settings(s).unwrap();
