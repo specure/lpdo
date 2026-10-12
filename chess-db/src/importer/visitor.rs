@@ -422,7 +422,7 @@ impl Visitor for GameVisitor {
 /// the legal moves instead: role, destination, promotion, whether it captures,
 /// and the file/rank of the origin when the source gave them. A spelling that
 /// still matches two moves is genuinely ambiguous and is refused.
-fn resolve_san(pos: &Chess, san: &San) -> Option<Move> {
+pub(crate) fn resolve_san(pos: &Chess, san: &San) -> Option<Move> {
     if let Ok(m) = san.to_move(pos) {
         return Some(m);
     }
@@ -444,6 +444,20 @@ fn resolve_san(pos: &Chess, san: &San) -> Option<Move> {
         found = Some(m);
     }
     found
+}
+
+/// The one canonical spelling of the move `raw` names in `pos` (check marks
+/// and annotation glyphs ignored, over-specified origins accepted as above),
+/// as the import has stored moves since #271 — or None when the text does not
+/// name one legal move there. Games imported before then keep their source's
+/// spelling in the positions index ("Ngf3" where the other knight is pinned
+/// and "Nf3" says it all), so the figures of a position merge spellings
+/// through this rather than counting them as two moves.
+pub(crate) fn canonical_san(pos: &Chess, raw: &str) -> Option<String> {
+    let san: San = raw.trim_end_matches(['+', '#', '!', '?']).parse().ok()?;
+    let m = resolve_san(pos, &san)?;
+    let mut after = pos.clone();
+    Some(ShakmatySanPlus::from_move_and_play_unchecked(&mut after, m).to_string())
 }
 
 /// Remove ChessBase `[%evp ...]` evaluation-profile tags from a comment body.

@@ -45,6 +45,9 @@ pub struct MoveStats {
 pub fn position_moves(
     conn: &Connection,
     zobrist_hash: i64,
+    // The position itself, when the caller has it: the moves are then merged
+    // by what they are, not how a source spelt them (see `spellings`).
+    pos: Option<&shakmaty::Chess>,
     player_id: Option<u32>,
     name_pattern: Option<&str>,  // pre-normalized LIKE pattern, e.g. "%carlsen%"
     fide_id: Option<u32>,
@@ -61,6 +64,26 @@ pub fn position_moves(
     exclude_engines: bool,
 ) -> Result<Vec<MoveStats>> {
     let mut params: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
+    // Games imported before #271 keep their source's spelling of a move:
+    // "Ngf3" beside "Nf3" for the same knight, "Nf3" beside "Nf3+". Each
+    // spelling at this position that is not the canonical one is mapped to
+    // it before the grouping — in the query, so every figure (the rating
+    // quartiles too) is of the move, not of one way of writing it.
+    let spellings: Vec<(String, String)> = match pos {
+        Some(pos) => {
+            let mut st = conn.prepare("SELECT DISTINCT next_move FROM positions WHERE zobrist_hash = ? AND next_move IS NOT NULL")?;
+            let raws = st.query_map([zobrist_hash], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+            raws.into_iter()
+                .filter_map(|raw| crate::importer::visitor::canonical_san(pos, &raw).filter(|c| *c != raw).map(|c| (raw, c)))
+                .collect()
+        }
+        None => Vec::new(),
+    };
+    let next_move = if spellings.is_empty() { "p.next_move".to_string() } else {
+        let arms: String = spellings.iter().map(|_| " WHEN ? THEN ?").collect();
+        for (raw, canonical) in &spellings { params.push(Box::new(raw.clone())); params.push(Box::new(canonical.clone())); }
+        format!("CASE p.next_move{arms} ELSE p.next_move END")
+    };
     params.push(Box::new(zobrist_hash));
 
     let player_filter = if let Some(pid) = player_id {
@@ -132,7 +155,7 @@ pub fn position_moves(
 
     let sql = format!("
         WITH pos AS (
-            SELECT p.next_move,
+            SELECT {next_move} AS next_move,
                    g.result,
                    CASE WHEN p.move_number % 2 = 0 THEN g.white_elo ELSE g.black_elo END AS player_elo,
                    CASE WHEN p.move_number % 2 = 0 THEN g.black_elo  ELSE g.white_elo END AS opp_elo,
@@ -469,7 +492,7 @@ mod engine_filter_tests {
         )
         .unwrap();
         let moves = |exclude: bool| position_moves(
-            &conn, 42, None, None, None, "any", None, None, None, None, None, None, None, None, exclude,
+            &conn, 42, None, None, None, None, "any", None, None, None, None, None, None, None, None, exclude,
         ).unwrap();
 
         let with = moves(false);
@@ -478,6 +501,40 @@ mod engine_filter_tests {
 
         let without = moves(true);
         assert_eq!(without[0].games, 1);
+    }
+}
+
+#[cfg(test)]
+mod spelling_tests {
+    use super::*;
+    use shakmaty::{fen::Fen, zobrist::Zobrist64, Chess, EnPassantMode, Position};
+
+    /// Two sources write the same knight move differently (one disambiguates
+    /// though the other knight is pinned; one leaves the check mark out):
+    /// one move in the figures, with the games of all three.
+    #[test]
+    fn spellings_of_one_move_are_merged() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let pos: Chess = "rn2k2r/2Bbqppp/1P2pn2/3p4/1b6/4P3/P2N1PPP/R2QKBNR w KQkq - 0 11".parse::<Fen>().unwrap()
+            .into_position(shakmaty::CastlingMode::Standard).unwrap();
+        let z = pos.zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64;
+        conn.execute_batch(&format!(
+            "INSERT INTO players (id, name, name_normalized) VALUES (1, 'A', 'a'), (2, 'B', 'b');
+             INSERT INTO games (id, white_id, black_id, white_elo, black_elo, date, result, pgn) VALUES
+               (1, 1, 2, 2500, 2400, '2024-01-01', '1-0', ''), (2, 1, 2, 2600, 2400, '2024-01-02', '0-1', ''),
+               (3, 1, 2, 2700, 2400, '2024-01-03', '1/2-1/2', ''), (4, 1, 2, 2000, 2000, '2024-01-04', '1-0', '');
+             INSERT INTO positions (game_id, move_number, zobrist_hash, next_move) VALUES
+               (1, 20, {z}, 'Nf3'), (2, 20, {z}, 'Ngf3'), (3, 20, {z}, 'Nf3'), (4, 20, {z}, 'b7');"
+        )).unwrap();
+        let moves = position_moves(&conn, z, Some(&pos), None, None, None, "any", None, None, None, None, None, None, None, None, false).unwrap();
+        assert_eq!(moves.iter().map(|m| (m.mv.as_str(), m.games)).collect::<Vec<_>>(), vec![("Nf3", 3), ("b7", 1)]);
+        let nf3 = &moves[0];
+        assert_eq!((nf3.w_pct, nf3.d_pct, nf3.l_pct), (33.0, 33.0, 33.0));
+        assert_eq!(nf3.elo_p50, Some(2600.0), "the quartiles are of all three games");
+        // Without the position the spellings cannot be told apart.
+        let raw = position_moves(&conn, z, None, None, None, None, "any", None, None, None, None, None, None, None, None, false).unwrap();
+        assert_eq!(raw.len(), 3);
     }
 }
 

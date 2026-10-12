@@ -502,7 +502,7 @@ pub fn position_moves(
     let white_pattern = white.map(|n| format!("%{}%", normalize_name(n)));
     let black_pattern = black.map(|n| format!("%{}%", normalize_name(n)));
     let stats = crate::db::queries::position_moves(
-        conn, hash_i64,
+        conn, hash_i64, Some(&pos),
         None,
         name_pattern.as_deref(),
         fide_id,

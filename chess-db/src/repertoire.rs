@@ -1217,7 +1217,8 @@ pub fn chapter_stats(conn: &Connection, id: i64) -> Result<Vec<PositionStat>> {
     let evals = stored_evals(conn, &list, &black_to_move)?;
 
     Ok(order.into_iter().map(|z| {
-        let mut moves = by_pos.remove(&z).unwrap_or_default();
+        let key = keys.remove(&z).unwrap_or_default();
+        let mut moves = merge_spellings(position_of_key(&key).as_ref(), by_pos.remove(&z).unwrap_or_default());
         moves.sort_by(|a, b| b.games.cmp(&a.games).then_with(|| a.san.cmp(&b.san)));
         let games = moves.iter().map(|m| m.games).sum();
         let ours = chapter_moves.get(&z).cloned().unwrap_or_default();
@@ -1225,7 +1226,7 @@ pub fn chapter_stats(conn: &Connection, id: i64) -> Result<Vec<PositionStat>> {
             .filter(|(i, m)| *i < TOP_MOVES || ours.contains(&m.san))
             .map(|(_, m)| m)
             .collect();
-        PositionStat { key: keys.remove(&z).unwrap_or_default(), zobrist: format!("{:016x}", z as u64), games, moves, eval: evals.get(&z).cloned(), engine: None }
+        PositionStat { key, zobrist: format!("{:016x}", z as u64), games, moves, eval: evals.get(&z).cloned(), engine: None }
     }).collect())
 }
 
@@ -1436,11 +1437,14 @@ fn place(conn: &Connection, book_id: i64, player: i64) -> Result<Placement> {
     let mut mine_after: Vec<std::collections::HashSet<i64>> = Vec::new();
     let mut sets: Vec<std::collections::HashSet<i64>> = Vec::new();
     let mut count: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    let mut keys: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
     for (_, pgn) in &chapters {
         let w = walk(&movetext_of(pgn))?;
         let mut set = std::collections::HashSet::new();
         let mut after = std::collections::HashSet::new();
         for r in &w.rows {
+            keys.insert(r.zobrist, r.key.clone());
+            keys.insert(r.after_zobrist, r.after_key.clone());
             for z in [r.zobrist, r.after_zobrist] { if z != start { set.insert(z); } }
             if r.mover == book.color { after.insert(r.after_zobrist); }
         }
@@ -1497,7 +1501,7 @@ fn place(conn: &Connection, book_id: i64, player: i64) -> Result<Placement> {
         // Where it left the chapters: an overview's positions are not theirs.
         if count[&z] == 0 { continue; }
         let d = out.deepest.entry(g).or_insert((-1, None));
-        if ply > d.0 { *d = (ply, next); }
+        if ply > d.0 { *d = (ply, next.map(|n| spelling(keys.get(&z).and_then(|k| position_of_key(k)).as_ref(), &n))); }
     }
 
     out.in_book = reached.iter().filter(|(_, zs)| zs.keys().any(|z| shared.contains(z))).map(|(g, _)| *g).collect();
@@ -1685,7 +1689,8 @@ fn follow_chapter(conn: &Connection, pgn: &str, ids: &[i64], color: &str) -> Res
     for (g, (ply, z, next)) in deepest {
         let ours = moves.get(&z);
         let side_to_move = if ply % 2 == 0 { "white" } else { "black" };
-        let (followed, left_by, mv) = match next.as_deref().map(strip_marks) {
+        let next = next.map(|n| spelling(keys.get(&z).and_then(|k| position_of_key(k)).as_ref(), &n));
+        let (followed, left_by, mv) = match next.as_deref() {
             None => ("ended", None, None),
             Some(san) if ours.is_some_and(|m| m.contains(san)) => ("index", None, None),
             Some(_) if ours.is_none() => ("end", None, None),
@@ -1771,15 +1776,17 @@ pub fn chapter_mine(conn: &Connection, id: i64, player: i64) -> Result<OwnGames>
     #[derive(Default)]
     struct Sum { games: i64, w: i64, d: i64, l: i64, perf_sum: f64, perf_n: i64, moves: std::collections::BTreeMap<String, i64> }
     let mut by_pos: std::collections::HashMap<i64, Sum> = std::collections::HashMap::new();
+    let mut positions: std::collections::HashMap<i64, Option<Chess>> = std::collections::HashMap::new();
     let mut rows = st.query([])?;
     while let Some(r) = rows.next()? {
         let (g, z, san): (i64, i64, String) = (r.get(0)?, r.get(1)?, r.get(2)?);
         let Some(game) = games.get(&g) else { continue };
+        let pos = positions.entry(z).or_insert_with(|| keys.get(&z).and_then(|k| position_of_key(k)));
         let s = by_pos.entry(z).or_default();
         s.games += 1;
         if game.score == 1.0 { s.w += 1 } else if game.score == 0.5 { s.d += 1 } else { s.l += 1 }
         if let Some(e) = game.opp_elo { s.perf_sum += e as f64 + 400.0 * (2.0 * game.score - 1.0); s.perf_n += 1; }
-        *s.moves.entry(san).or_default() += 1;
+        *s.moves.entry(spelling(pos.as_ref(), &san)).or_default() += 1;
     }
     out.positions = by_pos.into_iter().filter_map(|(z, s)| {
         let mut moves: Vec<(String, i64)> = s.moves.into_iter().collect();
@@ -2195,6 +2202,39 @@ fn strip_marks(san: &str) -> &str {
     san.trim_end_matches(['+', '#', '!', '?'])
 }
 
+/// The position a key ([`position_key`]) names — castling kept, the en
+/// passant square not (a key has none).
+fn position_of_key(key: &str) -> Option<Chess> {
+    format!("{key} - 0 1").parse::<Fen>().ok()?.into_position(shakmaty::CastlingMode::Standard).ok()
+}
+
+/// A move's spelling as the figures show it: the canonical one in `pos`,
+/// without check marks. Games imported before #271 keep their source's
+/// spelling in the positions index — "Ngf3" where the other knight is pinned
+/// and "Nf3" says it all, "Nf3" without the check mark — and counted by the
+/// text, one move showed as two.
+fn spelling(pos: Option<&Chess>, san: &str) -> String {
+    let canonical = pos.and_then(|p| crate::importer::visitor::canonical_san(p, san));
+    strip_marks(canonical.as_deref().unwrap_or(san)).to_string()
+}
+
+/// The database's moves from a position, the spellings of one move merged:
+/// their games added, the score weighted by them.
+fn merge_spellings(pos: Option<&Chess>, moves: Vec<MoveStat>) -> Vec<MoveStat> {
+    let mut out: Vec<MoveStat> = Vec::new();
+    for m in moves {
+        let san = spelling(pos, &m.san);
+        match out.iter_mut().find(|e| e.san == san) {
+            Some(e) => {
+                e.score = (e.score * e.games as f64 + m.score * m.games as f64) / (e.games + m.games) as f64;
+                e.games += m.games;
+            }
+            None => out.push(MoveStat { san, ..m }),
+        }
+    }
+    out
+}
+
 /// The cloud evaluations kept in the database for these positions (a list of
 /// hashes, as SQL): Lichess's first line where there is one, else chessdb's
 /// best move — both turned to White's side.
@@ -2296,6 +2336,38 @@ mod tests {
         // The ends of the lines are there too, without games.
         assert_eq!(stats.len(), 4);
         assert!(stats.iter().any(|s| s.key.ends_with(" w KQkq") && s.key.contains("2p5") && s.games == 0));
+    }
+
+    /// Games imported before #271 keep their source's spelling: "Ngf3" for
+    /// a knight move the other knight, pinned, cannot make — the one move
+    /// the chapter has there, counted once, with the games of both spellings.
+    #[test]
+    fn spellings_of_one_move_are_merged() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let book = create_book(&conn, "B", "black", None, None, None).unwrap();
+        // After 3...Bb4 the d2 knight is pinned: 4.Nf3 is the one spelling.
+        let line = "1. d4 Nf6 2. Bf4 e6 3. Nd2 Bb4 4. Ngf3 d5 *";
+        let ch = add_chapters(&conn, book.id, Some("Ch"), Some(line), None).unwrap().remove(0);
+        let mut pos = Chess::default();
+        for san in line.split_whitespace().filter(|t| !t.ends_with('.') && *t != "*").take(6) {
+            let m = shakmaty::san::San::from_ascii(san.as_bytes()).unwrap().to_move(&pos).unwrap();
+            pos.play_unchecked(m);
+        }
+        let z = pos.zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64;
+        conn.execute_batch(&format!("
+            INSERT INTO players (id, name, name_normalized) VALUES (1, 'A', 'a'), (2, 'B', 'b');
+            INSERT INTO games (id, white_id, black_id, result, pgn) VALUES
+              (1, 1, 2, '1-0', ''), (2, 1, 2, '0-1', ''), (3, 1, 2, '1-0', ''), (4, 1, 2, '1-0', '');
+            INSERT INTO positions (game_id, move_number, zobrist_hash, next_move) VALUES
+              (1, 6, {z}, 'Nf3'), (2, 6, {z}, 'Ngf3'), (3, 6, {z}, 'Nf3'), (4, 6, {z}, 'Bd3');
+        ")).unwrap();
+        let stats = chapter_stats(&conn, ch.id).unwrap();
+        let s = stats.iter().find(|s| s.zobrist == format!("{:016x}", z as u64)).unwrap();
+        assert_eq!(s.moves, vec![
+            MoveStat { san: "Nf3".into(), games: 3, score: 2.0 / 3.0 },
+            MoveStat { san: "Bd3".into(), games: 1, score: 1.0 },
+        ]);
     }
 
     #[test]
