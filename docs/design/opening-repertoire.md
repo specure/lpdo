@@ -500,14 +500,24 @@ back:
   last the book plays there (what the phone uses; a book move's rank stays
   right) — 10–23% smaller.
 
-  The fountain code has a cost the prototype did not show: its encoder
+  The fountain code had a cost the prototype did not show: bc-ur's encoder
   sends each part plain once, then only mixed parts, and by the time the
-  phone is held to the code the plain ones are gone. A reading then takes
-  1.3–1.9 × as many distinct parts as the chapter is cut in (measured with
-  the real decoder; repeating the plain parts only helped when no frame is
-  missed). The trainer's bar counts distinct parts against 1.5 × that, or
-  the parts decoded when more — the library's own estimate counted repeats
-  too against 1.75 × and stopped at 40–80%. The code is shown at 560 px
+  phone is held to the code the plain ones are gone. Its decoder only
+  peels — a mixed part counts once all but one of the parts mixed into it
+  are known — and its mixes are heavy (a degree drawn from 1/d, not a
+  soliton: 24 of 133 parts on average), so a reading that joined after the
+  plain pass took 1.9–2.4 × as many frames as the chapter is cut in: a
+  52 KB chapter with comments (133 parts) needed 250–320 frames and stalled
+  for the user (repeating the plain parts only helped when no frame is
+  missed). The trainer therefore reads the frames itself — bc-ur still
+  parses them and says which parts a frame mixes, by the same rule as its
+  encoder, so the frames are unchanged — and solves them as a system over
+  GF(2), rows reduced as they come: every frame that is not a repeat or a
+  mix of what is known counts, and the chapter is solved at its parts plus
+  a few. Simulated against the real frames: 1.03–1.12 × wherever the phone
+  joins, with a third or half of the frames missed (the peeling decoder:
+  1.35–2.4 ×). The bar is the parts pinned down against the parts in
+  all, exact. The code is shown at 560 px
   (the measured size; it was 420), drawn in the screen's own pixels so a
   scaled display does not blur it. The scan screen shows the camera's
   picture, ms a search and how often one finds a code, to tell a slow
