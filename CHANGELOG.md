@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Send to phone: a long chapter reads through** — a chapter with comments
+  (50 KB, 130-odd parts) stalled at a few percent: the phone's decoder only
+  counted a mixed frame once the parts mixed into it were known, and a phone
+  that joined after the first, plain pass needed two to two and a half times
+  the parts. The trainer now solves the frames as they come, so every frame
+  that brings something new counts and a chapter is read at its parts plus a
+  few — about half the time from a cold start, and the bar moves with every
+  frame. The frames are unchanged; the trainer updates itself on its next
+  start online. The transfer test in Maintenance works above 64 KB.
+
 ## [0.24.0] - 2026-10-12
 
 ### Added
