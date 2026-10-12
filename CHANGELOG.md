@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **One move, one row** — the moves from a position (the Reference tab, a
+  chapter's figures and the drill's replay, one's own games through a
+  chapter) counted a move once per spelling: "Nf3" and "Ngf3" as two moves
+  where the other knight is pinned, "Nf3" and "Nf3+" likewise. Games
+  imported before 0.19 keep their source's spelling in the positions index;
+  the spellings are now merged into the move's canonical one wherever the
+  figures are made, with all the games of each.
 - **Send to phone: a long chapter reads through** — a chapter with comments
   (50 KB, 130-odd parts) stalled at a few percent: the phone's decoder only
   counted a mixed frame once the parts mixed into it were known, and a phone

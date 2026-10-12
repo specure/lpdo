@@ -1192,12 +1192,11 @@ async fn position_moves_handler(
         return Err((StatusCode::BAD_REQUEST, "fen and first_moves are mutually exclusive".into()));
     }
 
-    let hash_i64: i64 = if let Some(ref fen_str) = q.fen {
+    let board: Chess = if let Some(ref fen_str) = q.fen {
         let parsed: Fen = fen_str.parse()
             .map_err(|e: shakmaty::fen::ParseFenError| (StatusCode::BAD_REQUEST, e.to_string()))?;
-        let board: Chess = parsed.into_position(shakmaty::CastlingMode::Standard)
-            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-        board.zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64
+        parsed.into_position(shakmaty::CastlingMode::Standard)
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
     } else if let Some(ref fm) = q.first_moves {
         let mut pos = Chess::default();
         for token in strip_move_numbers(fm).split_whitespace() {
@@ -1207,17 +1206,18 @@ async fn position_moves_handler(
                 .map_err(|_| (StatusCode::BAD_REQUEST, format!("illegal move: {}", token)))?;
             pos.play_unchecked(mv);
         }
-        pos.zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64
+        pos
     } else {
-        Chess::default().zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64
+        Chess::default()
     };
+    let hash_i64 = board.zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64;
 
     let name_pattern = q.name.as_deref().map(|n| format!("%{}%", normalize_name(n)));
     let white_pattern = q.white.as_deref().map(|n| format!("%{}%", normalize_name(n)));
     let black_pattern = q.black.as_deref().map(|n| format!("%{}%", normalize_name(n)));
     state.reads.run(move |conn| {
         let stats = crate::db::queries::position_moves(
-            conn, hash_i64,
+            conn, hash_i64, Some(&board),
             q.player_id,
             name_pattern.as_deref(),
             q.fide_id,
