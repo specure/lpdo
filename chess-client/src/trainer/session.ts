@@ -123,7 +123,7 @@ export const estimateMinutes = (d: number) => (d * REPETITIONS * SECONDS_PER_DEC
 /** The lines to practise below `path` (the focus by default), most likely
  *  first, up to `target` (at least one line). Counted from the trunk below
  *  `path`, by the lines' weight — their share of the games that stay in the
- *  chapter — so 75% can always be reached, and a line is not favoured for
+ *  chapter — so 80% can always be reached, and a line is not favoured for
  *  ending early. */
 export function chooseLines(chapter: LpdoChapter, target: Target, path: PNode[] = focusRoot(chapter).path): Session {
   const from = trunk(chapter, path);

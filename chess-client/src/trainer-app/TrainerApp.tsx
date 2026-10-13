@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { hasComments, validate, type LpdoChapter } from "../trainer/format";
-import { buildDrill, cardCounts, type Card } from "../trainer/drill";
+import { buildDrill, cardCounts, drillCoverage, type Card } from "../trainer/drill";
 import DrillView from "../trainer/DrillView";
 import ScanView from "./ScanView";
 import { cardStore, deleteChapter, keepData, listChapters, loadPrefs, saveChapter, savePrefs, type Prefs } from "./db";
@@ -116,6 +116,7 @@ export default function TrainerApp() {
   }
 
   const now = Date.now();
+  const coverage = drillCoverage();
   const favourites = new Set(prefs?.favourites ?? []);
   // The list as the settings show it: one colour's books, the favourites.
   const shown = (chapters ?? []).filter((c) =>
@@ -190,7 +191,7 @@ export default function TrainerApp() {
                 </h2>
                 <ul className="divide-y divide-outline/30">
                   {cs.map((c) => {
-                    const n = cardCounts(buildDrill(c, 0.75), cards, now);
+                    const n = cardCounts(buildDrill(c, coverage), cards, now);
                     return (
                       <li key={c.chapter.id} className="flex items-center gap-2">
                         <button onClick={() => setDrilling(c)} className="flex-1 min-w-0 text-left px-2 py-2.5 active:bg-on-surface/8 rounded-md">
