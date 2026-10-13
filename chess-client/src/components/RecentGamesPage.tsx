@@ -1,7 +1,8 @@
 // Recent games (#90): one's games of the last days — over the board and
 // online, one's linked handles' too — each with how it stood to the
 // repertoire: the chapters it went into (one per book, several when the
-// books overlap), and where one or the opponent deviated in each. A chapter puts
+// books overlap; a book it only started is not listed), and where one or
+// the opponent deviated in each. A chapter puts
 // itself on the Repertoire page's board where the game left it; Open puts
 // the game on the Analysis board. The same as a chapter's own-games list,
 // for every game of the day at once.
@@ -34,6 +35,14 @@ const summary = (g: RecentGame): GameSummary => ({
   event: g.event, date: g.date, result: g.result, eco: null, move_count: null, opening_line: null,
 });
 
+/** The chapters a game went into, to list: the books it only started
+ *  (`left_book`) left out as noise, those it stayed in to the end first,
+ *  then by how far it went. */
+function chaptersOf(g: RecentGame): LineMatch[] {
+  return g.matches.filter((m) => !m.left_book)
+    .sort((a, b) => Number(b.followed !== "left") - Number(a.followed !== "left") || b.ply - a.ply);
+}
+
 type Tone = "good" | "bad" | "muted" | "plain";
 const TONE: Record<Tone, string> = { good: "text-success", bad: "text-error", muted: "text-on-surface-variant", plain: "" };
 
@@ -41,10 +50,9 @@ const TONE: Record<Tone, string> = { good: "text-success", bad: "text-error", mu
  *  no chapter. */
 function verdict(m: LineMatch | undefined): { text: string; tone: Tone } {
   if (!m) return { text: "Not in the repertoire", tone: "muted" };
-  // Where the line left, the repertoire's move there: "Book move: 4.d4".
+  // Where the line left, the chapter's move there: "Book move: 4.d4".
   const has = m.book_has ?? [];
   const book = has.length ? ` Book move${has.length > 1 ? "s" : ""}: ${has.join(", ")}` : "";
-  if (m.left_book) return { text: `Left the book.${book}`, tone: "muted" };
   if (m.followed === "left") {
     return m.left_by === "you"
       ? { text: `You deviated at ${m.move ?? "?"}.${book}`, tone: "bad" }
@@ -87,10 +95,10 @@ export default function RecentGamesPage({ onOpenChapter, onOpenGame }: Props) {
   // class (an over-the-board game from a PGN without the tag) always.
   const present = new Set((data?.games ?? []).map((g) => g.time_class).filter((c): c is TimeClass => !!c));
   const shown = (data?.games ?? []).filter((g) => !g.time_class || classes.has(g.time_class));
-  // The tally counts each game once, by the chapter it went deepest into.
+  // The tally counts each game once, by its first chapter.
   const tally = shown.reduce((t, g) => {
-    const m = g.matches[0];
-    if (!m || m.left_book) t.out++;
+    const m = chaptersOf(g)[0];
+    if (!m) t.out++;
     else if (m.followed !== "left") t.inBook++;
     else if (m.left_by === "you") t.you++;
     else t.opp++;
@@ -151,7 +159,7 @@ export default function RecentGamesPage({ onOpenChapter, onOpenGame }: Props) {
               <tr className="text-left">
                 <th className="px-4 py-1.5 font-normal">Date</th>
                 <th className="px-2 py-1.5 font-normal"></th>
-                <th className="px-2 py-1.5 font-normal">Opponent</th>
+                <th className="px-2 py-1.5 font-normal">Players</th>
                 <th className="px-2 py-1.5 font-normal">Game</th>
                 <th className="px-2 py-1.5 font-normal">Chapter</th>
                 <th className="px-2 py-1.5 font-normal">Repertoire</th>
@@ -160,13 +168,11 @@ export default function RecentGamesPage({ onOpenChapter, onOpenGame }: Props) {
             </thead>
             <tbody>
               {shown.map((g) => {
-                const opp = g.color === "white" ? g.black : g.white;
-                const oppElo = g.color === "white" ? g.black_elo : g.white_elo;
-                // The chapters it went into, the deepest first; a row opens
-                // that one, a chapter's name its own.
-                const ms = g.matches;
+                // The chapters it went into; a row opens the first, a
+                // chapter's name its own.
+                const ms = chaptersOf(g);
                 const first = ms[0];
-                const canOpen = (m: LineMatch | undefined): m is LineMatch => !!m && !m.left_book;
+                const canOpen = (m: LineMatch | undefined): m is LineMatch => !!m;
                 const open = (m: LineMatch | undefined) => { if (canOpen(m)) onOpenChapter(m.chapter_id, m.at_key, g.moves); };
                 return (
                   <tr key={g.id}
@@ -178,7 +184,9 @@ export default function RecentGamesPage({ onOpenChapter, onOpenGame }: Props) {
                       {g.score === 1 ? "1" : g.score === 0.5 ? "½" : g.score === 0 ? "0" : "·"}
                     </td>
                     <td className="px-2 py-1.5 whitespace-nowrap">
-                      <span className="text-on-surface-variant">{g.color === "white" ? "vs" : "as Black vs"} </span>{opp}{oppElo ? <span className="text-on-surface-variant"> ({oppElo})</span> : null}
+                      {g.white}{g.white_elo ? <span className="text-on-surface-variant"> ({g.white_elo})</span> : null}
+                      <span className="text-on-surface-variant"> - </span>
+                      {g.black}{g.black_elo ? <span className="text-on-surface-variant"> ({g.black_elo})</span> : null}
                     </td>
                     <td className="px-2 py-1.5 whitespace-nowrap">
                       {g.time_class ? <span className="text-on-surface-variant">{g.time_class}{g.time_control ? ` ${g.time_control}` : ""}</span> : <span className="text-on-surface-variant">{g.event ?? ""}</span>}
