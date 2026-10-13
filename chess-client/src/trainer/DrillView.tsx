@@ -519,7 +519,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
     [lineMoves, cursor, atLine, path, drill]);
 
   const status = phase === "loading" ? "Reading your cards…"
-    : phase === "review" ? "Reviewing the line"
+    : phase === "review" ? "" // the toggle and the steps say it
     : phase === "own" ? "Your move"
     : phase === "show" ? "New move — play it"
     : phase === "missed" ? "Play the book move"
@@ -653,7 +653,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
                 })}
               </div>
             )}
-            <div className={`text-title-sm ${phase === "missed" ? "text-error" : phase === "show" ? "text-primary" : ""}`}>{status}</div>
+            {status && <div className={`text-title-sm ${phase === "missed" ? "text-error" : phase === "show" ? "text-primary" : ""}`}>{status}</div>}
             {/* A new move: the book's, and how it stands among the moves
                 played here (the figures in Reference). */}
             {phase === "show" && target && (
