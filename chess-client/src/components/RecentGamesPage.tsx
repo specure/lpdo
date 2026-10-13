@@ -180,11 +180,11 @@ export default function RecentGamesPage({ onOpenChapter, onOpenGame }: Props) {
           <table className="w-full text-body-sm">
             <thead className="sticky top-0 z-10 bg-surface text-label-sm text-on-surface-variant">
               <tr className="text-left">
-                <th className="px-4 py-1.5 font-normal">Played</th>
+                <th className="px-4 py-1.5 font-normal">Date</th>
+                <th className="px-2 py-1.5 font-normal">Game</th>
                 <th className="px-2 py-1.5 font-normal"></th>
-                <th className="px-2 py-1.5 font-normal">Players</th>
                 <th className="px-2 py-1.5 font-normal">Time control</th>
-                <th className="px-2 py-1.5 font-normal">Book · Chapter</th>
+                <th className="px-2 py-1.5 font-normal">Repertoire book</th>
                 <th className="px-2 py-1.5 font-normal">Deviation</th>
               </tr>
             </thead>
@@ -206,13 +206,13 @@ export default function RecentGamesPage({ onOpenChapter, onOpenGame }: Props) {
                   <td rowSpan={span} {...toGame} className="px-4 py-1.5 whitespace-nowrap text-on-surface-variant cursor-pointer">
                     {dayOf(g)}{timeOf(g) && <span className="ml-2 tabular-nums">{timeOf(g)}</span>}
                   </td>
-                  <td rowSpan={span} {...toGame} className={`${cell} cursor-pointer font-semibold tabular-nums whitespace-nowrap ${g.score === 1 ? "text-success" : g.score === 0 ? "text-error" : "text-on-surface-variant"}`}>
-                    {g.result === "1/2-1/2" ? "½-½" : g.result ?? "·"}
-                  </td>
                   <td rowSpan={span} {...toGame} className={`${cell} cursor-pointer whitespace-nowrap hover:underline`}>
                     {g.white}{g.white_elo ? <span className="text-on-surface-variant"> ({g.white_elo})</span> : null}
                     <span className="text-on-surface-variant"> - </span>
                     {g.black}{g.black_elo ? <span className="text-on-surface-variant"> ({g.black_elo})</span> : null}
+                  </td>
+                  <td rowSpan={span} {...toGame} className={`${cell} cursor-pointer font-semibold tabular-nums whitespace-nowrap ${g.score === 1 ? "text-success" : g.score === 0 ? "text-error" : "text-on-surface-variant"}`}>
+                    {g.result === "1/2-1/2" ? "½-½" : g.result ?? "·"}
                   </td>
                   <td rowSpan={span} {...toGame} className={`${cell} cursor-pointer whitespace-nowrap`}>
                     {g.time_control

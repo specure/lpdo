@@ -31,8 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deviated at a move, the opponent deviated — with the book's move there —
   or not in the repertoire; the time control as 3′+2″, and the time of
   day an online game was played (both in local time), a day's games
-  latest first; the columns Played, Players, Time control, Book ·
-  Chapter, Deviation, the long lines wrapping; the players (or the date)
+  latest first; the columns Date, Game (the players, then the result),
+  Time control, Repertoire book, Deviation, the long lines wrapping; the players (or the date)
   put the game on the Analysis board, from your side; a chapter's line
   puts the chapter on the Repertoire page's board where the game left it.
   A tally of the period at the top; the time classes as filters.
