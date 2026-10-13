@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the default, in place of 50 · 75 · 90 · 100: half the games left out too
   many lines. The choice is kept on the device, and the chapter list counts
   with it.
+- **Cut rare ends** — a line chosen was trained to its last move, books
+  carrying variations nobody plays and lines running past the database's
+  depth. With the switch (Session tab, on by default, kept on the device),
+  the lines' ends are cut where they get rare: a move is valued by the
+  share of the chapter's games that reach it — nothing beyond the
+  database's figures or below a move never played — and the least valued
+  are cut first, the longest line first among equals, always after your
+  move, keeping the coverage's share (80 or 95%) of the lines' use. At 100%
+  nothing is cut. The Session tab says how many moves went.
 
 ### Fixed
 - **One move, one row** — the moves from a position (the Reference tab, a
