@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for each move, the median rating of those who played it and their
   performance rating with it (from ten rated opponents); the Reference tab
   on the phone shows them as "rating → performance", the performance green
-  or red where it is 25 points or more above or below the rating. Analyse
+  or red where it is 40 points or more off what the side scores on average
+  (White about 35 above the rating, Black 35 below). Analyse
   the chapter again for figures stored before — or every chapter at once:
   **Analyse all chapters again** on the Maintenance page, under the
   repertoire's settings, works out the figures of every chapter of the

@@ -9,6 +9,14 @@
 
 import { bareSan, type Eval, type PNode, type Stats } from "./format";
 
+/** White's edge, in rating points: what a side performs against its own
+ *  rating on average — White above, Black below — so a performance is
+ *  coloured against that, not against the rating itself. */
+const WHITE_EDGE = 35;
+/** A performance this far from what the side scores on average is coloured
+ *  (a small sample's performance wanders by more than the edge). */
+const PERF_BAND = 40;
+
 const ordinal = (n: number) => (n === 1 ? "most played" : `${n}${n === 2 ? "nd" : n === 3 ? "rd" : "th"} most played`);
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 const fmtEval = (e: Eval) => ("mate" in e ? `${e.mate > 0 ? "" : "-"}M${Math.abs(e.mate)}` : `${e.cp > 0 ? "+" : ""}${(e.cp / 100).toFixed(2)}`);
@@ -37,6 +45,10 @@ export default function MoveStats({ move, ply, stats, own }: Props) {
   const top = ranked[0][1] || 1;
   // Any rating or performance among the moves shown: the column, and its key.
   const rated = shown.some((m) => m[3] != null || m[4] != null);
+  // What the side scores on average against its rating: the colour's zero.
+  const edge = ply % 2 === 0 ? WHITE_EDGE : -WHITE_EDGE;
+  const tone = (perf: number | null | undefined, elo: number | null | undefined) =>
+    perf == null || elo == null ? "" : perf - (elo + edge) >= PERF_BAND ? "text-success" : perf - (elo + edge) <= -PERF_BAND ? "text-error" : "";
   // One's own rare move: the opponent will seldom have met it.
   const verdict = !mine ? `not among the moves played here${own ? " — a surprise" : ""}`
     : mine[1] < 0.05 ? `rare — ${pct(mine[1])} of games${own ? ", a surprise" : ""}`
@@ -63,10 +75,10 @@ export default function MoveStats({ move, ply, stats, own }: Props) {
                   staying in its column. */}
               {rated && (
                 <span className="shrink-0 inline-flex items-center tabular-nums whitespace-nowrap"
-                  title={`${elo != null ? `Median rating ${elo}` : "No ratings"}${perf != null ? ` · performance ${perf}` : " · too few rated games for a performance"}`}>
+                  title={`${elo != null ? `Median rating ${elo}` : "No ratings"}${perf != null ? ` · performance ${perf} (${ply % 2 === 0 ? "White" : "Black"} scores about ${edge > 0 ? "+" : "−"}${WHITE_EDGE} on average; coloured from ${PERF_BAND} off that)` : " · too few rated games for a performance"}`}>
                   <span className="w-10 text-right">{elo ?? ""}</span>
                   <span className="w-4 text-center text-on-surface-variant/70">{perf != null ? "→" : ""}</span>
-                  <span className={`w-10 text-right ${perf != null && perf - (elo ?? perf) >= 25 ? "text-success" : perf != null && perf - (elo ?? perf) <= -25 ? "text-error" : ""}`}>{perf ?? ""}</span>
+                  <span className={`w-10 text-right ${tone(perf, elo)}`}>{perf ?? ""}</span>
                 </span>
               )}
             </div>
