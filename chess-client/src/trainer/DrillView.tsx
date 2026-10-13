@@ -538,14 +538,18 @@ export default function DrillView({ chapter, store, onClose }: Props) {
   const tool = "h-8 px-2 rounded-md text-label-md text-primary hover:bg-primary/8 disabled:opacity-35 disabled:hover:bg-transparent";
   const withComments = useMemo(() => hasComments(chapter), [chapter]);
   // The figures to show: a new or missed move, the book's, where it stands;
-  // in a review the move just played; in a test the opponent's move just
-  // played (one's own would give away the book's reply).
+  // in a review the move just played; in a test the opponent's last move
+  // (one's own would give away the book's reply) — kept while the reply is
+  // played, so the tab does not flicker between a chart and nothing.
   const ownLast = lastPlayed ? sideToMove(path.slice(0, -1)) === color : false;
+  const lastOpp = ownLast ? path.length - 2 : path.length - 1;
   const figures = (phase === "show" || phase === "missed") && target
     ? { move: target, ply: path.length, stats: statsHere(), own: true }
-    : lastPlayed && (reviewing || !ownLast)
+    : reviewing && lastPlayed
       ? { move: lastPlayed, ply: path.length - 1, stats: path.length >= 2 ? path[path.length - 2].stats : chapter.start.stats, own: ownLast }
-      : null;
+      : lastOpp >= 0
+        ? { move: path[lastOpp], ply: lastOpp, stats: lastOpp >= 1 ? path[lastOpp - 1].stats : chapter.start.stats, own: false }
+        : null;
   const mineHere = lastPlayed ? lastPlayed.mine : chapter.start.mine;
   const evalHere = statsHere()?.eval;
   const endEval = lineMoves ? lineMoves[lineMoves.length - 1]?.engine : undefined;
