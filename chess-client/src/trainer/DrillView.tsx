@@ -488,10 +488,9 @@ export default function DrillView({ chapter, store, onClose }: Props) {
   const pickTab = (t: Tab) => { setTab(t); try { localStorage.setItem(TAB_KEY, t); } catch { /* per-device convenience only */ } };
   /** The chapter's line through the moves `p`: on down its main
    *  continuation (switched-off moves aside), joining the session's lines —
-   *  the drill's line in progress kept first — and gone through from the
-   *  ply `at` in the mode at hand (in a test, from before one's own move
-   *  tapped, so it is asked). */
-  const openLineThrough = (p: PNode[], at: number, mode: Mode = reviewing ? "review" : "test") => {
+   *  the drill's line in progress kept first — and reviewed from the ply
+   *  `at` (a test, if one is on, is left). */
+  const openLineThrough = (p: PNode[], at: number) => {
     if (!cards) return;
     const moves = [...p];
     for (let next = moves[moves.length - 1]?.children.find((c) => !c.off); next; next = next.children.find((c) => !c.off)) moves.push(next);
@@ -500,11 +499,10 @@ export default function DrillView({ chapter, store, onClose }: Props) {
     const next = [...ls, { moves, missed: [] }];
     setLines(next);
     setCursor(next.length - 1);
-    if (mode === "review") reviewLine(moves, at);
-    else testAgain(moves, at > 0 && sideToMove(moves.slice(0, at - 1)) === color ? at - 1 : at);
+    reviewLine(moves, at);
   };
   /** Another of the chapter's moves here reviewed instead. */
-  const reviewBranch = (n: PNode) => openLineThrough([...path, n], path.length, "review");
+  const reviewBranch = (n: PNode) => openLineThrough([...path, n], path.length);
   const budgetUsed = perDay > 0 && today.met >= budget;
   const boardActive = phase === "own" || phase === "show" || phase === "missed";
   const mode: Mode = reviewing ? "review" : "test";
@@ -745,7 +743,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
               <Tree nodes={chapter.tree} path={[]} inSession={drill.inSession} onLine={onLine} at={lastPlayed} pick={(p) => openLineThrough(p, p.length)} />
               <div className="text-label-sm text-on-surface-variant">
                 <b className="font-semibold text-primary">Blue</b>: this line · plain: the session's others · grey: left out at {Math.round(coverage * 100)}% ·
-                <s> struck</s>: switched off. A move tapped goes to its line, {reviewing ? "reviewed" : "tested"} from there.
+                <s> struck</s>: switched off. A move tapped is reviewed from there — its line, out of a test.
               </div>
             </>)}
             {tab === "comments" && (<>
