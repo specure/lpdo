@@ -45,6 +45,14 @@ function chaptersOf(g: RecentGame): LineMatch[] {
 type Tone = "good" | "bad" | "muted" | "plain";
 const TONE: Record<Tone, string> = { good: "text-success", bad: "text-error", muted: "text-on-surface-variant", plain: "" };
 
+/** The time of day a game was played, in local time ("14:17"); "" without. */
+function timeOf(g: RecentGame): string {
+  if (!g.played_at) return "";
+  const d = new Date(g.played_at);
+  const two = (n: number) => String(n).padStart(2, "0");
+  return Number.isNaN(d.getTime()) ? "" : `${two(d.getHours())}:${two(d.getMinutes())}`;
+}
+
 /** "5...Nxd5": the move that brought the line to `ply` half-moves. */
 const moveAt = (moves: string[], ply: number) =>
   `${Math.floor((ply - 1) / 2) + 1}${(ply - 1) % 2 ? "..." : "."}${moves[ply - 1] ?? ""}`;
@@ -184,7 +192,9 @@ export default function RecentGamesPage({ onOpenChapter, onOpenGame }: Props) {
                     className={`border-t border-outline/20 align-top ${canOpen(first) ? "cursor-pointer hover:bg-on-surface/5" : ""}`}
                     onClick={() => open(first)}
                     title={canOpen(first) ? "The chapter on the board where the game left it" : undefined}>
-                    <td className="px-4 py-1.5 whitespace-nowrap text-on-surface-variant">{g.date ?? "?"}</td>
+                    <td className="px-4 py-1.5 whitespace-nowrap text-on-surface-variant" title={g.played_at ? `${g.played_at.replace("T", " ").replace("Z", "")} UTC` : undefined}>
+                      {g.date ?? "?"}{timeOf(g) && <span className="ml-2 tabular-nums">{timeOf(g)}</span>}
+                    </td>
                     <td className={`px-2 py-1.5 font-semibold tabular-nums whitespace-nowrap ${g.score === 1 ? "text-success" : g.score === 0 ? "text-error" : "text-on-surface-variant"}`}
                       title={g.score === 1 ? "You won" : g.score === 0 ? "You lost" : g.score === 0.5 ? "A draw" : undefined}>
                       {g.result === "1/2-1/2" ? "½-½" : g.result ?? "·"}
@@ -206,7 +216,7 @@ export default function RecentGamesPage({ onOpenChapter, onOpenGame }: Props) {
                           className={canOpen(m) && m !== first ? "cursor-pointer hover:underline" : undefined}
                           onClick={m !== first ? (e) => { e.stopPropagation(); open(m); } : undefined}
                           title={canOpen(m) && m !== first ? "This chapter on the board where the game left it" : undefined}>
-                          {m.chapter_name}<span className="text-label-sm text-on-surface-variant"> · {m.book_name}</span>
+                          <span className="text-label-sm text-on-surface-variant">{m.book_name} · </span>{m.chapter_name}
                         </div>
                       ))}
                     </td>
