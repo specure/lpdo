@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   coverage and *New a day* now live) — a dot on a tab where there is
   something to see; the tab chosen is kept. The board keeps its size on the
   phone, whatever the panel says.
+- **Tree** — a tab with the chapter's whole tree, each variation on its own
+  line under the one it leaves: the line at hand in bold, the session's
+  other lines plain, the lines the coverage leaves out grey, switched-off
+  ones struck; the move at hand marked. A move tapped goes to its line,
+  tested or reviewed from there, whichever is on.
+- **Lines: 80 · 95 · 100%** — the session's coverage choices, 80% (Pareto's)
+  the default, in place of 50 · 75 · 90 · 100: half the games left out too
+  many lines. The choice is kept on the device, and the chapter list counts
+  with it.
 
 ### Fixed
 - **One move, one row** — the moves from a position (the Reference tab, a

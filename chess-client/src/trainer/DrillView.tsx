@@ -22,8 +22,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { bareSan, hasComments, type Eval, type LpdoChapter, type PNode } from "./format";
 import {
-  NEW_PER_DAY_CHOICES, buildDrill, cardCounts, describeBookMove, fenAfter, introduce, lineOver, matchOwn, newPerDay,
-  newToday, nextMoves, nextStep, opponentMove, review, saveNewPerDay, saveNewToday, sideToMove,
+  COVERAGE_CHOICES, NEW_PER_DAY_CHOICES, buildDrill, cardCounts, describeBookMove, drillCoverage, fenAfter, introduce, lineOver,
+  matchOwn, newPerDay, newToday, nextMoves, nextStep, opponentMove, review, saveCoverage, saveNewPerDay, saveNewToday, sideToMove,
   type Card, type CardStore, type NewToday,
 } from "./drill";
 import DrillBoard, { BRANCH_COLOR, HINT_COLOR } from "./DrillBoard";
@@ -50,9 +50,9 @@ type Mode = "test" | "review";
 /** A line of the session: its moves, and where it had a miss (plies). */
 interface LineRec { moves: PNode[]; missed: number[] }
 
-type Tab = "line" | "comments" | "engine" | "reference" | "session";
+type Tab = "line" | "tree" | "comments" | "engine" | "reference" | "session";
 const TABS: { id: Tab; label: string }[] = [
-  { id: "line", label: "Line" }, { id: "comments", label: "Comments" }, { id: "engine", label: "Engine" },
+  { id: "line", label: "Line" }, { id: "tree", label: "Tree" }, { id: "comments", label: "Comments" }, { id: "engine", label: "Engine" },
   { id: "reference", label: "Reference" }, { id: "session", label: "Session" },
 ];
 const TAB_KEY = "lpdoDrillTab";
@@ -79,6 +79,51 @@ function LineText({ moves, missed, at, onPick, more }: { moves: PNode[]; missed:
   );
 }
 
+/** The chapter's tree (the Tree tab): a line's moves in a row, each
+ *  variation on its own line under it, indented, in the chapter's order.
+ *  The line at hand in bold, the session's other lines plain, lines the
+ *  coverage leaves out greyed, switched-off ones struck. The move at hand is
+ *  marked and scrolled to. A move tapped: `pick` with the moves to it. */
+function Tree({ nodes, path, inSession, onLine, at, pick, depth = 0 }: {
+  nodes: PNode[]; path: PNode[]; inSession: Set<PNode>; onLine: Set<PNode>; at: PNode | null; pick: (path: PNode[]) => void; depth?: number;
+}) {
+  const main: PNode[] = [];
+  const variations: { prefix: PNode[]; nodes: PNode[] }[] = [];
+  let level = nodes, prefix = path;
+  while (level.length) {
+    const n = level[0];
+    main.push(n);
+    if (level.length > 1) variations.push({ prefix, nodes: level.slice(1) });
+    prefix = [...prefix, n];
+    level = n.children;
+  }
+  return (
+    <div className={depth ? "pl-2.5 ml-1 border-l border-outline/30" : ""}>
+      <div className="font-mono text-label-md leading-relaxed">
+        {main.map((n, i) => {
+          const p = path.length + i;
+          const num = p % 2 === 0 ? `${p / 2 + 1}.` : i === 0 ? `${Math.floor(p / 2) + 1}…` : "";
+          const here = n === at;
+          const tone = n.off ? "line-through text-on-surface-variant/50" : onLine.has(n) ? "font-semibold text-on-surface" : inSession.has(n) ? "text-on-surface" : "text-on-surface-variant/60";
+          return (
+            <span key={n.uci + i}>
+              <span className="text-on-surface-variant/70">{num}</span>
+              <span onClick={() => pick([...path, ...main.slice(0, i + 1)])}
+                ref={here ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}
+                className={`cursor-pointer rounded-sm hover:bg-on-surface/8 ${tone} ${here ? "underline underline-offset-2 bg-primary/15" : ""}`}>
+                {n.san}
+              </span>{" "}
+            </span>
+          );
+        })}
+      </div>
+      {variations.map((v) => v.nodes.map((n) => (
+        <Tree key={`${v.prefix.length}-${n.uci}`} nodes={[n]} path={v.prefix} inSession={inSession} onLine={onLine} at={at} pick={pick} depth={depth + 1} />
+      )))}
+    </div>
+  );
+}
+
 /** The replay's steps, drawn: as characters iOS shows them as emoji. */
 const STEP_ICONS = {
   first: "M6 5h2v14H6zM19 5v14L9 12z",
@@ -86,8 +131,6 @@ const STEP_ICONS = {
   on: "M7 5v14l11-7z",
   last: "M5 5v14l10-7zM16 5h2v14h-2z",
 };
-
-const COVERAGES = [0.5, 0.75, 0.9, 1];
 
 /** The chapter's other moves drawn as arrows in a review, the most played;
  *  the rest are only listed. */
@@ -109,7 +152,7 @@ const fmtEval = (e: Eval) => ("mate" in e
   : `${e.cp > 0 ? "+" : e.cp < 0 ? "−" : ""}${(Math.abs(e.cp) / 100).toFixed(2)}`);
 
 export default function DrillView({ chapter, store, onClose }: Props) {
-  const [coverage, setCoverage] = useState(0.75);
+  const [coverage, setCoverage] = useState(() => drillCoverage());
   const drill = useMemo(() => buildDrill(chapter, coverage), [chapter, coverage]);
   const chapterId = chapter.chapter.id;
   const [perDay, setPerDay] = useState(() => newPerDay());
@@ -440,16 +483,25 @@ export default function DrillView({ chapter, store, onClose }: Props) {
       : [];
   const pickLayer = (l: Layer) => { setLayer(l); try { localStorage.setItem(LAYER_KEY, l); } catch { /* per-device convenience only */ } };
   const pickTab = (t: Tab) => { setTab(t); try { localStorage.setItem(TAB_KEY, t); } catch { /* per-device convenience only */ } };
-  /** Another of the chapter's moves here reviewed instead: on down its main
-   *  continuation, from this position — a line of the session from here. */
-  const reviewBranch = (n: PNode) => {
-    const moves = [...path, n];
-    for (let next = moves[moves.length - 1].children.find((c) => !c.off); next; next = next.children.find((c) => !c.off)) moves.push(next);
-    const ls = [...lines, { moves, missed: [] }];
-    setLines(ls);
-    setCursor(ls.length - 1);
-    reviewLine(moves, path.length);
+  /** The chapter's line through the moves `p`: on down its main
+   *  continuation (switched-off moves aside), joining the session's lines —
+   *  the drill's line in progress kept first — and gone through from the
+   *  ply `at` in the mode at hand (in a test, from before one's own move
+   *  tapped, so it is asked). */
+  const openLineThrough = (p: PNode[], at: number, mode: Mode = reviewing ? "review" : "test") => {
+    if (!cards) return;
+    const moves = [...p];
+    for (let next = moves[moves.length - 1]?.children.find((c) => !c.off); next; next = next.children.find((c) => !c.off)) moves.push(next);
+    let ls = lines;
+    if (cursor === null && path.length) ({ ls } = keepLine());
+    const next = [...ls, { moves, missed: [] }];
+    setLines(next);
+    setCursor(next.length - 1);
+    if (mode === "review") reviewLine(moves, at);
+    else testAgain(moves, at > 0 && sideToMove(moves.slice(0, at - 1)) === color ? at - 1 : at);
   };
+  /** Another of the chapter's moves here reviewed instead. */
+  const reviewBranch = (n: PNode) => openLineThrough([...path, n], path.length, "review");
   const budgetUsed = perDay > 0 && today.met >= budget;
   const boardActive = phase === "own" || phase === "show" || phase === "missed";
   const mode: Mode = reviewing ? "review" : "test";
@@ -459,6 +511,11 @@ export default function DrillView({ chapter, store, onClose }: Props) {
   // The line's moves, when they are known: in a replay, or the drill's done
   // (in progress, the opponent may still turn either way).
   const lineMoves = replaying ?? (atEnd ? atLine?.moves ?? null : null);
+  // The line at hand's moves, for the tree: the drill's in progress on
+  // down the main continuation.
+  const onLine = useMemo(() => new Set(lineMoves ?? (cursor !== null ? atLine?.moves ?? [] : extend(path))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [lineMoves, cursor, atLine, path, drill]);
 
   const status = phase === "loading" ? "Reading your cards…"
     : phase === "review" ? "Reviewing the line"
@@ -560,7 +617,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
             promotions={promotions} lastMove={lastMove} hint={hint} arrows={arrows} circles={shown === "book" ? bookCircles : []} />
           </div>
         </div>
-        <div className="flex-1 min-h-0 md:flex-none md:w-80 flex flex-col border-t md:border-t-0 md:border-l border-outline/40">
+        <div className="flex-1 min-h-0 md:flex-none md:w-88 flex flex-col border-t md:border-t-0 md:border-l border-outline/40">
           <div className="shrink-0 px-3 pt-2 flex flex-col gap-2">
             {/* The session's lines, back and forth; test or review, from here. */}
             <div className="flex items-center gap-1">
@@ -639,7 +696,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
               const dot = (t.id === "comments" && !!comment) || (t.id === "engine" && atEnd && !!endEval);
               return (
                 <button key={t.id} role="tab" aria-selected={tab === t.id} onClick={() => pickTab(t.id)}
-                  className={`h-9 px-2 text-label-md whitespace-nowrap border-b-2 -mb-px ${tab === t.id ? "border-primary text-primary" : "border-transparent text-on-surface-variant hover:text-on-surface"}`}>
+                  className={`h-9 px-1.5 text-label-md whitespace-nowrap border-b-2 -mb-px ${tab === t.id ? "border-primary text-primary" : "border-transparent text-on-surface-variant hover:text-on-surface"}`}>
                   {t.label}
                   {dot && tab !== t.id && <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-primary align-middle" aria-label="something here" />}
                 </button>
@@ -682,6 +739,13 @@ export default function DrillView({ chapter, store, onClose }: Props) {
               {!reviewing && phase !== "sessionDone" && phase !== "loading" && (
                 <div className="text-label-sm text-on-surface-variant">A move tapped is reviewed from there.</div>
               )}
+            </>)}
+            {tab === "tree" && (<>
+              <Tree nodes={chapter.tree} path={[]} inSession={drill.inSession} onLine={onLine} at={lastPlayed} pick={(p) => openLineThrough(p, p.length)} />
+              <div className="text-label-sm text-on-surface-variant">
+                <b className="font-semibold text-on-surface">Bold</b>: this line · plain: the session's others · grey: left out at {Math.round(coverage * 100)}% ·
+                <s> struck</s>: switched off. A move tapped goes to its line, {reviewing ? "reviewed" : "tested"} from there.
+              </div>
             </>)}
             {tab === "comments" && (<>
               {pre && <div className="text-body-sm italic text-on-surface-variant">{pre}</div>}
@@ -741,9 +805,9 @@ export default function DrillView({ chapter, store, onClose }: Props) {
                 <label className="flex items-center gap-1.5 text-label-md text-on-surface-variant"
                   title="The lines drilled: the most played first, until they take in this share of the games that stay in the chapter">
                   Lines
-                  <select value={coverage} onChange={(e) => setCoverage(Number(e.target.value))}
+                  <select value={coverage} onChange={(e) => { const c = Number(e.target.value); setCoverage(c); saveCoverage(c); }}
                     className="h-7 px-1 rounded-sm bg-surface-container border border-outline/40 text-on-surface text-label-md">
-                    {COVERAGES.map((c) => <option key={c} value={c}>{Math.round(c * 100)}%</option>)}
+                    {COVERAGE_CHOICES.map((c) => <option key={c} value={c}>{Math.round(c * 100)}%</option>)}
                   </select>
                 </label>
                 <label className="flex items-center gap-1.5 text-label-md text-on-surface-variant"

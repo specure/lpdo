@@ -380,7 +380,8 @@ picked in the tree) and takes its lines in order of weight until they reach
 a target, set one of two ways, the other shown alongside:
 
 - **Coverage** — the share of the chapter's games the lines chosen take
-  in ("3 of 20 lines, 78%"); the default, 75% — always reachable.
+  in ("3 of 20 lines, 82%"); 80 (Pareto's — the default, kept on the
+  device), 95 or 100% — always reachable.
 - **Time** — "20 minutes": lines are added while the estimate stays under
   it.
 

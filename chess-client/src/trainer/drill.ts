@@ -202,12 +202,18 @@ export function describeBookMove(node: PNode, stats: Stats | undefined): string 
   return `${node.san} — ${Math.round(m[1] * 100)}% of games, scores ${Math.round(m[2] * 100)}%`;
 }
 
-/** The FEN after `path`. */
+/** The FEN after `path` — from the position kept before its last move
+ *  when the move is on the session's lines, else played through from the
+ *  start (a line of the chapter outside the session). */
 export function fenAfter(d: Drill, path: PNode[]): string {
   if (!path.length) return d.startFen;
   const last = path[path.length - 1];
-  const board = new Chess(d.fenBefore.get(last) ?? d.startFen);
-  try { board.move(last.san); } catch { /* the chapter's moves are legal */ }
+  const before = d.fenBefore.get(last);
+  const board = new Chess(before ?? d.startFen);
+  try {
+    if (before) board.move(last.san);
+    else for (const n of path) board.move(n.san);
+  } catch { /* the chapter's moves are legal */ }
   return board.fen();
 }
 
@@ -216,6 +222,23 @@ export function fenAfter(d: Drill, path: PNode[]): string {
 export function lineOver(d: Drill, moves: PNode[]): "checkmate" | "stalemate" | null {
   const board = new Chess(fenAfter(d, moves));
   return board.isCheckmate() ? "checkmate" : board.isStalemate() ? "stalemate" : null;
+}
+
+// ── The session's coverage ───────────────────────────────────────────────────
+
+/** The share of the games staying in the chapter that the session's lines
+ *  take in, by default: Pareto's 80% — the few lines most games follow. */
+export const COVERAGE = 0.8;
+export const COVERAGE_CHOICES = [0.8, 0.95, 1];
+const COVERAGE_KEY = "lpdoDrillCoverage";
+
+/** The coverage chosen on this device, else the default. */
+export function drillCoverage(): number {
+  try { const v = Number(localStorage.getItem(COVERAGE_KEY)); return COVERAGE_CHOICES.includes(v) ? v : COVERAGE; } catch { return COVERAGE; }
+}
+
+export function saveCoverage(c: number): void {
+  try { localStorage.setItem(COVERAGE_KEY, String(c)); } catch { /* not kept */ }
 }
 
 // ── New moves a day ──────────────────────────────────────────────────────────
