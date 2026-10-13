@@ -1986,15 +1986,17 @@ pub fn match_line_ordered(conn: &Connection, sans: &[String], color: &str, order
     for (id, c) in &chapters {
         for z in &has[id] { *count.entry((c.book.0, *z)).or_default() += 1; }
     }
-    // Went into a chapter: played on from a position of its own — the
-    // chapter's move there, or to the end of its line, or the line ended
-    // there. Only reaching one and deviating at once is not enough: for the
-    // game as it went the chapter is not what was played (1.c4 e5 2.g3 in a
-    // book whose 1...e5 chapter has 2.Nc3).
+    // Went into a chapter: reached a position of its own (by any move
+    // order) and played on from it — the chapter's move there, to the end
+    // of its line, or the line ended there — or left it there from move 4
+    // on, the chapter's move the one to have played. Leaving at once
+    // earlier is not enough: 1.c4 e5 2.g3, in a book whose 1...e5 chapter
+    // has 2.Nc3, is not that chapter.
+    const LEAVE_FROM_PLY: usize = 6; // the move left with is move 4 or later
     let went_into = |id: i64, book: i64| (1..=n).any(|ply| {
         let z = zs[ply];
         has[&id].contains(&z) && count[&(book, z)] == 1
-            && (ply == n || chapters[&id].moves.get(&z).is_none_or(|ms| ms.contains(moves[ply])))
+            && (ply == n || ply >= LEAVE_FROM_PLY || chapters[&id].moves.get(&z).is_none_or(|ms| ms.contains(moves[ply])))
     });
 
     // In each book, the chapters it went into, furthest; else the book's own row.
@@ -2937,6 +2939,29 @@ mod tests {
         let m = match_line(&conn, &line("e4 e6 d4 d5 Nc3 Nf6 Qf3"), "white").unwrap().into_iter().find(|m| m.chapter_id == classical).unwrap();
         assert_eq!((m.left_book, m.left_by, m.mv.as_deref()), (false, Some("you"), Some("4.Qf3")));
         assert_eq!(m.book_has, ["4.e5", "4.Bg5", "4.Bd3", "4.exd5"], "the PGN's order, not the alphabet's");
+    }
+
+    #[test]
+    fn a_chapter_left_at_once_counts_from_move_4() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let dutch = create_book(&conn, "Dutch", "black", None, None, None).unwrap();
+        let add = |name: &str, moves: &str| add_chapters(&conn, dutch.id, Some(name), Some(moves), None).unwrap().remove(0).id;
+        let classical = add("Classical", "1. d4 f5 2. c4 Nf6 3. Nc3 e6 4. Nf3 Be7 5. g3 O-O *");
+        add("Leningrad", "1. d4 f5 2. g3 Nf6 3. Bg2 g6 *");
+        let line = |moves: &str| moves.split(' ').map(String::from).collect::<Vec<_>>();
+        let first = |moves: &str| match_line(&conn, &line(moves), "black").unwrap().remove(0);
+
+        // Into the Classical's 4.Nf3 position by transposition (1.Nf3 f5
+        // 2.c4 Nf6 3.d4 e6 4.Nc3), left at once with 4...Bb4: the chapter,
+        // its move the one to have played.
+        let m = first("Nf3 f5 c4 Nf6 d4 e6 Nc3 Bb4");
+        assert_eq!((m.chapter_id, m.left_book, m.left_by, m.mv.as_deref(), m.book_has.clone()),
+            (classical, false, Some("you"), Some("4...Bb4"), vec!["4...Be7".to_string()]));
+        // The Classical's own 2.c4 position left at once with 2...e5: too
+        // early for the chapter — the book's row.
+        let m = first("d4 f5 c4 e5");
+        assert_eq!((m.left_book, m.mv.as_deref()), (true, Some("2...e5")));
     }
 
     #[test]
