@@ -1865,21 +1865,35 @@ pub struct LineMatch {
     pub book_has: Vec<String>,
 }
 
-/// A chapter's moves from a position (`moves`, as indexed), in the order
-/// its PGN has them: the main move first — a variation comes after the
-/// move it replaces. The set's order when the chapter cannot be read.
-fn moves_in_order(conn: &Connection, chapter_id: i64, z: i64, moves: &std::collections::HashSet<String>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    if let Ok(w) = get_chapter(conn, chapter_id).and_then(|c| walk(&movetext_of(&c.pgn))) {
-        for r in w.rows.iter().filter(|r| r.zobrist == z) {
-            let san = strip_marks(&r.next_move).to_string();
-            if moves.contains(&san) && !out.contains(&san) { out.push(san); }
-        }
+/// Chapters' moves in their PGN's order, per position — the main move
+/// first, a variation coming after the move it replaces: each chapter
+/// walked once, when first asked for (a request matching many games asks
+/// for the same chapters again).
+#[derive(Default)]
+pub struct MoveOrder(std::collections::HashMap<i64, std::collections::HashMap<i64, Vec<String>>>);
+
+impl MoveOrder {
+    /// The chapter's moves from position `z` (`moves`, as indexed), in its
+    /// PGN's order; the alphabet's for any the walk did not give (a chapter
+    /// that cannot be read).
+    fn of(&mut self, conn: &Connection, chapter_id: i64, z: i64, moves: &std::collections::HashSet<String>) -> Vec<String> {
+        let at = self.0.entry(chapter_id).or_insert_with(|| {
+            let mut at: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+            if let Ok(w) = get_chapter(conn, chapter_id).and_then(|c| walk(&movetext_of(&c.pgn))) {
+                for r in &w.rows {
+                    let san = strip_marks(&r.next_move).to_string();
+                    let v = at.entry(r.zobrist).or_default();
+                    if !v.contains(&san) { v.push(san); }
+                }
+            }
+            at
+        });
+        let mut out: Vec<String> = at.get(&z).into_iter().flatten().filter(|m| moves.contains(*m)).cloned().collect();
+        let mut rest: Vec<&String> = moves.iter().filter(|m| !out.contains(m)).collect();
+        rest.sort();
+        out.extend(rest.into_iter().cloned());
+        out
     }
-    let mut rest: Vec<&String> = moves.iter().filter(|m| !out.contains(m)).collect();
-    rest.sort();
-    out.extend(rest.into_iter().cloned());
-    out
 }
 
 /// The chapters of the books of `color` a line of moves (SAN, from the
@@ -1891,6 +1905,12 @@ fn moves_in_order(conn: &Connection, chapter_id: i64, z: i64, moves: &std::colle
 /// only repeat them. Then the books it went into none of the chapters of, one row each
 /// (`left_book`). A move that cannot be played ends the line.
 pub fn match_line(conn: &Connection, sans: &[String], color: &str) -> Result<Vec<LineMatch>> {
+    match_line_ordered(conn, sans, color, &mut MoveOrder::default())
+}
+
+/// [`match_line`], the chapters' move order kept in `order` for the next
+/// line (the Recent games: many games, the same chapters).
+pub fn match_line_ordered(conn: &Connection, sans: &[String], color: &str, order: &mut MoveOrder) -> Result<Vec<LineMatch>> {
     let color = valid_color(color)?;
     // The line's positions, before each move and after the last.
     let mut pos = Chess::default();
@@ -1952,7 +1972,8 @@ pub fn match_line(conn: &Connection, sans: &[String], color: &str) -> Result<Vec
         let side_to_move = if deepest.is_multiple_of(2) { "white" } else { "black" };
         let (followed, left_by, mv, book_has) = if deepest == n { ("ended", None, None, Vec::new()) }
             else if let Some(ms) = c.moves.get(&zs[deepest]) {
-                let has = moves_in_order(conn, *id, zs[deepest], ms).into_iter().map(|san| move_label(deepest as i64, &san)).collect();
+                // Ordered below, for the rows kept only: a chapter walk each.
+                let has = ms.iter().cloned().collect();
                 ("left", Some(if side_to_move == color { "you" } else { "opponent" }), Some(move_label(deepest as i64, moves[deepest])), has)
             } else { ("end", None, None, Vec::new()) };
         found.push((LineMatch {
@@ -2004,6 +2025,14 @@ pub fn match_line(conn: &Connection, sans: &[String], color: &str) -> Result<Vec
         m.left_book = true;
         m.book_has = book_has;
         book_rows.push((m, o));
+    }
+    // The chapter rows' moves where the line left: the chapter's order,
+    // the main move first, labelled ("4.e5").
+    for (m, _) in kept.iter_mut() {
+        if m.followed != "left" { continue; }
+        let at = m.ply as usize;
+        let set: std::collections::HashSet<String> = m.book_has.drain(..).collect();
+        m.book_has = order.of(conn, m.chapter_id, zs[at], &set).into_iter().map(|san| move_label(m.ply, &san)).collect();
     }
     kept.sort_by(|(a, ao), (b, bo)| b.ply.cmp(&a.ply).then(ao.cmp(bo)));
     book_rows.sort_by(|(a, ao), (b, bo)| b.ply.cmp(&a.ply).then(ao.0.cmp(&bo.0)));
@@ -2285,6 +2314,7 @@ pub fn recent_games(conn: &Connection, player: i64, days: u32, filter: Filter, l
         r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?,
     )))?.collect::<duckdb::Result<_>>()?;
     let mut games = Vec::with_capacity(rows.len());
+    let mut order = MoveOrder::default();
     for (id, white, black, white_elo, black_elo, date, event, site, result, time_control, time_class, platform, pgn, mine_white) in rows {
         let color = if mine_white { "white" } else { "black" };
         let score = match (result.as_deref(), mine_white) {
@@ -2294,7 +2324,7 @@ pub fn recent_games(conn: &Connection, player: i64, days: u32, filter: Filter, l
             _ => None,
         };
         let sans = crate::dedup::canonical_moves(&pgn);
-        let matches = match_line(conn, &sans, color)?;
+        let matches = match_line_ordered(conn, &sans, color, &mut order)?;
         let played_at = played_at(&pgn, date.as_deref());
         games.push(RecentGame { id, white, black, white_elo, black_elo, date, played_at, event, site, result, time_control, time_class, platform, color: color.to_string(), score, moves: sans, matches });
     }
@@ -2977,7 +3007,10 @@ mod tests {
             INSERT INTO games (id, white_id, black_id, result, date, pgn, platform) VALUES (3, {handle}, 2, '1-0', '2000-01-01', '1. d4 1-0', 'lichess');
             INSERT INTO games (id, white_id, black_id, result, date, pgn, platform, time_class) VALUES (4, {handle}, 2, '1-0', '{today}', '[UTCTime \"20:00:00\"]\n\n1. e4 e5 1-0', 'lichess', 'blitz');
         ")).unwrap();
-        // The settings count the last twelve months: the game of 2000 is out.
+        // The settings count the last twelve months: the game of 2000 is out
+        // (the settings held, as other tests change them).
+        let _turn = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_settings(RepertoireSettings::default()).unwrap();
         for (scope, n) in [(Scope::All, 3), (Scope::Otb, 1), (Scope::Online, 2)] {
             assert_eq!(chapter_mine(&conn, ch.id, 1, Filter::scope(scope)).unwrap().games, n, "{scope:?}");
         }
