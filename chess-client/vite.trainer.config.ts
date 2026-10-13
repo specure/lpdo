@@ -4,6 +4,7 @@
 // and the theme (src/index.css) with the desktop app; the Tauri build
 // (vite.config.ts) is not touched.
 import { createHash } from "node:crypto";
+import { execSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { defineConfig, type Plugin } from "vite";
@@ -40,9 +41,18 @@ function precache(): Plugin {
   };
 }
 
+/** The build's mark, shown in the trainer's footer — so the phone can say
+ *  which build it runs: the commit, and the day. */
+const mark = (() => {
+  let commit = "dev";
+  try { commit = execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); } catch { /* no git */ }
+  return `${commit} · ${new Date().toISOString().slice(0, 10)}`;
+})();
+
 export default defineConfig({
   root: "trainer",
   base: "./",
+  define: { __TRAINER_BUILD__: JSON.stringify(mark) },
   plugins: [react(), tailwindcss(), precache()],
   build: { outDir: "../dist-trainer", emptyOutDir: true },
   server: { port: 1430, strictPort: true, host: true, fs: { allow: [".."] } },

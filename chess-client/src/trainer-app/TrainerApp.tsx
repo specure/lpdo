@@ -224,6 +224,7 @@ export default function TrainerApp() {
       </main>
       <footer className="px-4 py-3 text-label-sm text-on-surface-variant">
         Everything stays on this phone — no account, nothing sent anywhere.
+        <span className="block mt-1 opacity-70">Build {typeof __TRAINER_BUILD__ === "string" ? __TRAINER_BUILD__ : "dev"}</span>
       </footer>
     </div>
   );
