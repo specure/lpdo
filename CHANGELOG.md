@@ -54,6 +54,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   active books anew, in the background (Stockfish's line ends are kept).
 
 ### Changed
+- **A chapter left right where the game reached it counts from move 4** —
+  on the Recent games page and the Analysis page's Repertoire tab, a game
+  that reaches a position only one chapter of a book has (by any move
+  order) and leaves it there now shows that chapter, "You deviated at
+  5.d4. Book move: 5.d3", when the move left with is move 4 or later;
+  earlier it is still only the book's grey row (1.c4 e5 2.g3 is not a
+  1...e5 chapter that plays 2.Nc3).
 - **Send to phone: the comments go too by default** — the checkbox is on;
   untick it for a chapter only to be drilled.
 - **The drill's screen, on the phone and the desktop** — the lines of a
