@@ -8,9 +8,10 @@
 # pushed there: `git push -f origin HEAD:trainer-next`), so a change is on
 # the phone in a few minutes without waiting for CI and CodeQL on the pull
 # request. By hand, the folder is chosen. The rest of gh-pages (the APT
-# repository) is checked out and published as it is. The preview is the same
-# origin as the real one, so the phone's chapters and cards are shared; it
-# is its own page to add to the Home Screen.
+# repository) is checked out and published as it is. The preview is its own
+# page to add to the Home Screen, with its own chapters and cards: a web app
+# on an iPhone's Home Screen has a store of its own, so nothing is shared
+# with the real trainer there (two Safari tabs would share).
 name: Phone trainer
 
 on:

@@ -636,9 +636,10 @@ pace.
    (`PositionStat.engine`), the package too (`PNode.engine`);
    (b) the phone trainer (the web app done: `chess-client/src/trainer-app/`,
    `vite.trainer.config.ts`, published by `.github/workflows/trainer.yml` to
-   GitHub Pages `/trainer/` from main, and to `/trainer-next/` — a preview on
-   the same origin, sharing the phone's chapters and cards — from whatever
-   is pushed to the `trainer-next` branch, in minutes, no CI to wait for;
+   GitHub Pages `/trainer/` from main, and to `/trainer-next/` — a preview,
+   with chapters and cards of its own on the phone (a Home Screen web app
+   has its own store) — from whatever is pushed to the `trainer-next`
+   branch, in minutes, no CI to wait for;
    chapters by file — **Save for phone…** — and by
    animated QR code — **Send to phone…**, `trainer/qrTransfer.ts`: BC-UR,
    400 bytes a frame at 10 a second, the package without comments; jsQR or
