@@ -24,6 +24,8 @@ pub struct Tags {
     pub result: Option<String>,
     pub eco: Option<String>,
     pub chessbase_id: Option<i64>,
+    /// The TimeControl tag as written ("180+2", "40/7200:3600", "-").
+    pub time_control: Option<String>,
     pub pgn_headers: String,
     pub start_pos: Chess,
     /// True when the game starts from a non-standard position (Chess960 or
@@ -75,6 +77,7 @@ pub struct GameData {
     pub result: Option<String>,
     pub eco: Option<String>,
     pub chessbase_id: Option<i64>,
+    pub time_control: Option<String>,
     pub pgn: String,
     pub opening_line: String,
     pub move_count: i16,
@@ -155,6 +158,7 @@ impl Visitor for GameVisitor {
             "Result" => tags.result = Some(v),
             "ECO" => tags.eco = Some(v),
             "GameId" => tags.chessbase_id = v.parse().ok(),
+            "TimeControl" => tags.time_control = Some(v).filter(|t| !t.is_empty() && t != "?"),
             "FEN" => {
                 match v.parse::<Fen>()
                     .ok()
@@ -403,6 +407,7 @@ impl Visitor for GameVisitor {
             result: t.result,
             eco: t.eco,
             chessbase_id: t.chessbase_id,
+            time_control: t.time_control,
             pgn,
             opening_line,
             move_count: movetext.move_count,

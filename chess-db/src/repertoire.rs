@@ -9,6 +9,7 @@
 //! tag in a move's comment means "not in my repertoire from here").
 
 use std::io::Cursor;
+use crate::accounts::Scope;
 use std::ops::ControlFlow;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -1219,6 +1220,7 @@ pub fn chapter_stats(conn: &Connection, id: i64) -> Result<Vec<PositionStat>> {
               AND COALESCE(g.white_elo, 0) <= {ceiling}
               AND COALESCE(g.black_elo, 0) <= {ceiling}
               AND g.id NOT IN (SELECT game_id FROM engine_games)
+              AND g.platform IS NULL
         )
         SELECT zobrist_hash, san, COUNT(*) AS games, AVG(score) AS score,
                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY player_elo) FILTER (WHERE player_elo > 0) AS elo,
@@ -1305,20 +1307,22 @@ fn since_months(months: u32, today: chrono::NaiveDate) -> Option<String> {
     Some(day.format("%Y-%m-%d").to_string())
 }
 
-/// One's games with `color`, from the period the settings give (games
-/// without a date left out when there is one): the months, the first day
-/// counted, the games by id.
-fn my_games(conn: &Connection, player: i64, color: &str) -> Result<(u32, Option<String>, std::collections::HashMap<i64, MyGame>)> {
+/// One's games with `color` — one's own and one's linked handles' (#90),
+/// within `scope` — from the period the settings give (games without a
+/// date left out when there is one): the months, the first day counted, the
+/// games by id.
+fn my_games(conn: &Connection, player: i64, color: &str, scope: Scope) -> Result<(u32, Option<String>, std::collections::HashMap<i64, MyGame>)> {
     let months = settings().own_games_months;
     let since = since_months(months, chrono::Local::now().date_naive());
     let (me, opp, win) = if color == "white" { ("white_id", "black_elo", "1-0") } else { ("black_id", "white_elo", "0-1") };
+    let ids = crate::accounts::identity_ids(conn, player)?.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
     let mut games = std::collections::HashMap::new();
     let mut st = conn.prepare(&format!(
-        "SELECT id, CASE result WHEN '{win}' THEN 1.0 WHEN '1/2-1/2' THEN 0.5 ELSE 0.0 END, {opp}
-         FROM games
-         WHERE {me} = ?1 AND result IN ('1-0', '0-1', '1/2-1/2') AND deleted_at IS NULL
-           AND (?2 IS NULL OR date >= ?2)"))?;
-    let mut rows = st.query(duckdb::params![player, since])?;
+        "SELECT g.id, CASE g.result WHEN '{win}' THEN 1.0 WHEN '1/2-1/2' THEN 0.5 ELSE 0.0 END, g.{opp}
+         FROM games g
+         WHERE g.{me} IN ({ids}) AND g.result IN ('1-0', '0-1', '1/2-1/2') AND g.deleted_at IS NULL
+           AND (?1 IS NULL OR g.date >= ?1){}", scope.sql()))?;
+    let mut rows = st.query(duckdb::params![since])?;
     while let Some(r) = rows.next()? {
         games.insert(r.get(0)?, MyGame { score: r.get(1)?, opp_elo: r.get::<_, Option<i64>>(2)?.filter(|e| *e > 0) });
     }
@@ -1381,9 +1385,9 @@ pub struct ChapterGames {
 /// the book's games that went into none ("left the book"), by the move that
 /// left. With the book's colour, from the period the settings give; looked
 /// up live (~0.1 s).
-pub fn book_mine(conn: &Connection, book_id: i64, player: i64) -> Result<BookGames> {
+pub fn book_mine(conn: &Connection, book_id: i64, player: i64, scope: Scope) -> Result<BookGames> {
     let started = std::time::Instant::now();
-    let p = place(conn, book_id, player)?;
+    let p = place(conn, book_id, player, scope)?;
     let mut out = BookGames {
         color: p.color.clone(), months: p.months, since: p.since.clone(), games: p.games.len() as i64,
         in_book: score_of(p.placed.iter().filter_map(|g| p.games.get(g))),
@@ -1444,7 +1448,7 @@ struct Placement {
 /// has them — by any move order. A game that went from one chapter's own
 /// positions into another's counts for the latter only, or for both, as the
 /// settings say.
-fn place(conn: &Connection, book_id: i64, player: i64) -> Result<Placement> {
+fn place(conn: &Connection, book_id: i64, player: i64, scope: Scope) -> Result<Placement> {
     let book = get_book(conn, book_id)?;
     let mut st = conn.prepare("SELECT id, pgn, name, overview FROM repertoire_chapters WHERE book_id = ? AND NOT COALESCE(model, FALSE) ORDER BY ord, id")?;
     let rows: Vec<(i64, String, String, Option<bool>)> = st.query_map(duckdb::params![book_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<duckdb::Result<_>>()?;
@@ -1498,7 +1502,7 @@ fn place(conn: &Connection, book_id: i64, player: i64) -> Result<Placement> {
         .map(|(set, o)| if *o { Default::default() } else { set.iter().filter(|z| count[z] == 1).copied().collect() })
         .collect();
 
-    let (months, since, games) = my_games(conn, player, &book.color)?;
+    let (months, since, games) = my_games(conn, player, &book.color, scope)?;
     let mut out = Placement {
         color: book.color.clone(), months, since, games,
         chapters: chapters.iter().map(|(id, _)| *id).collect(),
@@ -1610,9 +1614,9 @@ pub struct BookGameList {
 /// One's games in a book's chapters — those the chapters' own lists have,
 /// each once — newest first, each with the chapters it counts for. Those
 /// that left the book before any chapter are not among them.
-pub fn book_games(conn: &Connection, book_id: i64, player: i64) -> Result<BookGameList> {
+pub fn book_games(conn: &Connection, book_id: i64, player: i64, scope: Scope) -> Result<BookGameList> {
     let started = std::time::Instant::now();
-    let p = place(conn, book_id, player)?;
+    let p = place(conn, book_id, player, scope)?;
     let mut out = BookGameList { color: p.color.clone(), months: p.months, since: p.since.clone(), games: Vec::new(), ms: 0 };
     // How far each game followed its chapter — the one it transposed into,
     // or the first it counts for — the same as the chapter's own list.
@@ -1736,10 +1740,10 @@ pub struct ChapterGameList {
     pub ms: i64,
 }
 
-pub fn chapter_games(conn: &Connection, chapter_id: i64, player: i64) -> Result<ChapterGameList> {
+pub fn chapter_games(conn: &Connection, chapter_id: i64, player: i64, scope: Scope) -> Result<ChapterGameList> {
     let started = std::time::Instant::now();
     let detail = get_chapter(conn, chapter_id)?;
-    let p = place(conn, detail.summary.book_id, player)?;
+    let p = place(conn, detail.summary.book_id, player, scope)?;
     let ids: Vec<i64> = p.chapters.iter().position(|c| *c == chapter_id)
         .map(|i| p.per_chapter[i].clone()).unwrap_or_default();
     let mut out = ChapterGameList { color: p.color.clone(), months: p.months, since: p.since.clone(), games: Vec::new(), ms: 0 };
@@ -1774,7 +1778,7 @@ pub fn chapter_games(conn: &Connection, chapter_id: i64, player: i64) -> Result<
 /// Black), from the last `own_games_months` of the settings. From one's games
 /// (the players indexes) to their positions — never a scan of the whole
 /// positions index: ~0.1 s.
-pub fn chapter_mine(conn: &Connection, id: i64, player: i64) -> Result<OwnGames> {
+pub fn chapter_mine(conn: &Connection, id: i64, player: i64, scope: Scope) -> Result<OwnGames> {
     let started = std::time::Instant::now();
     let detail = get_chapter(conn, id)?;
     let w = walk(&movetext_of(&detail.pgn))?;
@@ -1784,7 +1788,7 @@ pub fn chapter_mine(conn: &Connection, id: i64, player: i64) -> Result<OwnGames>
         keys.insert(r.after_zobrist, r.after_key.clone());
     }
     let color = detail.book.color.clone();
-    let (months, since, games) = my_games(conn, player, &color)?;
+    let (months, since, games) = my_games(conn, player, &color, scope)?;
     let mut out = OwnGames { color, months, since, games: games.len() as i64, ms: 0, positions: Vec::new() };
     if games.is_empty() || keys.is_empty() {
         out.ms = started.elapsed().as_millis() as i64;
@@ -2186,6 +2190,80 @@ pub fn set_settings(mut new: RepertoireSettings) -> Result<RepertoireSettings, S
     Ok(new)
 }
 
+// ── One's recent games (#90) ─────────────────────────────────────────────────
+
+/// One of one's games of the last days, with how it stood to the repertoire:
+/// the chapter it went into, how far, and who left it where — as the books
+/// say of any game (`match_line`).
+#[derive(Clone, Debug, Serialize)]
+pub struct RecentGame {
+    pub id: i64,
+    pub white: String,
+    pub black: String,
+    pub white_elo: Option<i64>,
+    pub black_elo: Option<i64>,
+    pub date: Option<String>,
+    pub event: Option<String>,
+    pub site: Option<String>,
+    pub result: Option<String>,
+    pub time_control: Option<String>,
+    pub time_class: Option<String>,
+    pub platform: Option<String>,
+    /// One's side in it.
+    pub color: String,
+    /// One's result: 1, ½, 0; none when the game has no result.
+    pub score: Option<f64>,
+    /// The chapter it went into, when it went into one.
+    #[serde(rename = "match")]
+    pub line: Option<LineMatch>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RecentGames {
+    pub days: u32,
+    /// The first day counted.
+    pub since: String,
+    pub scope: Scope,
+    pub games: Vec<RecentGame>,
+    pub ms: i64,
+}
+
+/// One's games of the last `days` (1: today's), one's linked handles' too,
+/// within `scope`, newest first, at most `limit`, each matched against the
+/// books of its colour.
+pub fn recent_games(conn: &Connection, player: i64, days: u32, scope: Scope, limit: usize) -> Result<RecentGames> {
+    let started = std::time::Instant::now();
+    let days = days.max(1);
+    let since = (chrono::Local::now().date_naive() - chrono::Days::new(u64::from(days) - 1)).format("%Y-%m-%d").to_string();
+    let ids = crate::accounts::identity_ids(conn, player)?.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    let mut st = conn.prepare(&format!(
+        "SELECT g.id, pw.name, pb.name, g.white_elo, g.black_elo, g.date, g.event, g.site, g.result,
+                g.time_control, g.time_class, g.platform, g.pgn, g.white_id IN ({ids})
+         FROM games g JOIN players pw ON g.white_id = pw.id JOIN players pb ON g.black_id = pb.id
+         WHERE (g.white_id IN ({ids}) OR g.black_id IN ({ids})) AND g.deleted_at IS NULL AND g.date >= ?1{}
+         ORDER BY g.date DESC, g.id DESC
+         LIMIT {limit}", scope.sql()))?;
+    type Row = (i64, String, String, Option<i64>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, String, bool);
+    let rows: Vec<Row> = st.query_map(duckdb::params![since], |r| Ok((
+        r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?,
+        r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?,
+    )))?.collect::<duckdb::Result<_>>()?;
+    let mut games = Vec::with_capacity(rows.len());
+    for (id, white, black, white_elo, black_elo, date, event, site, result, time_control, time_class, platform, pgn, mine_white) in rows {
+        let color = if mine_white { "white" } else { "black" };
+        let score = match (result.as_deref(), mine_white) {
+            (Some("1/2-1/2"), _) => Some(0.5),
+            (Some("1-0"), w) | (Some("0-1"), w) if (result.as_deref() == Some("1-0")) == w => Some(1.0),
+            (Some("1-0"), _) | (Some("0-1"), _) => Some(0.0),
+            _ => None,
+        };
+        let sans = crate::dedup::canonical_moves(&pgn);
+        let line = match_line(conn, &sans, color)?.into_iter().next();
+        games.push(RecentGame { id, white, black, white_elo, black_elo, date, event, site, result, time_control, time_class, platform, color: color.to_string(), score, line });
+    }
+    Ok(RecentGames { days, since, scope, games, ms: started.elapsed().as_millis() as i64 })
+}
+
 // ── Stored analyses ──────────────────────────────────────────────────────────
 
 /// Analyse a chapter for practice and keep the result: the figures of
@@ -2362,10 +2440,15 @@ mod tests {
               ('lichess', {z1}, '{{\"status\":\"ok\",\"depth\":40,\"knodes\":1,\"lines\":[{{\"evalCp\":25,\"mate\":null,\"pvUci\":[]}}]}}', 0);
         ")).unwrap();
 
+        // One's online game (#90): not among the reference's games.
+        conn.execute_batch(&format!("
+            INSERT INTO games (id, white_id, black_id, result, pgn, platform) VALUES (10, 1, 2, '1-0', '', 'lichess');
+            INSERT INTO positions (game_id, move_number, zobrist_hash, next_move) VALUES (10, 0, {z0}, 'e4');
+        ")).unwrap();
         let stats = chapter_stats(&conn, ch.id).unwrap();
         let at = |key: &str| stats.iter().find(|s| s.key == key).unwrap_or_else(|| panic!("{key} in {stats:?}"));
         let s0 = at("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq");
-        assert_eq!(s0.games, 3, "the engine game is left out");
+        assert_eq!(s0.games, 3, "the engine game and the online game are left out");
         assert_eq!(s0.moves, vec![
             MoveStat { san: "e4".into(), games: 2, score: 0.75, elo: None, perf: None },
             MoveStat { san: "d4".into(), games: 1, score: 0.0, elo: None, perf: None },
@@ -2477,7 +2560,7 @@ mod tests {
         ")).unwrap();
 
         // The last 12 months (the default): games 1 and 2.
-        let live = chapter_mine(&conn, ch.id, 1).unwrap();
+        let live = chapter_mine(&conn, ch.id, 1, Scope::All).unwrap();
         assert_eq!((live.color.as_str(), live.months, live.games), ("black", 12, 2));
         assert!(live.since.is_some());
         let after_e4 = live.positions.iter().find(|p| p.key.ends_with(" b KQkq")).unwrap();
@@ -2491,7 +2574,7 @@ mod tests {
         let all = {
             let _turn = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             set_settings(RepertoireSettings { own_games_months: 0, ..Default::default() }).unwrap();
-            let all = chapter_mine(&conn, ch.id, 1).unwrap();
+            let all = chapter_mine(&conn, ch.id, 1, Scope::All).unwrap();
             set_settings(RepertoireSettings::default()).unwrap();
             all
         };
@@ -2577,7 +2660,7 @@ mod tests {
         }
         conn.execute_batch(&sql).unwrap();
 
-        let b = book_mine(&conn, book.id, 1).unwrap();
+        let b = book_mine(&conn, book.id, 1, Scope::All).unwrap();
         assert_eq!(b.games, 6);
         assert_eq!((b.in_book.games, b.in_book.w, b.in_book.d, b.in_book.l), (4, 2, 1, 1), "neither the Sicilian nor the Winawer, which went into no chapter");
         let at = |id: i64| b.chapters.iter().find(|c| c.id == id).unwrap().score.clone();
@@ -2590,24 +2673,24 @@ mod tests {
 
         // The games of a chapter, and how far each followed it: the Advance
         // game to the end of the line (the index has its last position).
-        let adv = chapter_games(&conn, advance, 1).unwrap();
+        let adv = chapter_games(&conn, advance, 1, Scope::All).unwrap();
         assert_eq!(adv.games.len(), 1);
         assert_eq!((adv.games[0].id, adv.games[0].follow.followed), (1, "ended"));
-        let st = chapter_games(&conn, steinitz, 1).unwrap();
+        let st = chapter_games(&conn, steinitz, 1, Scope::All).unwrap();
         assert_eq!(st.games.iter().map(|g| g.id).collect::<Vec<_>>(), vec![2]);
-        let ta = chapter_games(&conn, tarrasch, 1).unwrap();
+        let ta = chapter_games(&conn, tarrasch, 1, Scope::All).unwrap();
         assert_eq!(ta.games.len(), 1);
         let f = &ta.games[0].follow;
         assert_eq!((f.followed, f.left_by, f.mv.as_deref()), ("left", Some("you"), Some("3...c5")));
 
         // The book's games: each with its chapter; neither the Winawer, which
         // left before any, nor the Sicilian.
-        let bg = book_games(&conn, book.id, 1).unwrap();
+        let bg = book_games(&conn, book.id, 1, Scope::All).unwrap();
         let mut by: Vec<(i64, Vec<i64>)> = bg.games.into_iter().map(|g| (g.id, g.chapters)).collect();
         by.sort();
         assert_eq!(by, vec![(1, vec![advance]), (2, vec![steinitz]), (4, vec![kia]), (6, vec![tarrasch])]);
         // Each with how far it followed its chapter, as the chapter's list says.
-        let bg = book_games(&conn, book.id, 1).unwrap();
+        let bg = book_games(&conn, book.id, 1, Scope::All).unwrap();
         let adv_in_book = bg.games.iter().find(|g| g.id == 1).unwrap();
         assert_eq!(adv_in_book.follow.as_ref().map(|f| f.followed), Some(adv.games[0].follow.followed));
     }
@@ -2655,7 +2738,7 @@ mod tests {
         let _turn = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         set_settings(RepertoireSettings::default()).unwrap();
         let placed = || {
-            let b = book_games(&conn, book.id, 1).unwrap();
+            let b = book_games(&conn, book.id, 1, Scope::All).unwrap();
             let mut by: Vec<(i64, Vec<i64>)> = b.games.into_iter().map(|g| (g.id, g.chapters)).collect();
             by.sort();
             by
@@ -2664,11 +2747,11 @@ mod tests {
         // 2.d3 game went only through the quickstarter: into no chapter, and
         // not in the whole book.
         assert_eq!(placed(), vec![(1, vec![steinitz]), (3, vec![advance])]);
-        let mine = book_mine(&conn, book.id, 1).unwrap();
+        let mine = book_mine(&conn, book.id, 1, Scope::All).unwrap();
         assert_eq!(mine.in_book.games, 2);
         assert_eq!(mine.chapters.iter().find(|c| c.id == quick).unwrap().score.games, 0, "an overview lists none");
-        assert!(chapter_games(&conn, quick, 1).unwrap().games.is_empty());
-        let bg = book_games(&conn, book.id, 1).unwrap();
+        assert!(chapter_games(&conn, quick, 1, Scope::All).unwrap().games.is_empty());
+        let bg = book_games(&conn, book.id, 1, Scope::All).unwrap();
         let f = bg.games.iter().find(|g| g.id == 1).unwrap().follow.as_ref().unwrap();
         assert_eq!(f.mv.as_deref(), Some("3...dxe4"));
 
@@ -2678,7 +2761,7 @@ mod tests {
         let c = get_chapter_summary(&conn, quick).unwrap();
         assert_eq!((c.overview, c.overview_set), (false, true));
         assert!(!placed().iter().any(|(g, _)| *g == 1));
-        assert_eq!(book_mine(&conn, book.id, 1).unwrap().left_by, vec![("3...dxe4".to_string(), 1)]);
+        assert_eq!(book_mine(&conn, book.id, 1, Scope::All).unwrap().left_by, vec![("3...dxe4".to_string(), 1)]);
         let pgn = book_pgn(&conn, book.id).unwrap();
         assert_eq!(pgn.matches("[LpdoOverview \"0\"]").count(), 1, "only the one set by hand");
         let again = import_books(&conn, &pgn, None).unwrap().remove(0);
@@ -2720,28 +2803,28 @@ mod tests {
         let _turn = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let placed = |mode: TransposedGames| {
             set_settings(RepertoireSettings { transposed_games: mode, ..Default::default() }).unwrap();
-            let b = book_games(&conn, book.id, 1).unwrap();
+            let b = book_games(&conn, book.id, 1, Scope::All).unwrap();
             let mut by: Vec<(i64, Vec<i64>)> = b.games.into_iter().map(|g| (g.id, g.chapters)).collect();
             by.sort();
             by
         };
         assert_eq!(placed(TransposedGames::Target), vec![(1, vec![winawer]), (2, vec![advance])], "the default");
-        assert!(chapter_games(&conn, advance, 1).unwrap().games.iter().all(|g| g.id == 2));
-        let mine = book_mine(&conn, book.id, 1).unwrap();
+        assert!(chapter_games(&conn, advance, 1, Scope::All).unwrap().games.iter().all(|g| g.id == 2));
+        let mine = book_mine(&conn, book.id, 1, Scope::All).unwrap();
         assert_eq!(mine.chapters.iter().map(|c| c.score.games).collect::<Vec<_>>(), vec![1, 1]);
 
         // Shown in both, the chapter it went into first; the Advance says
         // where it went.
         assert_eq!(placed(TransposedGames::Show), vec![(1, vec![winawer, advance]), (2, vec![advance])]);
-        let b = book_games(&conn, book.id, 1).unwrap();
+        let b = book_games(&conn, book.id, 1, Scope::All).unwrap();
         let f = b.games.iter().find(|g| g.id == 1).unwrap().follow.as_ref().unwrap();
         assert_eq!(f.followed, "end", "as the Winawer has it");
-        let a = chapter_games(&conn, advance, 1).unwrap();
+        let a = chapter_games(&conn, advance, 1, Scope::All).unwrap();
         let g = a.games.iter().find(|g| g.id == 1).unwrap();
         assert_eq!(g.transposed_to.as_ref().map(|c| c.id), Some(winawer));
         assert_eq!(g.follow.mv.as_deref(), Some("3.Nc3"));
         assert!(a.games.iter().find(|g| g.id == 2).unwrap().transposed_to.is_none());
-        assert!(chapter_games(&conn, winawer, 1).unwrap().games[0].transposed_to.is_none());
+        assert!(chapter_games(&conn, winawer, 1, Scope::All).unwrap().games[0].transposed_to.is_none());
         set_settings(RepertoireSettings::default()).unwrap();
     }
 
@@ -2826,6 +2909,40 @@ mod tests {
         attach_line_end_evals(&conn, id, &mut positions).unwrap();
         let e = positions.iter().find_map(|p| p.engine.clone()).expect("an evaluation on the figures");
         assert_eq!((e.cp, e.depth, e.engine.as_str()), (Some(35), 22, "Stockfish 19"));
+    }
+
+    /// One's games through a linked handle count as one's own (#90), within
+    /// a scope; the recent games say how each stood to the repertoire.
+    #[test]
+    fn ones_online_games_count_within_the_scope() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let book = create_book(&conn, "B", "white", None, None, None).unwrap();
+        let ch = add_chapters(&conn, book.id, Some("Ch"), Some("1. e4 e5 2. Nf3 *"), None).unwrap().remove(0);
+        conn.execute_batch("INSERT INTO players (id, name, name_normalized) VALUES (1, 'Svrcek, Jozef', 'svrcek jozef'), (2, 'Opp', 'opp');").unwrap();
+        let handle = crate::accounts::add(&conn, crate::accounts::Platform::Lichess, "jozef77", 1).unwrap().player_id;
+        let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+        conn.execute_batch(&format!("
+            INSERT INTO games (id, white_id, black_id, result, date, pgn) VALUES (1, 1, 2, '1-0', '{today}', '1. e4 e5 2. Nf3 Nc6 1-0');
+            INSERT INTO games (id, white_id, black_id, result, date, pgn, platform, time_class) VALUES (2, {handle}, 2, '0-1', '{today}', '1. e4 c5 0-1', 'lichess', 'blitz');
+            INSERT INTO games (id, white_id, black_id, result, date, pgn, platform) VALUES (3, {handle}, 2, '1-0', '2000-01-01', '1. d4 1-0', 'lichess');
+        ")).unwrap();
+        // The settings count the last twelve months: the game of 2000 is out.
+        for (scope, n) in [(Scope::All, 2), (Scope::Otb, 1), (Scope::Online, 1)] {
+            assert_eq!(chapter_mine(&conn, ch.id, 1, scope).unwrap().games, n, "{scope:?}");
+        }
+        assert_eq!(chapter_mine(&conn, ch.id, handle, Scope::All).unwrap().games, 1, "the handle on its own");
+
+        let recent = recent_games(&conn, 1, 1, Scope::All, 10).unwrap();
+        assert_eq!(recent.games.iter().map(|g| g.id).collect::<Vec<_>>(), vec![2, 1], "today's, newest first");
+        let online = &recent.games[0];
+        assert_eq!((online.platform.as_deref(), online.time_class.as_deref(), online.color.as_str(), online.score), (Some("lichess"), Some("blitz"), "white", Some(0.0)));
+        let m = online.line.as_ref().expect("matched against the book");
+        assert_eq!((m.chapter_id, m.followed, m.left_by, m.mv.as_deref()), (ch.id, "left", Some("opponent"), Some("1...c5")));
+        let otb = &recent.games[1];
+        assert_eq!((otb.score, otb.line.as_ref().map(|m| m.followed)), (Some(1.0), Some("end")));
+        assert_eq!(recent_games(&conn, 1, 1, Scope::Online, 10).unwrap().games.len(), 1);
+        assert_eq!(recent_games(&conn, 1, 30, Scope::All, 10).unwrap().games.len(), 2, "the old one is past the days");
     }
 
     #[test]

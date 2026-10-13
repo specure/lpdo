@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **One's own online games, the server side** (#90) — accounts on Lichess
+  and Chess.com linked to your player (`/accounts`); their games synced
+  into the private collection *My online games* by the daily update and on
+  request, incrementally, nothing twice. A handle is a player of its own,
+  marked by its platform, never resolved against the FIDE list nor merged
+  with a real name; your games through a linked handle count as yours in
+  the repertoire's figures and game lists, within a scope: all, over the
+  board only, online only. Every game imported from now on keeps its time
+  control and its class (bullet, blitz, rapid, classical, correspondence).
+  Online games never count in the reference figures. `/players/{id}/recent`
+  lists your games of the last days with how each stood to the repertoire.
+  The screens come next.
 - **Rating and performance in the figures** — a chapter's figures carry,
   for each move, the median rating of those who played it and their
   performance rating with it (from ten rated opponents); the Reference tab

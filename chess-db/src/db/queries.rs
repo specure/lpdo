@@ -184,6 +184,7 @@ pub fn position_moves(
               {visibility_filter}
               {collection_filter}
               {engine_filter}
+              AND g.platform IS NULL
         ),
         agg AS (
             SELECT

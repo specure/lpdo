@@ -8,6 +8,7 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+mod accounts;
 mod ajedrez;
 mod auth;
 mod cloud_eval;
@@ -2059,7 +2060,7 @@ async fn main() -> Result<()> {
             let path = expand_home(&path);
             let depth = if max_position_depth == 0 { None } else { Some(max_position_depth as i16) };
             let visibility = if private { "private".to_string() } else { "public".to_string() };
-            let spec = importer::ImportSpec { collection, visibility, on_duplicate };
+            let spec = importer::ImportSpec { collection, visibility, on_duplicate, platform: None };
             importer::import_pgn(&conn, &path, depth, reindex_threshold, fast, skip_dedup, &spec, &reporter)?;
         }
         Commands::IndexPositions { max_position_depth, rebuild, safe } => {

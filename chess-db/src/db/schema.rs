@@ -393,6 +393,25 @@ pub fn init(conn: &Connection) -> Result<()> {
     // table (#40) reuses the name. Creating it last avoids the drop clobbering it.
     init_sources(conn)?;
 
+    // One's own online games (#90). After every other change to `games` and
+    // `players`: the importer's appenders follow the tables' column order, so
+    // these columns must stay the last.
+    // - `games.time_control`: the PGN's TimeControl as written ("180+2");
+    //   `time_class`: bullet / blitz / rapid / classical / correspondence from
+    //   it (importer::time_class); `platform`: "lichess" / "chesscom" for a
+    //   game synced from an account, NULL for every other game — the reference
+    //   figures leave such games out.
+    // - `players.platform`: the same for a handle on a platform — a *virtual*
+    //   player, never resolved against or normalised from the FIDE list, never
+    //   merged with a real name.
+    conn.execute_batch(
+        "ALTER TABLE games ADD COLUMN IF NOT EXISTS time_control VARCHAR;
+         ALTER TABLE games ADD COLUMN IF NOT EXISTS time_class VARCHAR;
+         ALTER TABLE games ADD COLUMN IF NOT EXISTS platform VARCHAR;
+         ALTER TABLE players ADD COLUMN IF NOT EXISTS platform VARCHAR;",
+    )?;
+    crate::accounts::init(conn)?;
+
     // One-time repair (#282): FIDE list reloads used to DELETE + re-append
     // `fide_players` in place, and DuckDB never reclaims deleted rows, so each
     // reload left the previous list's storage behind. Reloads now swap in a
