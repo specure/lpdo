@@ -15,6 +15,10 @@ export interface GameSummary {
   deleted_at?: string | null;
   /** PGN Round tag ("5", "3.2", "?"). */
   round?: string | null;
+  /** One's side in the game, when the caller knows it (the Recent games
+   *  page: an online game is played under a handle, which the profile
+   *  player's name does not match) — the board opens from that side. */
+  my_color?: "white" | "black";
   move_number?: number | null;
 }
 
