@@ -46,6 +46,15 @@ function chaptersOf(g: RecentGame): LineMatch[] {
 type Tone = "good" | "bad" | "muted" | "plain";
 const TONE: Record<Tone, string> = { good: "text-success", bad: "text-error", muted: "text-on-surface-variant", plain: "" };
 
+/** The day a game was played, in local time ("2026-10-13") — the PGN's
+ *  date is the UTC day, a day early for a game after midnight here. */
+function dayOf(g: RecentGame): string {
+  const d = g.played_at ? new Date(g.played_at) : null;
+  if (!d || Number.isNaN(d.getTime())) return g.date ?? "?";
+  const two = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
+}
+
 /** The time of day a game was played, in local time ("14:17"); "" without. */
 function timeOf(g: RecentGame): string {
   if (!g.played_at) return "";
@@ -169,72 +178,82 @@ export default function RecentGamesPage({ onOpenChapter, onOpenGame }: Props) {
           </p>
         ) : (
           <table className="w-full text-body-sm">
-            <thead className="sticky top-0 bg-surface text-label-sm text-on-surface-variant">
+            <thead className="sticky top-0 z-10 bg-surface text-label-sm text-on-surface-variant">
               <tr className="text-left">
-                <th className="px-4 py-1.5 font-normal">Date</th>
+                <th className="px-4 py-1.5 font-normal">Played</th>
                 <th className="px-2 py-1.5 font-normal"></th>
                 <th className="px-2 py-1.5 font-normal">Players</th>
-                <th className="px-2 py-1.5 font-normal">Game</th>
-                <th className="px-2 py-1.5 font-normal">Chapter</th>
-                <th className="px-2 py-1.5 font-normal">Repertoire</th>
+                <th className="px-2 py-1.5 font-normal">Time control</th>
+                <th className="px-2 py-1.5 font-normal">Book · Chapter</th>
+                <th className="px-2 py-1.5 font-normal">Deviation</th>
                 <th className="px-2 py-1.5 font-normal"></th>
               </tr>
             </thead>
-            <tbody>
-              {shown.map((g) => {
-                // The chapters it went into; a row opens the first, a
-                // chapter's name its own.
-                const ms = chaptersOf(g);
-                const first = ms[0];
-                const canOpen = (m: LineMatch | undefined): m is LineMatch => !!m;
-                const open = (m: LineMatch | undefined) => { if (canOpen(m)) onOpenChapter(m.chapter_id, m.at_key, g.moves); };
-                return (
-                  <tr key={g.id}
-                    className={`border-t border-outline/20 align-top ${canOpen(first) ? "cursor-pointer hover:bg-on-surface/5" : ""}`}
-                    onClick={() => open(first)}
-                    title={canOpen(first) ? "The chapter on the board where the game left it" : undefined}>
-                    <td className="px-4 py-1.5 whitespace-nowrap text-on-surface-variant" title={g.played_at ? `${g.played_at.replace("T", " ").replace("Z", "")} UTC` : undefined}>
-                      {g.date ?? "?"}{timeOf(g) && <span className="ml-2 tabular-nums">{timeOf(g)}</span>}
-                    </td>
-                    <td className={`px-2 py-1.5 font-semibold tabular-nums whitespace-nowrap ${g.score === 1 ? "text-success" : g.score === 0 ? "text-error" : "text-on-surface-variant"}`}
-                      title={g.score === 1 ? "You won" : g.score === 0 ? "You lost" : g.score === 0.5 ? "A draw" : undefined}>
-                      {g.result === "1/2-1/2" ? "½-½" : g.result ?? "·"}
-                    </td>
-                    <td className="px-2 py-1.5 whitespace-nowrap">
-                      {g.white}{g.white_elo ? <span className="text-on-surface-variant"> ({g.white_elo})</span> : null}
-                      <span className="text-on-surface-variant"> - </span>
-                      {g.black}{g.black_elo ? <span className="text-on-surface-variant"> ({g.black_elo})</span> : null}
-                    </td>
-                    <td className="px-2 py-1.5 whitespace-nowrap">
-                      {g.time_control
-                        ? <span className="text-on-surface-variant" title={g.time_class ?? undefined}>{timeControlLabel(g.time_control)}</span>
-                        : <span className="text-on-surface-variant">{g.time_class ?? g.event ?? ""}</span>}
-                      {g.platform && <span className="ml-1.5"><PlatformBadge platform={g.platform} /></span>}
-                    </td>
-                    <td className="px-2 py-1.5 whitespace-nowrap">
-                      {ms.length === 0 ? <span className="text-on-surface-variant">—</span> : ms.map((m) => (
-                        <div key={m.chapter_id}
-                          className={canOpen(m) && m !== first ? "cursor-pointer hover:underline" : undefined}
-                          onClick={m !== first ? (e) => { e.stopPropagation(); open(m); } : undefined}
-                          title={canOpen(m) && m !== first ? "This chapter on the board where the game left it" : undefined}>
+            {shown.map((g) => {
+              // One row per chapter it went into, the game's own cells
+              // spanning them, so a wrapped deviation stays level with its
+              // chapter. A click opens that row's chapter; the game's cells
+              // the first.
+              const ms = chaptersOf(g);
+              const span = Math.max(1, ms.length);
+              const open = (m: LineMatch | undefined) => { if (m) onOpenChapter(m.chapter_id, m.at_key, g.moves); };
+              const clickable = ms.length > 0;
+              const cell = "px-2 py-1.5";
+              const game = (
+                <>
+                  <td rowSpan={span} className="px-4 py-1.5 whitespace-nowrap text-on-surface-variant" title={g.played_at ? `${g.played_at.replace("T", " ").replace("Z", "")} UTC` : undefined}>
+                    {dayOf(g)}{timeOf(g) && <span className="ml-2 tabular-nums">{timeOf(g)}</span>}
+                  </td>
+                  <td rowSpan={span} className={`${cell} font-semibold tabular-nums whitespace-nowrap ${g.score === 1 ? "text-success" : g.score === 0 ? "text-error" : "text-on-surface-variant"}`}
+                    title={g.score === 1 ? "You won" : g.score === 0 ? "You lost" : g.score === 0.5 ? "A draw" : undefined}>
+                    {g.result === "1/2-1/2" ? "½-½" : g.result ?? "·"}
+                  </td>
+                  <td rowSpan={span} className={`${cell} whitespace-nowrap`}>
+                    {g.white}{g.white_elo ? <span className="text-on-surface-variant"> ({g.white_elo})</span> : null}
+                    <span className="text-on-surface-variant"> - </span>
+                    {g.black}{g.black_elo ? <span className="text-on-surface-variant"> ({g.black_elo})</span> : null}
+                  </td>
+                  <td rowSpan={span} className={`${cell} whitespace-nowrap`}>
+                    {g.time_control
+                      ? <span className="text-on-surface-variant" title={g.time_class ?? undefined}>{timeControlLabel(g.time_control)}</span>
+                      : <span className="text-on-surface-variant">{g.time_class ?? g.event ?? ""}</span>}
+                    {g.platform && <span className="ml-1.5"><PlatformBadge platform={g.platform} /></span>}
+                  </td>
+                </>
+              );
+              const openGame = (
+                <td rowSpan={span} className={`${cell} text-right whitespace-nowrap`}>
+                  <button onClick={(e) => { e.stopPropagation(); void onOpenGame([summary(g)]); }}
+                    className="h-7 px-2.5 rounded-full text-label-md text-primary hover:bg-primary/8" title="The game on the Analysis board">Open</button>
+                </td>
+              );
+              return (
+                <tbody key={g.id} className={`border-t border-outline/20 align-top ${clickable ? "cursor-pointer hover:bg-on-surface/5" : ""}`}
+                  onClick={() => open(ms[0])}>
+                  {ms.length === 0 ? (
+                    <tr>
+                      {game}
+                      <td className={`${cell} text-on-surface-variant`}>—</td>
+                      <td className={`${cell} ${TONE.muted}`}>{verdict(undefined, g.moves).text}</td>
+                      {openGame}
+                    </tr>
+                  ) : ms.map((m, i) => {
+                    const v = verdict(m, g.moves);
+                    return (
+                      <tr key={m.chapter_id} onClick={(e) => { e.stopPropagation(); open(m); }}
+                        title="The chapter on the board where the game left it">
+                        {i === 0 && game}
+                        <td className={`${cell} min-w-[14rem] hover:underline`}>
                           <span className="text-label-sm text-on-surface-variant">{m.book_name} · </span>{m.chapter_name}
-                        </div>
-                      ))}
-                    </td>
-                    <td className="px-2 py-1.5 whitespace-nowrap">
-                      {ms.length === 0 ? <div className={TONE.muted}>{verdict(undefined, g.moves).text}</div> : ms.map((m) => {
-                        const v = verdict(m, g.moves);
-                        return <div key={m.chapter_id} className={TONE[v.tone]}>{v.text}</div>;
-                      })}
-                    </td>
-                    <td className="px-2 py-1.5 text-right whitespace-nowrap">
-                      <button onClick={(e) => { e.stopPropagation(); void onOpenGame([summary(g)]); }}
-                        className="h-7 px-2.5 rounded-full text-label-md text-primary hover:bg-primary/8" title="The game on the Analysis board">Open</button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
+                        </td>
+                        <td className={`${cell} min-w-[14rem] ${TONE[v.tone]}`}>{v.text}</td>
+                        {i === 0 && openGame}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              );
+            })}
           </table>
         )}
       </div>

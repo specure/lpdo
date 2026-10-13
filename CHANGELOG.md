@@ -30,7 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the verdict in each: in book to the end with the last book move, you
   deviated at a move, the opponent deviated — with the book's move there —
   or not in the repertoire; the time control as 3′+2″, and the time of
-  day an online game was played, a day's games latest first; a
+  day an online game was played (both in local time), a day's games
+  latest first; the columns Played, Players, Time control, Book ·
+  Chapter, Deviation, the long lines wrapping; a
   chapter puts itself on the Repertoire page's board where the game left
   it, *Open* puts the game on the Analysis board.
   A tally of the period at the top; the time classes as filters.
