@@ -435,7 +435,7 @@ export default function HomeEmptyState({
             icon={<IconClock />}
             iconHoverClass="group-hover:rotate-12 group-hover:scale-110"
             title="Recent games"
-            description="Your games of the last days — over the board and online — against your repertoire: where you or the opponent left it."
+            description="Your games of the last days — over the board and online — against your repertoire: where you or the opponent deviated."
             onClick={onOpenRecent}
             delayMs={160}
             className="lg:col-span-3"

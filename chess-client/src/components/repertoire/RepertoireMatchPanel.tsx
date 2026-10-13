@@ -114,7 +114,7 @@ export default function RepertoireMatchPanel({ moves, match: { color, pick, matc
               <span className="truncate w-full">{m.book_name}</span>
               <span className="text-label-sm truncate w-full">
                 {m.followed === "left" && m.move
-                  ? <>{m.move.includes("...") ? "Black" : "White"} left the book at {m.move}{m.book_has?.length ? <> · the book has {m.book_has.join(", ")}</> : null}</>
+                  ? <>{m.move.includes("...") ? "Black" : "White"} left the book at {m.move}.{m.book_has?.length ? <> Book move{m.book_has.length > 1 ? "s" : ""}: {m.book_has.join(", ")}</> : null}</>
                   : <>in the book's common moves to {moveAt(moves, m.ply)}</>}
               </span>
             </button>
@@ -128,8 +128,8 @@ export default function RepertoireMatchPanel({ moves, match: { color, pick, matc
                 in the chapter to {moveAt(moves, m.ply)}
                 {m.followed === "left" && m.move ? (
                   <> · <span className={m.left_by === "you" ? "text-error" : ""}>
-                    {m.move.includes("...") ? "Black" : "White"} deviated at {m.move}
-                  </span></>
+                    {m.move.includes("...") ? "Black" : "White"} deviated at {m.move}.
+                  </span>{m.book_has?.length ? <> Book move{m.book_has.length > 1 ? "s" : ""}: {m.book_has.join(", ")}</> : null}</>
                 ) : m.followed === "end" ? " · the end of its line" : " · the game ended in it"}
               </span>
             </button>

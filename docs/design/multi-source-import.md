@@ -146,7 +146,8 @@ the owner, enabled, last sync and status — `chess-db/src/accounts.rs`).
   games are private.
 - **Recent games**: `GET /players/{id}/recent?days=7&scope=all` — one's games
   of the last days, the handles' too, newest first, each with its match
-  against the books (`match_line`: the chapter, how far, who left it where),
+  against the books (`match_line`: every chapter it went into, one per
+  book, how far, who deviated where),
   the time control and the platform. The phone-less review of today's games.
 - The **UI** (phase 2, 2026-10-13): the Maintenance page's *Online accounts*
   tab (`AccountsSection.tsx`: link, Sync now, daily on/off,
