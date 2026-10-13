@@ -109,7 +109,7 @@ export default function TrainerApp() {
 
   if (drilling) {
     return (
-      <div className="h-[100dvh] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] bg-surface">
+      <div className="h-[100dvh] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] bg-surface">
         <DrillView chapter={drilling} store={cardStore} onClose={() => { setDrilling(null); void load(); }} />
       </div>
     );
@@ -125,7 +125,7 @@ export default function TrainerApp() {
   const chip = (on: boolean) => `h-8 px-3 rounded-full text-label-md border ${on
     ? "bg-secondary-container text-on-secondary-container border-transparent" : "text-on-surface-variant border-outline/40"}`;
   return (
-    <div className="min-h-[100dvh] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] bg-surface text-on-surface flex flex-col">
+    <div className="min-h-[100dvh] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] bg-surface text-on-surface flex flex-col">
       <header className="px-4 py-3 flex items-center gap-3 border-b border-outline/40">
         <img src="./icon-192.png" alt="" className="w-8 h-8 rounded-md" />
         <h1 className="text-title-md flex-1">LPDO Trainer</h1>
