@@ -25,9 +25,10 @@ export default function SendToPhoneDialog({ chapterId, onClose, onSaveFile }: Pr
   const [pkg, setPkg] = useState<LpdoChapter | null>(null);
   const [frames, setFrames] = useState<Frames | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The chapter's comments go too when asked: the drill's replay shows them,
-  // but they make the code about twice as long to read.
-  const [comments, setComments] = useState(false);
+  // The chapter's comments go too unless left out: the review shows them.
+  // They make the code about twice as long to read — a minute, now that
+  // the phone solves the frames as they come.
+  const [comments, setComments] = useState(true);
   // Analyse now: the job asked for.
   const [analysing, setAnalysing] = useState<"no" | "asked" | "failed">("no");
   // Bytes a frame, frames a second, the code's size: Maintenance → Sending

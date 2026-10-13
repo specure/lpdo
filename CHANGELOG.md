@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the chapter again for figures stored before.
 
 ### Changed
+- **Send to phone: the comments go too by default** — the checkbox is on;
+  untick it for a chapter only to be drilled.
 - **The drill's screen, on the phone and the desktop** — the lines of a
   session are walked back and forth at any point, also in the middle of a
   line (*‹ Previous · Next ›*; after the last, a new line). **Test · Review**
