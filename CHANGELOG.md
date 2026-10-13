@@ -26,7 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tested or reviewed from there, whichever is on.
 - **Lines: 80 · 95 · 100%** — the session's coverage choices, 80% (Pareto's)
   the default, in place of 50 · 75 · 90 · 100: half the games left out too
-  many lines. The choice is kept on the device, and the chapter list counts
+  many lines. At 100% the whole chapter is trained, your own alternative
+  moves at a branch too (they were left out, the coverage not counting
+  them). The choice is kept on the device, and the chapter list counts
   with it.
 - **Cut rare ends** — a line chosen was trained to its last move, books
   carrying variations nobody plays. With the switch (Session tab, on by

@@ -193,8 +193,9 @@ export function cutRare(lines: Line[], use: Map<PNode, number>, color: Side, kee
  *  first, up to `target` (at least one line). Counted from the trunk below
  *  `path`, by the lines' weight — their share of the games that stay in the
  *  chapter — so 80% can always be reached, and a line is not favoured for
- *  ending early. With `cut`, below 100%, the lines' rare ends are cut
- *  (`cutRare`), keeping the coverage's share of the lines' use. */
+ *  ending early. At 100% every line, one's own alternatives too. With
+ *  `cut`, below 100%, the lines' rare ends are cut (`cutRare`), keeping the
+ *  coverage's share of the lines' use. */
 export function chooseLines(chapter: LpdoChapter, target: Target, path: PNode[] = focusRoot(chapter).path, cut = false): Session {
   const from = trunk(chapter, path);
   const use = new Map<PNode, number>();
@@ -208,8 +209,11 @@ export function chooseLines(chapter: LpdoChapter, target: Target, path: PNode[] 
   const color = chapter.book.color;
   const chosen: Line[] = [];
   let coverage = 0;
+  // At 100%, the whole chapter: one's own alternatives too, which the
+  // coverage does not count.
+  const whole = "coverage" in target && target.coverage >= 1;
   for (const l of ranked) {
-    if (chosen.length) {
+    if (chosen.length && !whole) {
       if ("coverage" in target && coverage >= target.coverage - 1e-9) break;
       if ("minutes" in target && estimateMinutes(decisions([...chosen, l], color)) > target.minutes) break;
     }
