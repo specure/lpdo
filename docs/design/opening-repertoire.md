@@ -413,6 +413,25 @@ have no statistics and inherit their line's likelihood.
 The desktop has both, with the same session setup, in the Repertoire page
 from the first step; the phone trainer is the same code.
 
+How the drill's screen holds them (`trainer/DrillView.tsx`): a session is
+a sequence of lines — the drill's, each joining the sequence when it is
+done or left — walked back and forth at any point (*‹ Previous · Next ›*;
+after the last, a new line of the drill). A line is gone through in one of
+two modes, switched at any point, from where one is: **Test** — the
+opponent's moves played, one's own asked where due, shown where never met,
+played by themselves where known and not due (as in the drill, so a line
+tested again goes straight to the moves that were missed), a miss counting
+once — or **Review** — stepped through by hand, nothing asked. Switching
+at the end of a line starts it over. What there is to know is in tabs under
+the board: **Line** (the moves — in a test only those played so far; a
+move tapped is reviewed from there; the chapter's other moves at a branch),
+**Comments** (in a review, and on a move shown or missed — before, they
+could give the move away), **Engine** (the stored evaluation of the
+position, Stockfish's of the line's end), **Reference** (how the move at
+hand stands among the moves played there, one's own games through the
+position) and **Session** (the lines' coverage, new a day, what is due and
+the tally).
+
 ### The chapter format
 
 One JSON document, documented and versioned, read by the desktop training,

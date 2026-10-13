@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The drill's screen, on the phone and the desktop** — the lines of a
+  session are walked back and forth at any point, also in the middle of a
+  line (*‹ Previous · Next ›*; after the last, a new line). **Test · Review**
+  is switched at any point, from where one is (at a line's end, the line
+  over again). A line tested again goes as the drill does: the moves known
+  and not due are played by themselves, so it comes straight to the moves
+  missed. What there is to know is in tabs under the board — **Line**,
+  **Comments**, **Engine**, **Reference**, **Session** (where the lines'
+  coverage and *New a day* now live) — a dot on a tab where there is
+  something to see; the tab chosen is kept. The board keeps its size on the
+  phone, whatever the panel says.
+
 ### Fixed
 - **One move, one row** — the moves from a position (the Reference tab, a
   chapter's figures and the drill's replay, one's own games through a

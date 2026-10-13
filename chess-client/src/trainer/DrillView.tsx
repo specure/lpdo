@@ -7,16 +7,20 @@
 // day takes in only so many new moves of a chapter; once they are met, more
 // can be added for the day. A miss shows the book's move with the database's
 // figures, to be played; its card comes back in the session. A line with a
-// miss stops at its end, for one of two: tested again — the same moves,
-// every one of one's own asked, the opponent's played, a miss counting as
-// one — or reviewed: stepped through by hand (⏮ ◀ ▶ ⏭, the arrow keys, a
-// swipe on the phone, a move tapped in the text) with the chapter's
-// comments, the moves' figures and Stockfish at the end, nothing asked. Or
-// the next line. Shared by the desktop (the Repertoire page) and the phone
-// trainer.
+// miss stops at its end, for one of two: tested again — the same moves, the
+// opponent's played, one's own asked where due or new and played by
+// themselves where known, a miss counting as one — or reviewed: stepped
+// through by hand (⏮ ◀ ▶ ⏭, the arrow keys, a swipe on the phone, a move
+// tapped in the text) with the chapter's comments, the moves' figures and
+// Stockfish at the end, nothing asked. Test and review are switched at any
+// point of a line, from where one is; the session's lines are walked back
+// and forth (‹ Previous · Next ›) at any point, the next after the last
+// being a new line of the drill. What there is to know is in tabs — the
+// line, the comments, the engine, the database's figures, the session.
+// Shared by the desktop (the Repertoire page) and the phone trainer.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { bareSan, hasComments, type LpdoChapter, type PNode } from "./format";
+import { bareSan, hasComments, type Eval, type LpdoChapter, type PNode } from "./format";
 import {
   NEW_PER_DAY_CHOICES, buildDrill, cardCounts, describeBookMove, fenAfter, introduce, lineOver, matchOwn, newPerDay,
   newToday, nextMoves, nextStep, opponentMove, review, saveNewPerDay, saveNewToday, sideToMove,
@@ -39,9 +43,25 @@ interface Props {
  *  being reviewed; replayEnd: a test or a review done. */
 type Phase = "loading" | "own" | "show" | "missed" | "auto" | "opponent" | "lineDone" | "lineEnd" | "review" | "replayEnd" | "sessionDone";
 
+/** How a line is gone through: tested — the drill, or the same moves again —
+ *  or reviewed, nothing asked. */
+type Mode = "test" | "review";
+
+/** A line of the session: its moves, and where it had a miss (plies). */
+interface LineRec { moves: PNode[]; missed: number[] }
+
+type Tab = "line" | "comments" | "engine" | "reference" | "session";
+const TABS: { id: Tab; label: string }[] = [
+  { id: "line", label: "Line" }, { id: "comments", label: "Comments" }, { id: "engine", label: "Engine" },
+  { id: "reference", label: "Reference" }, { id: "session", label: "Session" },
+];
+const TAB_KEY = "lpdoDrillTab";
+const readTab = (): Tab => { try { const v = localStorage.getItem(TAB_KEY); return TABS.some((t) => t.id === v) ? (v as Tab) : "line"; } catch { return "line"; } };
+
 /** A line as text, "1.c4 e5 2.g3 Nc6 …": the moves missed marked, and the
- *  one the replay is at; a move tapped goes there (`onPick`, its index). */
-function LineText({ moves, missed, at, onPick }: { moves: PNode[]; missed: number[]; at?: number; onPick?: (i: number) => void }) {
+ *  one the replay is at; a move tapped goes there (`onPick`, its index). With
+ *  `more`, the line goes on past what is shown (a test's moves to come). */
+function LineText({ moves, missed, at, onPick, more }: { moves: PNode[]; missed: number[]; at?: number; onPick?: (i: number) => void; more?: boolean }) {
   return (
     <div className="font-mono text-label-md leading-relaxed">
       {moves.map((m, i) => (
@@ -53,6 +73,8 @@ function LineText({ moves, missed, at, onPick }: { moves: PNode[]; missed: numbe
           </span>{" "}
         </span>
       ))}
+      {moves.length === 0 && <span className="text-on-surface-variant">The start position </span>}
+      {more && <span className="text-on-surface-variant">…</span>}
     </div>
   );
 }
@@ -81,6 +103,10 @@ const readLayer = (): Layer | null => { try { const v = localStorage.getItem(LAY
 /** A PGN colour code ("G", "R"…) as the desktop draws it. */
 const bookColor = (code: string) => (DRAW_COLORS.find((d) => d.code === code) ?? DRAW_COLORS[0]).rgba;
 const squares = (uci: string) => ({ from: uci.slice(0, 2), to: uci.slice(2, 4) });
+/** "+0.35", "−1.20", "#3", "−#2": an evaluation from White's side. */
+const fmtEval = (e: Eval) => ("mate" in e
+  ? `${e.mate > 0 ? "" : "−"}#${Math.abs(e.mate)}`
+  : `${e.cp > 0 ? "+" : e.cp < 0 ? "−" : ""}${(Math.abs(e.cp) / 100).toFixed(2)}`);
 
 export default function DrillView({ chapter, store, onClose }: Props) {
   const [coverage, setCoverage] = useState(0.75);
@@ -100,15 +126,19 @@ export default function DrillView({ chapter, store, onClose }: Props) {
   const [tally, setTally] = useState({ right: 0, wrong: 0, fresh: 0 });
   // The cards answered in this line: a retry after a miss does not count.
   const answered = useRef(new Set<string>());
-  // Where this line had a miss (its plies); the line just done, to test
-  // again or review; the moves of the line tested again or reviewed (null:
-  // drilling).
+  // Where this run of the line had a miss (its plies).
   const [missedPlies, setMissedPlies] = useState<number[]>([]);
-  const [lastLine, setLastLine] = useState<{ moves: PNode[]; missed: number[] } | null>(null);
+  // The session's lines so far, in order, and which of them is at hand —
+  // null while the drill's own line is in progress (it joins them when it
+  // is done, or left).
+  const [lines, setLines] = useState<LineRec[]>([]);
+  const [cursor, setCursor] = useState<number | null>(null);
+  // The moves of the line tested again or reviewed (null: drilling).
   const [replaying, setReplaying] = useState<PNode[] | null>(null);
-  // The line reviewed (stepped through), not tested again.
+  // The line reviewed (stepped through), not tested.
   const [reviewing, setReviewing] = useState(false);
   const [layer, setLayer] = useState<Layer | null>(readLayer);
+  const [tab, setTab] = useState<Tab>(readTab);
   const board = useRef<HTMLDivElement>(null);
   const swipe = useRef<{ x: number; y: number; t: number; onBoard: boolean } | null>(null);
 
@@ -119,13 +149,19 @@ export default function DrillView({ chapter, store, onClose }: Props) {
   const allowed = (t: NewToday = today, any = anyLine) => any || perDay === 0 || t.met < perDay + t.extra;
 
   /** What happens at `p`, and the move it is about. Tested again: the
-   *  line's next move, the opponent's played, one's own asked; reviewed:
-   *  nothing until a step. */
+   *  line's next move — the opponent's played; one's own asked where due,
+   *  shown where never met, played by itself where known and not due (all
+   *  asked when every line counts). Reviewed: nothing until a step. */
   const phaseAt = (p: PNode[], cs: Record<string, Card>, any: boolean, t: NewToday, rp: PNode[] | null, rv = reviewing): { phase: Phase; target: PNode | null } => {
     if (rp) {
       if (p.length >= rp.length) return { phase: "replayEnd", target: null };
-      if (rv) return { phase: "review", target: rp[p.length] };
-      return { phase: sideToMove(p) === color ? "own" : "opponent", target: rp[p.length] };
+      const move = rp[p.length];
+      if (rv) return { phase: "review", target: move };
+      if (sideToMove(p) !== color) return { phase: "opponent", target: move };
+      const key = drill.cardOf.get(move);
+      const card = key ? cs[key] : undefined;
+      const kind: Phase = !key ? "own" : !card ? "show" : any || card.due <= Date.now() ? "own" : "auto";
+      return { phase: kind, target: move };
     }
     const step = nextStep(drill, p, cs, Date.now(), allowed(t, any), any);
     if (step.kind === "done") return { phase: "lineDone", target: null };
@@ -141,26 +177,37 @@ export default function DrillView({ chapter, store, onClose }: Props) {
     setTarget(next.target);
   };
 
+  /** `moves` on down the chapter's main continuation, to the end of the line. */
+  const extend = (moves: PNode[]) => {
+    const out = [...moves];
+    for (let next = nextMoves(drill, out)[0]; next; next = nextMoves(drill, out)[0]) out.push(next);
+    return out;
+  };
+
+  /** A new line of the drill. */
   const startLine = (cs: Record<string, Card>, any: boolean, t: NewToday = today) => {
     answered.current = new Set();
     setReplaying(null);
     setReviewing(false);
     setMissedPlies([]);
-    const first = phaseAt([], cs, any, t, null);
+    setCursor(null);
+    const first = phaseAt([], cs, any, t, null, false);
     // Nothing to do from the start: the session is over.
     if (first.phase === "lineDone") { setPhase("sessionDone"); setTarget(null); setPath([]); setLastMove(null); return; }
     setNote(null);
-    go([], cs, any, t, null);
+    go([], cs, any, t, null, false);
   };
 
-  /** The line tested again from its start: one's moves asked, the
-   *  opponent's played; a miss counts — once a move, as in the drill. */
-  const testAgain = (moves: PNode[]) => {
+  /** The line tested again from the ply `at` (its start by default): one's
+   *  moves asked where due, the opponent's played; a miss counts — once a
+   *  move, as in the drill. */
+  const testAgain = (moves: PNode[], at = 0) => {
     answered.current = new Set();
     setReplaying(moves);
     setReviewing(false);
+    setMissedPlies([]);
     setNote(null);
-    go([], cards ?? {}, anyLine, today, moves, false);
+    go(moves.slice(0, at), cards ?? {}, anyLine, today, moves, false);
   };
 
   /** The line reviewed, from the ply `at` (its start by default). */
@@ -169,6 +216,63 @@ export default function DrillView({ chapter, store, onClose }: Props) {
     setReviewing(true);
     setNote(null);
     go(moves.slice(0, at), cards ?? {}, anyLine, today, moves, true);
+  };
+
+  /** The line at hand among the session's lines — the drill's line in
+   *  progress joins them (its moves so far on down the chapter's main
+   *  continuation): the lines, and its index. */
+  const keepLine = (): { ls: LineRec[]; i: number } => {
+    if (cursor !== null) return { ls: lines, i: cursor };
+    const ls = [...lines, { moves: replaying ?? extend(path), missed: missedPlies }];
+    setLines(ls);
+    setCursor(ls.length - 1);
+    return { ls, i: ls.length - 1 };
+  };
+
+  /** One of the session's lines, in the mode at hand. */
+  const openLine = (ls: LineRec[], i: number) => {
+    setCursor(i);
+    if (reviewing) reviewLine(ls[i].moves); else testAgain(ls[i].moves);
+  };
+
+  const canPrev = cursor !== null ? cursor > 0 : lines.length > 0;
+  const canNext = phase !== "loading" && ((cursor !== null && cursor + 1 < lines.length) || phase !== "sessionDone");
+
+  /** The line before this one — the drill's line in progress kept, to come
+   *  back to. */
+  const prevLine = () => {
+    let ls = lines, i = cursor ?? lines.length;
+    if (cursor === null && path.length) ({ ls, i } = keepLine());
+    if (i <= 0) return;
+    openLine(ls, i - 1);
+  };
+
+  /** The line after this one; after the last, a new line of the drill. */
+  const nextLine = () => {
+    if (!cards) return;
+    if (cursor !== null && cursor + 1 < lines.length) { openLine(lines, cursor + 1); return; }
+    if (cursor === null && path.length && phase !== "sessionDone") keepLine();
+    startLine(cards, anyLine);
+  };
+
+  /** Test or review, from where one is in the line — at its end (or the
+   *  mode already on, at its end), from the start. */
+  const setMode = (m: Mode) => {
+    if (!cards || phase === "loading") return;
+    let at: { ls: LineRec[]; i: number } | null;
+    if (phase === "sessionDone" && cursor === null) at = lines.length ? { ls: lines, i: lines.length - 1 } : null;
+    else at = keepLine();
+    if (!at) return;
+    const moves = replaying ?? at.ls[at.i].moves;
+    const over = atEnd || phase === "sessionDone" || path.length >= moves.length;
+    const from = over ? 0 : path.length;
+    if (m === "review") {
+      if (reviewing && !over) return;
+      reviewLine(moves, from);
+    } else {
+      if (!reviewing && !over) return; // testing already
+      testAgain(moves, from);
+    }
   };
 
   /** A step through the line reviewed, to the ply `to` (clamped). */
@@ -199,6 +303,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
     if (!cards) return;
     setAnyLine(false);
     setTally({ right: 0, wrong: 0, fresh: 0 });
+    setLines([]);
     startLine(cards, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cards === null, drill]);
@@ -225,15 +330,16 @@ export default function DrillView({ chapter, store, onClose }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, path]);
 
-  // The line done: kept, to replay; with a miss it waits — replay it, or the
-  // next; else the next one, after a moment.
+  // The drill's line done: it joins the session's lines, to come back to;
+  // with a miss it waits — test it again, review it, or the next; else the
+  // next one, after a moment.
   useEffect(() => {
     if (phase !== "lineDone" || !cards) return;
-    // The line to replay: on to its end — where the run stopped (nothing
-    // further due) the chapter's main continuation, to the end of the line.
-    const moves = [...path];
-    for (let next = nextMoves(drill, moves)[0]; next; next = nextMoves(drill, moves)[0]) moves.push(next);
-    setLastLine({ moves, missed: missedPlies });
+    // On to its end — where the run stopped (nothing further due) the
+    // chapter's main continuation, to the end of the line.
+    const ls = [...lines, { moves: extend(path), missed: missedPlies }];
+    setLines(ls);
+    setCursor(ls.length - 1);
     if (missedPlies.length) { setPhase("lineEnd"); return; }
     const t = window.setTimeout(() => startLine(cards, anyLine), 1100);
     return () => window.clearTimeout(t);
@@ -256,26 +362,13 @@ export default function DrillView({ chapter, store, onClose }: Props) {
     return keep(key, review(cards[key], correct, Date.now()));
   };
 
-  const statsBefore = () => (path.length ? path[path.length - 1].stats : chapter.start.stats);
+  /** The figures of the position at hand: the moves from it. */
+  const statsHere = () => (path.length ? path[path.length - 1].stats : chapter.start.stats);
 
   const onMove = (uci: string): boolean => {
-    const node = matchOwn(drill, path, uci);
-    if (replaying) {
-      // Tested again: the line's own move. A miss counts, as in the drill
-      // (once a move); a move right moves no card on — it was just seen.
-      if (phase !== "own" && phase !== "missed") return false;
-      if (node && node === target) {
-        setNote(phase === "own" ? { text: `✓ ${node.san}`, tone: "good" } : null);
-        go([...path, node]);
-        return true;
-      }
-      if (phase === "own" && target) {
-        answer(target, false);
-        setNote({ text: `The book move is ${describeBookMove(target, statsBefore())}`, tone: "bad" });
-        setPhase("missed");
-      }
-      return false;
-    }
+    // In a test of a line, its move is the one asked; another of the
+    // session's moves here is a miss.
+    const node = replaying ? (target?.uci === uci ? target : null) : matchOwn(drill, path, uci);
     if (phase === "show") {
       // A new move: played as shown, it is met — asked later in the session.
       if (!node || node !== target) return false;
@@ -302,7 +395,8 @@ export default function DrillView({ chapter, store, onClose }: Props) {
     }
     if (phase !== "own") return false;
     if (node) {
-      const cs = answer(node, true);
+      // Right. Tested again, a move right moves no card on — it was just seen.
+      const cs = replaying ? cards ?? {} : answer(node, true);
       setNote({ text: `✓ ${node.san}`, tone: "good" });
       go([...path, node], cs);
       return true;
@@ -310,9 +404,10 @@ export default function DrillView({ chapter, store, onClose }: Props) {
     // A miss: the move asked comes back, shown with its figures; the line
     // stops at its end, to be replayed.
     const main = target ?? nextMoves(drill, path)[0];
+    if (!main) return false;
     answer(main, false);
     setMissedPlies((m) => (m.includes(path.length) ? m : [...m, path.length]));
-    setNote({ text: `The book move is ${describeBookMove(main, statsBefore())}`, tone: "bad" });
+    setNote({ text: `The book move is ${describeBookMove(main, statsHere())}`, tone: "bad" });
     setPhase("missed");
     setTarget(main);
     return false;
@@ -320,21 +415,21 @@ export default function DrillView({ chapter, store, onClose }: Props) {
 
   const counts = cards ? cardCounts(drill, cards, Date.now()) : null;
   const fen = fenAfter(drill, path);
-  const promotions = Object.fromEntries(nextMoves(drill, path).filter((n) => n.uci.length === 5).map((n) => [n.uci.slice(0, 4), n.uci[4]]));
+  const promotions = Object.fromEntries((replaying ? replaying.slice(path.length, path.length + 1) : nextMoves(drill, path)).filter((n) => n.uci.length === 5).map((n) => [n.uci.slice(0, 4), n.uci[4]]));
   const s = drill.session;
   const hint = (phase === "show" || phase === "missed") && target ? squares(target.uci) : null;
   // In a review, where the chapter branches: the line's move and the
   // chapter's others here (not those switched off), the most played first.
   const here = path.length ? path[path.length - 1].children : chapter.tree;
-  const shareHere = (n: PNode) => statsBefore()?.moves.find(([san]) => bareSan(san) === bareSan(n.san))?.[1] ?? 0;
+  const shareHere = (n: PNode) => statsHere()?.moves.find(([san]) => bareSan(san) === bareSan(n.san))?.[1] ?? 0;
   const branches = phase === "review" && target
     ? here.filter((n) => n !== target && !n.off).sort((a, b) => shareHere(b) - shareHere(a))
     : [];
   const movesLayer = branches.length > 0 && !!target;
   // The book's arrows and circles on the move just played.
-  const lastPlayedNode = path.length ? path[path.length - 1] : null;
-  const bookArrows = reviewing && lastPlayedNode ? (lastPlayedNode.arrows ?? []).map((c) => ({ from: c.slice(1, 3), to: c.slice(3, 5), color: bookColor(c[0]) })) : [];
-  const bookCircles = reviewing && lastPlayedNode ? (lastPlayedNode.circles ?? []).map((c) => ({ square: c.slice(1, 3), color: bookColor(c[0]) })) : [];
+  const lastPlayed = path.length ? path[path.length - 1] : null;
+  const bookArrows = reviewing && lastPlayed ? (lastPlayed.arrows ?? []).map((c) => ({ from: c.slice(1, 3), to: c.slice(3, 5), color: bookColor(c[0]) })) : [];
+  const bookCircles = reviewing && lastPlayed ? (lastPlayed.circles ?? []).map((c) => ({ square: c.slice(1, 3), color: bookColor(c[0]) })) : [];
   const bookLayer = bookArrows.length + bookCircles.length > 0;
   // Both: the kept choice, else the book's (the author's own); one: that one.
   const shown: Layer | null = bookLayer && movesLayer ? (layer ?? "book") : bookLayer ? "book" : movesLayer ? "moves" : null;
@@ -344,15 +439,26 @@ export default function DrillView({ chapter, store, onClose }: Props) {
       ? [...branches.slice(0, BRANCH_ARROWS).map((n) => ({ ...squares(n.uci), color: BRANCH_COLOR })), { ...squares(target.uci), color: HINT_COLOR }]
       : [];
   const pickLayer = (l: Layer) => { setLayer(l); try { localStorage.setItem(LAYER_KEY, l); } catch { /* per-device convenience only */ } };
+  const pickTab = (t: Tab) => { setTab(t); try { localStorage.setItem(TAB_KEY, t); } catch { /* per-device convenience only */ } };
   /** Another of the chapter's moves here reviewed instead: on down its main
-   *  continuation, from this position. */
+   *  continuation, from this position — a line of the session from here. */
   const reviewBranch = (n: PNode) => {
     const moves = [...path, n];
     for (let next = moves[moves.length - 1].children.find((c) => !c.off); next; next = next.children.find((c) => !c.off)) moves.push(next);
+    const ls = [...lines, { moves, missed: [] }];
+    setLines(ls);
+    setCursor(ls.length - 1);
     reviewLine(moves, path.length);
   };
   const budgetUsed = perDay > 0 && today.met >= budget;
   const boardActive = phase === "own" || phase === "show" || phase === "missed";
+  const mode: Mode = reviewing ? "review" : "test";
+  const atEnd = phase === "lineEnd" || phase === "replayEnd";
+  // The line at hand, as a record: the one replayed or the drill's just done.
+  const atLine = cursor !== null ? lines[cursor] : null;
+  // The line's moves, when they are known: in a replay, or the drill's done
+  // (in progress, the opponent may still turn either way).
+  const lineMoves = replaying ?? (atEnd ? atLine?.moves ?? null : null);
 
   const status = phase === "loading" ? "Reading your cards…"
     : phase === "review" ? "Reviewing the line"
@@ -364,13 +470,27 @@ export default function DrillView({ chapter, store, onClose }: Props) {
     : phase === "lineEnd" ? "Line done — test it again, or review it?"
     : phase === "replayEnd" ? (reviewing ? "End of the line" : "Test done")
     : anyLine ? "Every line drilled" : "Done for today";
-  // The chapter's comment on the move just played — in a review, where the
-  // line is being understood; in the drill and a test, on a miss (before,
-  // it could give away the move).
-  const lastPlayed = path.length ? path[path.length - 1] : null;
-  const comment = reviewing ? lastPlayed?.comment : phase === "missed" ? target?.comment : undefined;
+  // The chapter's comment on the move at hand — in a review, the move just
+  // played, where the line is being understood; in the drill and a test, the
+  // move shown or missed (before, it could give away the move).
+  const commentOn = reviewing ? lastPlayed : phase === "missed" || phase === "show" ? target : null;
+  const comment = reviewing && !lastPlayed ? chapter.start.comment : commentOn?.comment;
+  const pre = commentOn?.pre;
   const pill = "h-8 px-3 rounded-full text-label-md hover:brightness-110";
+  const tool = "h-8 px-2 rounded-md text-label-md text-primary hover:bg-primary/8 disabled:opacity-35 disabled:hover:bg-transparent";
   const withComments = useMemo(() => hasComments(chapter), [chapter]);
+  // The figures to show: a new or missed move, the book's, where it stands;
+  // in a review the move just played; in a test the opponent's move just
+  // played (one's own would give away the book's reply).
+  const ownLast = lastPlayed ? sideToMove(path.slice(0, -1)) === color : false;
+  const figures = (phase === "show" || phase === "missed") && target
+    ? { move: target, ply: path.length, stats: statsHere(), own: true }
+    : lastPlayed && (reviewing || !ownLast)
+      ? { move: lastPlayed, ply: path.length - 1, stats: path.length >= 2 ? path[path.length - 2].stats : chapter.start.stats, own: ownLast }
+      : null;
+  const mineHere = lastPlayed ? lastPlayed.mine : chapter.start.mine;
+  const evalHere = statsHere()?.eval;
+  const endEval = lineMoves ? lineMoves[lineMoves.length - 1]?.engine : undefined;
 
   const learnMore = () => {
     if (!cards) return;
@@ -378,6 +498,22 @@ export default function DrillView({ chapter, store, onClose }: Props) {
     setToday(t);
     saveNewToday(chapterId, t);
     startLine(cards, false, t);
+  };
+
+  /** The move text of the line at hand: in a review, the whole line, the
+   *  move tapped stepped to; in a test, the moves so far (the rest would be
+   *  given away), the move tapped reviewed from there; the drill's line
+   *  done, whole, with its misses. */
+  const lineTab = () => {
+    const missed = [...new Set([...(atLine?.missed ?? []), ...missedPlies])];
+    if (replaying && reviewing) {
+      return <LineText moves={replaying} missed={missed} at={path.length - 1} onPick={(i) => step(i + 1)} />;
+    }
+    if (atEnd && atLine) {
+      return <LineText moves={atLine.moves} missed={missed} onPick={(i) => reviewLine(atLine.moves, i + 1)} />;
+    }
+    return <LineText moves={path} missed={missed} more={phase !== "sessionDone"}
+      onPick={cards ? (i) => { const { ls, i: k } = keepLine(); reviewLine(replaying ?? ls[k].moves, i + 1); } : undefined} />;
   };
 
   return (
@@ -401,198 +537,238 @@ export default function DrillView({ chapter, store, onClose }: Props) {
         if (Math.abs(dx) < 40 || Math.abs(dx) < 2 * Math.abs(dy) || Date.now() - s0.t > 800) return;
         step(path.length + (dx < 0 ? 1 : -1));
       }}>
-      <div className="shrink-0 flex items-center gap-x-3 gap-y-1 px-3 py-2 border-b border-outline/40 flex-wrap">
-        <div className="min-w-0">
+      <div className="shrink-0 flex items-center gap-3 px-3 py-2 border-b border-outline/40">
+        <div className="min-w-0 flex-1">
           <div className="text-body-md truncate">{chapter.name}</div>
           <div className="text-label-sm text-on-surface-variant truncate">{chapter.book.name} · as {color === "white" ? "White" : "Black"}</div>
         </div>
-        <div className="ml-auto flex items-center gap-2 flex-wrap">
-          <label className="flex items-center gap-1.5 text-label-md text-on-surface-variant"
-            title="The lines drilled: the most played first, until they take in this share of the games that stay in the chapter">
-            Lines
-            <select value={coverage} onChange={(e) => setCoverage(Number(e.target.value))}
-              className="h-7 px-1 rounded-sm bg-surface-container border border-outline/40 text-on-surface text-label-md">
-              {COVERAGES.map((c) => <option key={c} value={c}>{Math.round(c * 100)}%</option>)}
-            </select>
-          </label>
-          <label className="flex items-center gap-1.5 text-label-md text-on-surface-variant"
-            title="How many new moves of a chapter a day takes in; moves due again are always asked">
-            New a day
-            <select value={perDay} onChange={(e) => {
-              const n = Number(e.target.value);
-              setPerDay(n);
-              saveNewPerDay(n);
-              if (cards && (phase === "sessionDone" || phase === "lineDone")) startLine(cards, anyLine);
-            }}
-              className="h-7 px-1 rounded-sm bg-surface-container border border-outline/40 text-on-surface text-label-md">
-              {NEW_PER_DAY_CHOICES.map((n) => <option key={n} value={n}>{n === 0 ? "all" : n}</option>)}
-            </select>
-          </label>
-          {onClose && (
-            <button onClick={onClose} className="h-8 px-3 rounded-full text-label-md text-primary hover:bg-primary/8">Close</button>
-          )}
+        <div className="text-label-sm text-on-surface-variant tabular-nums whitespace-nowrap" title="This session: right · missed">
+          <span className="text-success">{tally.right}</span> · <span className="text-error">{tally.wrong}</span>
         </div>
+        {onClose && (
+          <button onClick={onClose} className="h-8 px-3 rounded-full text-label-md text-primary hover:bg-primary/8">Close</button>
+        )}
       </div>
 
       <div className="flex-1 min-h-0 flex flex-col md:flex-row">
-        <div className="flex-1 min-h-0 min-w-0 flex p-2">
+        {/* The board: on the phone (portrait) a square the width of the
+            screen, whatever the panel says — a longer message must not
+            shrink it or move it; beside the panel on wider screens. */}
+        <div className="shrink-0 w-full aspect-square max-h-[60dvh] md:aspect-auto md:max-h-none md:w-auto md:flex-1 md:min-h-0 md:min-w-0 flex p-2">
           <div ref={board} className="flex-1 min-h-0 min-w-0 flex">
           <DrillBoard fen={fen} orientation={color} active={boardActive} onMove={onMove}
             promotions={promotions} lastMove={lastMove} hint={hint} arrows={arrows} circles={shown === "book" ? bookCircles : []} />
           </div>
         </div>
-        {/* Below the board (portrait): a fixed height, whatever it says — a
-            longer message must not shrink the board or move it. Beside it
-            (wider screens), its own column. */}
-        <div className="shrink-0 h-60 md:h-auto overflow-y-auto md:w-72 p-3 flex flex-col gap-3 border-t md:border-t-0 md:border-l border-outline/40">
-          {replaying && (
-            <div className="flex items-center gap-2">
-              <span className="text-label-md text-primary">{reviewing ? "Review — nothing asked" : "Test again — a miss counts"}</span>
-              {/* Out of it at any point, not only at its end. */}
-              {phase !== "replayEnd" && cards && (
-                <button onClick={() => startLine(cards, anyLine)} className="ml-auto text-label-md text-primary hover:underline">Next line →</button>
-              )}
-            </div>
-          )}
-          {/* Stepping through the review. */}
-          {replaying && reviewing && (
+        <div className="flex-1 min-h-0 md:flex-none md:w-80 flex flex-col border-t md:border-t-0 md:border-l border-outline/40">
+          <div className="shrink-0 px-3 pt-2 flex flex-col gap-2">
+            {/* The session's lines, back and forth; test or review, from here. */}
             <div className="flex items-center gap-1">
-              {([["first", 0, "To the start (Home)"], ["back", path.length - 1, "A move back (←)"], ["on", path.length + 1, "A move on (→)"], ["last", replaying.length, "To the end (End)"]] as const).map(([icon, to, title], i) => {
-                const off = i < 2 ? path.length === 0 : path.length >= replaying.length;
-                return (
-                  <button key={icon} onClick={() => step(to)} disabled={off} title={title} aria-label={title}
-                    className="h-10 flex-1 max-w-14 inline-flex items-center justify-center rounded-md bg-surface-container text-on-surface hover:bg-on-surface/8 disabled:opacity-35">
-                    <svg viewBox="0 0 24 24" className="w-5 h-5 fill-current" aria-hidden="true"><path d={STEP_ICONS[icon]} /></svg>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          {/* The line as text: at its end, and in a review — a move tapped
-              goes there (from the end, into a review). Not in a test: it
-              would give the moves away. */}
-          {((replaying && reviewing) || phase === "lineEnd") && (
-            <LineText moves={replaying ?? lastLine?.moves ?? path} missed={lastLine?.missed ?? missedPlies}
-              at={replaying ? path.length - 1 : undefined}
-              onPick={replaying ? (i) => step(i + 1) : lastLine ? (i) => reviewLine(lastLine.moves, i + 1) : undefined} />
-          )}
-          {/* The chapter's other moves here, in their arrows' colour: one
-              tapped is reviewed instead. */}
-          {/* Both kinds of arrows here: which to draw. */}
-          {bookLayer && movesLayer && (
-            <div className="flex items-center gap-2 text-label-md">
-              <span className="text-on-surface-variant">Arrows</span>
-              <div className="inline-flex rounded-full border border-outline/40 overflow-hidden">
-                {(["book", "moves"] as const).map((l) => (
-                  <button key={l} onClick={() => pickLayer(l)}
-                    className={`h-7 px-3 ${shown === l ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8"}`}>
-                    {l === "book" ? "Book" : "Moves"}
-                  </button>
-                ))}
+              <button onClick={prevLine} disabled={!canPrev} className={tool} title="The line before this one">‹ Previous</button>
+              <div className="flex-1 flex justify-center">
+                <div className="inline-flex rounded-full border border-outline/40 overflow-hidden" role="group" aria-label="Test or review">
+                  {(["test", "review"] as const).map((m) => (
+                    <button key={m} onClick={() => setMode(m)} aria-pressed={mode === m}
+                      title={m === "test" ? "Your moves asked where due, the opponent's played; a miss counts. At the end: the line again" : "Step through the line with its comments, the moves' figures and Stockfish at the end; nothing asked"}
+                      className={`h-7 px-3 text-label-md ${mode === m ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8"}`}>
+                      {m === "test" ? "Test" : "Review"}
+                    </button>
+                  ))}
+                </div>
               </div>
+              <button onClick={nextLine} disabled={!canNext} className={tool} title="The line after this one; after the last, a new line">Next ›</button>
             </div>
-          )}
-          {movesLayer && target && (
-            <div className="text-label-md flex flex-wrap items-center gap-x-2 gap-y-1">
-              <span className="text-on-surface-variant">Here the line plays</span>
-              <span className="font-mono font-semibold" style={{ color: HINT_COLOR }}>{target.san}</span>
-              <span className="text-on-surface-variant">· also in the chapter:</span>
-              {/* The most played drawn (in their colour when the moves are
-                  shown); the rest only listed. */}
-              {branches.map((n, i) => (
-                <button key={n.uci} onClick={() => reviewBranch(n)} title="Review this one instead"
-                  className={`font-mono font-semibold underline-offset-2 hover:underline ${shown === "moves" && i < BRANCH_ARROWS ? "" : "text-on-surface-variant"}`}
-                  style={shown === "moves" && i < BRANCH_ARROWS ? { color: BRANCH_COLOR } : undefined}>{n.san}</button>
-              ))}
-            </div>
-          )}
-          {reviewing && !withComments && (
-            <div className="text-label-sm text-on-surface-variant">Sent without its comments — send it again with comments to see them here.</div>
-          )}
-          <div className={`text-title-sm ${phase === "missed" ? "text-error" : phase === "show" ? "text-primary" : ""}`}>{status}</div>
-          {/* A new move: the book's, with how it stands among the moves
-              played here — the most played, or one the opponent will
-              rarely have met. */}
-          {phase === "show" && target && (
-            <>
-              <div className="text-body-sm">The book plays {target.san}</div>
-              <MoveStats move={target} ply={path.length} stats={statsBefore()} own />
-            </>
-          )}
-          {phase !== "show" && note && (
-            <div className={`text-body-sm ${note.tone === "bad" ? "text-on-surface" : note.tone === "good" ? "text-success" : "text-on-surface-variant"}`}>{note.text}</div>
-          )}
-          {comment && <div className="text-body-sm italic text-on-surface-variant">{comment}</div>}
-          {/* In a review: how the move just played stands among the moves
-              played there — one's own and the opponent's. */}
-          {reviewing && lastPlayed && (
-            <MoveStats move={lastPlayed} ply={path.length - 1}
-              stats={path.length >= 2 ? path[path.length - 2].stats : chapter.start.stats}
-              own={sideToMove(path.slice(0, -1)) === color} />
-          )}
-          {/* At the line's end, and a review's: Stockfish's verdict, kept by
-              the analysis job. */}
-          {(phase === "lineEnd" || (phase === "replayEnd" && reviewing)) && lastLine && (() => {
-            const end = lastLine.moves[lastLine.moves.length - 1]?.engine;
-            // Checkmate or stalemate: nothing for Stockfish there.
-            const over = end ? null : lineOver(drill, lastLine.moves);
-            return end ? (
+            {/* Stepping through the review. */}
+            {replaying && reviewing && (
+              <div className="flex items-center gap-1">
+                {([["first", 0, "To the start (Home)"], ["back", path.length - 1, "A move back (←)"], ["on", path.length + 1, "A move on (→)"], ["last", replaying.length, "To the end (End)"]] as const).map(([icon, to, title], i) => {
+                  const off = i < 2 ? path.length === 0 : path.length >= replaying.length;
+                  return (
+                    <button key={icon} onClick={() => step(to)} disabled={off} title={title} aria-label={title}
+                      className="h-9 flex-1 inline-flex items-center justify-center rounded-md bg-surface-container text-on-surface hover:bg-on-surface/8 disabled:opacity-35">
+                      <svg viewBox="0 0 24 24" className="w-5 h-5 fill-current" aria-hidden="true"><path d={STEP_ICONS[icon]} /></svg>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <div className={`text-title-sm ${phase === "missed" ? "text-error" : phase === "show" ? "text-primary" : ""}`}>{status}</div>
+            {/* A new move: the book's, and how it stands among the moves
+                played here (the figures in Reference). */}
+            {phase === "show" && target && (
+              <div className="text-body-sm">The book plays {describeBookMove(target, statsHere())}</div>
+            )}
+            {phase !== "show" && note && (
+              <div className={`text-body-sm ${note.tone === "bad" ? "text-on-surface" : note.tone === "good" ? "text-success" : "text-on-surface-variant"}`}>{note.text}</div>
+            )}
+            {atEnd && cards && atLine && (
+              <div className="flex gap-2 flex-wrap pb-1">
+                <button onClick={() => testAgain(replaying ?? atLine.moves)} className={`${pill} bg-primary text-on-primary`}
+                  title="The same moves: yours asked where due, the opponent's played; a miss counts">Test again</button>
+                <button onClick={() => reviewLine(replaying ?? atLine.moves)} className={`${pill} bg-primary text-on-primary`}
+                  title="Step through the line with its comments, the moves' figures and Stockfish at the end; nothing asked">Review the line</button>
+                <button onClick={nextLine} className={`${pill} bg-secondary-container text-on-secondary-container`}>Next line</button>
+              </div>
+            )}
+            {phase === "sessionDone" && !anyLine && (
               <div className="text-body-sm">
-                End of the line: <span className="font-semibold tabular-nums">{"mate" in end.eval
-                  ? `${end.eval.mate > 0 ? "" : "−"}#${Math.abs(end.eval.mate)}`
-                  : `${end.eval.cp > 0 ? "+" : end.eval.cp < 0 ? "−" : ""}${(Math.abs(end.eval.cp) / 100).toFixed(2)}`}</span>
-                <span className="text-on-surface-variant"> · {end.name}, depth {end.depth}</span>
+                {tally.right + tally.wrong} reviewed · {tally.fresh} new
+                {counts && counts.fresh > 0 && perDay > 0 && (
+                  <> · {counts.fresh} new left in these lines — about {Math.ceil(counts.fresh / perDay)} {Math.ceil(counts.fresh / perDay) === 1 ? "day" : "days"} at {perDay} a day</>
+                )}
               </div>
-            ) : over ? (
-              <div className="text-body-sm">End of the line: <span className="font-semibold">{over}</span>.</div>
-            ) : (
-              <div className="text-label-sm text-on-surface-variant">No engine evaluation of the line's end yet — analyse the chapter on the computer (Stockfish at the ends of the lines).</div>
-            );
-          })()}
-          {(phase === "lineEnd" || phase === "replayEnd") && cards && lastLine && (
-            <div className="flex gap-2 flex-wrap">
-              <button onClick={() => testAgain(lastLine.moves)} className={`${pill} bg-primary text-on-primary`}
-                title="The same moves: yours asked, the opponent's played; a miss counts">Test again</button>
-              <button onClick={() => reviewLine(lastLine.moves)} className={`${pill} bg-primary text-on-primary`}
-                title="Step through the line with its comments, the moves' figures and Stockfish at the end; nothing asked">Review the line</button>
-              <button onClick={() => startLine(cards, anyLine)} className={`${pill} bg-secondary-container text-on-secondary-container`}>Next line</button>
-            </div>
-          )}
-          {phase === "sessionDone" && !anyLine && (
-            <div className="text-body-sm">
-              {tally.right + tally.wrong} reviewed · {tally.fresh} new
-              {counts && counts.fresh > 0 && perDay > 0 && (
-                <> · {counts.fresh} new left in these lines — about {Math.ceil(counts.fresh / perDay)} {Math.ceil(counts.fresh / perDay) === 1 ? "day" : "days"} at {perDay} a day</>
-              )}
-            </div>
-          )}
-          <div className="text-body-sm text-on-surface-variant space-y-1">
-            <div>{s.lines.length} of {s.of} lines · {Math.round(s.coverage * 100)}% of the games</div>
-            {counts && <div>{counts.total} moves · {counts.fresh} new · {counts.due} due</div>}
-            {perDay > 0 && <div>New today: {today.met} of {budget}</div>}
-            <div>This session: <span className="text-success">{tally.right} right</span> · <span className="text-error">{tally.wrong} missed</span>{tally.fresh > 0 && <> · {tally.fresh} new</>}</div>
-          </div>
-          {!replaying && lastLine && phase !== "lineEnd" && phase !== "loading" && (
-            <div className="flex gap-3 text-label-md">
-              <span className="text-on-surface-variant">The last line:</span>
-              <button onClick={() => testAgain(lastLine.moves)} className="text-primary hover:underline">↺ Test again</button>
-              <button onClick={() => reviewLine(lastLine.moves)} className="text-primary hover:underline">Review</button>
-            </div>
-          )}
-          {phase === "sessionDone" && cards && (
-            <div className="flex gap-2 flex-wrap">
-              {!anyLine && budgetUsed && counts && counts.fresh > 0 && (
-                <button onClick={learnMore}
-                  className="h-8 px-3 rounded-full bg-primary text-on-primary text-label-md hover:brightness-110">
-                  Learn {Math.min(perDay, counts.fresh)} more today
+            )}
+            {phase === "sessionDone" && cards && (
+              <div className="flex gap-2 flex-wrap pb-1">
+                {!anyLine && budgetUsed && counts && counts.fresh > 0 && (
+                  <button onClick={learnMore} className={`${pill} bg-primary text-on-primary`}>
+                    Learn {Math.min(perDay, counts.fresh)} more today
+                  </button>
+                )}
+                <button onClick={() => { setAnyLine(true); startLine(cards, true); }} className={`${pill} bg-secondary-container text-on-secondary-container`}>
+                  Keep drilling
                 </button>
+              </div>
+            )}
+          </div>
+
+          {/* What there is to know, by kind; a dot where there is something
+              here now one might not expect. */}
+          <div className="shrink-0 mt-1 px-2 flex border-b border-outline/40 overflow-x-auto" role="tablist">
+            {TABS.map((t) => {
+              const dot = (t.id === "comments" && !!comment) || (t.id === "engine" && atEnd && !!endEval);
+              return (
+                <button key={t.id} role="tab" aria-selected={tab === t.id} onClick={() => pickTab(t.id)}
+                  className={`h-9 px-2 text-label-md whitespace-nowrap border-b-2 -mb-px ${tab === t.id ? "border-primary text-primary" : "border-transparent text-on-surface-variant hover:text-on-surface"}`}>
+                  {t.label}
+                  {dot && tab !== t.id && <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-primary align-middle" aria-label="something here" />}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto p-3 flex flex-col gap-3" role="tabpanel">
+            {tab === "line" && (<>
+              {lineTab()}
+              {/* Both kinds of arrows here: which to draw. */}
+              {bookLayer && movesLayer && (
+                <div className="flex items-center gap-2 text-label-md">
+                  <span className="text-on-surface-variant">Arrows</span>
+                  <div className="inline-flex rounded-full border border-outline/40 overflow-hidden">
+                    {(["book", "moves"] as const).map((l) => (
+                      <button key={l} onClick={() => pickLayer(l)}
+                        className={`h-7 px-3 ${shown === l ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8"}`}>
+                        {l === "book" ? "Book" : "Moves"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               )}
-              <button onClick={() => { setAnyLine(true); startLine(cards, true); }}
-                className="h-8 px-3 rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110">
-                Keep drilling
-              </button>
-            </div>
-          )}
+              {/* The chapter's other moves here, in their arrows' colour: one
+                  tapped is reviewed instead. */}
+              {movesLayer && target && (
+                <div className="text-label-md flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="text-on-surface-variant">Here the line plays</span>
+                  <span className="font-mono font-semibold" style={{ color: HINT_COLOR }}>{target.san}</span>
+                  <span className="text-on-surface-variant">· also in the chapter:</span>
+                  {/* The most played drawn (in their colour when the moves are
+                      shown); the rest only listed. */}
+                  {branches.map((n, i) => (
+                    <button key={n.uci} onClick={() => reviewBranch(n)} title="Review this one instead"
+                      className={`font-mono font-semibold underline-offset-2 hover:underline ${shown === "moves" && i < BRANCH_ARROWS ? "" : "text-on-surface-variant"}`}
+                      style={shown === "moves" && i < BRANCH_ARROWS ? { color: BRANCH_COLOR } : undefined}>{n.san}</button>
+                  ))}
+                </div>
+              )}
+              {!reviewing && phase !== "sessionDone" && phase !== "loading" && (
+                <div className="text-label-sm text-on-surface-variant">A move tapped is reviewed from there.</div>
+              )}
+            </>)}
+            {tab === "comments" && (<>
+              {pre && <div className="text-body-sm italic text-on-surface-variant">{pre}</div>}
+              {comment && <div className="text-body-sm">{comment}</div>}
+              {!comment && !pre && (
+                <div className="text-label-sm text-on-surface-variant">
+                  {!withComments ? "Sent without its comments — send it again with comments to see them here."
+                    : reviewing || phase === "missed" || phase === "show" ? "No comment on this move."
+                    : "The chapter's comments are shown in a review, and on a move shown or missed — before, one could give the move away."}
+                </div>
+              )}
+            </>)}
+            {tab === "engine" && (<>
+              <div className="text-body-sm">
+                {evalHere
+                  ? <>This position: <span className="font-semibold tabular-nums">{fmtEval(evalHere)}</span><span className="text-on-surface-variant"> · a stored evaluation</span></>
+                  : <span className="text-on-surface-variant">No stored evaluation of this position.</span>}
+              </div>
+              {lineMoves ? (() => {
+                // Checkmate or stalemate: nothing for Stockfish there.
+                const over = endEval ? null : lineOver(drill, lineMoves);
+                return endEval ? (
+                  <div className="text-body-sm">
+                    End of the line: <span className="font-semibold tabular-nums">{fmtEval(endEval.eval)}</span>
+                    <span className="text-on-surface-variant"> · {endEval.name}, depth {endEval.depth}</span>
+                  </div>
+                ) : over ? (
+                  <div className="text-body-sm">End of the line: <span className="font-semibold">{over}</span>.</div>
+                ) : (
+                  <div className="text-label-sm text-on-surface-variant">No engine evaluation of the line's end yet — analyse the chapter on the computer (Stockfish at the ends of the lines).</div>
+                );
+              })() : (
+                <div className="text-label-sm text-on-surface-variant">The end of the line, once the line is done: the opponent may still turn either way.</div>
+              )}
+              <div className="text-label-sm text-on-surface-variant">From White's side. No engine runs here; the figures come with the chapter.</div>
+            </>)}
+            {tab === "reference" && (<>
+              {figures ? <MoveStats move={figures.move} ply={figures.ply} stats={figures.stats} own={figures.own} /> : (
+                <div className="text-label-md text-on-surface-variant">
+                  {statsHere()?.games ? `${statsHere()!.games.toLocaleString()} games reached this position` : "Beyond the database's figures here"}
+                  {phase === "own" && " — the moves, once yours is played."}
+                </div>
+              )}
+              {chapter.mine && mineHere && mineHere.games > 0 && (
+                <div className="text-label-md">
+                  <span className="text-on-surface-variant">Your games through here: </span>
+                  {mineHere.games} · +{mineHere.w} ={mineHere.d} −{mineHere.l}
+                  {mineHere.perf != null && <span className="text-on-surface-variant"> · performance {mineHere.perf}</span>}
+                  {(reviewing || atEnd) && mineHere.moves.length > 0 && (
+                    <span className="text-on-surface-variant"> · you played {mineHere.moves.map(([san, n]) => `${san} ${n}×`).join(", ")}</span>
+                  )}
+                </div>
+              )}
+            </>)}
+            {tab === "session" && (<>
+              <div className="flex items-center gap-3 flex-wrap">
+                <label className="flex items-center gap-1.5 text-label-md text-on-surface-variant"
+                  title="The lines drilled: the most played first, until they take in this share of the games that stay in the chapter">
+                  Lines
+                  <select value={coverage} onChange={(e) => setCoverage(Number(e.target.value))}
+                    className="h-7 px-1 rounded-sm bg-surface-container border border-outline/40 text-on-surface text-label-md">
+                    {COVERAGES.map((c) => <option key={c} value={c}>{Math.round(c * 100)}%</option>)}
+                  </select>
+                </label>
+                <label className="flex items-center gap-1.5 text-label-md text-on-surface-variant"
+                  title="How many new moves of a chapter a day takes in; moves due again are always asked">
+                  New a day
+                  <select value={perDay} onChange={(e) => {
+                    const n = Number(e.target.value);
+                    setPerDay(n);
+                    saveNewPerDay(n);
+                    if (cards && (phase === "sessionDone" || phase === "lineDone")) startLine(cards, anyLine);
+                  }}
+                    className="h-7 px-1 rounded-sm bg-surface-container border border-outline/40 text-on-surface text-label-md">
+                    {NEW_PER_DAY_CHOICES.map((n) => <option key={n} value={n}>{n === 0 ? "all" : n}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="text-body-sm text-on-surface-variant space-y-1">
+                <div>{s.lines.length} of {s.of} lines · {Math.round(s.coverage * 100)}% of the games</div>
+                {counts && <div>{counts.total} moves · {counts.fresh} new · {counts.due} due</div>}
+                {perDay > 0 && <div>New today: {today.met} of {budget}</div>}
+                <div>This session: <span className="text-success">{tally.right} right</span> · <span className="text-error">{tally.wrong} missed</span>{tally.fresh > 0 && <> · {tally.fresh} new</>}</div>
+                <div>{lines.length} {lines.length === 1 ? "line" : "lines"} so far{cursor !== null && <> · at line {cursor + 1}</>}</div>
+              </div>
+            </>)}
+          </div>
         </div>
       </div>
     </div>
