@@ -104,6 +104,21 @@ export interface RecentGame {
   matches: LineMatch[];
 }
 
+/** A PGN time control to read: "180+2" → 3′+2″, "600" → 10′, "30" → 30″,
+ *  "1/86400" (correspondence) → 1 day a move; the over-the-board forms
+ *  ("40/7200+30:1800+30") as they are. */
+export function timeControlLabel(tc: string): string {
+  const m = /^(\d+)(?:\+(\d+))?$/.exec(tc.trim());
+  if (!m) {
+    const d = /^1\/(\d+)$/.exec(tc.trim());
+    if (d) { const days = Math.round(Number(d[1]) / 86400); return days === 1 ? "1 day a move" : `${days} days a move`; }
+    return tc;
+  }
+  const secs = Number(m[1]);
+  const base = secs % 60 === 0 ? `${secs / 60}′` : secs < 60 ? `${secs}″` : `${Math.floor(secs / 60)}′${secs % 60}″`;
+  return m[2] && Number(m[2]) > 0 ? `${base}+${m[2]}″` : base;
+}
+
 export interface RecentGames {
   days: number;
   since: string;

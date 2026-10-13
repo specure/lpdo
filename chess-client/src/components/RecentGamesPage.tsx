@@ -8,7 +8,7 @@
 // for every game of the day at once.
 
 import { useEffect, useState } from "react";
-import { SCOPES, TIME_CLASSES, getRecentGames, platformName, type RecentGame, type RecentGames, type Scope, type TimeClass } from "../lib/accounts";
+import { SCOPES, TIME_CLASSES, getRecentGames, platformName, timeControlLabel, type RecentGame, type RecentGames, type Scope, type TimeClass } from "../lib/accounts";
 import type { LineMatch } from "../lib/repertoire";
 import { currentMyPlayer } from "./MyStatsWidget";
 import { PlatformBadge } from "./AccountsSection";
@@ -194,7 +194,9 @@ export default function RecentGamesPage({ onOpenChapter, onOpenGame }: Props) {
                       {g.black}{g.black_elo ? <span className="text-on-surface-variant"> ({g.black_elo})</span> : null}
                     </td>
                     <td className="px-2 py-1.5 whitespace-nowrap">
-                      {g.time_class ? <span className="text-on-surface-variant">{g.time_class}{g.time_control ? ` ${g.time_control}` : ""}</span> : <span className="text-on-surface-variant">{g.event ?? ""}</span>}
+                      {g.time_control
+                        ? <span className="text-on-surface-variant" title={g.time_class ?? undefined}>{timeControlLabel(g.time_control)}</span>
+                        : <span className="text-on-surface-variant">{g.time_class ?? g.event ?? ""}</span>}
                       {g.platform && <span className="ml-1.5"><PlatformBadge platform={g.platform} /></span>}
                     </td>
                     <td className="px-2 py-1.5 whitespace-nowrap">
