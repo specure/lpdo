@@ -121,7 +121,7 @@ export default function ScanView({ onDone, onCancel }: Props) {
   if (test) return <TestResultView r={test} onAgain={() => { setTest(null); setProgress(0); setDetail(""); setRound((n) => n + 1); }} onClose={onCancel} />;
 
   return (
-    <div className="h-[100dvh] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] bg-black text-white flex flex-col">
+    <div className="h-[100dvh] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] bg-black text-white flex flex-col">
       <div className="relative flex-1 min-h-0 flex items-center justify-center overflow-hidden">
         <video ref={video} playsInline muted className="absolute inset-0 w-full h-full object-cover" />
         {/* Where to hold the code: the centre square the reading searches. */}
@@ -169,7 +169,7 @@ function TestResultView({ r, onAgain, onClose }: { r: TestResult; onAgain: () =>
     <div className="flex justify-between gap-4 py-1 border-b border-outline/30"><span className="text-on-surface-variant">{k}</span><span className="tabular-nums text-right">{v}</span></div>
   );
   return (
-    <div className="h-[100dvh] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] bg-surface text-on-surface flex flex-col">
+    <div className="h-[100dvh] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] bg-surface text-on-surface flex flex-col">
       <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
         <div>
           <div className="text-title-md">Test received</div>

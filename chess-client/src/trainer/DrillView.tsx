@@ -104,7 +104,7 @@ function Tree({ nodes, path, inSession, onLine, at, pick, depth = 0 }: {
           const p = path.length + i;
           const num = p % 2 === 0 ? `${p / 2 + 1}.` : i === 0 ? `${Math.floor(p / 2) + 1}…` : "";
           const here = n === at;
-          const tone = n.off ? "line-through text-on-surface-variant/50" : onLine.has(n) ? "font-semibold text-on-surface" : inSession.has(n) ? "text-on-surface" : "text-on-surface-variant/60";
+          const tone = n.off ? "line-through text-on-surface-variant/50" : onLine.has(n) ? "font-semibold text-primary" : inSession.has(n) ? "text-on-surface" : "text-on-surface-variant/50";
           return (
             <span key={n.uci + i}>
               <span className="text-on-surface-variant/70">{num}</span>
@@ -183,6 +183,8 @@ export default function DrillView({ chapter, store, onClose }: Props) {
   const [reviewing, setReviewing] = useState(false);
   const [layer, setLayer] = useState<Layer | null>(readLayer);
   const [tab, setTab] = useState<Tab>(readTab);
+  // On the phone: the board shrunk to give the panel room, while one reads.
+  const [roomy, setRoomy] = useState(false);
   const board = useRef<HTMLDivElement>(null);
   const swipe = useRef<{ x: number; y: number; t: number; onBoard: boolean } | null>(null);
 
@@ -427,7 +429,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
         setTally((x) => ({ ...x, fresh: x.fresh + 1 }));
       }
       if (key) answered.current.add(key);
-      setNote({ text: `New: ${node.san} — it comes again shortly`, tone: "info" });
+      setNote(null);
       go([...path, node], cs, anyLine, t);
       return true;
     }
@@ -486,10 +488,9 @@ export default function DrillView({ chapter, store, onClose }: Props) {
   const pickTab = (t: Tab) => { setTab(t); try { localStorage.setItem(TAB_KEY, t); } catch { /* per-device convenience only */ } };
   /** The chapter's line through the moves `p`: on down its main
    *  continuation (switched-off moves aside), joining the session's lines —
-   *  the drill's line in progress kept first — and gone through from the
-   *  ply `at` in the mode at hand (in a test, from before one's own move
-   *  tapped, so it is asked). */
-  const openLineThrough = (p: PNode[], at: number, mode: Mode = reviewing ? "review" : "test") => {
+   *  the drill's line in progress kept first — and reviewed from the ply
+   *  `at` (a test, if one is on, is left). */
+  const openLineThrough = (p: PNode[], at: number) => {
     if (!cards) return;
     const moves = [...p];
     for (let next = moves[moves.length - 1]?.children.find((c) => !c.off); next; next = next.children.find((c) => !c.off)) moves.push(next);
@@ -498,11 +499,10 @@ export default function DrillView({ chapter, store, onClose }: Props) {
     const next = [...ls, { moves, missed: [] }];
     setLines(next);
     setCursor(next.length - 1);
-    if (mode === "review") reviewLine(moves, at);
-    else testAgain(moves, at > 0 && sideToMove(moves.slice(0, at - 1)) === color ? at - 1 : at);
+    reviewLine(moves, at);
   };
   /** Another of the chapter's moves here reviewed instead. */
-  const reviewBranch = (n: PNode) => openLineThrough([...path, n], path.length, "review");
+  const reviewBranch = (n: PNode) => openLineThrough([...path, n], path.length);
   const budgetUsed = perDay > 0 && today.met >= budget;
   const boardActive = phase === "own" || phase === "show" || phase === "missed";
   const mode: Mode = reviewing ? "review" : "test";
@@ -519,14 +519,14 @@ export default function DrillView({ chapter, store, onClose }: Props) {
     [lineMoves, cursor, atLine, path, drill]);
 
   const status = phase === "loading" ? "Reading your cards…"
-    : phase === "review" ? "Reviewing the line"
+    : phase === "review" ? "" // the toggle and the steps say it
     : phase === "own" ? "Your move"
     : phase === "show" ? "New move — play it"
     : phase === "missed" ? "Play the book move"
     : phase === "opponent" || phase === "auto" ? "…"
     : phase === "lineDone" ? "Line done"
-    : phase === "lineEnd" ? "Line done — test it again, or review it?"
-    : phase === "replayEnd" ? (reviewing ? "End of the line" : "Test done")
+    : phase === "lineEnd" ? "Line done — Test it again, Review it, or Next"
+    : phase === "replayEnd" ? (reviewing ? "End of the line — Test it, or Next" : "Test done — again, Review it, or Next")
     : anyLine ? "Every line drilled" : "Done for today";
   // The chapter's comment on the move at hand — in a review, the move just
   // played, where the line is being understood; in the drill and a test, the
@@ -595,10 +595,11 @@ export default function DrillView({ chapter, store, onClose }: Props) {
         if (Math.abs(dx) < 40 || Math.abs(dx) < 2 * Math.abs(dy) || Date.now() - s0.t > 800) return;
         step(path.length + (dx < 0 ? 1 : -1));
       }}>
-      <div className="shrink-0 flex items-center gap-3 px-3 py-2 border-b border-outline/40">
-        <div className="min-w-0 flex-1">
-          <div className="text-body-md truncate">{chapter.name}</div>
-          <div className="text-label-sm text-on-surface-variant truncate">{chapter.book.name} · as {color === "white" ? "White" : "Black"}</div>
+      {/* On a short screen (the phone sideways) one line. */}
+      <div className="shrink-0 flex items-center gap-3 px-3 py-2 short:py-1 border-b border-outline/40">
+        <div className="min-w-0 flex-1 short:flex short:items-baseline short:gap-2">
+          <div className="text-body-md truncate short:text-label-md">{chapter.name}</div>
+          <div className="text-label-sm text-on-surface-variant truncate short:min-w-0">{chapter.book.name} · as {color === "white" ? "White" : "Black"}</div>
         </div>
         <div className="text-label-sm text-on-surface-variant tabular-nums whitespace-nowrap" title="This session: right · missed">
           <span className="text-success">{tally.right}</span> · <span className="text-error">{tally.wrong}</span>
@@ -611,14 +612,16 @@ export default function DrillView({ chapter, store, onClose }: Props) {
       <div className="flex-1 min-h-0 flex flex-col md:flex-row">
         {/* The board: on the phone (portrait) a square the width of the
             screen, whatever the panel says — a longer message must not
-            shrink it or move it; beside the panel on wider screens. */}
-        <div className="shrink-0 w-full aspect-square max-h-[60dvh] md:aspect-auto md:max-h-none md:w-auto md:flex-1 md:min-h-0 md:min-w-0 flex p-2">
+            shrink it or move it; on wider screens (the phone sideways, the
+            desktop) a square of the height, the panel taking the rest of
+            the width (at least 20rem of it). */}
+        <div className={`shrink-0 w-full aspect-square ${roomy ? "max-h-[30dvh]" : "max-h-[60dvh]"} md:max-h-none md:w-auto md:h-full md:max-w-[calc(100%-20rem)] flex p-2`}>
           <div ref={board} className="flex-1 min-h-0 min-w-0 flex">
           <DrillBoard fen={fen} orientation={color} active={boardActive} onMove={onMove}
             promotions={promotions} lastMove={lastMove} hint={hint} arrows={arrows} circles={shown === "book" ? bookCircles : []} />
           </div>
         </div>
-        <div className="flex-1 min-h-0 md:flex-none md:w-88 flex flex-col border-t md:border-t-0 md:border-l border-outline/40">
+        <div className="flex-1 min-h-0 min-w-0 md:min-w-80 flex flex-col border-t md:border-t-0 md:border-l border-outline/40">
           <div className="shrink-0 px-3 pt-2 flex flex-col gap-2">
             {/* The session's lines, back and forth; test or review, from here. */}
             <div className="flex items-center gap-1">
@@ -650,7 +653,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
                 })}
               </div>
             )}
-            <div className={`text-title-sm ${phase === "missed" ? "text-error" : phase === "show" ? "text-primary" : ""}`}>{status}</div>
+            {status && <div className={`text-title-sm ${phase === "missed" ? "text-error" : phase === "show" ? "text-primary" : ""}`}>{status}</div>}
             {/* A new move: the book's, and how it stands among the moves
                 played here (the figures in Reference). */}
             {phase === "show" && target && (
@@ -658,15 +661,6 @@ export default function DrillView({ chapter, store, onClose }: Props) {
             )}
             {phase !== "show" && note && (
               <div className={`text-body-sm ${note.tone === "bad" ? "text-on-surface" : note.tone === "good" ? "text-success" : "text-on-surface-variant"}`}>{note.text}</div>
-            )}
-            {atEnd && cards && atLine && (
-              <div className="flex gap-2 flex-wrap pb-1">
-                <button onClick={() => testAgain(replaying ?? atLine.moves)} className={`${pill} bg-primary text-on-primary`}
-                  title="The same moves: yours asked where due, the opponent's played; a miss counts">Test again</button>
-                <button onClick={() => reviewLine(replaying ?? atLine.moves)} className={`${pill} bg-primary text-on-primary`}
-                  title="Step through the line with its comments, the moves' figures and Stockfish at the end; nothing asked">Review the line</button>
-                <button onClick={nextLine} className={`${pill} bg-secondary-container text-on-secondary-container`}>Next line</button>
-              </div>
             )}
             {phase === "sessionDone" && !anyLine && (
               <div className="text-body-sm">
@@ -703,6 +697,13 @@ export default function DrillView({ chapter, store, onClose }: Props) {
                 </button>
               );
             })}
+            <button onClick={() => setRoomy((r) => !r)} aria-pressed={roomy} title={roomy ? "The board back to its size" : "More room to read: the board made small"}
+              aria-label={roomy ? "The board back to its size" : "More room to read"}
+              className="md:hidden ml-auto shrink-0 w-9 h-9 inline-flex items-center justify-center rounded-md text-on-surface-variant hover:bg-on-surface/8">
+              <svg viewBox="0 0 24 24" className="w-5 h-5 fill-current" aria-hidden="true">
+                <path d={roomy ? "M12 20l-5-5h3V9H7l5-5 5 5h-3v6h3z" : "M7 14h10l-5 5zM7 10h10l-5-5z"} />
+              </svg>
+            </button>
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto p-3 flex flex-col gap-3" role="tabpanel">
             {tab === "line" && (<>
@@ -744,8 +745,8 @@ export default function DrillView({ chapter, store, onClose }: Props) {
             {tab === "tree" && (<>
               <Tree nodes={chapter.tree} path={[]} inSession={drill.inSession} onLine={onLine} at={lastPlayed} pick={(p) => openLineThrough(p, p.length)} />
               <div className="text-label-sm text-on-surface-variant">
-                <b className="font-semibold text-on-surface">Bold</b>: this line · plain: the session's others · grey: left out at {Math.round(coverage * 100)}% ·
-                <s> struck</s>: switched off. A move tapped goes to its line, {reviewing ? "reviewed" : "tested"} from there.
+                <b className="font-semibold text-primary">Blue</b>: this line · plain: the session's others · grey: left out at {Math.round(coverage * 100)}% ·
+                <s> struck</s>: switched off. A move tapped is reviewed from there — its line, out of a test.
               </div>
             </>)}
             {tab === "comments" && (<>
@@ -755,7 +756,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
                 <div className="text-label-sm text-on-surface-variant">
                   {!withComments ? "Sent without its comments — send it again with comments to see them here."
                     : reviewing || phase === "missed" || phase === "show" ? "No comment on this move."
-                    : "The chapter's comments are shown in a review, and on a move shown or missed — before, one could give the move away."}
+                    : "The chapter's comments are shown in a review, and on a move shown or missed."}
                 </div>
               )}
             </>)}
