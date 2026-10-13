@@ -7,8 +7,8 @@
 // arrives on the next start) and from the cache when not. No requests leave
 // for anywhere else.
 
-const VERSION = "6def70564b58"; // set by the build
-const PRECACHE = ["./","./assets/buffer-C2jLOE12.js","./assets/bytewords-DMi_r4Mx.js","./assets/cbor-DxaPBd9K.js","./assets/fountainUtils-eJaRJ9lx.js","./assets/index-BpQdNt0m.css","./assets/index-maqhHqed.js","./assets/utils-oaWNL7qy.js","./icon-180.png","./icon-192.png","./icon-512.png","./index.html","./manifest.webmanifest"]; // set by the build
+const VERSION = "07ca68a36e91"; // set by the build
+const PRECACHE = ["./","./assets/buffer-BddXIBoD.js","./assets/bytewords-fyXtaPmS.js","./assets/cbor-CTzVTEFH.js","./assets/fountainUtils-BIwGRkOD.js","./assets/index-BpQdNt0m.css","./assets/index-CET59Xxk.js","./assets/utils-YV0R7YTH.js","./icon-180.png","./icon-192.png","./icon-512.png","./index.html","./manifest.webmanifest"]; // set by the build
 const CACHE = `lpdo-trainer-${VERSION}`;
 
 self.addEventListener("install", (e) => {
