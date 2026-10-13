@@ -93,8 +93,8 @@ export interface Drill {
 const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const fenKey = (fen: string) => fen.split(" ").slice(0, 3).join(" ");
 
-export function buildDrill(chapter: LpdoChapter, coverage: number): Drill {
-  const session = chooseLines(chapter, { coverage });
+export function buildDrill(chapter: LpdoChapter, coverage: number, cut = false): Drill {
+  const session = chooseLines(chapter, { coverage }, undefined, cut);
   const color = chapter.book.color;
   const inSession = new Set<PNode>();
   const fenBefore = new Map<PNode, string>();
@@ -239,6 +239,16 @@ export function drillCoverage(): number {
 
 export function saveCoverage(c: number): void {
   try { localStorage.setItem(COVERAGE_KEY, String(c)); } catch { /* not kept */ }
+}
+
+/** Whether the lines' rare ends are cut (`cutRare`), as chosen on this
+ *  device; on by default. */
+const CUT_KEY = "lpdoDrillCut";
+export function drillCut(): boolean {
+  try { return localStorage.getItem(CUT_KEY) !== "0"; } catch { return true; }
+}
+export function saveCut(on: boolean): void {
+  try { localStorage.setItem(CUT_KEY, on ? "1" : "0"); } catch { /* not kept */ }
 }
 
 // ── New moves a day ──────────────────────────────────────────────────────────

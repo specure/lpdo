@@ -385,6 +385,25 @@ a target, set one of two ways, the other shown alongside:
 - **Time** — "20 minutes": lines are added while the estimate stays under
   it.
 
+**Cut rare ends** (on by default, kept on the device; nothing cut at 100%):
+a line chosen is otherwise trained to its last move, and books carry
+variations nobody plays. Each of one's own moves in the chosen lines has a
+**use**: its line's weight so far — the share of the games staying in the
+chapter that reach its position. Only the opponent's moves lower it: one's
+own rare move or novelty leaves it as it is, the position before it being
+reached all the same, and a position without figures (after a novelty, or
+beyond the database's depth) keeps the use so far — a forced line is not
+rare for being deep. It is 0 below an opponent's move never played in a
+position the database knows. The least used move at a line's end is cut
+first, the deepest first among equals (the longest line), a cut taking
+one's move and the opponent's before it, so a line still ends after one's
+own move; as long as the moves left keep the coverage's share (80%) of the
+lines' use. So the never-played variations go first, then the ends of the
+rarest branches; lines cut to the same moves become one. (The chance of
+reaching a position among *all* games would not do here: it falls at every
+opponent's move, forced or not, and 80% of it is the first few moves — on
+real chapters it cut to move 3.)
+
 The **estimate** counts **decisions**, not moves or lines: the distinct
 positions where it is one's own move (lines share their beginnings — 20
 lines may be 60 decisions). Time ≈ decisions × repetitions × seconds per

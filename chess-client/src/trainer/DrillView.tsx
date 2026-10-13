@@ -22,8 +22,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { bareSan, hasComments, type Eval, type LpdoChapter, type PNode } from "./format";
 import {
-  COVERAGE_CHOICES, NEW_PER_DAY_CHOICES, buildDrill, cardCounts, describeBookMove, drillCoverage, fenAfter, introduce, lineOver,
-  matchOwn, newPerDay, newToday, nextMoves, nextStep, opponentMove, review, saveCoverage, saveNewPerDay, saveNewToday, sideToMove,
+  COVERAGE_CHOICES, NEW_PER_DAY_CHOICES, buildDrill, cardCounts, describeBookMove, drillCoverage, drillCut, fenAfter, introduce, lineOver,
+  matchOwn, newPerDay, newToday, nextMoves, nextStep, opponentMove, review, saveCoverage, saveCut, saveNewPerDay, saveNewToday, sideToMove,
   type Card, type CardStore, type NewToday,
 } from "./drill";
 import DrillBoard, { BRANCH_COLOR, HINT_COLOR } from "./DrillBoard";
@@ -153,7 +153,8 @@ const fmtEval = (e: Eval) => ("mate" in e
 
 export default function DrillView({ chapter, store, onClose }: Props) {
   const [coverage, setCoverage] = useState(() => drillCoverage());
-  const drill = useMemo(() => buildDrill(chapter, coverage), [chapter, coverage]);
+  const [cut, setCut] = useState(() => drillCut());
+  const drill = useMemo(() => buildDrill(chapter, coverage, cut), [chapter, coverage, cut]);
   const chapterId = chapter.chapter.id;
   const [perDay, setPerDay] = useState(() => newPerDay());
   const [today, setToday] = useState<NewToday>(() => newToday(chapterId));
@@ -809,6 +810,11 @@ export default function DrillView({ chapter, store, onClose }: Props) {
                     className="h-7 px-1 rounded-sm bg-surface-container border border-outline/40 text-on-surface text-label-md">
                     {COVERAGE_CHOICES.map((c) => <option key={c} value={c}>{Math.round(c * 100)}%</option>)}
                   </select>
+                </label>
+                <label className="flex items-center gap-1.5 text-label-md text-on-surface-variant"
+                  title="Below 100%: the lines' ends cut where they get rare — a move valued by the share of the chapter's games that reach it (the opponent's moves lower it, yours never), the least valued cut first, the longest line first among equals, keeping the same share of the lines' use; the book's variations nobody plays go first">
+                  <input type="checkbox" checked={cut} onChange={(e) => { setCut(e.target.checked); saveCut(e.target.checked); }} className="accent-primary" />
+                  Cut rare ends{cut && (coverage >= 1 ? <span className="text-on-surface-variant"> · none at 100%</span> : s.cut > 0 && <span className="text-on-surface-variant"> · {s.cut} {s.cut === 1 ? "move" : "moves"} cut</span>)}
                 </label>
                 <label className="flex items-center gap-1.5 text-label-md text-on-surface-variant"
                   title="How many new moves of a chapter a day takes in; moves due again are always asked">
