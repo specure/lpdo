@@ -148,8 +148,16 @@ the owner, enabled, last sync and status — `chess-db/src/accounts.rs`).
   of the last days, the handles' too, newest first, each with its match
   against the books (`match_line`: the chapter, how far, who left it where),
   the time control and the platform. The phone-less review of today's games.
-- Out of scope: bots, variants, Lichess tokens for private games. The UI
-  (accounts on the Sources page, the Recent games view) is phase 2.
+- The **UI** (phase 2, 2026-10-13): *Your online accounts* on the Maintenance
+  page under Sources (`AccountsSection.tsx`: link, Sync now, daily on/off,
+  unlink; linking syncs at once); the **Recent games** page (`RecentGamesPage.tsx`,
+  a mode of the app, a Home card): days, the three-way scope and the time
+  classes as filters, a tally, a row opening the chapter on the Repertoire
+  page's board where the game left it (`RepertoireOpen` with the game's
+  moves, which the endpoint gives), *Open* for the Analysis board.
+- Out of scope: bots, variants, Lichess tokens for private games. Still to
+  come: time-control filters on the Games page and in a chapter's own-games
+  figures; a platform badge in the player search.
 
 ## Candidate sources (from #40)
 

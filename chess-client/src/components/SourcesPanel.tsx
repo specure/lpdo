@@ -11,6 +11,7 @@ import {
   setSourceWindow,
 } from "../api";
 import type { SourceStatus, ScheduleInfo } from "../types";
+import AccountsSection from "./AccountsSection";
 
 // ── Pending toggle intents (survives page switches) ───────────────────────────
 //
@@ -600,6 +601,7 @@ export default function SourcesPanel({ onMutated }: { onMutated?: () => void }) 
           <SourceCard key={s.key} source={s} hasActiveSync={syncingKeys.has(s.key)} onChanged={onChanged} />
         ))}
       </div>
+      <AccountsSection />
     </div>
   );
 }

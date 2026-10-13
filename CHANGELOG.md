@@ -17,9 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the repertoire's figures and game lists, within a scope: all, over the
   board only, online only. Every game imported from now on keeps its time
   control and its class (bullet, blitz, rapid, classical, correspondence).
-  Online games never count in the reference figures. `/players/{id}/recent`
-  lists your games of the last days with how each stood to the repertoire.
-  The screens come next.
+  Online games never count in the reference figures.
+- **Your online accounts** — on the Maintenance page under Sources: link a
+  handle on Chess.com or Lichess to your player, *Sync now*, daily on or
+  off, unlink (the games stay). Linking syncs the account's whole history
+  once; after that only the new games come in.
+- **Recent games** — a page of its own (Home, and *Recent* in the bar):
+  your games of today, three days, a week or a month — over the board and
+  online, all, or either — each with the chapter it went into and the
+  verdict: in book to the end, you left at a move, the opponent left, or
+  not in the repertoire; a row puts the chapter on the Repertoire page's
+  board where the game left it, *Open* puts the game on the Analysis board.
+  A tally of the period at the top; the time classes as filters.
 - **Rating and performance in the figures** — a chapter's figures carry,
   for each move, the median rating of those who played it and their
   performance rating with it (from ten rated opponents); the Reference tab

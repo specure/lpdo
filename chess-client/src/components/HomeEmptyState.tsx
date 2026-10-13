@@ -20,6 +20,8 @@ interface Props {
   onOpenTournament: () => void;
   /** Open the Repertoire page (#327). */
   onOpenRepertoire: () => void;
+  /** Open Recent games: one's games of the last days against the repertoire (#90). */
+  onOpenRecent: () => void;
   /** Open the Games page: every game in the database. */
   onOpenGames: () => void;
   /** Open the Analysis page: the games opened on the board. */
@@ -28,6 +30,14 @@ interface Props {
   /** Open the Setup Wizard (used by the empty-database CTA). */
   onRunWizard: () => void;
 }
+
+// A clock for "Recent games".
+const IconClock = () => (
+  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 7v5l3 2" />
+  </svg>
+);
 
 // Chessboard glyph for "My games".
 const IconBoard = () => (
@@ -326,7 +336,7 @@ function ActionCard({
 }
 
 export default function HomeEmptyState({
-  status, onMyGames, onSearchPlayer, onOpenTournament, onOpenRepertoire, onOpenGames, onOpenAnalysis, onBrowseLocal, onRunWizard,
+  status, onMyGames, onSearchPlayer, onOpenTournament, onOpenRepertoire, onOpenRecent, onOpenGames, onOpenAnalysis, onBrowseLocal, onRunWizard,
 }: Props) {
   // Live first-run readiness (overrides the parent's slow-polled status). The
   // slot below the quick-start cards becomes one of: Preparing… / failed (Reset)
@@ -398,7 +408,7 @@ export default function HomeEmptyState({
             onClick={onMyGames}
             disabled={!hasMyPlayer}
             delayMs={60}
-            className="lg:col-span-4"
+            className="lg:col-span-3"
           />
           <ActionCard
             tone="tertiary"
@@ -408,7 +418,7 @@ export default function HomeEmptyState({
             description="Add a chess-results.com tournament and prep against likely opponents."
             onClick={onOpenTournament}
             delayMs={100}
-            className="lg:col-span-4"
+            className="lg:col-span-3"
           />
           <ActionCard
             tone="secondary"
@@ -418,7 +428,17 @@ export default function HomeEmptyState({
             description="Opening books and chapters — the lines you play, studied with the database and the engines."
             onClick={onOpenRepertoire}
             delayMs={140}
-            className="lg:col-span-4"
+            className="lg:col-span-3"
+          />
+          <ActionCard
+            tone="tertiary"
+            icon={<IconClock />}
+            iconHoverClass="group-hover:rotate-12 group-hover:scale-110"
+            title="Recent games"
+            description="Your games of the last days — over the board and online — against your repertoire: where you or the opponent left it."
+            onClick={onOpenRecent}
+            delayMs={160}
+            className="lg:col-span-3"
           />
           <ActionCard
             tone="secondary"
