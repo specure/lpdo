@@ -13,7 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   performance rating with it (from ten rated opponents); the Reference tab
   on the phone shows them as "rating → performance", the performance green
   or red where it is 25 points or more above or below the rating. Analyse
-  the chapter again for figures stored before.
+  the chapter again for figures stored before — or every chapter at once:
+  **Analyse all chapters again** on the Maintenance page, under the
+  repertoire's settings, works out the figures of every chapter of the
+  active books anew, in the background (Stockfish's line ends are kept).
 
 ### Changed
 - **The drill's screen, on the phone and the desktop** — the lines of a

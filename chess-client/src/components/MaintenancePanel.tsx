@@ -10,7 +10,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { clearCrashLog, formatCrashLog, readCrashLog, type CrashEntry } from "../lib/crashLog";
 import { listen } from "@tauri-apps/api/event";
 import { useJobProgress } from "../hooks/useJobProgress";
-import { getRepertoireSettings, putRepertoireSettings, type RepertoireSettings, type TransposedGames } from "../lib/repertoire";
+import { analyseAllChapters, getRepertoireSettings, putRepertoireSettings, type RepertoireSettings, type TransposedGames } from "../lib/repertoire";
 import {
   DEFAULT_BACKUP_DIR, DEFAULT_COLLECTION, backupCollection, backupFolder, rememberBackupCollection, rememberBackupFolder,
   saveBackup, useAutoBackup, whenAt, type BackupKind,
@@ -1035,6 +1035,17 @@ function RepertoireSection() {
           {settings.line_end_depth !== undefined && (
             <LineEndDepth depth={settings.line_end_depth} onSave={(d) => void save({ line_end_depth: d })} />
           )}
+          <div className="space-y-1 pt-2">
+            <button onClick={() => { setError(null); setNote(null); analyseAllChapters().then(() => setNote("Queued: every chapter of the active books, one after another — see Activity.")).catch((e) => setError(e instanceof Error ? e.message : String(e))); }}
+              className="h-8 px-3 rounded-full bg-secondary-container text-on-secondary-container text-label-md hover:brightness-110">
+              Analyse all chapters again
+            </button>
+            <p className="text-label-sm text-on-surface-variant">
+              The database's figures of every chapter of the active books worked out anew, in the background — after an
+              update that changed what the figures hold (0.24.3: the movers' rating and performance). A few seconds a
+              chapter; Stockfish's evaluations at the ends of the lines are kept where they are as deep as the setting.
+            </p>
+          </div>
           {note && <p className="text-body-sm text-success">{note}</p>}
         </div>
       )}

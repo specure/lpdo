@@ -1530,10 +1530,18 @@ fn run_job(
         // A repertoire's chapters analysed for practice (#327): the database's
         // figures, kept per chapter (one's own games are looked up live).
         "repertoire_analyse" => {
-            let ids: Vec<i64> = p.get("chapters").and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
-                .unwrap_or_default();
-            if ids.is_empty() { return Err(anyhow!("repertoire_analyse: 'chapters' required")); }
+            // The chapters given — or, with `all`, every active chapter of
+            // the active books (the Maintenance page's "Analyse all chapters
+            // again": the figures worked out anew after a change in what
+            // they hold).
+            let ids: Vec<i64> = if p.get("all").and_then(|v| v.as_bool()).unwrap_or(false) {
+                crate::repertoire::active_chapters(conn)?
+            } else {
+                p.get("chapters").and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
+                    .unwrap_or_default()
+            };
+            if ids.is_empty() { return Err(anyhow!("repertoire_analyse: 'chapters' required (or 'all', with a chapter to analyse)")); }
             let n = ids.len() as u64;
             // Stockfish at the ends of the lines, to the depth of the
             // settings: a process of its own, started when first needed,

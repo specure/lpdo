@@ -2079,6 +2079,17 @@ pub fn line_ends_missing(conn: &Connection, id: i64, depth: u32) -> Result<usize
     Ok(fens.iter().filter(|f| kept.get(*f).is_none_or(|e| e.depth < depth)).count())
 }
 
+/// Every chapter to analyse, in the books' order: those of the active
+/// books, switched on, not model games — "Analyse all chapters again" on
+/// the Maintenance page, after a change in what the figures hold.
+pub fn active_chapters(conn: &Connection) -> Result<Vec<i64>> {
+    let mut st = conn.prepare(
+        "SELECT c.id FROM repertoire_chapters c JOIN repertoire_books b ON b.id = c.book_id
+         WHERE COALESCE(b.active, TRUE) AND c.active AND NOT COALESCE(c.model, FALSE)
+         ORDER BY b.ord, b.id, c.ord, c.id")?;
+    Ok(st.query_map([], |r| r.get(0))?.collect::<duckdb::Result<_>>()?)
+}
+
 /// The chapters the server would analyse by itself, in the books' order:
 /// those of the active books, switched on, not model games, left alone
 /// `quiet_min` minutes — whose figures are missing or out of date, or (with
@@ -2815,6 +2826,23 @@ mod tests {
         attach_line_end_evals(&conn, id, &mut positions).unwrap();
         let e = positions.iter().find_map(|p| p.engine.clone()).expect("an evaluation on the figures");
         assert_eq!((e.cp, e.depth, e.engine.as_str()), (Some(35), 22, "Stockfish 19"));
+    }
+
+    #[test]
+    fn every_active_chapter_for_analysing_all_again() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let book = create_book(&conn, "B", "white", None, None, None).unwrap();
+        let chs: Vec<_> = ["1. e4 *", "1. d4 *", "1. c4 *"].iter().enumerate()
+            .map(|(i, pgn)| add_chapters(&conn, book.id, Some(&format!("c{i}")), Some(pgn), None).unwrap().remove(0)).collect();
+        conn.execute("UPDATE repertoire_chapters SET active = FALSE WHERE id = ?", duckdb::params![chs[1].id]).unwrap();
+        conn.execute("UPDATE repertoire_chapters SET model = TRUE WHERE id = ?", duckdb::params![chs[2].id]).unwrap();
+        assert_eq!(active_chapters(&conn).unwrap(), vec![chs[0].id], "switched off and model games left out");
+        let other = create_book(&conn, "C", "black", None, None, None).unwrap();
+        let more = add_chapters(&conn, other.id, Some("x"), Some("1. e4 c5 *"), None).unwrap();
+        assert_eq!(active_chapters(&conn).unwrap(), vec![chs[0].id, more[0].id]);
+        conn.execute("UPDATE repertoire_books SET active = FALSE WHERE id = ?", duckdb::params![other.id]).unwrap();
+        assert_eq!(active_chapters(&conn).unwrap(), vec![chs[0].id], "an inactive book's chapters left out");
     }
 
     #[test]

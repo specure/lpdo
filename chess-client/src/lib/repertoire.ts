@@ -113,6 +113,10 @@ export const getStoredAnalysis = (id: number) => apiGet<ChapterAnalysis>(`/reper
  *  the database's figures. */
 export const analyseChapters = (chapters: number[]) =>
   submitJob({ type: "repertoire_analyse", params: { chapters } });
+/** Every active chapter of the active books analysed again — after a change
+ *  in what the figures hold (the server of 0.24.3 or later). */
+export const analyseAllChapters = () =>
+  submitJob({ type: "repertoire_analyse", params: { all: true } });
 
 /** One's own games through a chapter's positions, looked up live (~0.1 s):
  *  those with the book's colour, from the last `months` (0: all) — `since`
