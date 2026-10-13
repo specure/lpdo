@@ -6,14 +6,17 @@
 import { Chess } from "chess.js";
 import { parsePgnTree, type MoveNode } from "../lib/parsePgnTree";
 import { encodeCal, encodeCsl } from "../lib/parseAnnotations";
-import { FORMAT, VERSION, bareSan, type LpdoChapter, type Mine, type PNode, type Side, type Stats } from "./format";
+import { FORMAT, VERSION, bareSan, type LpdoChapter, type Mine, type MoveFigures, type PNode, type Side, type Stats } from "./format";
 
 /** The server's figures for one position (see chess-db repertoire.rs). */
 export interface PositionStat {
   key: string;
   zobrist: string;
   games: number;
-  moves: { san: string; games: number; score: number }[];
+  /** `elo`: the median rating of the rated movers; `perf`: their performance
+   *  with the move, from ten rated opponents. Absent from analyses stored
+   *  before 0.24.1. */
+  moves: { san: string; games: number; score: number; elo?: number | null; perf?: number | null }[];
   eval: { cp: number } | { mate: number } | null;
   /** At a line's end: Stockfish's evaluation, as kept (White's side). */
   engine?: { cp?: number; mate?: number; depth: number; engine: string } | null;
@@ -52,7 +55,13 @@ function toStats(s: PositionStat | undefined): Stats | undefined {
   const total = s.moves.reduce((n, m) => n + m.games, 0) || 1;
   const out: Stats = {
     games: s.games,
-    moves: s.moves.map((m): [string, number, number] => [m.san, round(m.games / total), round(m.score)]).sort((a, b) => b[1] - a[1]),
+    moves: s.moves.map((m): MoveFigures => {
+      const f: MoveFigures = [m.san, round(m.games / total), round(m.score)];
+      // The rating and the performance only where there are any: the
+      // package is sent by QR code, byte by byte.
+      if (m.perf != null || m.elo != null) f.push(m.perf ?? null, m.elo ?? null);
+      return f;
+    }).sort((a, b) => b[1] - a[1]),
   };
   if (s.eval) out.eval = s.eval;
   return out;

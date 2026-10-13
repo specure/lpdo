@@ -15,13 +15,18 @@ export type Side = "white" | "black";
 /** A stored engine evaluation, from White's side. */
 export type Eval = { cp: number } | { mate: number };
 
+/** A move from a position: SAN, its share of the games, the score for the
+ *  side playing it — and, where known, their performance rating with it
+ *  (from ten rated opponents) and the median rating of those who played it
+ *  (null: not known; both absent: neither). */
+export type MoveFigures = [san: string, share: number, score: number, perf?: number | null, elo?: number | null];
+
 /** What the database knows of a position (the one after a node's move, or
- *  the start position). `moves`: [SAN, share of the games, score for the
- *  side playing it] — the most played moves and every move the chapter has
- *  here, most played first. */
+ *  the start position). `moves`: the most played moves and every move the
+ *  chapter has here, most played first. */
 export interface Stats {
   games: number;
-  moves: [string, number, number][];
+  moves: MoveFigures[];
   eval?: Eval;
 }
 

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Rating and performance in the figures** — a chapter's figures carry,
+  for each move, the median rating of those who played it and their
+  performance rating with it (from ten rated opponents); the Reference tab
+  on the phone shows them as "rating → performance", the performance green
+  or red where it is 25 points or more above or below the rating. Analyse
+  the chapter again for figures stored before.
+
 ### Changed
 - **The drill's screen, on the phone and the desktop** — the lines of a
   session are walked back and forth at any point, also in the middle of a

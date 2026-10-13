@@ -471,7 +471,7 @@ the phone trainer and any later app alike:
       "card": "a1b2c3d4e5f60718:c2c4",  // own moves: position hash + UCI move
       "comment": "…", "pre": "…", "nags": [1],
       "arrows": ["Gc4c5"], "circles": ["Rd4"], "off": true,   // only when there are any
-      "stats": { "games": 889516, "moves": [["e5", 0.31, 0.47], ["Nf6", 0.29, 0.45]], "eval": { "cp": 12 } },
+      "stats": { "games": 889516, "moves": [["e5", 0.31, 0.47, 2480, 2410], ["Nf6", 0.29, 0.45]], "eval": { "cp": 12 } },
       "engine": { "eval": { "cp": 18 }, "best": ["d4", { "cp": 35 }], "depth": 24 },  // from the analysis job
       "mine": { "games": 7, "w": 3, "d": 2, "l": 2, "perf": 2180, "moves": [["d4", 2], ["b3", 5]] },
       "children": [ … ] }            // in the chapter's order; the first is the main line
@@ -481,8 +481,12 @@ the phone trainer and any later app alike:
 
 - `stats` is the position after the move (`start.stats`: the initial
   position): games that reached it and went on, the moves from it — SAN,
-  share of those games, score for the side playing it; the database's most
-  played (up to eight) and every move the chapter has there — and a stored
+  share of those games, score for the side playing it, and where known the
+  movers' performance rating with it (the opponent's rating plus 400 for a
+  win, less 400 for a loss, averaged, from ten rated opponents) and the
+  median rating of the rated movers (null for one not known; both left off
+  where neither is); the database's most played (up to eight) and every
+  move the chapter has there — and a stored
   evaluation from White's side, `{ "cp": n }` or `{ "mate": n }` (Lichess's
   cloud evaluation where kept, else chessdb's), when there is one. Engine
   games are left out, as the Reference tab does by default. Served by
