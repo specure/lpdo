@@ -95,7 +95,8 @@ pub fn init(conn: &Connection) -> Result<()> {
             last_sync    TIMESTAMP,
             last_status  VARCHAR,
             created_at   TIMESTAMP
-        );",
+        );
+        ALTER TABLE accounts ADD COLUMN IF NOT EXISTS from_date DATE;",
     )?;
     Ok(())
 }
@@ -116,11 +117,14 @@ pub struct Account {
     pub last_status: Option<String>,
     /// The handle's games in the database.
     pub games: i64,
+    /// Games from this day on are synced ("2025-10-13"); none: all of them.
+    pub from_date: Option<String>,
 }
 
 const SELECT: &str = "SELECT a.id, a.platform, a.username, a.player_id, a.owner_id, o.name, a.enabled,
                              CAST(a.last_sync AS VARCHAR), a.last_status,
-                             (SELECT COUNT(*) FROM games g WHERE (g.white_id = a.player_id OR g.black_id = a.player_id) AND g.deleted_at IS NULL)
+                             (SELECT COUNT(*) FROM games g WHERE (g.white_id = a.player_id OR g.black_id = a.player_id) AND g.deleted_at IS NULL),
+                             CAST(a.from_date AS VARCHAR)
                       FROM accounts a JOIN players o ON o.id = a.owner_id";
 
 fn row(r: &duckdb::Row) -> duckdb::Result<Account> {
@@ -136,6 +140,7 @@ fn row(r: &duckdb::Row) -> duckdb::Result<Account> {
         last_sync: r.get(7)?,
         last_status: r.get(8)?,
         games: r.get(9)?,
+        from_date: r.get(10)?,
     })
 }
 
@@ -176,11 +181,21 @@ fn normalized(name: &str) -> String {
     name.to_lowercase().replace(',', " ").split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// "2025-10-13", or nothing; anything else is refused.
+fn valid_date(d: Option<&str>) -> Result<Option<String>> {
+    match d.map(str::trim).filter(|d| !d.is_empty()) {
+        None => Ok(None),
+        Some(d) => chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").map(|_| Some(d.to_string())).map_err(|_| anyhow!("not a date (YYYY-MM-DD): {d:?}")),
+    }
+}
+
 /// Link a handle to a local player: the handle's own player row, made if it
-/// is not there (a virtual player, `platform` set), and the account.
-pub fn add(conn: &Connection, platform: Platform, username: &str, owner_id: i64) -> Result<Account> {
+/// is not there (a virtual player, `platform` set), and the account — its
+/// games from `from` on (a day, "2025-10-13"), or all of them.
+pub fn add(conn: &Connection, platform: Platform, username: &str, owner_id: i64, from: Option<&str>) -> Result<Account> {
     let username = username.trim();
     if !valid_username(username) { bail!("not a username: {username:?}"); }
+    let from = valid_date(from)?;
     let owner: Option<String> = conn
         .query_row("SELECT platform FROM players WHERE id = ?", duckdb::params![owner_id], |r| r.get(0))
         .map_err(|_| anyhow!("player {owner_id} not found"))?;
@@ -210,11 +225,22 @@ pub fn add(conn: &Connection, platform: Platform, username: &str, owner_id: i64)
     };
     let id: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) + 1 FROM accounts", [], |r| r.get(0))?;
     conn.execute(
-        "INSERT INTO accounts (id, platform, username, player_id, owner_id, enabled, created_at)
-         VALUES (?, ?, ?, ?, ?, TRUE, CAST(NOW() AS TIMESTAMP))",
-        duckdb::params![id, platform.key(), username, player_id, owner_id],
+        "INSERT INTO accounts (id, platform, username, player_id, owner_id, enabled, created_at, from_date)
+         VALUES (?, ?, ?, ?, ?, TRUE, CAST(NOW() AS TIMESTAMP), CAST(? AS DATE))",
+        duckdb::params![id, platform.key(), username, player_id, owner_id, from],
     )?;
     get(conn, id)
+}
+
+/// From which day the account's games are synced; none for all of them.
+/// An earlier day than before: the next sync fetches from it (the games
+/// held are dropped by their address, as ever).
+pub fn set_from(conn: &Connection, id: i64, from: Option<&str>) -> Result<()> {
+    let from = valid_date(from)?;
+    let n = conn.execute("UPDATE accounts SET from_date = CAST(? AS DATE), last_sync = CASE WHEN ? IS NULL OR from_date IS NULL OR CAST(? AS DATE) < from_date THEN NULL ELSE last_sync END WHERE id = ?",
+        duckdb::params![from, from, from, id])?;
+    if n == 0 { bail!("account {id} not found"); }
+    Ok(())
 }
 
 /// Unlink an account. Its games and the handle's player row stay.
@@ -400,17 +426,27 @@ fn timestamp_ms(s: &str) -> Option<i64> {
     chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok().map(|t| t.and_utc().timestamp_millis())
 }
 
-/// Sync one account: fetch from a day (a month) before the last sync, drop
-/// the games held, import the rest into the collection, private, as the
+/// A game's day from its tags, "2026-10-13".
+fn date_of(game: &str) -> Option<String> {
+    tag(game, "UTCDate").or_else(|| tag(game, "Date")).map(|d| d.replace('.', "-"))
+}
+
+/// Sync one account: fetch from a day (a month) before the last sync — and
+/// from the account's first day — drop the games held and those before
+/// that day, import the rest into the collection, private, as the
 /// platform's games; the outcome kept on the account.
 pub fn sync_account(conn: &Connection, rt: &tokio::runtime::Handle, account: &Account, dir: &Path, reporter: &Reporter) -> Result<SyncOutcome> {
     let label = format!("{} on {}", account.username, account.platform.name());
     reporter.log(format!("{label}: fetching…"));
-    let last = account.last_sync.as_deref().and_then(timestamp_ms);
+    let last = account.last_sync.as_deref().and_then(timestamp_ms).map(|ms| ms - 86_400_000);
+    let first = account.from_date.as_deref()
+        .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+        .map(|d| d.and_hms_opt(0, 0, 0).expect("midnight").and_utc().timestamp_millis());
+    let since = match (last, first) { (Some(a), Some(b)) => Some(a.max(b)), (a, b) => a.or(b) };
     let fetched = match account.platform {
-        Platform::Lichess => rt.block_on(fetch_lichess(&account.username, last.map(|ms| ms - 86_400_000))),
+        Platform::Lichess => rt.block_on(fetch_lichess(&account.username, since)),
         Platform::Chesscom => {
-            let from = last.and_then(|ms| chrono::DateTime::from_timestamp_millis(ms - 86_400_000)).map(|t| {
+            let from = since.and_then(chrono::DateTime::from_timestamp_millis).map(|t| {
                 use chrono::Datelike;
                 (t.year(), t.month())
             });
@@ -424,7 +460,9 @@ pub fn sync_account(conn: &Connection, rt: &tokio::runtime::Handle, account: &Ac
             return Err(e);
         }
     };
-    let games = split_games(&text);
+    let games: Vec<String> = split_games(&text).into_iter()
+        .filter(|g| match (&account.from_date, date_of(g)) { (Some(from), Some(d)) => d.as_str() >= from.as_str(), _ => true })
+        .collect();
     let sites: Vec<String> = games.iter().filter_map(|g| site_of(g)).collect();
     let known = known_sites(conn, &sites)?;
     let fresh: Vec<String> = games.iter()
@@ -496,19 +534,22 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::init(&conn).unwrap();
         conn.execute_batch("INSERT INTO players (id, name, name_normalized) VALUES (1, 'Svrcek, Jozef', 'svrcek jozef');").unwrap();
-        let a = add(&conn, Platform::Lichess, "jozef77", 1).unwrap();
-        assert_eq!((a.platform, a.username.as_str(), a.owner_id, a.enabled), (Platform::Lichess, "jozef77", 1, true));
+        let a = add(&conn, Platform::Lichess, "jozef77", 1, Some("2025-10-13")).unwrap();
+        assert_eq!((a.platform, a.username.as_str(), a.owner_id, a.enabled, a.from_date.as_deref()), (Platform::Lichess, "jozef77", 1, true, Some("2025-10-13")));
+        set_from(&conn, a.id, None).unwrap();
+        assert_eq!(get(&conn, a.id).unwrap().from_date, None);
+        assert!(add(&conn, Platform::Chesscom, "x", 1, Some("yesterday")).is_err(), "not a date");
         let handle: (String, Option<String>) = conn.query_row("SELECT name, platform FROM players WHERE id = ?", duckdb::params![a.player_id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!(handle, ("jozef77".into(), Some("lichess".into())), "a virtual player of its own");
         assert_eq!(identity_ids(&conn, 1).unwrap(), vec![1, a.player_id]);
-        assert!(add(&conn, Platform::Lichess, "Jozef77", 1).is_err(), "linked already");
-        assert!(add(&conn, Platform::Chesscom, "jozef77", a.player_id).is_err(), "a handle owns nothing");
-        let b = add(&conn, Platform::Chesscom, "jozef77", 1).unwrap();
+        assert!(add(&conn, Platform::Lichess, "Jozef77", 1, None).is_err(), "linked already");
+        assert!(add(&conn, Platform::Chesscom, "jozef77", a.player_id, None).is_err(), "a handle owns nothing");
+        let b = add(&conn, Platform::Chesscom, "jozef77", 1, None).unwrap();
         assert_ne!(b.player_id, a.player_id, "the same handle on another platform is another player");
         assert_eq!(list(&conn).unwrap().len(), 2);
         remove(&conn, a.id).unwrap();
         assert_eq!(identity_ids(&conn, 1).unwrap(), vec![1, b.player_id]);
-        assert!(add(&conn, Platform::Lichess, "no spaces here", 1).is_err());
+        assert!(add(&conn, Platform::Lichess, "no spaces here", 1, None).is_err());
     }
 
     /// The real platforms: run by hand — `cargo test accounts -- --ignored`.

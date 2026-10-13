@@ -1445,10 +1445,13 @@ async fn repertoire_book_games_handler(State(state): State<AppState>, AxumPath(i
 // ── One's online accounts (#90) ──────────────────────────────────────────────
 
 #[derive(Deserialize)]
-struct AccountBody { platform: String, username: String, player_id: i64 }
+struct AccountBody { platform: String, username: String, player_id: i64, from: Option<String> }
 
 #[derive(Deserialize)]
 struct AccountEnabledBody { enabled: bool }
+
+#[derive(Deserialize)]
+struct AccountFromBody { from: Option<String> }
 
 #[derive(Deserialize)]
 struct RecentQuery { days: Option<u32>, scope: Option<String>, limit: Option<usize> }
@@ -1463,7 +1466,7 @@ async fn account_add_handler(State(state): State<AppState>, Json(b): Json<Accoun
     let platform = crate::accounts::Platform::parse(&b.platform)
         .ok_or_else(|| (StatusCode::BAD_REQUEST, format!("platform must be lichess or chesscom, not {:?}", b.platform)))?;
     state.writer.run(move |conn| {
-        crate::accounts::add(conn, platform, &b.username, b.player_id).map(Json).map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))
+        crate::accounts::add(conn, platform, &b.username, b.player_id, b.from.as_deref()).map(Json).map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))
     }).await
 }
 
@@ -1479,6 +1482,14 @@ async fn account_enabled_handler(State(state): State<AppState>, AxumPath(id): Ax
     state.writer.run(move |conn| {
         crate::accounts::set_enabled(conn, id, b.enabled).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))?;
         Ok(msg(format!("Account {id} {}.", if b.enabled { "enabled" } else { "disabled" })))
+    }).await
+}
+
+/// From which day the account's games are synced; none for all.
+async fn account_from_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Json(b): Json<AccountFromBody>) -> ApiResult<serde_json::Value> {
+    state.writer.run(move |conn| {
+        crate::accounts::set_from(conn, id, b.from.as_deref()).map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+        Ok(msg(format!("Account {id}: games from {}.", b.from.as_deref().unwrap_or("the start"))))
     }).await
 }
 
@@ -3083,6 +3094,7 @@ pub async fn run(
         .route("/accounts/sync",                       post(accounts_sync_handler))
         .route("/accounts/{id}",                       axum::routing::delete(account_delete_handler))
         .route("/accounts/{id}/enabled",               post(account_enabled_handler))
+        .route("/accounts/{id}/from",                  post(account_from_handler))
         .route("/accounts/{id}/sync",                  post(account_sync_handler))
         .route("/players/{id}/recent",                 get(player_recent_handler))
         .route("/schedule",                            get(get_schedule_handler).post(set_schedule_handler))

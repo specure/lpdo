@@ -2923,7 +2923,7 @@ mod tests {
         let book = create_book(&conn, "B", "white", None, None, None).unwrap();
         let ch = add_chapters(&conn, book.id, Some("Ch"), Some("1. e4 e5 2. Nf3 *"), None).unwrap().remove(0);
         conn.execute_batch("INSERT INTO players (id, name, name_normalized) VALUES (1, 'Svrcek, Jozef', 'svrcek jozef'), (2, 'Opp', 'opp');").unwrap();
-        let handle = crate::accounts::add(&conn, crate::accounts::Platform::Lichess, "jozef77", 1).unwrap().player_id;
+        let handle = crate::accounts::add(&conn, crate::accounts::Platform::Lichess, "jozef77", 1, None).unwrap().player_id;
         let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
         conn.execute_batch(&format!("
             INSERT INTO games (id, white_id, black_id, result, date, pgn) VALUES (1, 1, 2, '1-0', '{today}', '1. e4 e5 2. Nf3 Nc6 1-0');

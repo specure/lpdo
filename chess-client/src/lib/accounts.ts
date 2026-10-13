@@ -29,11 +29,15 @@ export interface Account {
   last_status: string | null;
   /** The handle's games in the database. */
   games: number;
+  /** Games from this day on are synced ("2025-10-13"); null: all of them. */
+  from_date: string | null;
 }
 
 export const getAccounts = () => apiGet<Account[]>("/accounts");
-export const addAccount = (platform: Platform, username: string, playerId: number) =>
-  postJson<Account>("/accounts", { platform, username, player_id: playerId });
+export const addAccount = (platform: Platform, username: string, playerId: number, from: string | null) =>
+  postJson<Account>("/accounts", { platform, username, player_id: playerId, from });
+/** From which day the account's games are synced; null for all. */
+export const setAccountFrom = (id: number, from: string | null) => postJson<unknown>(`/accounts/${id}/from`, { from });
 export const removeAccount = (id: number) => apiDelete(`/accounts/${id}`);
 export const setAccountEnabled = (id: number, enabled: boolean) => postJson<unknown>(`/accounts/${id}/enabled`, { enabled });
 /** Sync now — a job, followed in Activity. */
