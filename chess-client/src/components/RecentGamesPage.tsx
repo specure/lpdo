@@ -45,9 +45,13 @@ function chaptersOf(g: RecentGame): LineMatch[] {
 type Tone = "good" | "bad" | "muted" | "plain";
 const TONE: Record<Tone, string> = { good: "text-success", bad: "text-error", muted: "text-on-surface-variant", plain: "" };
 
-/** How the game stood to a chapter, in words — to the repertoire, with
- *  no chapter. */
-function verdict(m: LineMatch | undefined): { text: string; tone: Tone } {
+/** "5...Nxd5": the move that brought the line to `ply` half-moves. */
+const moveAt = (moves: string[], ply: number) =>
+  `${Math.floor((ply - 1) / 2) + 1}${(ply - 1) % 2 ? "..." : "."}${moves[ply - 1] ?? ""}`;
+
+/** How the game (its `moves`) stood to a chapter, in words — to the
+ *  repertoire, with no chapter. */
+function verdict(m: LineMatch | undefined, moves: string[]): { text: string; tone: Tone } {
   if (!m) return { text: "Not in the repertoire", tone: "muted" };
   // Where the line left, the chapter's move there: "Book move: 4.d4".
   const has = m.book_has ?? [];
@@ -57,7 +61,9 @@ function verdict(m: LineMatch | undefined): { text: string; tone: Tone } {
       ? { text: `You deviated at ${m.move ?? "?"}.${book}`, tone: "bad" }
       : { text: `Opponent deviated at ${m.move ?? "?"}.${book}`, tone: "plain" };
   }
-  return { text: m.followed === "ended" ? "The line ended in it" : "In book to the end", tone: "good" };
+  // To the end of the chapter's line, or the game's: the last move in the book.
+  const last = m.ply > 0 ? ` Last book move: ${moveAt(moves, m.ply)}` : "";
+  return { text: `${m.followed === "ended" ? "The game ended in the book." : "In book to the end."}${last}`, tone: "good" };
 }
 
 export default function RecentGamesPage({ onOpenChapter, onOpenGame }: Props) {
@@ -202,8 +208,8 @@ export default function RecentGamesPage({ onOpenChapter, onOpenGame }: Props) {
                       ))}
                     </td>
                     <td className="px-2 py-1.5 whitespace-nowrap">
-                      {ms.length === 0 ? <div className={TONE.muted}>{verdict(undefined).text}</div> : ms.map((m) => {
-                        const v = verdict(m);
+                      {ms.length === 0 ? <div className={TONE.muted}>{verdict(undefined, g.moves).text}</div> : ms.map((m) => {
+                        const v = verdict(m, g.moves);
                         return <div key={m.chapter_id} className={TONE[v.tone]}>{v.text}</div>;
                       })}
                     </td>
