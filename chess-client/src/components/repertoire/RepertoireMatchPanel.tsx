@@ -34,14 +34,17 @@ const moveAt = (moves: string[], ply: number) =>
 
 /** The chapters a game went into, in the books of the colour picked — kept
  *  by the Analysis page, so the tab can say how many while it is not shown. */
-export function useRepertoireMatch(moves: string[], white: string, black: string, on: boolean): RepertoireMatch {
+export function useRepertoireMatch(moves: string[], white: string, black: string, on: boolean, mine?: BookColor): RepertoireMatch {
   const [color, setColor] = useState<BookColor>(() => (localStorage.getItem(COLOR_KEY) === "black" ? "black" : "white"));
   const [matches, setMatches] = useState<LineMatch[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // One's own colour when one played the game.
+  // One's own colour when one played the game: as the caller knows it (an
+  // online game, played under a handle — the Recent page says), else by
+  // the profile player's name.
   useEffect(() => {
     if (!on) return;
+    if (mine) { setColor(mine); return; }
     let gone = false;
     void currentMyPlayer().then((me) => {
       if (gone || !me) return;
@@ -49,7 +52,7 @@ export function useRepertoireMatch(moves: string[], white: string, black: string
       else if (me.name === black) setColor("black");
     }).catch(() => {});
     return () => { gone = true; };
-  }, [white, black, on]);
+  }, [white, black, on, mine]);
 
   const line = moves.join(" ");
   useEffect(() => {

@@ -426,6 +426,15 @@ export default function App() {
     if (fresh.length > room) return fresh.length - room;
     setMode("analysis");
     if (games.length) setActiveAnalysisKey(`g${games[0].id}`);
+    // A game already open, with one's side now known (the Recent page):
+    // the tab learns the side and turns to it.
+    const sided = games.filter((g) => g.my_color && open.some((t) => t.key === `g${g.id}`));
+    if (sided.length) {
+      setAnalysisTabs((prev) => prev.map((t) => {
+        const g = sided.find((x) => t.key === `g${x.id}`);
+        return g ? { ...t, game: { ...t.game, my_color: g.my_color }, flipped: g.my_color === "black" } : t;
+      }));
+    }
     const loaded = await Promise.all(fresh.map(async (game) => {
       // One of the user's own games opens from their side.
       try { return { key: `g${game.id}`, game, loaded: await loadGamePgn(game.id), fen: null, cursor: null, flipped: (game.my_color ?? myColorIn(game)) === "black" } as AnalysisTab; }
