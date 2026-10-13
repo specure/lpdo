@@ -23,7 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   line under the one it leaves: the line at hand in bold, the session's
   other lines plain, the lines the coverage leaves out grey, switched-off
   ones struck; the move at hand marked. A move tapped goes to its line,
-  tested or reviewed from there, whichever is on.
+  tested or reviewed from there, whichever is on. The line at hand is in
+  blue, the session's other lines plain, the rest grey.
+- **Room to read** — on the phone, a button at the end of the tabs shrinks
+  the board to a third of the screen while one reads the tree or the
+  comments, and back. The end-of-line buttons went: *Test · Review* and
+  *Next ›* above do the same.
 - **Lines: 80 · 95 · 100%** — the session's coverage choices, 80% (Pareto's)
   the default, in place of 50 · 75 · 90 · 100: half the games left out too
   many lines. At 100% the whole chapter is trained, your own alternative

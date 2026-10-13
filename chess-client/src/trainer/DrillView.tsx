@@ -104,7 +104,7 @@ function Tree({ nodes, path, inSession, onLine, at, pick, depth = 0 }: {
           const p = path.length + i;
           const num = p % 2 === 0 ? `${p / 2 + 1}.` : i === 0 ? `${Math.floor(p / 2) + 1}…` : "";
           const here = n === at;
-          const tone = n.off ? "line-through text-on-surface-variant/50" : onLine.has(n) ? "font-semibold text-on-surface" : inSession.has(n) ? "text-on-surface" : "text-on-surface-variant/60";
+          const tone = n.off ? "line-through text-on-surface-variant/50" : onLine.has(n) ? "font-semibold text-primary" : inSession.has(n) ? "text-on-surface" : "text-on-surface-variant/50";
           return (
             <span key={n.uci + i}>
               <span className="text-on-surface-variant/70">{num}</span>
@@ -183,6 +183,8 @@ export default function DrillView({ chapter, store, onClose }: Props) {
   const [reviewing, setReviewing] = useState(false);
   const [layer, setLayer] = useState<Layer | null>(readLayer);
   const [tab, setTab] = useState<Tab>(readTab);
+  // On the phone: the board shrunk to give the panel room, while one reads.
+  const [roomy, setRoomy] = useState(false);
   const board = useRef<HTMLDivElement>(null);
   const swipe = useRef<{ x: number; y: number; t: number; onBoard: boolean } | null>(null);
 
@@ -525,8 +527,8 @@ export default function DrillView({ chapter, store, onClose }: Props) {
     : phase === "missed" ? "Play the book move"
     : phase === "opponent" || phase === "auto" ? "…"
     : phase === "lineDone" ? "Line done"
-    : phase === "lineEnd" ? "Line done — test it again, or review it?"
-    : phase === "replayEnd" ? (reviewing ? "End of the line" : "Test done")
+    : phase === "lineEnd" ? "Line done — Test it again, Review it, or Next"
+    : phase === "replayEnd" ? (reviewing ? "End of the line — Test it, or Next" : "Test done — again, Review it, or Next")
     : anyLine ? "Every line drilled" : "Done for today";
   // The chapter's comment on the move at hand — in a review, the move just
   // played, where the line is being understood; in the drill and a test, the
@@ -612,7 +614,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
         {/* The board: on the phone (portrait) a square the width of the
             screen, whatever the panel says — a longer message must not
             shrink it or move it; beside the panel on wider screens. */}
-        <div className="shrink-0 w-full aspect-square max-h-[60dvh] md:aspect-auto md:max-h-none md:w-auto md:flex-1 md:min-h-0 md:min-w-0 flex p-2">
+        <div className={`shrink-0 w-full aspect-square ${roomy ? "max-h-[30dvh]" : "max-h-[60dvh]"} md:aspect-auto md:max-h-none md:w-auto md:flex-1 md:min-h-0 md:min-w-0 flex p-2`}>
           <div ref={board} className="flex-1 min-h-0 min-w-0 flex">
           <DrillBoard fen={fen} orientation={color} active={boardActive} onMove={onMove}
             promotions={promotions} lastMove={lastMove} hint={hint} arrows={arrows} circles={shown === "book" ? bookCircles : []} />
@@ -659,15 +661,6 @@ export default function DrillView({ chapter, store, onClose }: Props) {
             {phase !== "show" && note && (
               <div className={`text-body-sm ${note.tone === "bad" ? "text-on-surface" : note.tone === "good" ? "text-success" : "text-on-surface-variant"}`}>{note.text}</div>
             )}
-            {atEnd && cards && atLine && (
-              <div className="flex gap-2 flex-wrap pb-1">
-                <button onClick={() => testAgain(replaying ?? atLine.moves)} className={`${pill} bg-primary text-on-primary`}
-                  title="The same moves: yours asked where due, the opponent's played; a miss counts">Test again</button>
-                <button onClick={() => reviewLine(replaying ?? atLine.moves)} className={`${pill} bg-primary text-on-primary`}
-                  title="Step through the line with its comments, the moves' figures and Stockfish at the end; nothing asked">Review the line</button>
-                <button onClick={nextLine} className={`${pill} bg-secondary-container text-on-secondary-container`}>Next line</button>
-              </div>
-            )}
             {phase === "sessionDone" && !anyLine && (
               <div className="text-body-sm">
                 {tally.right + tally.wrong} reviewed · {tally.fresh} new
@@ -703,6 +696,13 @@ export default function DrillView({ chapter, store, onClose }: Props) {
                 </button>
               );
             })}
+            <button onClick={() => setRoomy((r) => !r)} aria-pressed={roomy} title={roomy ? "The board back to its size" : "More room to read: the board made small"}
+              aria-label={roomy ? "The board back to its size" : "More room to read"}
+              className="md:hidden ml-auto shrink-0 w-9 h-9 inline-flex items-center justify-center rounded-md text-on-surface-variant hover:bg-on-surface/8">
+              <svg viewBox="0 0 24 24" className="w-5 h-5 fill-current" aria-hidden="true">
+                <path d={roomy ? "M12 20l-5-5h3V9H7l5-5 5 5h-3v6h3z" : "M7 14h10l-5 5zM7 10h10l-5-5z"} />
+              </svg>
+            </button>
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto p-3 flex flex-col gap-3" role="tabpanel">
             {tab === "line" && (<>
@@ -744,7 +744,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
             {tab === "tree" && (<>
               <Tree nodes={chapter.tree} path={[]} inSession={drill.inSession} onLine={onLine} at={lastPlayed} pick={(p) => openLineThrough(p, p.length)} />
               <div className="text-label-sm text-on-surface-variant">
-                <b className="font-semibold text-on-surface">Bold</b>: this line · plain: the session's others · grey: left out at {Math.round(coverage * 100)}% ·
+                <b className="font-semibold text-primary">Blue</b>: this line · plain: the session's others · grey: left out at {Math.round(coverage * 100)}% ·
                 <s> struck</s>: switched off. A move tapped goes to its line, {reviewing ? "reviewed" : "tested"} from there.
               </div>
             </>)}

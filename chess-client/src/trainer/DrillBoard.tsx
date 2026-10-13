@@ -28,7 +28,9 @@ interface Props {
   id?: string;
 }
 
-const MIN = 200;
+/** Smaller than this it is not a board — the phone trainer shrinks it to
+ *  30% of the screen while one reads. */
+const MIN = 120;
 
 /** The book's move: a hint, and the line's move in a review. */
 export const HINT_COLOR = "rgba(56, 142, 60, 0.85)";
