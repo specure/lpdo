@@ -87,6 +87,9 @@ export interface RecentGame {
   white_elo: number | null;
   black_elo: number | null;
   date: string | null;
+  /** When it was played, "2026-10-13T12:17:11Z" (the online games have
+   *  it); null without. Absent from servers before 0.24.14. */
+  played_at?: string | null;
   event: string | null;
   site: string | null;
   result: string | null;

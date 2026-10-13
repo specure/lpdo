@@ -2206,6 +2206,9 @@ pub struct RecentGame {
     pub white_elo: Option<i64>,
     pub black_elo: Option<i64>,
     pub date: Option<String>,
+    /// When it was played, "2026-10-13T12:17:11Z" — from the PGN's UTCDate
+    /// and UTCTime tags, which the online games have; none without them.
+    pub played_at: Option<String>,
     pub event: Option<String>,
     pub site: Option<String>,
     pub result: Option<String>,
@@ -2235,8 +2238,17 @@ pub struct RecentGames {
     pub ms: i64,
 }
 
+/// When a game was played, from its PGN: the UTCDate and UTCTime tags
+/// (Lichess and Chess.com write them), as "2026-10-13T12:17:11Z".
+fn played_at(pgn: &str, date: Option<&str>) -> Option<String> {
+    let time = tag(pgn, "UTCTime")?;
+    let date = tag(pgn, "UTCDate").or_else(|| date.map(str::to_string))?.replace('.', "-");
+    (time.len() == 8 && date.len() == 10 && !date.contains('?')).then(|| format!("{date}T{time}Z"))
+}
+
 /// One's games of the last `days` (1: today's), one's linked handles' too,
-/// within `scope`, newest first, at most `limit`, each matched against the
+/// within `scope`, newest first (within a day by the time played, the
+/// games without one last), at most `limit`, each matched against the
 /// books of its colour.
 pub fn recent_games(conn: &Connection, player: i64, days: u32, filter: Filter, limit: usize) -> Result<RecentGames> {
     let started = std::time::Instant::now();
@@ -2266,8 +2278,12 @@ pub fn recent_games(conn: &Connection, player: i64, days: u32, filter: Filter, l
         };
         let sans = crate::dedup::canonical_moves(&pgn);
         let matches = match_line(conn, &sans, color)?;
-        games.push(RecentGame { id, white, black, white_elo, black_elo, date, event, site, result, time_control, time_class, platform, color: color.to_string(), score, moves: sans, matches });
+        let played_at = played_at(&pgn, date.as_deref());
+        games.push(RecentGame { id, white, black, white_elo, black_elo, date, played_at, event, site, result, time_control, time_class, platform, color: color.to_string(), score, moves: sans, matches });
     }
+    games.sort_by(|a, b| b.date.cmp(&a.date)
+        .then_with(|| match (&a.played_at, &b.played_at) { (Some(x), Some(y)) => y.cmp(x), (Some(_), None) => std::cmp::Ordering::Less, (None, Some(_)) => std::cmp::Ordering::Greater, _ => std::cmp::Ordering::Equal })
+        .then_with(|| b.id.cmp(&a.id)));
     Ok(RecentGames { days, since, scope: filter.scope, games, ms: started.elapsed().as_millis() as i64 })
 }
 
@@ -2932,31 +2948,35 @@ mod tests {
         conn.execute_batch("INSERT INTO players (id, name, name_normalized) VALUES (1, 'Svrcek, Jozef', 'svrcek jozef'), (2, 'Opp', 'opp');").unwrap();
         let handle = crate::accounts::add(&conn, crate::accounts::Platform::Lichess, "jozef77", 1, None).unwrap().player_id;
         let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+        let utc_today = today.replace('-', ".");
         conn.execute_batch(&format!("
             INSERT INTO games (id, white_id, black_id, result, date, pgn) VALUES (1, 1, 2, '1-0', '{today}', '1. e4 e5 2. Nf3 Nc6 1-0');
-            INSERT INTO games (id, white_id, black_id, result, date, pgn, platform, time_class) VALUES (2, {handle}, 2, '0-1', '{today}', '1. e4 c5 0-1', 'lichess', 'blitz');
+            INSERT INTO games (id, white_id, black_id, result, date, pgn, platform, time_class) VALUES (2, {handle}, 2, '0-1', '{today}', '[UTCDate \"{utc_today}\"]\n[UTCTime \"12:17:11\"]\n\n1. e4 c5 0-1', 'lichess', 'blitz');
             INSERT INTO games (id, white_id, black_id, result, date, pgn, platform) VALUES (3, {handle}, 2, '1-0', '2000-01-01', '1. d4 1-0', 'lichess');
+            INSERT INTO games (id, white_id, black_id, result, date, pgn, platform, time_class) VALUES (4, {handle}, 2, '1-0', '{today}', '[UTCTime \"20:00:00\"]\n\n1. e4 e5 1-0', 'lichess', 'blitz');
         ")).unwrap();
         // The settings count the last twelve months: the game of 2000 is out.
-        for (scope, n) in [(Scope::All, 2), (Scope::Otb, 1), (Scope::Online, 1)] {
+        for (scope, n) in [(Scope::All, 3), (Scope::Otb, 1), (Scope::Online, 2)] {
             assert_eq!(chapter_mine(&conn, ch.id, 1, Filter::scope(scope)).unwrap().games, n, "{scope:?}");
         }
-        assert_eq!(chapter_mine(&conn, ch.id, handle, Filter::all()).unwrap().games, 1, "the handle on its own");
-        // The time classes: blitz is the online game; "none" the OTB one.
-        assert_eq!(chapter_mine(&conn, ch.id, 1, Filter::parse(None, Some("blitz")).unwrap()).unwrap().games, 1);
+        assert_eq!(chapter_mine(&conn, ch.id, handle, Filter::all()).unwrap().games, 2, "the handle on its own");
+        // The time classes: blitz is the online games; "none" the OTB one.
+        assert_eq!(chapter_mine(&conn, ch.id, 1, Filter::parse(None, Some("blitz")).unwrap()).unwrap().games, 2);
         assert_eq!(chapter_mine(&conn, ch.id, 1, Filter::parse(None, Some("none")).unwrap()).unwrap().games, 1);
         assert_eq!(chapter_mine(&conn, ch.id, 1, Filter::parse(None, Some("bullet")).unwrap()).unwrap().games, 0);
 
         let recent = recent_games(&conn, 1, 1, Filter::all(), 10).unwrap();
-        assert_eq!(recent.games.iter().map(|g| g.id).collect::<Vec<_>>(), vec![2, 1], "today's, newest first");
-        let online = &recent.games[0];
+        assert_eq!(recent.games.iter().map(|g| g.id).collect::<Vec<_>>(), vec![4, 2, 1], "today's, the latest played first, the one without a time last");
+        assert_eq!(recent.games.iter().map(|g| g.played_at.as_deref()).collect::<Vec<_>>(),
+            vec![Some(format!("{today}T20:00:00Z").as_str()), Some(format!("{today}T12:17:11Z").as_str()), None]);
+        let online = &recent.games[1];
         assert_eq!((online.platform.as_deref(), online.time_class.as_deref(), online.color.as_str(), online.score), (Some("lichess"), Some("blitz"), "white", Some(0.0)));
         let m = online.matches.first().expect("matched against the book");
         assert_eq!((m.chapter_id, m.followed, m.left_by, m.mv.as_deref()), (ch.id, "left", Some("opponent"), Some("1...c5")));
-        let otb = &recent.games[1];
+        let otb = &recent.games[2];
         assert_eq!((otb.score, otb.matches.first().map(|m| m.followed)), (Some(1.0), Some("end")));
-        assert_eq!(recent_games(&conn, 1, 1, Filter::scope(Scope::Online), 10).unwrap().games.len(), 1);
-        assert_eq!(recent_games(&conn, 1, 30, Filter::all(), 10).unwrap().games.len(), 2, "the old one is past the days");
+        assert_eq!(recent_games(&conn, 1, 1, Filter::scope(Scope::Online), 10).unwrap().games.len(), 2);
+        assert_eq!(recent_games(&conn, 1, 30, Filter::all(), 10).unwrap().games.len(), 3, "the old one is past the days");
     }
 
     #[test]
