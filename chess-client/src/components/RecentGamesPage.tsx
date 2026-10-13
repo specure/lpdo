@@ -185,8 +185,9 @@ export default function RecentGamesPage({ onOpenChapter, onOpenGame }: Props) {
                     onClick={() => open(first)}
                     title={canOpen(first) ? "The chapter on the board where the game left it" : undefined}>
                     <td className="px-4 py-1.5 whitespace-nowrap text-on-surface-variant">{g.date ?? "?"}</td>
-                    <td className={`px-2 py-1.5 font-semibold tabular-nums ${g.score === 1 ? "text-success" : g.score === 0 ? "text-error" : "text-on-surface-variant"}`}>
-                      {g.score === 1 ? "1" : g.score === 0.5 ? "½" : g.score === 0 ? "0" : "·"}
+                    <td className={`px-2 py-1.5 font-semibold tabular-nums whitespace-nowrap ${g.score === 1 ? "text-success" : g.score === 0 ? "text-error" : "text-on-surface-variant"}`}
+                      title={g.score === 1 ? "You won" : g.score === 0 ? "You lost" : g.score === 0.5 ? "A draw" : undefined}>
+                      {g.result === "1/2-1/2" ? "½-½" : g.result ?? "·"}
                     </td>
                     <td className="px-2 py-1.5 whitespace-nowrap">
                       {g.white}{g.white_elo ? <span className="text-on-surface-variant"> ({g.white_elo})</span> : null}
