@@ -595,10 +595,11 @@ export default function DrillView({ chapter, store, onClose }: Props) {
         if (Math.abs(dx) < 40 || Math.abs(dx) < 2 * Math.abs(dy) || Date.now() - s0.t > 800) return;
         step(path.length + (dx < 0 ? 1 : -1));
       }}>
-      <div className="shrink-0 flex items-center gap-3 px-3 py-2 border-b border-outline/40">
-        <div className="min-w-0 flex-1">
-          <div className="text-body-md truncate">{chapter.name}</div>
-          <div className="text-label-sm text-on-surface-variant truncate">{chapter.book.name} · as {color === "white" ? "White" : "Black"}</div>
+      {/* On a short screen (the phone sideways) one line. */}
+      <div className="shrink-0 flex items-center gap-3 px-3 py-2 short:py-1 border-b border-outline/40">
+        <div className="min-w-0 flex-1 short:flex short:items-baseline short:gap-2">
+          <div className="text-body-md truncate short:text-label-md">{chapter.name}</div>
+          <div className="text-label-sm text-on-surface-variant truncate short:min-w-0">{chapter.book.name} · as {color === "white" ? "White" : "Black"}</div>
         </div>
         <div className="text-label-sm text-on-surface-variant tabular-nums whitespace-nowrap" title="This session: right · missed">
           <span className="text-success">{tally.right}</span> · <span className="text-error">{tally.wrong}</span>
@@ -611,14 +612,16 @@ export default function DrillView({ chapter, store, onClose }: Props) {
       <div className="flex-1 min-h-0 flex flex-col md:flex-row">
         {/* The board: on the phone (portrait) a square the width of the
             screen, whatever the panel says — a longer message must not
-            shrink it or move it; beside the panel on wider screens. */}
-        <div className={`shrink-0 w-full aspect-square ${roomy ? "max-h-[30dvh]" : "max-h-[60dvh]"} md:aspect-auto md:max-h-none md:w-auto md:flex-1 md:min-h-0 md:min-w-0 flex p-2`}>
+            shrink it or move it; on wider screens (the phone sideways, the
+            desktop) a square of the height, the panel taking the rest of
+            the width (at least 20rem of it). */}
+        <div className={`shrink-0 w-full aspect-square ${roomy ? "max-h-[30dvh]" : "max-h-[60dvh]"} md:max-h-none md:w-auto md:h-full md:max-w-[calc(100%-20rem)] flex p-2`}>
           <div ref={board} className="flex-1 min-h-0 min-w-0 flex">
           <DrillBoard fen={fen} orientation={color} active={boardActive} onMove={onMove}
             promotions={promotions} lastMove={lastMove} hint={hint} arrows={arrows} circles={shown === "book" ? bookCircles : []} />
           </div>
         </div>
-        <div className="flex-1 min-h-0 md:flex-none md:w-88 flex flex-col border-t md:border-t-0 md:border-l border-outline/40">
+        <div className="flex-1 min-h-0 min-w-0 md:min-w-80 flex flex-col border-t md:border-t-0 md:border-l border-outline/40">
           <div className="shrink-0 px-3 pt-2 flex flex-col gap-2">
             {/* The session's lines, back and forth; test or review, from here. */}
             <div className="flex items-center gap-1">

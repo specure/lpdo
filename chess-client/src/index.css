@@ -1,4 +1,7 @@
 @import "tailwindcss";
+
+/* A short screen — a phone held sideways: the trainer's header shrinks to a line. */
+@custom-variant short (@media (max-height: 520px));
 /* Scan src/ for classes whichever build imports this — the phone trainer's
    (vite.trainer.config.ts) has its root elsewhere. */
 @source ".";

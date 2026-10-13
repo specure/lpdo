@@ -28,7 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Room to read** — on the phone, a button at the end of the tabs shrinks
   the board to a third of the screen while one reads the tree or the
   comments, and back. The end-of-line buttons went: *Test · Review* and
-  *Next ›* above do the same.
+  *Next ›* above do the same. Sideways, the board is a square of the
+  screen's height and the panel takes the rest of the width; the header is
+  one line.
 - **Lines: 80 · 95 · 100%** — the session's coverage choices, 80% (Pareto's)
   the default, in place of 50 · 75 · 90 · 100: half the games left out too
   many lines. At 100% the whole chapter is trained, your own alternative
