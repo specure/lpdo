@@ -58,12 +58,15 @@ export default function MoveStats({ move, ply, stats, own }: Props) {
                 <span className={`block h-full ${line ? "bg-primary" : "bg-on-surface/30"}`} style={{ width: `${Math.max(3, (share / top) * 100)}%` }} />
               </span>
               <span className="w-9 shrink-0 text-right tabular-nums" title="The score for the side playing it">{pct(score)}</span>
+              {/* Two columns and an arrow between — the arrow and the
+                  performance left out where there is none, the rating
+                  staying in its column. */}
               {rated && (
-                <span className="w-[5.5rem] shrink-0 text-right tabular-nums whitespace-nowrap"
-                  title={`${elo != null ? `Median rating ${elo}` : "No ratings"}${perf != null ? ` · performance ${perf}` : ""}`}>
-                  {elo ?? "–"} <span className="text-on-surface-variant/70">→</span> {perf != null
-                    ? <span className={perf - (elo ?? perf) >= 25 ? "text-success" : perf - (elo ?? perf) <= -25 ? "text-error" : ""}>{perf}</span>
-                    : "–"}
+                <span className="shrink-0 inline-flex items-center tabular-nums whitespace-nowrap"
+                  title={`${elo != null ? `Median rating ${elo}` : "No ratings"}${perf != null ? ` · performance ${perf}` : " · too few rated games for a performance"}`}>
+                  <span className="w-10 text-right">{elo ?? ""}</span>
+                  <span className="w-4 text-center text-on-surface-variant/70">{perf != null ? "→" : ""}</span>
+                  <span className={`w-10 text-right ${perf != null && perf - (elo ?? perf) >= 25 ? "text-success" : perf != null && perf - (elo ?? perf) <= -25 ? "text-error" : ""}`}>{perf ?? ""}</span>
                 </span>
               )}
             </div>
