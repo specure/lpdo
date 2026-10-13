@@ -812,7 +812,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
                   </select>
                 </label>
                 <label className="flex items-center gap-1.5 text-label-md text-on-surface-variant"
-                  title="Below 100%: the lines' ends cut where they get rare — a move valued by the share of the chapter's games that reach it, the least valued cut first, the longest line first among equals, keeping the same share of the lines' use; the book's variations nobody plays, and everything beyond the database's depth, go first">
+                  title="Below 100%: the lines' ends cut where they get rare — a move valued by the share of the chapter's games that reach it (the opponent's moves lower it, yours never), the least valued cut first, the longest line first among equals, keeping the same share of the lines' use; the book's variations nobody plays go first">
                   <input type="checkbox" checked={cut} onChange={(e) => { setCut(e.target.checked); saveCut(e.target.checked); }} className="accent-primary" />
                   Cut rare ends{cut && (coverage >= 1 ? <span className="text-on-surface-variant"> · none at 100%</span> : s.cut > 0 && <span className="text-on-surface-variant"> · {s.cut} {s.cut === 1 ? "move" : "moves"} cut</span>)}
                 </label>

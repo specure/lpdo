@@ -76,9 +76,12 @@ const neverPlayed = (stats: Stats | undefined, san: string): boolean =>
 /** Every line below `path` (the start when empty), with its likelihood from
  *  there; switched-off moves and what follows them left out. With `use`, each
  *  of one's own moves' use is kept in it: its line's weight so far — the
- *  share of the games staying in the chapter that reach its position — and
- *  0 where nothing can be known of it: beyond the database's figures, or
- *  below an opponent's move never played. */
+ *  share of the games staying in the chapter that reach its position, which
+ *  only the opponent's moves lower (one's own rare move or novelty leaves it
+ *  as it is: the position before it is reached all the same, and a position
+ *  without figures, after it or beyond the database's depth, keeps the use
+ *  so far) — and 0 below an opponent's move never played in a position the
+ *  database knows. */
 export function linesFrom(chapter: LpdoChapter, path: PNode[] = [], use?: Map<PNode, number>): Line[] {
   const color: Side = chapter.book.color;
   const out: Line[] = [];
@@ -94,7 +97,7 @@ export function linesFrom(chapter: LpdoChapter, path: PNode[] = [], use?: Map<PN
       const q = own ? p : p * shares[i];
       const v = own ? w : w * (sum > 0 ? shares[i] / sum : 1 / on.length);
       const gone = dead || (!own && neverPlayed(stats, n.san));
-      if (own && use) use.set(n, !gone && stats && stats.games > 0 ? w : 0);
+      if (own && use) use.set(n, gone ? 0 : w);
       const next = [...prefix, n];
       const alternative = alt || (own && i > 0);
       const kids = n.children.filter((c) => !c.off);
@@ -136,16 +139,17 @@ export const estimateMinutes = (d: number) => (d * REPETITIONS * SECONDS_PER_DEC
 
 /** The lines' ends cut where they get rare: each of one's own moves has a
  *  use (`use`: its line's weight so far — the share of the games staying
- *  in the chapter that reach it; 0 beyond the database's figures and below
- *  a move never played) and the least used are cut first, the deepest first
- *  among equals (the longest line), a cut taking one's move and the
- *  opponent's before it, so a line still ends after one's own move; as long
- *  as the moves left keep `keep` of the lines' use. So the book's variations
- *  nobody plays and everything beyond the database's depth go first, then
- *  the ends of the rarest lines. Lines cut to the same moves become one.
- *  (The chance of reaching a position among all games would not do: it
- *  falls at every opponent's move, forced or not, and 80% of it is the
- *  first few moves.) */
+ *  in the chapter that reach it, lowered by the opponent's moves only; 0
+ *  below an opponent's move never played) and the least used are cut
+ *  first, the deepest first among equals (the longest line), a cut taking
+ *  one's move and the opponent's before it, so a line still ends after
+ *  one's own move; as long as the moves left keep `keep` of the lines' use.
+ *  So the book's variations nobody plays go first, then the ends of the
+ *  rarest branches — a forced line keeps its use however deep, past the
+ *  database's depth too. Lines cut to the same moves become one. (The
+ *  chance of reaching a position among all games would not do: it falls
+ *  at every opponent's move, forced or not, and 80% of it is the first few
+ *  moves.) */
 export function cutRare(lines: Line[], use: Map<PNode, number>, color: Side, keep: number): { lines: Line[]; cut: number } {
   const kept = new Set<PNode>();
   const parent = new Map<PNode, PNode | null>();
