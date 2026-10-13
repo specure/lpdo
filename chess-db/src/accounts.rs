@@ -83,6 +83,53 @@ impl Scope {
     }
 }
 
+/// The time classes a game can have (importer::time_class).
+pub const TIME_CLASSES: [&str; 5] = ["bullet", "blitz", "rapid", "classical", "correspondence"];
+
+/// What of one's games count (#90): the scope, and the time classes — the
+/// known ones, and "none" for a game without a time control (most
+/// over-the-board games); no classes given: all of them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Filter {
+    pub scope: Scope,
+    pub classes: Option<Vec<String>>,
+}
+
+impl Filter {
+    pub fn all() -> Self { Self::default() }
+    pub fn scope(scope: Scope) -> Self { Self { scope, classes: None } }
+    /// From the query's `scope` and `classes` ("blitz,rapid,none").
+    pub fn parse(scope: Option<&str>, classes: Option<&str>) -> Result<Self> {
+        let scope = Scope::parse(scope)?;
+        let classes = match classes.map(str::trim).filter(|c| !c.is_empty()) {
+            None => None,
+            Some(list) => {
+                let mut out: Vec<String> = Vec::new();
+                for c in list.split(',') {
+                    let c = c.trim().to_lowercase();
+                    if c.is_empty() { continue; }
+                    if c != "none" && !TIME_CLASSES.contains(&c.as_str()) { bail!("not a time class: {c:?}"); }
+                    if !out.contains(&c) { out.push(c); }
+                }
+                Some(out)
+            }
+        };
+        Ok(Self { scope, classes })
+    }
+    /// The games' filter, with the games table as `g`.
+    pub fn sql(&self) -> String {
+        let mut s = self.scope.sql().to_string();
+        if let Some(cs) = &self.classes {
+            let named: Vec<String> = cs.iter().filter(|c| *c != "none").map(|c| format!("'{c}'")).collect();
+            let mut parts = Vec::new();
+            if !named.is_empty() { parts.push(format!("g.time_class IN ({})", named.join(","))); }
+            if cs.iter().any(|c| c == "none") { parts.push("g.time_class IS NULL".to_string()); }
+            if parts.is_empty() { s.push_str(" AND FALSE"); } else { s.push_str(&format!(" AND ({})", parts.join(" OR "))); }
+        }
+        s
+    }
+}
+
 pub fn init(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS accounts (
@@ -489,6 +536,11 @@ mod tests {
         assert_eq!(Scope::parse(Some("otb")).unwrap(), Scope::Otb);
         assert_eq!(Scope::parse(Some("Online")).unwrap(), Scope::Online);
         assert!(Scope::parse(Some("mine")).is_err());
+        let f = Filter::parse(Some("online"), Some("blitz, rapid,none")).unwrap();
+        assert_eq!(f.sql(), " AND g.platform IS NOT NULL AND (g.time_class IN ('blitz','rapid') OR g.time_class IS NULL)");
+        assert_eq!(Filter::parse(None, Some("")).unwrap(), Filter::all());
+        assert_eq!(Filter::parse(None, Some("none")).unwrap().sql(), " AND (g.time_class IS NULL)");
+        assert!(Filter::parse(None, Some("fast")).is_err());
     }
 
     #[test]

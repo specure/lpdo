@@ -155,9 +155,12 @@ the owner, enabled, last sync and status — `chess-db/src/accounts.rs`).
   classes as filters, a tally, a row opening the chapter on the Repertoire
   page's board where the game left it (`RepertoireOpen` with the game's
   moves, which the endpoint gives), *Open* for the Analysis board.
-- Out of scope: bots, variants, Lichess tokens for private games. Still to
-  come: time-control filters on the Games page and in a chapter's own-games
-  figures; a platform badge in the player search.
+- **Phase 3** (2026-10-13): the own-games endpoints take `classes=` beside
+  `scope=` (`accounts::Filter`: the known classes and `none`); the Repertoire
+  page's games panel has the bar (kept on the device, `lpdoMineFilter`, and
+  used by the book's figures); the games list takes `time_class=`; the
+  player info carries `platform`, shown as a badge in the player search.
+- Out of scope: bots, variants, Lichess tokens for private games.
 
 ## Candidate sources (from #40)
 

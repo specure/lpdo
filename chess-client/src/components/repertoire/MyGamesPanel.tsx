@@ -13,6 +13,7 @@ import { parsePgnTree, type AnnotatedGame } from "../../lib/parsePgnTree";
 import { cursorAtPosition } from "../../lib/repertoireLines";
 import { positionKey } from "../../trainer/buildPackage";
 import { currentMyPlayer } from "../MyStatsWidget";
+import { CLASS_CHOICES, SCOPES, loadMineFilter, saveMineFilter, type MineFilter } from "../../lib/accounts";
 import type { CursorPath } from "../../lib/moveTreeNav";
 import type { GameSummary } from "../../types";
 
@@ -36,7 +37,41 @@ const summary = (g: ChapterGame | BookGame): GameSummary => ({
 });
 
 export default function MyGamesPanel(props: Props) {
-  return props.book ? <BookGamesList {...props} book={props.book} /> : <ChapterGamesList {...props} />;
+  // Which of one's games count (#90): all, over the board or online, and
+  // the time classes — kept on the device, shared with the book's figures.
+  const [filter, setFilter] = useState<MineFilter>(loadMineFilter);
+  const change = (f: MineFilter) => { setFilter(f); saveMineFilter(f); };
+  return (
+    <div className="flex-1 min-h-0 flex flex-col">
+      <MineFilterBar filter={filter} onChange={change} />
+      {props.book ? <BookGamesList {...props} book={props.book} filter={filter} /> : <ChapterGamesList {...props} filter={filter} />}
+    </div>
+  );
+}
+
+/** The scope and the time classes of one's games. */
+function MineFilterBar({ filter, onChange }: { filter: MineFilter; onChange: (f: MineFilter) => void }) {
+  const chip = (on: boolean) => `h-6 px-2 rounded-full text-label-sm border ${on ? "bg-secondary-container text-on-secondary-container border-transparent" : "text-on-surface-variant border-outline/40 hover:bg-on-surface/8"}`;
+  const toggle = (c: MineFilter["classes"][number]) =>
+    onChange({ ...filter, classes: filter.classes.includes(c) ? filter.classes.filter((x) => x !== c) : [...filter.classes, c] });
+  return (
+    <div className="px-3 py-1 shrink-0 flex items-center gap-1.5 flex-wrap border-b border-outline/40"
+      title="Which of your games count here and in the book's figures: over the board, online (your linked accounts), or all; and the time classes — none picked: all of them.">
+      <div className="inline-flex rounded-full border border-outline/40 overflow-hidden" role="group" aria-label="Which games">
+        {SCOPES.map((s) => (
+          <button key={s.id} onClick={() => onChange({ ...filter, scope: s.id })}
+            className={`h-6 px-2 text-label-sm ${filter.scope === s.id ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8"}`}>
+            {s.id === "otb" ? "OTB" : s.label}
+          </button>
+        ))}
+      </div>
+      {CLASS_CHOICES.map((c) => (
+        <button key={c.id} onClick={() => toggle(c.id)} className={chip(filter.classes.includes(c.id))} aria-pressed={filter.classes.includes(c.id)}>
+          {c.id === "none" ? "no clock" : c.label}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 /** One's result in a game, from one's own side: "1", "½", "0". */
@@ -85,7 +120,7 @@ function followed(f: Pick<ChapterGame, "followed" | "left_by" | "move" | "at_ply
 }
 
 /** The whole book's games, each with the chapter it went into. */
-function BookGamesList({ book, chapterId, reloadKey, onPick, onOpen, onPreview, onPickChapter }: Props & { book: NonNullable<Props["book"]> }) {
+function BookGamesList({ book, chapterId, reloadKey, onPick, onOpen, onPreview, onPickChapter, filter }: Props & { book: NonNullable<Props["book"]>; filter: MineFilter }) {
   const [list, setList] = useState<BookGameList | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [picked, setPicked] = useState<number | null>(null);
@@ -99,11 +134,11 @@ function BookGamesList({ book, chapterId, reloadKey, onPick, onOpen, onPreview, 
       const me = await currentMyPlayer();
       if (gone) return;
       if (!me) { setList(null); setNote("Set your player on the Home page to see your games here."); return; }
-      try { const l = await getBookGameList(book.id, me.id); if (!gone) setList(l); }
+      try { const l = await getBookGameList(book.id, me.id, filter); if (!gone) setList(l); }
       catch (e) { if (!gone) setNote(String(e)); }
     })();
     return () => { gone = true; };
-  }, [book.id, reloadKey]);
+  }, [book.id, reloadKey, filter]);
   if (note) return <div className="p-3 text-center text-on-surface-variant text-body-sm">{note}</div>;
   if (!list) return <div className="p-3 text-center text-on-surface-variant text-body-sm">Looking up your games…</div>;
   const meWhite = list.color === "white";
@@ -154,7 +189,7 @@ function BookGamesList({ book, chapterId, reloadKey, onPick, onOpen, onPreview, 
 }
 
 /** The chapter's games, each with how far it followed the chapter. */
-function ChapterGamesList({ chapterId, reloadKey, onPick, onOpen, onPreview }: Props) {
+function ChapterGamesList({ chapterId, reloadKey, onPick, onOpen, onPreview, filter }: Props & { filter: MineFilter }) {
   const [list, setList] = useState<ChapterGameList | null>(null);
   const [tree, setTree] = useState<AnnotatedGame | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -167,14 +202,14 @@ function ChapterGamesList({ chapterId, reloadKey, onPick, onOpen, onPreview }: P
       if (gone) return;
       if (!me) { setList(null); setNote("Set your player on the Home page to see your games here."); return; }
       try {
-        const [l, c] = await Promise.all([getChapterGames(chapterId, me.id), getChapter(chapterId)]);
+        const [l, c] = await Promise.all([getChapterGames(chapterId, me.id, filter), getChapter(chapterId)]);
         if (gone) return;
         setList(l);
         setTree(parsePgnTree(c.pgn));
       } catch (e) { if (!gone) setNote(String(e)); }
     })();
     return () => { gone = true; };
-  }, [chapterId, reloadKey]);
+  }, [chapterId, reloadKey, filter]);
 
   if (note) return <div className="p-3 text-center text-on-surface-variant text-body-sm">{note}</div>;
   if (!list) return <div className="p-3 text-center text-on-surface-variant text-body-sm">Looking up your games…</div>;

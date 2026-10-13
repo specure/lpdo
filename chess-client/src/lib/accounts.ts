@@ -49,6 +49,31 @@ export const SCOPES: { id: Scope; label: string }[] = [
 
 export type TimeClass = "bullet" | "blitz" | "rapid" | "classical" | "correspondence";
 export const TIME_CLASSES: TimeClass[] = ["bullet", "blitz", "rapid", "classical", "correspondence"];
+/** A class to filter by: the classes, and "none" for a game without a time
+ *  control (most over-the-board games). */
+export type ClassChoice = TimeClass | "none";
+export const CLASS_CHOICES: { id: ClassChoice; label: string }[] = [
+  ...TIME_CLASSES.map((c) => ({ id: c as ClassChoice, label: c })), { id: "none", label: "no time control" },
+];
+
+/** Which of one's games count on the Repertoire page (#90): the scope and
+ *  the classes (all when empty). Kept on the device. */
+export interface MineFilter { scope: Scope; classes: ClassChoice[] }
+const MINE_FILTER_KEY = "lpdoMineFilter";
+export function loadMineFilter(): MineFilter {
+  try {
+    const v = JSON.parse(localStorage.getItem(MINE_FILTER_KEY) ?? "null") as Partial<MineFilter> | null;
+    const scope = SCOPES.some((s) => s.id === v?.scope) ? (v!.scope as Scope) : "all";
+    const classes = Array.isArray(v?.classes) ? v!.classes.filter((c): c is ClassChoice => CLASS_CHOICES.some((x) => x.id === c)) : [];
+    return { scope, classes };
+  } catch { return { scope: "all", classes: [] }; }
+}
+export function saveMineFilter(f: MineFilter): void {
+  try { localStorage.setItem(MINE_FILTER_KEY, JSON.stringify(f)); } catch { /* per-device convenience only */ }
+}
+/** The query string of a filter, after `player_id`. */
+export const mineQuery = (f: MineFilter) =>
+  `${f.scope !== "all" ? `&scope=${f.scope}` : ""}${f.classes.length ? `&classes=${f.classes.join(",")}` : ""}`;
 
 /** One of one's games of the last days, with how it stood to the repertoire. */
 export interface RecentGame {

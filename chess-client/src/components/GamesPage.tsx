@@ -99,6 +99,8 @@ export const PLAYERS_RAIL_KEY = "players-rail-size";
 export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, player, onOpenInAnalysis, onOpenManyInAnalysis, analysisCapacity, collections, onCollectionChange, reloadKey, leadingPanel, leadingPanelSize = 14 }: Props) {
   // Engine games counted or not (#296): one setting shared with Analysis.
   const [showEngines, setShowEngines] = useShowEngineGames();
+  // A time class (#90): "" for all; "none" for games without a time control.
+  const [timeClass, setTimeClass] = useState("");
   const playerScoped = player !== undefined;
   // Restore the Games page's last analysed line + filters (once, on mount). Never
   // for the player-scoped view — that always locks to the externally-chosen player.
@@ -347,6 +349,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     if (scopeCollectionId !== null) params.set("collection_id", String(scopeCollectionId));
     if (scopeIncludeDeleted) params.set("include_deleted", "true");
     if (!showEngines) params.set("exclude_engines", "true");
+    if (timeClass) params.set("time_class", timeClass);
     return params;
   }
 
@@ -382,7 +385,7 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
         if (token === queryToken.current) { setError(e instanceof Error ? e.message : "Failed to load games"); setLoading(false); }
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p1?.id, p1Color, p2?.id, p2Color, event, dateFrom, dateTo, firstMovesStr, scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, reloadKey, showEngines]);
+  }, [p1?.id, p1Color, p2?.id, p2Color, event, dateFrom, dateTo, firstMovesStr, scopePublicOnly, scopeCollectionId, scopeIncludeDeleted, reloadKey, showEngines, timeClass]);
 
   function loadMore() {
     if (loading || loadingMore || total === null || games.length >= total || moreFrom.current === games.length) return;
@@ -420,13 +423,14 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
     const primary = p1 ?? p2;
     if (primary) { params.set("player_id", String(primary.id)); params.set("color", p1 ? p1Color : p2Color); }
     if (!showEngines) params.set("exclude_engines", "true");
+    if (timeClass) params.set("time_class", timeClass);
 
     fetch(`/api/position/moves?${params}`, { signal: movesAbortRef.current.signal })
       .then((r) => { if (!r.ok) throw new Error(); return r.json() as Promise<MoveStats[]>; })
       .then((data) => { setMoveStats(data); setMovesLoading(false); })
       .catch((e) => { if (e instanceof DOMException && e.name === "AbortError") return; setMoveStats([]); setMovesLoading(false); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listOnly, firstMovesStr, dateFrom, dateTo, scopePublicOnly, scopeCollectionId, p1?.id, p1Color, p2?.id, p2Color, showEngines]);
+  }, [listOnly, firstMovesStr, dateFrom, dateTo, scopePublicOnly, scopeCollectionId, p1?.id, p1Color, p2?.id, p2Color, showEngines, timeClass]);
 
   // Explorer move-number prefix: White to move → "N.", Black to move → "N...".
   const moveNo = Math.floor(moveSequence.length / 2) + 1;
@@ -608,6 +612,20 @@ export default function GamesPage({ scopePublicOnly, scopeCollectionId, scopeInc
                 </select>
               </div>
             )}
+            {/* The time control (#90): online games carry one; most over-the-board
+                games none. */}
+            <div>
+              <div className="text-label-md text-on-surface-variant mb-1.5">Time control</div>
+              <select value={timeClass} onChange={(e) => setTimeClass(e.target.value)} className={`w-full ${textInput} cursor-pointer`}>
+                <option value="">Any</option>
+                <option value="bullet">Bullet</option>
+                <option value="blitz">Blitz</option>
+                <option value="rapid">Rapid</option>
+                <option value="classical">Classical</option>
+                <option value="correspondence">Correspondence</option>
+                <option value="none">No time control</option>
+              </select>
+            </div>
             {/* Engine games (#296) — the same switch as on Analysis and the
                 Players list: off, they count nowhere. */}
             <label className="flex items-center gap-2 text-body-sm text-on-surface cursor-pointer"

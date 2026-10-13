@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PlayerInfo } from "../types";
+import { PlatformBadge } from "./AccountsSection";
 
 interface Props {
   selectedId: number | null;
@@ -50,7 +51,7 @@ function PlayerRow({
             : "text-on-surface hover:bg-on-surface/8 active:bg-on-surface/12"
         }`}
       >
-        <div className="text-body-lg truncate">{player.name}</div>
+        <div className="text-body-lg truncate">{player.name}{player.platform && <span className="ml-2 align-middle"><PlatformBadge platform={player.platform} /></span>}</div>
         <div className={`text-body-sm mt-0.5 ${selected ? "text-on-secondary-container/80" : "text-on-surface-variant"}`}>
           {player.game_count.toLocaleString()} games
           {player.fide_id && <span className="ml-2">FIDE {player.fide_id}</span>}
