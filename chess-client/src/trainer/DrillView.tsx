@@ -429,7 +429,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
         setTally((x) => ({ ...x, fresh: x.fresh + 1 }));
       }
       if (key) answered.current.add(key);
-      setNote({ text: `New: ${node.san} — it comes again shortly`, tone: "info" });
+      setNote(null);
       go([...path, node], cs, anyLine, t);
       return true;
     }
@@ -756,7 +756,7 @@ export default function DrillView({ chapter, store, onClose }: Props) {
                 <div className="text-label-sm text-on-surface-variant">
                   {!withComments ? "Sent without its comments — send it again with comments to see them here."
                     : reviewing || phase === "missed" || phase === "show" ? "No comment on this move."
-                    : "The chapter's comments are shown in a review, and on a move shown or missed — before, one could give the move away."}
+                    : "The chapter's comments are shown in a review, and on a move shown or missed."}
                 </div>
               )}
             </>)}
