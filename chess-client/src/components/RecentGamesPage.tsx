@@ -33,6 +33,7 @@ const keep = (key: string, v: string) => { try { localStorage.setItem(key, v); }
 const summary = (g: RecentGame): GameSummary => ({
   id: g.id, white: g.white, black: g.black, white_elo: g.white_elo, black_elo: g.black_elo,
   event: g.event, date: g.date, result: g.result, eco: null, move_count: null, opening_line: null,
+  my_color: g.color,
 });
 
 /** The chapters a game went into, to list — as far as it went in each,

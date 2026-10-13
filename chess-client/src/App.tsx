@@ -428,7 +428,7 @@ export default function App() {
     if (games.length) setActiveAnalysisKey(`g${games[0].id}`);
     const loaded = await Promise.all(fresh.map(async (game) => {
       // One of the user's own games opens from their side.
-      try { return { key: `g${game.id}`, game, loaded: await loadGamePgn(game.id), fen: null, cursor: null, flipped: myColorIn(game) === "black" } as AnalysisTab; }
+      try { return { key: `g${game.id}`, game, loaded: await loadGamePgn(game.id), fen: null, cursor: null, flipped: (game.my_color ?? myColorIn(game)) === "black" } as AnalysisTab; }
       catch { return null; }   // load failure → the tab simply doesn't appear
     }));
     const tabs = loaded.filter((t): t is AnalysisTab => t !== null);
