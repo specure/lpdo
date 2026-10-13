@@ -1,15 +1,21 @@
 # Phone trainer (#327) — publish the static web app to GitHub Pages:
-#   https://specure.github.io/lpdo/trainer/
+#   https://specure.github.io/lpdo/trainer/        — main, the real one
+#   https://specure.github.io/lpdo/trainer-next/   — the preview
 #
 # Built from chess-client (vite.trainer.config.ts → dist-trainer/) and copied
-# into the gh-pages branch's trainer/ folder; the rest of the branch (the APT
-# repository) is checked out and published as it is. Runs when the trainer's
-# code changes on main, or by hand.
+# into the gh-pages branch — trainer/ when the trainer's code changes on
+# main, trainer-next/ on a push to the `trainer-next` branch (any branch
+# pushed there: `git push -f origin HEAD:trainer-next`), so a change is on
+# the phone in a few minutes without waiting for CI and CodeQL on the pull
+# request. By hand, the folder is chosen. The rest of gh-pages (the APT
+# repository) is checked out and published as it is. The preview is the same
+# origin as the real one, so the phone's chapters and cards are shared; it
+# is its own page to add to the Home Screen.
 name: Phone trainer
 
 on:
   push:
-    branches: [main]
+    branches: [main, trainer-next]
     paths:
       - "chess-client/src/trainer/**"
       - "chess-client/src/trainer-app/**"
@@ -19,6 +25,12 @@ on:
       - "chess-client/package-lock.json"
       - ".github/workflows/trainer.yml"
   workflow_dispatch:
+    inputs:
+      folder:
+        description: "Where on the page: trainer (the real one) or trainer-next (the preview)"
+        type: choice
+        options: [trainer-next, trainer]
+        default: trainer-next
 
 permissions:
   contents: write   # push to the gh-pages branch
@@ -35,6 +47,16 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: src
+
+      - name: Which folder
+        id: where
+        run: |
+          folder="${{ inputs.folder }}"
+          if [ -z "$folder" ]; then
+            if [ "${{ github.ref_name }}" = main ]; then folder=trainer; else folder=trainer-next; fi
+          fi
+          echo "folder=$folder" >> "$GITHUB_OUTPUT"
+          echo "Publishing ${{ github.ref_name }} (${{ github.sha }}) to $folder/"
 
       - uses: actions/setup-node@v7
         with:
@@ -56,8 +78,8 @@ jobs:
 
       - name: Put the trainer in place
         run: |
-          rm -rf gh-pages/trainer
-          cp -r src/chess-client/dist-trainer gh-pages/trainer
+          rm -rf "gh-pages/${{ steps.where.outputs.folder }}"
+          cp -r src/chess-client/dist-trainer "gh-pages/${{ steps.where.outputs.folder }}"
           touch gh-pages/.nojekyll
 
       - name: Publish to gh-pages
@@ -67,4 +89,4 @@ jobs:
           publish_dir: ./gh-pages
           publish_branch: gh-pages
           force_orphan: false
-          commit_message: "trainer: publish ${{ github.sha }}"
+          commit_message: "${{ steps.where.outputs.folder }}: publish ${{ github.ref_name }} ${{ github.sha }}"
