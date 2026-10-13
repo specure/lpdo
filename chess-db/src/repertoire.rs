@@ -1860,9 +1860,26 @@ pub struct LineMatch {
     /// went as far.
     pub left_book: bool,
     /// Where the line left ("left"), the repertoire's moves there — the
-    /// chapter's ("4.Ba4" for a 4.Bxc6 game), or the book's chapters' for
-    /// a book row ("3.Nf3"). Empty otherwise.
+    /// chapter's ("4.Ba4" for a 4.Bxc6 game), its main move first, or the
+    /// book's chapters' for a book row ("3.Nf3"). Empty otherwise.
     pub book_has: Vec<String>,
+}
+
+/// A chapter's moves from a position (`moves`, as indexed), in the order
+/// its PGN has them: the main move first — a variation comes after the
+/// move it replaces. The set's order when the chapter cannot be read.
+fn moves_in_order(conn: &Connection, chapter_id: i64, z: i64, moves: &std::collections::HashSet<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Ok(w) = get_chapter(conn, chapter_id).and_then(|c| walk(&movetext_of(&c.pgn))) {
+        for r in w.rows.iter().filter(|r| r.zobrist == z) {
+            let san = strip_marks(&r.next_move).to_string();
+            if moves.contains(&san) && !out.contains(&san) { out.push(san); }
+        }
+    }
+    let mut rest: Vec<&String> = moves.iter().filter(|m| !out.contains(m)).collect();
+    rest.sort();
+    out.extend(rest.into_iter().cloned());
+    out
 }
 
 /// The chapters of the books of `color` a line of moves (SAN, from the
@@ -1935,7 +1952,7 @@ pub fn match_line(conn: &Connection, sans: &[String], color: &str) -> Result<Vec
         let side_to_move = if deepest.is_multiple_of(2) { "white" } else { "black" };
         let (followed, left_by, mv, book_has) = if deepest == n { ("ended", None, None, Vec::new()) }
             else if let Some(ms) = c.moves.get(&zs[deepest]) {
-                let has = ms.iter().collect::<std::collections::BTreeSet<_>>().into_iter().map(|san| move_label(deepest as i64, san)).collect();
+                let has = moves_in_order(conn, *id, zs[deepest], ms).into_iter().map(|san| move_label(deepest as i64, &san)).collect();
                 ("left", Some(if side_to_move == color { "you" } else { "opponent" }), Some(move_label(deepest as i64, moves[deepest])), has)
             } else { ("end", None, None, Vec::new()) };
         found.push((LineMatch {
@@ -2885,6 +2902,11 @@ mod tests {
         let m = &match_line(&conn, &line("e4 e6 d4 d5 e5"), "black").unwrap()[0];
         assert_eq!((m.book_name.as_str(), m.chapter_name.as_str()), ("French", "Advance"));
         assert_eq!(m.at_key, "rnbqkbnr/ppp2ppp/4p3/3pP3/3P4/8/PPP2PPP/RNBQKBNR b KQkq");
+        // The chapter's moves where the line left, the main move first.
+        let classical = add(white.id, "Classical", "1. e4 e6 2. d4 d5 3. Nc3 Nf6 4. e5 (4. Bg5) (4. Bd3) (4. exd5) *");
+        let m = match_line(&conn, &line("e4 e6 d4 d5 Nc3 Nf6 Qf3"), "white").unwrap().into_iter().find(|m| m.chapter_id == classical).unwrap();
+        assert_eq!((m.left_book, m.left_by, m.mv.as_deref()), (false, Some("you"), Some("4.Qf3")));
+        assert_eq!(m.book_has, ["4.e5", "4.Bg5", "4.Bd3", "4.exd5"], "the PGN's order, not the alphabet's");
     }
 
     #[test]

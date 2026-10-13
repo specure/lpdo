@@ -129,7 +129,12 @@ export default function RepertoireMatchPanel({ moves, match: { color, pick, matc
                 {m.followed === "left" && m.move ? (
                   <> · <span className={m.left_by === "you" ? "text-error" : ""}>
                     {m.move.includes("...") ? "Black" : "White"} deviated at {m.move}.
-                  </span>{m.book_has?.length ? <> Book move{m.book_has.length > 1 ? "s" : ""}: {m.book_has.join(", ")}</> : null}</>
+                  </span>{(() => {
+                    // The chapter's moves there, the main move first: the one
+                    // move for one's own deviation, every answer for the opponent's.
+                    const has = (m.book_has ?? []).slice(0, m.left_by === "you" ? 1 : undefined);
+                    return has.length ? <> Book move{has.length > 1 ? "s" : ""}: {has.join(", ")}</> : null;
+                  })()}</>
                 ) : m.followed === "end" ? " · the end of its line" : " · the game ended in it"}
               </span>
             </button>

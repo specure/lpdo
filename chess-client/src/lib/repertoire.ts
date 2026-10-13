@@ -221,8 +221,9 @@ export interface LineMatch {
    *  they all share: one row for the book, `chapter_id` the first that went
    *  as far. Absent from older servers. */
   left_book?: boolean;
-  /** Where the line left, the repertoire's moves there: the chapter's
-   *  ("4.Ba4" for a 4.Bxc6 game), or the book's chapters' for a book row
+  /** Where the line left, the repertoire's moves there: the chapter's,
+   *  its main move first ("4.Ba4" for a 4.Bxc6 game), or the book's
+   *  chapters' for a book row
    *  ("3.Nf3"). Absent from older servers, empty for a chapter row before
    *  0.24.13. */
   book_has?: string[];

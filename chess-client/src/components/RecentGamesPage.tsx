@@ -71,8 +71,10 @@ const moveAt = (moves: string[], ply: number) =>
  *  repertoire, with no chapter. */
 function verdict(m: LineMatch | undefined, moves: string[]): { text: string; tone: Tone } {
   if (!m) return { text: "Not in the repertoire", tone: "muted" };
-  // Where the line left, the chapter's move there: "Book move: 4.d4".
-  const has = m.book_has ?? [];
+  // Where the line left, the chapter's moves there, the main move first:
+  // your deviation gets the one move to have played ("Book move: 4.d4"),
+  // the opponent's every answer the book has.
+  const has = (m.book_has ?? []).slice(0, m.left_by === "you" ? 1 : undefined);
   const book = has.length ? ` Book move${has.length > 1 ? "s" : ""}: ${has.join(", ")}` : "";
   if (m.followed === "left") {
     return m.left_by === "you"
