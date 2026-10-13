@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Rating and performance in the figures** — a chapter's figures carry,
   for each move, the median rating of those who played it and their
   performance rating with it (from ten rated opponents); the Reference tab
-  on the phone shows them as "rating → performance", the performance green
-  or red where it is 40 points or more off what the side scores on average
+  on the phone shows the performance against the rating, "+30", green or
+  red where it is 40 points or more off what the side scores on average
   (White about 35 above the rating, Black 35 below). Analyse
   the chapter again for figures stored before — or every chapter at once:
   **Analyse all chapters again** on the Maintenance page, under the

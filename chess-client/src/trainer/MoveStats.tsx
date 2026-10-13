@@ -1,9 +1,9 @@
 // How a move of the line stands among the moves played in its position
 // (#327), from the database's figures the package carries — offline: the
-// most played moves there as bars with their share and score — and the
-// median rating of those who played it and their performance with it, where
-// the package has them — the line's move marked, and a word on it ("2nd most
-// played", "rare — 3% of games").
+// most played moves there as bars with their share and score — and what
+// the move did for those who played it: their performance against their
+// median rating, "+30", where the package has them — the line's move
+// marked, and a word on it ("2nd most played", "rare — 3% of games").
 // Shown when a new move is learnt, and in a review, for one's own moves and
 // the opponent's.
 
@@ -43,8 +43,9 @@ export default function MoveStats({ move, ply, stats, own }: Props) {
   const shown = ranked.slice(0, 3);
   if (mine && at >= 3) shown.push(mine);
   const top = ranked[0][1] || 1;
-  // Any rating or performance among the moves shown: the column, and its key.
-  const rated = shown.some((m) => m[3] != null || m[4] != null);
+  // A performance against the rating among the moves shown: the column, and
+  // its key.
+  const rated = shown.some((m) => m[3] != null && m[4] != null);
   // What the side scores on average against its rating: the colour's zero.
   const edge = ply % 2 === 0 ? WHITE_EDGE : -WHITE_EDGE;
   const tone = (perf: number | null | undefined, elo: number | null | undefined) =>
@@ -70,15 +71,15 @@ export default function MoveStats({ move, ply, stats, own }: Props) {
                 <span className={`block h-full ${line ? "bg-primary" : "bg-on-surface/30"}`} style={{ width: `${Math.max(3, (share / top) * 100)}%` }} />
               </span>
               <span className="w-9 shrink-0 text-right tabular-nums" title="The score for the side playing it">{pct(score)}</span>
-              {/* Two columns and an arrow between — the arrow and the
-                  performance left out where there is none, the rating
-                  staying in its column. */}
+              {/* The performance against the movers' rating, "+30": what
+                  the move did for those who played it. Coloured against what
+                  the side scores on average. */}
               {rated && (
-                <span className="shrink-0 inline-flex items-center tabular-nums whitespace-nowrap"
-                  title={`${elo != null ? `Median rating ${elo}` : "No ratings"}${perf != null ? ` · performance ${perf} (${ply % 2 === 0 ? "White" : "Black"} scores about ${edge > 0 ? "+" : "−"}${WHITE_EDGE} on average; coloured from ${PERF_BAND} off that)` : " · too few rated games for a performance"}`}>
-                  <span className="w-10 text-right">{elo ?? ""}</span>
-                  <span className="w-4 text-center text-on-surface-variant/70">{perf != null ? "→" : ""}</span>
-                  <span className={`w-10 text-right ${tone(perf, elo)}`}>{perf ?? ""}</span>
+                <span className={`w-12 shrink-0 text-right tabular-nums ${tone(perf, elo)}`}
+                  title={perf != null && elo != null
+                    ? `Performance ${perf} against a median rating of ${elo} · ${ply % 2 === 0 ? "White" : "Black"} scores about ${edge > 0 ? "+" : "−"}${WHITE_EDGE} on average; coloured from ${PERF_BAND} off that`
+                    : "Too few rated games for a performance"}>
+                  {perf != null && elo != null ? `${perf - elo > 0 ? "+" : perf - elo < 0 ? "−" : "±"}${Math.abs(perf - elo)}` : ""}
                 </span>
               )}
             </div>
@@ -86,7 +87,7 @@ export default function MoveStats({ move, ply, stats, own }: Props) {
         })}
       </div>
       <div className="text-label-sm text-on-surface-variant">
-        of {stats.games.toLocaleString()} games · share, score{rated ? ", rating → performance" : ""}{stats.eval ? ` · position ${fmtEval(stats.eval)}` : ""}
+        of {stats.games.toLocaleString()} games · share, score{rated ? ", performance against the rating" : ""}{stats.eval ? ` · position ${fmtEval(stats.eval)}` : ""}
       </div>
     </div>
   );
