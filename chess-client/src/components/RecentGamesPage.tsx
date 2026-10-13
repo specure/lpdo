@@ -1,0 +1,198 @@
+// Recent games (#90): one's games of the last days — over the board and
+// online, one's linked handles' too — each with how it stood to the
+// repertoire: the chapter it went into, and where one or the opponent left
+// it. A row puts the chapter on the Repertoire page's board where the game
+// left it; Open puts the game on the Analysis board. The same as a chapter's
+// own-games list, for every game of the day at once.
+
+import { useEffect, useState } from "react";
+import { SCOPES, TIME_CLASSES, getRecentGames, platformName, type RecentGame, type RecentGames, type Scope, type TimeClass } from "../lib/accounts";
+import { currentMyPlayer } from "./MyStatsWidget";
+import { PlatformBadge } from "./AccountsSection";
+import type { GameSummary, PlayerInfo } from "../types";
+
+interface Props {
+  /** Put a chapter on the Repertoire page's board at a position, in the
+   *  variation the game's moves took. */
+  onOpenChapter: (chapterId: number, key: string, moves: string[]) => void;
+  /** Open games on the Analysis board. */
+  onOpenGame: (games: GameSummary[]) => Promise<number>;
+}
+
+const DAYS = [1, 3, 7, 30] as const;
+const DAYS_KEY = "lpdoRecentDays";
+const SCOPE_KEY = "lpdoRecentScope";
+const read = <T,>(key: string, ok: (v: string) => T | null, fallback: T): T => {
+  try { const v = localStorage.getItem(key); return v ? (ok(v) ?? fallback) : fallback; } catch { return fallback; }
+};
+const keep = (key: string, v: string) => { try { localStorage.setItem(key, v); } catch { /* per-device convenience only */ } };
+
+const summary = (g: RecentGame): GameSummary => ({
+  id: g.id, white: g.white, black: g.black, white_elo: g.white_elo, black_elo: g.black_elo,
+  event: g.event, date: g.date, result: g.result, eco: null, move_count: null, opening_line: null,
+});
+
+/** How the game stood to the repertoire, in words. */
+function verdict(g: RecentGame): { text: string; tone: "good" | "bad" | "muted" | "plain" } {
+  const m = g.match;
+  if (!m) return { text: "not in the repertoire", tone: "muted" };
+  if (m.left_book) return { text: `left the book${m.book_has?.length ? ` (it plays ${m.book_has.join(", ")})` : ""}`, tone: "muted" };
+  if (m.followed === "left") {
+    return m.left_by === "you"
+      ? { text: `you left at ${m.move ?? "?"}`, tone: "bad" }
+      : { text: `opponent left at ${m.move ?? "?"}`, tone: "plain" };
+  }
+  return { text: m.followed === "ended" ? "the line ended in it" : "in book to the end", tone: "good" };
+}
+
+export default function RecentGamesPage({ onOpenChapter, onOpenGame }: Props) {
+  const [days, setDays] = useState<number>(() => read(DAYS_KEY, (v) => (DAYS as readonly number[]).includes(Number(v)) ? Number(v) : null, 7));
+  const [scope, setScope] = useState<Scope>(() => read(SCOPE_KEY, (v) => SCOPES.some((s) => s.id === v) ? (v as Scope) : null, "all"));
+  const [classes, setClasses] = useState<Set<TimeClass>>(() => new Set(TIME_CLASSES));
+  const [me, setMe] = useState<PlayerInfo | null | undefined>(undefined);
+  const [data, setData] = useState<RecentGames | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => { void currentMyPlayer().then(setMe).catch(() => setMe(null)); }, []);
+  useEffect(() => {
+    if (!me) return;
+    let gone = false;
+    setLoading(true);
+    setError(null);
+    getRecentGames(me.id, days, scope)
+      .then((d) => { if (!gone) setData(d); })
+      .catch((e: unknown) => { if (!gone) setError(e instanceof Error ? e.message : String(e)); })
+      .finally(() => { if (!gone) setLoading(false); });
+    return () => { gone = true; };
+  }, [me, days, scope]);
+
+  const pickDays = (d: number) => { setDays(d); keep(DAYS_KEY, String(d)); };
+  const pickScope = (s: Scope) => { setScope(s); keep(SCOPE_KEY, s); };
+  const toggleClass = (c: TimeClass) => setClasses((prev) => {
+    const next = new Set(prev);
+    if (next.has(c)) next.delete(c); else next.add(c);
+    return next;
+  });
+
+  // The classes among the games, and the games shown: a game without a
+  // class (an over-the-board game from a PGN without the tag) always.
+  const present = new Set((data?.games ?? []).map((g) => g.time_class).filter((c): c is TimeClass => !!c));
+  const shown = (data?.games ?? []).filter((g) => !g.time_class || classes.has(g.time_class));
+  const tally = shown.reduce((t, g) => {
+    const v = verdict(g);
+    if (!g.match || g.match.left_book) t.out++;
+    else if (g.match.followed !== "left") t.inBook++;
+    else if (g.match.left_by === "you") t.you++;
+    else t.opp++;
+    if (g.score === 1) t.w++; else if (g.score === 0.5) t.d++; else if (g.score === 0) t.l++;
+    void v;
+    return t;
+  }, { inBook: 0, you: 0, opp: 0, out: 0, w: 0, d: 0, l: 0 });
+
+  const chip = (on: boolean) => `h-7 px-2.5 rounded-full text-label-md border ${on ? "bg-secondary-container text-on-secondary-container border-transparent" : "text-on-surface-variant border-outline/40 hover:bg-on-surface/8"}`;
+
+  return (
+    <div className="h-full min-h-0 flex flex-col">
+      <div className="shrink-0 px-4 py-3 border-b border-outline/40 flex items-center gap-3 flex-wrap">
+        <h2 className="text-title-md text-on-surface">Recent games</h2>
+        <div className="inline-flex rounded-full border border-outline/40 overflow-hidden" role="group" aria-label="Days">
+          {DAYS.map((d) => (
+            <button key={d} onClick={() => pickDays(d)} className={`h-8 px-3 text-label-md ${days === d ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8"}`}>
+              {d === 1 ? "Today" : d === 3 ? "3 days" : d === 7 ? "Week" : "Month"}
+            </button>
+          ))}
+        </div>
+        <div className="inline-flex rounded-full border border-outline/40 overflow-hidden" role="group" aria-label="Which games">
+          {SCOPES.map((s) => (
+            <button key={s.id} onClick={() => pickScope(s.id)} className={`h-8 px-3 text-label-md ${scope === s.id ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-on-surface/8"}`}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+        {present.size > 0 && (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {TIME_CLASSES.filter((c) => present.has(c)).map((c) => (
+              <button key={c} onClick={() => toggleClass(c)} className={chip(classes.has(c))} aria-pressed={classes.has(c)}>{c}</button>
+            ))}
+          </div>
+        )}
+        {data && (
+          <div className="ml-auto text-label-md text-on-surface-variant tabular-nums" title="In book to the end · you left · the opponent left · not in the repertoire">
+            {shown.length} {shown.length === 1 ? "game" : "games"} · <span className="text-success">+{tally.w}</span> ={tally.d} <span className="text-error">−{tally.l}</span>
+            <span className="ml-3">{tally.inBook} in book · <span className="text-error">{tally.you} you left</span> · {tally.opp} opponent left · {tally.out} outside</span>
+          </div>
+        )}
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {me === null ? (
+          <p className="p-4 text-body-md text-on-surface-variant">Set your player on the Home page to see your games here.</p>
+        ) : error ? (
+          <p className="p-4 text-body-md text-error">{error}</p>
+        ) : !data || (loading && data.days !== days) ? (
+          <p className="p-4 text-body-md text-on-surface-variant">Looking up your games…</p>
+        ) : shown.length === 0 ? (
+          <p className="p-4 text-body-md text-on-surface-variant">
+            No games of yours since {data.since}{scope !== "all" ? ` (${SCOPES.find((s) => s.id === scope)?.label.toLowerCase()})` : ""}.
+            Online games come in with the daily update, or with <i>Sync now</i> on the Maintenance page, Sources.
+          </p>
+        ) : (
+          <table className="w-full text-body-sm">
+            <thead className="sticky top-0 bg-surface text-label-sm text-on-surface-variant">
+              <tr className="text-left">
+                <th className="px-4 py-1.5 font-normal">Date</th>
+                <th className="px-2 py-1.5 font-normal"></th>
+                <th className="px-2 py-1.5 font-normal">Opponent</th>
+                <th className="px-2 py-1.5 font-normal">Game</th>
+                <th className="px-2 py-1.5 font-normal">Chapter</th>
+                <th className="px-2 py-1.5 font-normal">Repertoire</th>
+                <th className="px-2 py-1.5 font-normal"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((g) => {
+                const v = verdict(g);
+                const opp = g.color === "white" ? g.black : g.white;
+                const oppElo = g.color === "white" ? g.black_elo : g.white_elo;
+                const m = g.match;
+                const canOpen = !!m && !m.left_book;
+                return (
+                  <tr key={g.id}
+                    className={`border-t border-outline/20 ${canOpen ? "cursor-pointer hover:bg-on-surface/5" : ""}`}
+                    onClick={() => { if (m && canOpen) onOpenChapter(m.chapter_id, m.at_key, g.moves); }}
+                    title={canOpen ? "The chapter on the board where the game left it" : undefined}>
+                    <td className="px-4 py-1.5 whitespace-nowrap text-on-surface-variant">{g.date ?? "?"}</td>
+                    <td className={`px-2 py-1.5 font-semibold tabular-nums ${g.score === 1 ? "text-success" : g.score === 0 ? "text-error" : "text-on-surface-variant"}`}>
+                      {g.score === 1 ? "1" : g.score === 0.5 ? "½" : g.score === 0 ? "0" : "·"}
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap">
+                      <span className="text-on-surface-variant">{g.color === "white" ? "vs" : "as Black vs"} </span>{opp}{oppElo ? <span className="text-on-surface-variant"> ({oppElo})</span> : null}
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap">
+                      {g.time_class ? <span className="text-on-surface-variant">{g.time_class}{g.time_control ? ` ${g.time_control}` : ""}</span> : <span className="text-on-surface-variant">{g.event ?? ""}</span>}
+                      {g.platform && <span className="ml-1.5"><PlatformBadge platform={g.platform} /></span>}
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap">
+                      {m ? <>{m.chapter_name}<span className="text-label-sm text-on-surface-variant"> · {m.book_name}</span></> : <span className="text-on-surface-variant">—</span>}
+                    </td>
+                    <td className={`px-2 py-1.5 whitespace-nowrap ${v.tone === "good" ? "text-success" : v.tone === "bad" ? "text-error" : v.tone === "muted" ? "text-on-surface-variant" : ""}`}>{v.text}</td>
+                    <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                      <button onClick={(e) => { e.stopPropagation(); void onOpenGame([summary(g)]); }}
+                        className="h-7 px-2.5 rounded-full text-label-md text-primary hover:bg-primary/8" title="The game on the Analysis board">Open</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+      {data && data.games.some((g) => g.platform) && (
+        <div className="shrink-0 px-4 py-1.5 border-t border-outline/40 text-label-sm text-on-surface-variant">
+          Online games are those of your linked accounts ({[...new Set(data.games.map((g) => g.platform).filter(Boolean))].map(platformName).join(", ")}); the chapters' own game lists on the Repertoire page count them too.
+        </div>
+      )}
+    </div>
+  );
+}

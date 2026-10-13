@@ -43,6 +43,7 @@ import { loadGamePgn } from "./lib/useGamePgn";
 import { CursorPath } from "./lib/moveTreeNav";
 import { setAppVersion as setCrashAppVersion, setCrashContext } from "./lib/crashLog";
 import HomeEmptyState from "./components/HomeEmptyState";
+import RecentGamesPage from "./components/RecentGamesPage";
 import UpdateBanner, { EngineUpdateBanner } from "./components/UpdateBanner";
 
 /** How many games the Analysis board holds at once. Each open game keeps its
@@ -73,6 +74,7 @@ const NAV = [
   ["mygames", "My games"],
   ["prep", "Prep"],
   ["repertoire", "Repertoire"],
+  ["recent", "Recent"],
   ["players", "Players"],
   ["games", "Games"],
   ["analysis", "Analysis"],
@@ -516,7 +518,7 @@ export default function App() {
   const [showAddGame, setShowAddGame] = useState(false);
   // A chapter asked for from Analysis, until the Repertoire page has opened it.
   const [repertoireOpen, setRepertoireOpen] = useState<RepertoireOpen | null>(null);
-  const [mode, setMode] = useState<"home" | "players" | "prep" | "games" | "analysis" | "repertoire" | "local" | "maintenance">("home");
+  const [mode, setMode] = useState<"home" | "players" | "prep" | "games" | "analysis" | "repertoire" | "recent" | "local" | "maintenance">("home");
   // When set, focuses the player search input on the next render (used so the
   // Home screen's "Search a player" card can switch tabs and focus in one step).
   const [pendingSearchFocus, setPendingSearchFocus] = useState(false);
@@ -1013,6 +1015,7 @@ export default function App() {
           onSearchPlayer={() => { setMode("players"); setPendingSearchFocus(true); }}
           onOpenTournament={() => setMode("prep")}
           onOpenRepertoire={() => setMode("repertoire")}
+          onOpenRecent={() => setMode("recent")}
           onOpenGames={() => setMode("games")}
           onOpenAnalysis={() => setMode("analysis")}
           onBrowseLocal={() => setMode("local")}
@@ -1022,6 +1025,15 @@ export default function App() {
 
       {/* Maintenance view — full-screen, server-status aware. Mutations inside
           re-poll status (and refresh open game lists) via onMutated. */}
+      {mode === "recent" && (
+        <RecentGamesPage
+          onOpenChapter={(chapterId, key, moves) => {
+            setRepertoireOpen((r) => ({ chapterId, key, moves, seq: (r?.seq ?? 0) + 1 }));
+            setMode("repertoire");
+          }}
+          onOpenGame={openManyInAnalysis}
+        />
+      )}
       {mode === "maintenance" && (
         <MaintenancePanel
           onRunWizard={() => setShowSetup(true)}

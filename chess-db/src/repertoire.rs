@@ -2213,6 +2213,9 @@ pub struct RecentGame {
     pub color: String,
     /// One's result: 1, ½, 0; none when the game has no result.
     pub score: Option<f64>,
+    /// The game's moves (SAN, the main line) — to put a chapter's board
+    /// where the game left it.
+    pub moves: Vec<String>,
     /// The chapter it went into, when it went into one.
     #[serde(rename = "match")]
     pub line: Option<LineMatch>,
@@ -2259,7 +2262,7 @@ pub fn recent_games(conn: &Connection, player: i64, days: u32, scope: Scope, lim
         };
         let sans = crate::dedup::canonical_moves(&pgn);
         let line = match_line(conn, &sans, color)?.into_iter().next();
-        games.push(RecentGame { id, white, black, white_elo, black_elo, date, event, site, result, time_control, time_class, platform, color: color.to_string(), score, line });
+        games.push(RecentGame { id, white, black, white_elo, black_elo, date, event, site, result, time_control, time_class, platform, color: color.to_string(), score, moves: sans, line });
     }
     Ok(RecentGames { days, since, scope, games, ms: started.elapsed().as_millis() as i64 })
 }
