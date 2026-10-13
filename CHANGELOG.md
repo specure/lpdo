@@ -26,8 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Recent games** — a page of its own (Home, and *Recent* in the bar):
   your games of today, three days, a week or a month — over the board and
   online, all, or either — each with the chapters it went into (one per
-  book, when the books overlap; those it stayed in to the end first, then
-  by how far it went) and the verdict in each: in book to the end, you
+  book, when the books overlap; the one it went furthest in first) and
+  the verdict in each: in book to the end, you
   deviated at a move, the opponent deviated — with the book's move there —
   or not in the repertoire; a
   chapter puts itself on the Repertoire page's board where the game left

@@ -35,12 +35,11 @@ const summary = (g: RecentGame): GameSummary => ({
   event: g.event, date: g.date, result: g.result, eco: null, move_count: null, opening_line: null,
 });
 
-/** The chapters a game went into, to list: the books it only started
- *  (`left_book`) left out as noise, those it stayed in to the end first,
- *  then by how far it went. */
+/** The chapters a game went into, to list — as far as it went in each,
+ *  deepest first, as the server has them — the books it only started
+ *  (`left_book`) left out as noise. */
 function chaptersOf(g: RecentGame): LineMatch[] {
-  return g.matches.filter((m) => !m.left_book)
-    .sort((a, b) => Number(b.followed !== "left") - Number(a.followed !== "left") || b.ply - a.ply);
+  return g.matches.filter((m) => !m.left_book);
 }
 
 type Tone = "good" | "bad" | "muted" | "plain";
@@ -95,7 +94,7 @@ export default function RecentGamesPage({ onOpenChapter, onOpenGame }: Props) {
   // class (an over-the-board game from a PGN without the tag) always.
   const present = new Set((data?.games ?? []).map((g) => g.time_class).filter((c): c is TimeClass => !!c));
   const shown = (data?.games ?? []).filter((g) => !g.time_class || classes.has(g.time_class));
-  // The tally counts each game once, by its first chapter.
+  // The tally counts each game once, by the chapter it went deepest into.
   const tally = shown.reduce((t, g) => {
     const m = chaptersOf(g)[0];
     if (!m) t.out++;
