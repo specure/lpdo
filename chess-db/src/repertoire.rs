@@ -1105,6 +1105,13 @@ pub struct MoveStat {
     pub games: i64,
     /// The average result for the side playing the move (1 win, ½ draw).
     pub score: f64,
+    /// The median rating of those who played it (the rated ones).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elo: Option<i32>,
+    /// Their performance rating with it — the opponent's rating plus 400
+    /// for a win, less 400 for a loss, averaged — from ten rated opponents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perf: Option<i32>,
 }
 
 /// A stored engine evaluation, from White's side.
@@ -1187,28 +1194,45 @@ pub fn chapter_stats(conn: &Connection, id: i64) -> Result<Vec<PositionStat>> {
     let list = order.iter().map(|z| z.to_string()).collect::<Vec<_>>().join(",");
 
     let ceiling = crate::db::queries::HUMAN_ELO_CEILING;
+    // Each move's games with the mover's result and the two ratings (an even
+    // move number is White's move); then the figures: the median rating of
+    // the rated movers, and their performance — the opponent's rating plus
+    // 400 for a win, less 400 for a loss, averaged over the rated opponents,
+    // from ten of them.
     let sql = format!("
-        SELECT p.zobrist_hash,
-               regexp_replace(p.next_move, '[+#!?]+$', '') AS san,
-               COUNT(*) AS games,
-               AVG(CASE WHEN p.move_number % 2 = 0 THEN
+        WITH m AS (
+            SELECT p.zobrist_hash,
+                   regexp_replace(p.next_move, '[+#!?]+$', '') AS san,
+                   CASE WHEN p.move_number % 2 = 0 THEN
                         CASE g.result WHEN '1-0' THEN 1.0 WHEN '1/2-1/2' THEN 0.5 ELSE 0.0 END
                     ELSE
                         CASE g.result WHEN '0-1' THEN 1.0 WHEN '1/2-1/2' THEN 0.5 ELSE 0.0 END
-                    END) AS score
-        FROM positions p
-        JOIN games g ON p.game_id = g.id
-        WHERE p.zobrist_hash IN ({list})
-          AND p.next_move IS NOT NULL
-          AND g.result IN ('1-0', '0-1', '1/2-1/2')
-          AND g.deleted_at IS NULL
-          AND COALESCE(g.white_elo, 0) <= {ceiling}
-          AND COALESCE(g.black_elo, 0) <= {ceiling}
-          AND g.id NOT IN (SELECT game_id FROM engine_games)
+                    END AS score,
+                   COALESCE(CASE WHEN p.move_number % 2 = 0 THEN g.white_elo ELSE g.black_elo END, 0) AS player_elo,
+                   COALESCE(CASE WHEN p.move_number % 2 = 0 THEN g.black_elo ELSE g.white_elo END, 0) AS opp_elo
+            FROM positions p
+            JOIN games g ON p.game_id = g.id
+            WHERE p.zobrist_hash IN ({list})
+              AND p.next_move IS NOT NULL
+              AND g.result IN ('1-0', '0-1', '1/2-1/2')
+              AND g.deleted_at IS NULL
+              AND COALESCE(g.white_elo, 0) <= {ceiling}
+              AND COALESCE(g.black_elo, 0) <= {ceiling}
+              AND g.id NOT IN (SELECT game_id FROM engine_games)
+        )
+        SELECT zobrist_hash, san, COUNT(*) AS games, AVG(score) AS score,
+               PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY player_elo) FILTER (WHERE player_elo > 0) AS elo,
+               CASE WHEN COUNT(*) FILTER (WHERE opp_elo > 0) >= 10
+                    THEN AVG(opp_elo + 400.0 * (2.0 * score - 1.0)) FILTER (WHERE opp_elo > 0) END AS perf
+        FROM m
         GROUP BY 1, 2");
     let mut by_pos: std::collections::HashMap<i64, Vec<MoveStat>> = std::collections::HashMap::new();
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, MoveStat { san: r.get(1)?, games: r.get(2)?, score: r.get(3)? })))?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, MoveStat {
+        san: r.get(1)?, games: r.get(2)?, score: r.get(3)?,
+        elo: r.get::<_, Option<f64>>(4)?.map(|x| x.round() as i32),
+        perf: r.get::<_, Option<f64>>(5)?.map(|x| x.round() as i32),
+    })))?;
     for row in rows {
         let (z, m) = row?;
         by_pos.entry(z).or_default().push(m);
@@ -2219,14 +2243,22 @@ fn spelling(pos: Option<&Chess>, san: &str) -> String {
 }
 
 /// The database's moves from a position, the spellings of one move merged:
-/// their games added, the score weighted by them.
+/// their games added, the score, the rating and the performance weighted
+/// by them (the median's weighted mean is near enough).
 fn merge_spellings(pos: Option<&Chess>, moves: Vec<MoveStat>) -> Vec<MoveStat> {
     let mut out: Vec<MoveStat> = Vec::new();
     for m in moves {
         let san = spelling(pos, &m.san);
         match out.iter_mut().find(|e| e.san == san) {
             Some(e) => {
-                e.score = (e.score * e.games as f64 + m.score * m.games as f64) / (e.games + m.games) as f64;
+                let (eg, mg) = (e.games as f64, m.games as f64);
+                let weighted = |a: Option<i32>, b: Option<i32>| match (a, b) {
+                    (Some(a), Some(b)) => Some(((a as f64 * eg + b as f64 * mg) / (eg + mg)).round() as i32),
+                    (a, b) => a.or(b),
+                };
+                e.score = (e.score * eg + m.score * mg) / (eg + mg);
+                e.elo = weighted(e.elo, m.elo);
+                e.perf = weighted(e.perf, m.perf);
                 e.games += m.games;
             }
             None => out.push(MoveStat { san, ..m }),
@@ -2324,8 +2356,8 @@ mod tests {
         let s0 = at("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq");
         assert_eq!(s0.games, 3, "the engine game is left out");
         assert_eq!(s0.moves, vec![
-            MoveStat { san: "e4".into(), games: 2, score: 0.75 },
-            MoveStat { san: "d4".into(), games: 1, score: 0.0 },
+            MoveStat { san: "e4".into(), games: 2, score: 0.75, elo: None, perf: None },
+            MoveStat { san: "d4".into(), games: 1, score: 0.0, elo: None, perf: None },
         ]);
         assert_eq!(s0.zobrist, format!("{:016x}", z0 as u64));
         assert_eq!(s0.eval, None);
@@ -2336,6 +2368,41 @@ mod tests {
         // The ends of the lines are there too, without games.
         assert_eq!(stats.len(), 4);
         assert!(stats.iter().any(|s| s.key.ends_with(" w KQkq") && s.key.contains("2p5") && s.games == 0));
+    }
+
+    #[test]
+    fn the_figures_carry_the_movers_rating_and_performance() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let book = create_book(&conn, "B", "white", None, None, None).unwrap();
+        let ch = add_chapters(&conn, book.id, Some("Ch"), Some("1. e4 *"), None).unwrap().remove(0);
+        let z0 = Chess::default().zobrist_hash::<Zobrist64>(EnPassantMode::Legal).0 as i64;
+        // Twelve games of 1.e4 by a 2400 against a 2300: six won, six drawn —
+        // a score of 0.75, a performance of 2300 + 400 × (2 × 0.75 − 1) =
+        // 2500. Two of 1.d4 by a 2500 against a 2200: rated, but too few
+        // for a performance.
+        let mut games = Vec::new();
+        let mut positions = Vec::new();
+        for id in 1..=12 {
+            games.push(format!("({id}, 1, 2, 2400, 2300, '{}', '')", if id <= 6 { "1-0" } else { "1/2-1/2" }));
+            positions.push(format!("({id}, 0, {z0}, 'e4')"));
+        }
+        for id in 13..=14 {
+            games.push(format!("({id}, 1, 2, 2500, 2200, '{}', '')", if id == 13 { "1-0" } else { "0-1" }));
+            positions.push(format!("({id}, 0, {z0}, 'd4')"));
+        }
+        conn.execute_batch(&format!("
+            INSERT INTO players (id, name, name_normalized) VALUES (1, 'A', 'a'), (2, 'B', 'b');
+            INSERT INTO games (id, white_id, black_id, white_elo, black_elo, result, pgn) VALUES {};
+            INSERT INTO positions (game_id, move_number, zobrist_hash, next_move) VALUES {};
+        ", games.join(", "), positions.join(", "))).unwrap();
+
+        let stats = chapter_stats(&conn, ch.id).unwrap();
+        let s0 = stats.iter().find(|s| s.key.starts_with("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w")).unwrap();
+        let e4 = s0.moves.iter().find(|m| m.san == "e4").unwrap();
+        assert_eq!((e4.games, e4.score, e4.elo, e4.perf), (12, 0.75, Some(2400), Some(2500)));
+        let d4 = s0.moves.iter().find(|m| m.san == "d4").unwrap();
+        assert_eq!((d4.games, d4.elo, d4.perf), (2, Some(2500), None), "two rated opponents: no performance");
     }
 
     /// Games imported before #271 keep their source's spelling: "Ngf3" for
@@ -2365,8 +2432,8 @@ mod tests {
         let stats = chapter_stats(&conn, ch.id).unwrap();
         let s = stats.iter().find(|s| s.zobrist == format!("{:016x}", z as u64)).unwrap();
         assert_eq!(s.moves, vec![
-            MoveStat { san: "Nf3".into(), games: 3, score: 2.0 / 3.0 },
-            MoveStat { san: "Bd3".into(), games: 1, score: 1.0 },
+            MoveStat { san: "Nf3".into(), games: 3, score: 2.0 / 3.0, elo: None, perf: None },
+            MoveStat { san: "Bd3".into(), games: 1, score: 1.0, elo: None, perf: None },
         ]);
     }
 
