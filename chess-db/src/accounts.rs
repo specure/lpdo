@@ -264,20 +264,18 @@ pub async fn fetch_lichess(username: &str, since_ms: Option<i64>) -> Result<Stri
 
 /// A user's games on Chess.com as PGN: the monthly archives from `from`
 /// (year, month) on — the current month's grows as games are played — one
-/// request each, in turn.
+/// request each, in turn. The month's JSON, each game's PGN in it: the
+/// archive's own `/pgn` answers "internal error" for some months.
 pub async fn fetch_chesscom(username: &str, from: Option<(i32, u32)>) -> Result<String> {
     let client = client()?;
     let user = username.to_lowercase();
-    let list = client.get(format!("https://api.chess.com/pub/player/{user}/games/archives")).send().await?;
-    match list.status().as_u16() {
-        200 => {}
-        404 => bail!("no such user on Chess.com: {username}"),
-        429 => bail!("Chess.com asks to wait (rate limit); try again in a minute"),
-        s => bail!("Chess.com answered {s}"),
-    }
     #[derive(Deserialize)]
     struct Archives { archives: Vec<String> }
-    let archives: Archives = list.json().await.context("Chess.com's archive list")?;
+    let archives: Archives = get_json(&client, &format!("https://api.chess.com/pub/player/{user}/games/archives"), username).await?;
+    #[derive(Deserialize)]
+    struct Month { games: Vec<Game> }
+    #[derive(Deserialize)]
+    struct Game { pgn: Option<String> }
     let mut out = String::new();
     for url in archives.archives {
         // ".../games/2026/10"
@@ -287,14 +285,44 @@ pub async fn fetch_chesscom(username: &str, from: Option<(i32, u32)>) -> Result<
         if let Some((fy, fm)) = from {
             if (year, month) < (fy, fm) { continue; }
         }
-        let resp = client.get(format!("{url}/pgn")).send().await?;
-        match resp.status().as_u16() {
-            200 => { out.push_str(&resp.text().await?); out.push_str("\n\n"); }
-            429 => bail!("Chess.com asks to wait (rate limit); try again in a minute"),
-            s => bail!("Chess.com answered {s} for {url}"),
+        // Either form of a month fails now and then, "internal error", while
+        // the other is served: the JSON first, then the month's PGN.
+        match get_json::<Month>(&client, &url, username).await {
+            Ok(m) => for g in m.games {
+                if let Some(pgn) = g.pgn { out.push_str(pgn.trim()); out.push_str("\n\n"); }
+            },
+            Err(e1) => match get_text(&client, &format!("{url}/pgn"), username).await {
+                Ok(t) => { out.push_str(t.trim()); out.push_str("\n\n"); }
+                Err(e2) => bail!("the archive {year}-{month:02}: {e1:#}; as PGN: {e2:#}"),
+            },
         }
     }
     Ok(out)
+}
+
+/// An answer from Chess.com, asked up to three times: its API answers an
+/// "internal error" now and then and is right the next moment.
+async fn get_response(client: &reqwest::Client, url: &str, username: &str) -> Result<reqwest::Response> {
+    let mut last = anyhow!("no answer");
+    for attempt in 0..3 {
+        if attempt > 0 { tokio::time::sleep(std::time::Duration::from_secs(2 * attempt)).await; }
+        let resp = match client.get(url).send().await { Ok(r) => r, Err(e) => { last = e.into(); continue; } };
+        match resp.status().as_u16() {
+            200 => return Ok(resp),
+            404 if url.ends_with("/archives") => bail!("no such user on Chess.com: {username}"),
+            429 => bail!("Chess.com asks to wait (rate limit); try again in a minute"),
+            s => { last = anyhow!("Chess.com answered {s} for {url}"); }
+        }
+    }
+    Err(last)
+}
+
+async fn get_json<T: serde::de::DeserializeOwned>(client: &reqwest::Client, url: &str, username: &str) -> Result<T> {
+    get_response(client, url, username).await?.json::<T>().await.with_context(|| format!("Chess.com's answer for {url}"))
+}
+
+async fn get_text(client: &reqwest::Client, url: &str, username: &str) -> Result<String> {
+    Ok(get_response(client, url, username).await?.text().await?)
 }
 
 // ── The games ───────────────────────────────────────────────────────────────
@@ -490,7 +518,9 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let li = rt.block_on(fetch_lichess("DrNykterstein", Some(1_700_000_000_000))).unwrap();
         assert!(li.contains("[Event "), "{}", &li[..li.len().min(200)]);
-        let cc = rt.block_on(fetch_chesscom("hikaru", Some((2026, 1)))).unwrap();
+        let cc = rt.block_on(fetch_chesscom("erik", Some((2026, 9)))).unwrap();
         assert!(cc.contains("[Link "), "{}", &cc[..cc.len().min(200)]);
+        let games = split_games(&cc);
+        assert!(games.len() > 1 && games.iter().all(|g| site_of(g).is_some()), "{} games, each with its address", games.len());
     }
 }
