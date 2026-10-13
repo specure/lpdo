@@ -1402,12 +1402,18 @@ async fn repertoire_chapter_stats_handler(State(state): State<AppState>, AxumPat
 }
 
 #[derive(Deserialize)]
-struct ChapterMineQuery { player_id: i64 }
+struct ChapterMineQuery { player_id: i64, scope: Option<String> }
+
+/// How one's games are counted: all, over the board only, online only (#90).
+fn scope_of(s: &Option<String>) -> Result<crate::accounts::Scope, (StatusCode, String)> {
+    crate::accounts::Scope::parse(s.as_deref()).map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))
+}
 
 /// One's own games through a chapter's positions, looked up live: with the
 /// book's colour, from the period the settings give.
 async fn repertoire_chapter_mine_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<ChapterMineQuery>) -> ApiResult<crate::repertoire::OwnGames> {
-    state.reads.run(move |conn| crate::repertoire::chapter_mine(conn, id, q.player_id).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
+    let scope = scope_of(&q.scope)?;
+    state.reads.run(move |conn| crate::repertoire::chapter_mine(conn, id, q.player_id, scope).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
 }
 
 #[derive(Deserialize)]
@@ -1420,17 +1426,81 @@ async fn repertoire_match_handler(State(state): State<AppState>, Json(b): Json<M
 
 /// One's own games across a book's chapters, looked up live.
 async fn repertoire_book_mine_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<ChapterMineQuery>) -> ApiResult<crate::repertoire::BookGames> {
-    state.reads.run(move |conn| crate::repertoire::book_mine(conn, id, q.player_id).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
+    let scope = scope_of(&q.scope)?;
+    state.reads.run(move |conn| crate::repertoire::book_mine(conn, id, q.player_id, scope).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
 }
 
 /// One's games in a chapter, with how far each followed it.
 async fn repertoire_chapter_games_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<ChapterMineQuery>) -> ApiResult<crate::repertoire::ChapterGameList> {
-    state.reads.run(move |conn| crate::repertoire::chapter_games(conn, id, q.player_id).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
+    let scope = scope_of(&q.scope)?;
+    state.reads.run(move |conn| crate::repertoire::chapter_games(conn, id, q.player_id, scope).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
 }
 
 /// One's games in a book's opening, with the chapter each went into.
 async fn repertoire_book_games_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<ChapterMineQuery>) -> ApiResult<crate::repertoire::BookGameList> {
-    state.reads.run(move |conn| crate::repertoire::book_games(conn, id, q.player_id).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
+    let scope = scope_of(&q.scope)?;
+    state.reads.run(move |conn| crate::repertoire::book_games(conn, id, q.player_id, scope).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
+}
+
+// ── One's online accounts (#90) ──────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct AccountBody { platform: String, username: String, player_id: i64 }
+
+#[derive(Deserialize)]
+struct AccountEnabledBody { enabled: bool }
+
+#[derive(Deserialize)]
+struct RecentQuery { days: Option<u32>, scope: Option<String>, limit: Option<usize> }
+
+/// The linked accounts, with their last sync.
+async fn accounts_handler(State(state): State<AppState>) -> ApiResult<Vec<crate::accounts::Account>> {
+    state.reads.run(|conn| crate::accounts::list(conn).map(Json).map_err(db_err)).await
+}
+
+/// Link a handle on Lichess or Chess.com to a local player.
+async fn account_add_handler(State(state): State<AppState>, Json(b): Json<AccountBody>) -> ApiResult<crate::accounts::Account> {
+    let platform = crate::accounts::Platform::parse(&b.platform)
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, format!("platform must be lichess or chesscom, not {:?}", b.platform)))?;
+    state.writer.run(move |conn| {
+        crate::accounts::add(conn, platform, &b.username, b.player_id).map(Json).map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))
+    }).await
+}
+
+/// Unlink an account; its games stay.
+async fn account_delete_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>) -> ApiResult<serde_json::Value> {
+    state.writer.run(move |conn| {
+        crate::accounts::remove(conn, id).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))?;
+        Ok(msg(format!("Account {id} unlinked.")))
+    }).await
+}
+
+async fn account_enabled_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Json(b): Json<AccountEnabledBody>) -> ApiResult<serde_json::Value> {
+    state.writer.run(move |conn| {
+        crate::accounts::set_enabled(conn, id, b.enabled).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))?;
+        Ok(msg(format!("Account {id} {}.", if b.enabled { "enabled" } else { "disabled" })))
+    }).await
+}
+
+/// Sync one account now — a job, followed in Activity.
+async fn account_sync_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>) -> ApiResult<serde_json::Value> {
+    let job = state.jobs.submit("sync_accounts".to_string(), serde_json::json!({ "account": id }));
+    Ok(Json(serde_json::json!({ "job_id": job })))
+}
+
+/// Sync every enabled account now.
+async fn accounts_sync_handler(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
+    let job = state.jobs.submit("sync_accounts".to_string(), serde_json::json!({}));
+    Ok(Json(serde_json::json!({ "job_id": job })))
+}
+
+/// One's games of the last days — one's handles' too — each with how it
+/// stood to the repertoire.
+async fn player_recent_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<RecentQuery>) -> ApiResult<crate::repertoire::RecentGames> {
+    let scope = scope_of(&q.scope)?;
+    let days = q.days.unwrap_or(7).clamp(1, 366);
+    let limit = q.limit.unwrap_or(200).clamp(1, 2000);
+    state.reads.run(move |conn| crate::repertoire::recent_games(conn, id, days, scope, limit).map(Json).map_err(db_err)).await
 }
 
 #[derive(Deserialize)]
@@ -3009,6 +3079,12 @@ pub async fn run(
         .route("/repertoire/settings",                 get(repertoire_settings_handler).put(repertoire_settings_put_handler))
         .route("/sources",                             get(sources_handler))
         .route("/sources/{key}/enabled",               post(set_source_enabled_handler))
+        .route("/accounts",                            get(accounts_handler).post(account_add_handler))
+        .route("/accounts/sync",                       post(accounts_sync_handler))
+        .route("/accounts/{id}",                       axum::routing::delete(account_delete_handler))
+        .route("/accounts/{id}/enabled",               post(account_enabled_handler))
+        .route("/accounts/{id}/sync",                  post(account_sync_handler))
+        .route("/players/{id}/recent",                 get(player_recent_handler))
         .route("/schedule",                            get(get_schedule_handler).post(set_schedule_handler))
         .route("/players",                             get(players_handler))
         .route("/players/{id}",                        get(player_by_id_handler))

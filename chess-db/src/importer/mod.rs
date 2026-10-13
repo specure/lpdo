@@ -83,6 +83,42 @@ pub struct ImportSpec {
     /// wins; private never auto-downgrades).
     pub visibility: String,
     pub on_duplicate: String,      // "skip" | "replace" | "always"
+    /// Games synced from an online account (#90): "lichess" / "chesscom".
+    /// The games carry it (`games.platform`) and their players are the
+    /// platform's handles — found and made apart from every other player
+    /// (`players.platform`), so a handle never lands on a real name.
+    pub platform: Option<String>,
+}
+
+/// A game's time class from its TimeControl tag, Lichess's bounds on the
+/// estimated length (base + 40 × increment, seconds): under 3 minutes
+/// bullet, under 8 blitz, under 25 rapid, else classical; a daily game
+/// ("1/86400") correspondence; "-" and the unreadable nothing.
+pub fn time_class(tc: &str) -> Option<&'static str> {
+    let tc = tc.trim();
+    if tc.is_empty() || tc == "-" || tc == "?" { return None; }
+    // "N/seconds": moves in a period — correspondence when a day or more
+    // per move, else a classical control ("40/7200:3600").
+    if let Some((moves, secs)) = tc.split_once('/') {
+        let secs: u64 = secs.split(':').next()?.parse().ok()?;
+        return Some(if moves.trim() == "1" && secs >= 86_400 { "correspondence" } else { "classical" });
+    }
+    let (base, inc) = match tc.split_once('+') {
+        Some((b, i)) => (b.parse::<u64>().ok()?, i.parse::<u64>().ok()?),
+        None => (tc.parse::<u64>().ok()?, 0),
+    };
+    let estimated = base + 40 * inc;
+    Some(if estimated < 180 { "bullet" } else if estimated < 480 { "blitz" } else if estimated < 1500 { "rapid" } else { "classical" })
+}
+
+/// A player to insert: id, name, normalised name, FIDE id, platform (a handle's).
+type NewPlayer = (u32, String, String, Option<u32>, Option<String>);
+
+/// The key the importer finds a player by: the normalised name — and, for a
+/// platform's handle, the platform before it, so "Carlsen" on Lichess is
+/// not Carlsen, Magnus (nor "Carlsen" on Chess.com).
+fn player_key(platform: Option<&str>, normalized: &str) -> String {
+    match platform { Some(p) => format!("{p}\u{0}{normalized}"), None => normalized.to_string() }
 }
 
 pub fn upsert_collection(conn: &Connection, name: &str) -> Result<i32> {
@@ -1106,7 +1142,7 @@ pub fn import_pgn(
             // Manual PGN imports are not date-filtered (unbounded window).
             let manual_window = crate::sources::DateWindow::default();
             let label = ProgressLabel { file_index: 1, file_count: 1, games_base: 0 };
-            match process_pgn_stream(conn, issue_id, collection_id, visibility, src, effective_depth, &mut ctx, fast, &manual_window, prog_size, &bytes_read, 0, PROGRESS_UNITS_PER_ISSUE, label, reporter) {
+            match process_pgn_stream(conn, issue_id, collection_id, visibility, spec.platform.as_deref(), src, effective_depth, &mut ctx, fast, &manual_window, prog_size, &bytes_read, 0, PROGRESS_UNITS_PER_ISSUE, label, reporter) {
                 Ok((imported, skipped_dups, skipped_ns, skipped_window)) => {
                     conn.execute(
                         "UPDATE source_items SET imported = TRUE, imported_at = NOW(), game_count = ? WHERE id = ?",
@@ -1207,10 +1243,10 @@ impl ImportContext {
         let next_game_id: u32 = crate::db::ids::next_id(conn, "games")?;
 
         {
-            let mut pstmt = conn.prepare("SELECT id, name_normalized FROM players")?;
-            let rows = pstmt.query_map([], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, String>(1)?)))?;
+            let mut pstmt = conn.prepare("SELECT id, name_normalized, platform FROM players")?;
+            let rows = pstmt.query_map([], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)))?;
             for row in rows.flatten() {
-                player_cache.insert(row.1, row.0);
+                player_cache.insert(player_key(row.2.as_deref(), &row.1), row.0);
             }
         }
 
@@ -1362,6 +1398,7 @@ fn import_issue(
         issue_id,
         collection_id,
         visibility,
+        None,
         Box::new(counted),
         max_position_depth,
         ctx,
@@ -1492,6 +1529,8 @@ fn process_pgn_stream(
     issue_id: i32,
     collection_id: i32,
     visibility: &'static str,
+    // The games' platform when they come from an online account (see ImportSpec).
+    platform: Option<&str>,
     src: Box<dyn Read>,
     max_position_depth: Option<i16>,
     ctx: &mut ImportContext,
@@ -1532,7 +1571,7 @@ fn process_pgn_stream(
     let mut skipped_nonstandard = 0usize;
     let mut skipped_window = 0usize;
     let window_unbounded = window.is_unbounded();
-    let mut new_players: Vec<(u32, String, String, Option<u32>)> = Vec::new();
+    let mut new_players: Vec<NewPlayer> = Vec::new();
     let mut player_fide_backfill: Vec<(u32, u32)> = Vec::new();
 
     loop {
@@ -1580,6 +1619,7 @@ fn process_pgn_stream(
             &mut player_fide_backfill,
             &white_name,
             game.white_fide_id,
+            platform,
         );
         let black_id = get_or_create_player(
             &mut ctx.player_cache,
@@ -1590,6 +1630,7 @@ fn process_pgn_stream(
             &mut player_fide_backfill,
             &black_name,
             game.black_fide_id,
+            platform,
         );
 
         // Deduplication: ChessBase GameId is checked first — same GameId is a
@@ -1664,6 +1705,9 @@ fn process_pgn_stream(
             pgn: game.pgn,
             opening_line: game.opening_line,
             chessbase_id: game.chessbase_id,
+            time_class: game.time_control.as_deref().and_then(time_class),
+            time_control: game.time_control,
+            platform: platform.map(str::to_string),
             move_hash,
             move_hash_short,
         });
@@ -1747,17 +1791,18 @@ fn get_or_create_player(
     fide_id_cache: &mut HashMap<u32, u32>,
     player_fide_id: &mut HashMap<u32, u32>,
     next_id: &mut u32,
-    new_players: &mut Vec<(u32, String, String, Option<u32>)>,
+    new_players: &mut Vec<NewPlayer>,
     backfill: &mut Vec<(u32, u32)>,
     name: &str,
     fide_id: Option<u32>,
+    platform: Option<&str>,
 ) -> u32 {
-    let normalized = name
+    let normalized = player_key(platform, &name
         .to_lowercase()
         .replace(',', " ")
         .split_whitespace()
         .collect::<Vec<_>>()
-        .join(" ");
+        .join(" "));
     // 1. Fast path: name already known
     if let Some(&id) = name_cache.get(&normalized) {
         // Back-fill: if this game brings a FIDE ID and the existing player
@@ -1787,7 +1832,9 @@ fn get_or_create_player(
         fide_id_cache.insert(fid, id);
         player_fide_id.insert(id, fid);
     }
-    new_players.push((id, name.to_string(), normalized, fide_id));
+    // The row keeps the plain normalised name; the platform is its own column.
+    let plain = normalized.split('\u{0}').next_back().unwrap_or(&normalized).to_string();
+    new_players.push((id, name.to_string(), plain, fide_id, platform.map(str::to_string)));
     id
 }
 
@@ -1839,27 +1886,27 @@ fn flush_player_fide_backfill(
 
 fn flush_players(
     conn: &Connection,
-    players: &[(u32, String, String, Option<u32>)],
+    players: &[NewPlayer],
     fast: bool,
 ) -> Result<()> {
     if players.is_empty() {
         return Ok(());
     }
     if fast {
-        // Column order: id, name, name_normalized, fide_id, game_count, name_normalised.
+        // Column order: id, name, name_normalized, fide_id, game_count, name_normalised, platform.
         let mut app = conn.appender("players")?;
-        for (id, name, norm, fide_id) in players {
-            app.append_row(duckdb::params![*id, name, norm, *fide_id, 0_i32, false])?;
+        for (id, name, norm, fide_id, platform) in players {
+            app.append_row(duckdb::params![*id, name, norm, *fide_id, 0_i32, false, platform])?;
         }
         app.flush()?;
     } else {
         crate::db::with_tx(conn, || {
             let mut stmt = conn.prepare(
-                "INSERT INTO players (id, name, name_normalized, fide_id, name_normalised)
-                 VALUES (?, ?, ?, ?, FALSE)",
+                "INSERT INTO players (id, name, name_normalized, fide_id, name_normalised, platform)
+                 VALUES (?, ?, ?, ?, FALSE, ?)",
             )?;
-            for (id, name, norm, fide_id) in players {
-                stmt.execute(duckdb::params![*id, name, norm, *fide_id])?;
+            for (id, name, norm, fide_id, platform) in players {
+                stmt.execute(duckdb::params![*id, name, norm, *fide_id, platform])?;
             }
             Ok(())
         })?;
@@ -1896,6 +1943,9 @@ struct GameRow {
     pgn: String,
     opening_line: String,
     chessbase_id: Option<i64>,
+    time_control: Option<String>,
+    time_class: Option<&'static str>,
+    platform: Option<String>,
     move_hash: i64,
     move_hash_short: Option<i64>,
 }
@@ -1915,7 +1965,7 @@ fn flush_games(conn: &Connection, games: &[GameRow], fast: bool) -> Result<()> {
         // Appender column order matches the live table layout. After Phase 2
         // dropped source_id, the trailing columns are: chessbase_id,
         // deleted_at (NULL on insert), visibility, deduped, move_hash,
-        // move_hash_short.
+        // move_hash_short, then (#90) time_control, time_class, platform.
         let mut app = conn.appender("games")?;
         for g in games {
             app.append_row(duckdb::params![
@@ -1926,6 +1976,7 @@ fn flush_games(conn: &Connection, games: &[GameRow], fast: bool) -> Result<()> {
                 g.visibility,
                 false,                               // deduped: new games await dedup_games
                 g.move_hash, g.move_hash_short,
+                g.time_control, g.time_class, g.platform,
             ])?;
         }
         app.flush()?;
@@ -1935,15 +1986,15 @@ fn flush_games(conn: &Connection, games: &[GameRow], fast: bool) -> Result<()> {
                 "INSERT INTO games (id, issue_id, white_id, black_id, white_elo, black_elo,
                                    event, site, date, round, result, eco, move_count, pgn,
                                    opening_line, chessbase_id, visibility, deduped,
-                                   move_hash, move_hash_short)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, ?)",
+                                   move_hash, move_hash_short, time_control, time_class, platform)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, ?, ?, ?, ?)",
             )?;
             for g in games {
                 stmt.execute(duckdb::params![
                     g.id, g.issue_id, g.white_id, g.black_id, g.white_elo, g.black_elo,
                     g.event, g.site, g.date, g.round, g.result, g.eco, g.move_count,
                     g.pgn, g.opening_line, g.chessbase_id, g.visibility,
-                    g.move_hash, g.move_hash_short
+                    g.move_hash, g.move_hash_short, g.time_control, g.time_class, g.platform
                 ])?;
             }
             Ok(())
@@ -2139,6 +2190,7 @@ mod bulk_index_tests {
             date: Some("2024-01-01".into()), round: None, result: Some("1-0".into()),
             eco: None, move_count: 3, pgn: "[W \"a\"]\n\n1. e4 e5 2. Nf3 1-0".into(),
             opening_line: "e4 e5 Nf3".into(), chessbase_id: None,
+            time_control: None, time_class: None, platform: None,
             move_hash: mh, move_hash_short: Some(mh + 1),
         };
         flush_games(&conn, &[row(1, 111)], true).unwrap();  // fast appender
@@ -2161,6 +2213,7 @@ mod bulk_index_tests {
             eco: None, move_count: 3,
             pgn: "[Event \"?\"]\n[White \"a\"]\n[Black \"b\"]\n[Result \"1-0\"]\n\n1. e4 e5 2. Nf3 1-0\n".into(),
             opening_line: "e4 e5 Nf3".into(), chessbase_id: None,
+            time_control: None, time_class: None, platform: None,
             move_hash: id as i64, move_hash_short: Some(id as i64 + 100),
         }
     }
@@ -2200,9 +2253,9 @@ mod bulk_index_tests {
         for i in 1..=n {
             let fide: Option<i32> = if i % 2 == 0 { Some(1_000_000 + i) } else { None };
             // Column order matches flush_players: id, name, name_normalized,
-            // fide_id, game_count, name_normalised.
+            // fide_id, game_count, name_normalised, platform.
             app.append_row(duckdb::params![
-                i, format!("Player {i}"), format!("player {i}"), fide, 0_i32, false
+                i, format!("Player {i}"), format!("player {i}"), fide, 0_i32, false, None::<String>
             ])
             .unwrap();
         }
@@ -2374,6 +2427,80 @@ mod engine_tag_tests {
 }
 
 #[cfg(test)]
+mod online_games_tests {
+    use super::*;
+
+    #[test]
+    fn time_classes() {
+        for (tc, class) in [("180+2", Some("blitz")), ("60", Some("bullet")), ("120+1", Some("bullet")), ("300", Some("blitz")),
+            ("600", Some("rapid")), ("900+10", Some("rapid")), ("1800", Some("classical")), ("1/86400", Some("correspondence")),
+            ("40/7200:3600", Some("classical")), ("-", None), ("?", None), ("", None), ("abc", None)] {
+            assert_eq!(time_class(tc), class, "{tc}");
+        }
+    }
+
+    const ONLINE: &str = "[Event \"Rated Blitz game\"]\n[Site \"https://lichess.org/abc12345\"]\n[Date \"2026.10.12\"]\n[Round \"-\"]\n\
+        [White \"Carlsen\"]\n[Black \"jozef77\"]\n[Result \"1-0\"]\n[WhiteElo \"2900\"]\n[BlackElo \"2100\"]\n[TimeControl \"180+2\"]\n\n\
+        1. d4 Nf6 2. Nc3 d5 3. Bg5 Ne4 1-0\n";
+
+    fn import(conn: &Connection, dir: &Path, file: &str, pgn: &str, platform: Option<&str>) {
+        let path = dir.join(file);
+        std::fs::write(&path, pgn).unwrap();
+        let spec = ImportSpec {
+            collection: crate::accounts::COLLECTION.into(), visibility: "private".into(), on_duplicate: "skip".into(),
+            platform: platform.map(str::to_string),
+        };
+        import_pgn(conn, &path, Some(40), 1000, false, false, &spec, &Reporter::silent()).unwrap();
+    }
+
+    /// A platform's handle is a player of its own, apart from a real name
+    /// spelt the same; the game carries the platform and its time control.
+    #[test]
+    fn a_handle_is_a_player_of_its_own() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let dir = std::env::temp_dir().join(format!("lpdo-online-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        conn.execute_batch("INSERT INTO players (id, name, name_normalized, fide_id) VALUES (1, 'Carlsen', 'carlsen', 1503014);").unwrap();
+
+        import(&conn, &dir, "a.pgn", ONLINE, Some("lichess"));
+        let (platform, tc, class, vis, site): (Option<String>, Option<String>, Option<String>, String, Option<String>) = conn.query_row(
+            "SELECT platform, time_control, time_class, visibility, site FROM games", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap();
+        assert_eq!((platform.as_deref(), tc.as_deref(), class.as_deref(), vis.as_str(), site.as_deref()),
+            (Some("lichess"), Some("180+2"), Some("blitz"), "private", Some("https://lichess.org/abc12345")));
+        let players: Vec<(i64, String, Option<String>)> = {
+            let mut st = conn.prepare("SELECT id, name, platform FROM players ORDER BY id").unwrap();
+            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<duckdb::Result<_>>().unwrap()
+        };
+        assert_eq!(players.len(), 3, "{players:?}");
+        assert_eq!(players[0], (1, "Carlsen".into(), None), "the real Carlsen untouched");
+        assert!(players[1..].iter().all(|p| p.2.as_deref() == Some("lichess")), "both handles virtual: {players:?}");
+        assert!(players[1..].iter().any(|p| p.1 == "Carlsen"), "the handle 'Carlsen' is another player: {players:?}");
+        let white: i64 = conn.query_row("SELECT white_id FROM games", [], |r| r.get(0)).unwrap();
+        assert_ne!(white, 1, "the game is the handle's, not the real Carlsen's");
+
+        // The same game again (another file): held once, no new players.
+        import(&conn, &dir, "b.pgn", ONLINE, Some("lichess"));
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM games", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM players", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 3);
+
+        // The same name from an over-the-board source: not the handle.
+        let otb = ONLINE.replace("[Site \"https://lichess.org/abc12345\"]", "[Site \"Club\"]").replace("3. Bg5 Ne4", "3. Bf4 c5");
+        let spec = ImportSpec { collection: "Manual".into(), visibility: "public".into(), on_duplicate: "skip".into(), platform: None };
+        std::fs::write(dir.join("c.pgn"), otb).unwrap();
+        import_pgn(&conn, &dir.join("c.pgn"), Some(40), 1000, false, false, &spec, &Reporter::silent()).unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM players WHERE name = 'jozef77'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2, "a real 'jozef77' beside the handle");
+        let (w, p): (i64, Option<String>) = conn.query_row("SELECT white_id, platform FROM games WHERE site = 'Club'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((w, p), (1, None), "the real Carlsen's game, no platform");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
 mod annotated_upgrade_tests {
     use super::*;
 
@@ -2401,6 +2528,7 @@ mod annotated_upgrade_tests {
             collection: collection.into(),
             visibility: visibility.into(),
             on_duplicate: "skip".into(),
+            platform: None,
         };
         import_pgn(conn, &path, None, 1000, false, false, &spec, &Reporter::silent()).unwrap();
     }

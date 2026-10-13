@@ -109,7 +109,47 @@ source→collection is effectively 1:1 already.
 - **Phase B — bulk sources:** curated bulk catalog entries + bulk acquisition +
   catalog UI.
 - **Phase C — UI polish:** wizard step, per-source maintenance, status breakdown.
-- **Phase D (later):** online APIs.
+- **Phase D — one's own online games** ([#90](https://github.com/specure/lpdo/issues/90)),
+  the server side done 2026-10-13: see "Online accounts" below.
+
+## Online accounts (#90)
+
+Not a catalog source: one's **accounts** on Lichess and Chess.com, linked to
+a local player (`accounts`: platform, username, the handle's own player row,
+the owner, enabled, last sync and status — `chess-db/src/accounts.rs`).
+
+- A handle is a **virtual player**: its own `players` row with `platform`
+  set (`lichess` / `chesscom`), found and made apart from every other player
+  by the importer (the platform is part of its key), so a handle never lands
+  on a real name spelt the same. The FIDE resolution, the normalisation from
+  the FIDE list and the player dedup leave such rows alone. The link to one's
+  identity is the account; `identity_ids` widens a player id to its handles,
+  which is how "my games" in the repertoire takes online games in — within a
+  **scope**: all (the default), over the board only, online only (`scope=`
+  on the chapter/book `mine` and `games` endpoints).
+- The **sync** (`sync_accounts` job: one account, or every enabled one; run
+  by the daily `update` too, and by hand through `POST /accounts/{id}/sync`,
+  `POST /accounts/sync`): Lichess streams the user's games as PGN from a
+  timestamp; Chess.com's monthly archives are fetched from the month of the
+  last sync on, the current month's a live list. Both from a day before the
+  last sync; games already held — by their address in `games.site` (Lichess's
+  Site, Chess.com's Link, written into Site) — are dropped, the rest go
+  through `import_pgn` into the private collection **My online games**, the
+  positions indexed, as the platform's games (`games.platform`). No tokens:
+  public games only.
+- **Time control** is stored with every game from now on, from any PGN that
+  has it: `games.time_control` as written, `games.time_class` bullet / blitz /
+  rapid / classical / correspondence (Lichess's bounds on base + 40 ×
+  increment). No filtering at import; the user filters.
+- The **reference figures** (the Reference query, a chapter's figures) leave
+  games with a platform out: platform ratings are not FIDE ratings, and these
+  games are private.
+- **Recent games**: `GET /players/{id}/recent?days=7&scope=all` — one's games
+  of the last days, the handles' too, newest first, each with its match
+  against the books (`match_line`: the chapter, how far, who left it where),
+  the time control and the platform. The phone-less review of today's games.
+- Out of scope: bots, variants, Lichess tokens for private games. The UI
+  (accounts on the Sources page, the Recent games view) is phase 2.
 
 ## Candidate sources (from #40)
 

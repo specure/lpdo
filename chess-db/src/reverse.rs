@@ -31,7 +31,7 @@ fn fold_expr(col: &str) -> String {
 /// How many players still lack a fide_id (the reverse-resolution backlog).
 pub fn pending_count(conn: &Connection) -> Result<usize> {
     let n: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM players WHERE fide_id IS NULL AND name_normalized <> ''",
+        "SELECT COUNT(*) FROM players WHERE fide_id IS NULL AND platform IS NULL AND name_normalized <> ''",
         [],
         |r| r.get(0),
     )?;
@@ -88,7 +88,7 @@ pub fn resolve_fide(
         let n: i64 = conn.query_row(
             &format!(
                 "SELECT COUNT(*) FROM players p JOIN resolve_cand c ON {fold_p} = c.nf
-                 WHERE p.fide_id IS NULL"
+                 WHERE p.fide_id IS NULL AND p.platform IS NULL"
             ),
             [],
             |r| r.get(0),
@@ -102,7 +102,7 @@ pub fn resolve_fide(
             &format!(
                 "UPDATE players SET fide_id = c.fide_id, name_normalised = FALSE
                  FROM resolve_cand c
-                 WHERE {fold_pl} = c.nf AND players.fide_id IS NULL"
+                 WHERE {fold_pl} = c.nf AND players.fide_id IS NULL AND players.platform IS NULL"
             ),
             [],
         )?
@@ -196,7 +196,7 @@ pub fn import_resolutions(conn: &Connection, path: &Path, reporter: &Reporter) -
         "UPDATE players SET fide_id = nr.fide_id, name_normalised = FALSE
          FROM name_resolution nr
          WHERE players.name_normalized = nr.name_normalized
-           AND players.fide_id IS NULL AND nr.fide_id IS NOT NULL",
+           AND players.fide_id IS NULL AND players.platform IS NULL AND nr.fide_id IS NOT NULL",
         [],
     )?;
     reporter.done(format!(

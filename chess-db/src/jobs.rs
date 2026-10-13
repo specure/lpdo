@@ -579,7 +579,7 @@ fn is_cancellable(job_type: &str) -> bool {
         job_type,
         "import" | "import_pgn" | "sources_sync" | "sources_download" | "sources_import"
             | "update" | "download" | "index_positions" | "dedup_games" | "dedup_players"
-            | "repertoire_analyse"
+            | "repertoire_analyse" | "sync_accounts"
     )
 }
 
@@ -590,7 +590,7 @@ const OFFLINE_RETRY_MS: u64 = 15 * 60 * 1000;
 /// Job types that make network requests, so a connectivity failure should pause
 /// and retry rather than fail (#206). Local jobs (import/dedup/index/…) never do.
 fn job_uses_network(job_type: &str) -> bool {
-    matches!(job_type, "download" | "sources_sync" | "sources_download" | "update" | "fide_refresh")
+    matches!(job_type, "download" | "sources_sync" | "sources_download" | "update" | "fide_refresh" | "sync_accounts")
 }
 
 /// The offline-gate dependency predicate in pure form (#206): does any earlier
@@ -616,7 +616,7 @@ fn blocks_maintenance(job_type: &str) -> bool {
     matches!(
         job_type,
         "import" | "import_pgn" | "sources_sync" | "sources_download" | "sources_import"
-            | "download" | "update"
+            | "download" | "update" | "sync_accounts"
             | "fide_refresh" | "resolve_fide" | "dedup_players" | "dedup_games"
             | "index_positions" | "normalise"
     )
@@ -1373,7 +1373,7 @@ fn run_job(
             // the critical path of a multi-million-game load (#154).
             let skip_dedup = flag(p, "skip_dedup");
             let visibility = if flag(p, "private") { "private" } else { "public" }.to_string();
-            let spec = importer::ImportSpec { collection, visibility, on_duplicate };
+            let spec = importer::ImportSpec { collection, visibility, on_duplicate, platform: None };
             // Absent → default depth 40; 0 disables position indexing (bulk loads).
             let depth = match p.get("max_position_depth").and_then(|v| v.as_u64()) {
                 Some(0) => None,
@@ -1647,6 +1647,29 @@ fn run_job(
         // Scheduled/manual update: refresh every enabled feed source, then run a
         // single global index + normalise pass. Generalized from the old TWIC-only
         // pipeline (#40).
+        // One's online accounts (#90): the games since the last sync, into
+        // "My online games" — one account, or every enabled one.
+        "sync_accounts" => {
+            let accounts = match p.get("account").and_then(|v| v.as_i64()) {
+                Some(id) => vec![crate::accounts::get(conn, id)?],
+                None => crate::accounts::enabled(conn)?,
+            };
+            if accounts.is_empty() { reporter.done("No online accounts linked — nothing to sync."); return Ok(()); }
+            let dir = db.parent().unwrap_or_else(|| Path::new(".")).join("accounts");
+            let n = accounts.len() as u64;
+            let (mut fetched, mut fresh, mut failed) = (0usize, 0usize, 0usize);
+            for (i, a) in accounts.iter().enumerate() {
+                if reporter.is_cancelled() { return Ok(()); }
+                reporter.progress(i as u64, n, format!("{} on {}", a.username, a.platform.name()));
+                match crate::accounts::sync_account(conn, rt, a, &dir, reporter) {
+                    Ok(o) => { fetched += o.fetched; fresh += o.new; }
+                    Err(e) => { failed += 1; reporter.log(format!("{} on {}: {e:#}", a.username, a.platform.name())); }
+                }
+            }
+            reporter.done(format!(
+                "Sync complete: {fresh} new game(s) of {fetched} fetched from {} account(s){}.",
+                accounts.len(), if failed > 0 { format!(", {failed} failed") } else { String::new() }));
+        }
         "update" => {
             // Each step's own `done` would otherwise terminate the job's event
             // stream after step 1; the sub-step reporter downgrades those to log
@@ -1670,8 +1693,9 @@ fn run_job(
                 }
             }
             let feeds = crate::sources::enabled_feeds(conn)?;
-            if feeds.is_empty() {
-                reporter.done("No feed sources enabled — nothing to update.");
+            let accounts = crate::accounts::enabled(conn)?;
+            if feeds.is_empty() && accounts.is_empty() {
+                reporter.done("No feed sources enabled and no online accounts linked — nothing to update.");
                 return Ok(());
             }
             // Tally per-source imports so the final line says what the run
@@ -1696,6 +1720,16 @@ fn run_job(
                 }
                 crate::sources::record_run(conn, src.key, "ok")?;
             }
+            // One's online accounts (#90): today's games, into their collection.
+            let mut online_new = 0usize;
+            let accounts_dir = db.parent().unwrap_or_else(|| Path::new(".")).join("accounts");
+            for a in &accounts {
+                if reporter.is_cancelled() { return Ok(()); }
+                match crate::accounts::sync_account(conn, rt, a, &accounts_dir, &step) {
+                    Ok(o) => online_new += o.new,
+                    Err(e) => reporter.log(format!("{} on {}: {e:#}", a.username, a.platform.name())),
+                }
+            }
             if reporter.is_cancelled() { return Ok(()); }
             reporter.log("Indexing positions (fast)");
             run_index_positions_guarded(conn, db, Some(40), false, true, &step)?;
@@ -1708,14 +1742,12 @@ fn run_job(
                 reporter.log("Normalising players");
                 crate::fide::normalise_from_local(conn, false, &step)?;
             }
+            let online = if accounts.is_empty() { String::new() } else { format!(", {online_new} online game(s) from {} account(s)", accounts.len()) };
             reporter.done(if imported_total == 0 {
-                format!(
-                    "Update complete — no new games from {} source(s).",
-                    feeds.len()
-                )
+                format!("Update complete — no new games from {} source(s){online}.", feeds.len())
             } else {
                 format!(
-                    "Update complete: {} new game(s) from {} of {} source(s).",
+                    "Update complete: {} new game(s) from {} of {} source(s){online}.",
                     crate::progress::thousands(imported_total as i64),
                     sources_with_new,
                     feeds.len()

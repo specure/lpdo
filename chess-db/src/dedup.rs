@@ -157,7 +157,7 @@ pub fn dedup_players(conn: &Connection, dry_run: bool, reporter: &Reporter) -> R
              SELECT id, trim(regexp_replace(regexp_replace(name,
                         '^\\s*(GM|IM|FM|CM|NM|LM|WGM|WIM|WFM|WCM)\\s+', '', 'i'),
                         '\\s+[0-9]{{3,4}}\\s*$', '')) AS bare
-             FROM players WHERE regexp_matches(name_normalized, '{TITLE_PREFIX}')
+             FROM players WHERE regexp_matches(name_normalized, '{TITLE_PREFIX}') AND platform IS NULL
          ),
          readings AS (
              SELECT id, {as_written} AS k FROM titled
@@ -168,7 +168,7 @@ pub fn dedup_players(conn: &Connection, dry_run: bool, reporter: &Reporter) -> R
          candidates AS (
              SELECT DISTINCT r.id AS titled_id, u.id AS real_id
              FROM readings r
-             JOIN players u ON u.name_normalized = r.k
+             JOIN players u ON u.name_normalized = r.k AND u.platform IS NULL
              WHERE r.k <> '' AND NOT regexp_matches(u.name_normalized, '{TITLE_PREFIX}')
          )
          SELECT titled_id, MIN(real_id) AS real_id
@@ -190,16 +190,18 @@ pub fn dedup_players(conn: &Connection, dry_run: bool, reporter: &Reporter) -> R
              ),
              dup_name AS (
                  SELECT name_normalized FROM players
-                 WHERE name_normalized IS NOT NULL AND name_normalized <> ''
+                 WHERE name_normalized IS NOT NULL AND name_normalized <> '' AND platform IS NULL
                  GROUP BY name_normalized HAVING COUNT(*) > 1
              ),
+             -- A platform's handle (#90) is never a duplicate of anyone.
              cand AS (
                  SELECT id, name, name_normalized, fide_id, name_normalised
                  FROM players
-                 WHERE fide_id IN (SELECT fide_id FROM dup_fide)
+                 WHERE platform IS NULL
+                   AND (fide_id IN (SELECT fide_id FROM dup_fide)
                     OR name_normalized IN (SELECT name_normalized FROM dup_name)
                     OR id IN (SELECT titled_id FROM title_pairs)
-                    OR id IN (SELECT real_id FROM title_pairs)
+                    OR id IN (SELECT real_id FROM title_pairs))
              ),
              last AS (
                  SELECT pid, MAX(date) AS last_date
@@ -1084,7 +1086,7 @@ pub fn cleanup_nonstandard(
 /// including Lichess's `[%eval]`/`[%clk]`), NAGs (`$n`), variations (`(…)`), and
 /// the result token are all dropped; castling `0-0`/`0-0-0` is normalised to
 /// `O-O`/`O-O-O` and trailing `!`/`?` move-quality marks are stripped.
-fn canonical_moves(pgn: &str) -> Vec<String> {
+pub(crate) fn canonical_moves(pgn: &str) -> Vec<String> {
     // Movetext = from the first non-header line onward. Can't scan for a trailing
     // `]` (the old approach): Lichess comments embed it, e.g. `{[%eval 0.1]}`.
     let movetext = pgn
