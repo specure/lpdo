@@ -20,7 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Online games never count in the reference figures.
 - **Online accounts** — a tab of the Maintenance page: link a
   handle on Chess.com or Lichess to your player, *Sync now*, daily on or
-  off, unlink (the games stay). Linking syncs the account's whole history
+  off, unlink (the games stay), and the day the games are synced from — a
+  year back by default; empty for the whole history. Linking syncs at
   once; after that only the new games come in.
 - **Recent games** — a page of its own (Home, and *Recent* in the bar):
   your games of today, three days, a week or a month — over the board and
