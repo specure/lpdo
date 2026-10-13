@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   board only, online only. Every game imported from now on keeps its time
   control and its class (bullet, blitz, rapid, classical, correspondence).
   Online games never count in the reference figures.
-- **Your online accounts** — on the Maintenance page under Sources: link a
+- **Online accounts** — a tab of the Maintenance page: link a
   handle on Chess.com or Lichess to your player, *Sync now*, daily on or
   off, unlink (the games stay). Linking syncs the account's whole history
   once; after that only the new games come in.

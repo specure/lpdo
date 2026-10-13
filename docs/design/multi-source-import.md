@@ -148,8 +148,8 @@ the owner, enabled, last sync and status — `chess-db/src/accounts.rs`).
   of the last days, the handles' too, newest first, each with its match
   against the books (`match_line`: the chapter, how far, who left it where),
   the time control and the platform. The phone-less review of today's games.
-- The **UI** (phase 2, 2026-10-13): *Your online accounts* on the Maintenance
-  page under Sources (`AccountsSection.tsx`: link, Sync now, daily on/off,
+- The **UI** (phase 2, 2026-10-13): the Maintenance page's *Online accounts*
+  tab (`AccountsSection.tsx`: link, Sync now, daily on/off,
   unlink; linking syncs at once); the **Recent games** page (`RecentGamesPage.tsx`,
   a mode of the app, a Home card): days, the three-way scope and the time
   classes as filters, a tally, a row opening the chapter on the Repertoire

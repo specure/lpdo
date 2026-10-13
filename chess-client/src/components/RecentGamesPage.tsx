@@ -135,7 +135,7 @@ export default function RecentGamesPage({ onOpenChapter, onOpenGame }: Props) {
         ) : shown.length === 0 ? (
           <p className="p-4 text-body-md text-on-surface-variant">
             No games of yours since {data.since}{scope !== "all" ? ` (${SCOPES.find((s) => s.id === scope)?.label.toLowerCase()})` : ""}.
-            Online games come in with the daily update, or with <i>Sync now</i> on the Maintenance page, Sources.
+            Online games come in with the daily update, or with <i>Sync now</i> on the Maintenance page, Online accounts.
           </p>
         ) : (
           <table className="w-full text-body-sm">
