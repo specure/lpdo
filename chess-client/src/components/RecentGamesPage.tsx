@@ -2,10 +2,10 @@
 // online, one's linked handles' too — each with how it stood to the
 // repertoire: the chapters it went into (one per book, several when the
 // books overlap; a book it only started is not listed), and where one or
-// the opponent deviated in each. A chapter puts
-// itself on the Repertoire page's board where the game left it; Open puts
-// the game on the Analysis board. The same as a chapter's own-games list,
-// for every game of the day at once.
+// the opponent deviated in each. A chapter's row puts the chapter on the
+// Repertoire page's board where the game left it; the game's cells (the
+// date, the result, the players) put the game on the Analysis board. The
+// same as a chapter's own-games list, for every game of the day at once.
 
 import { useEffect, useState } from "react";
 import { SCOPES, TIME_CLASSES, getRecentGames, platformName, timeControlLabel, type RecentGame, type RecentGames, type Scope, type TimeClass } from "../lib/accounts";
@@ -186,34 +186,35 @@ export default function RecentGamesPage({ onOpenChapter, onOpenGame }: Props) {
                 <th className="px-2 py-1.5 font-normal">Time control</th>
                 <th className="px-2 py-1.5 font-normal">Book · Chapter</th>
                 <th className="px-2 py-1.5 font-normal">Deviation</th>
-                <th className="px-2 py-1.5 font-normal"></th>
               </tr>
             </thead>
             {shown.map((g) => {
               // One row per chapter it went into, the game's own cells
               // spanning them, so a wrapped deviation stays level with its
-              // chapter. A click opens that row's chapter; the game's cells
-              // the first.
+              // chapter. The game's cells put the game on the Analysis
+              // board; a chapter's row, that chapter where the game left it.
               const ms = chaptersOf(g);
               const span = Math.max(1, ms.length);
-              const open = (m: LineMatch | undefined) => { if (m) onOpenChapter(m.chapter_id, m.at_key, g.moves); };
-              const clickable = ms.length > 0;
+              const open = (m: LineMatch) => onOpenChapter(m.chapter_id, m.at_key, g.moves);
               const cell = "px-2 py-1.5";
+              const toGame = {
+                onClick: (e: React.MouseEvent) => { e.stopPropagation(); void onOpenGame([summary(g)]); },
+                title: "The game on the Analysis board",
+              };
               const game = (
                 <>
-                  <td rowSpan={span} className="px-4 py-1.5 whitespace-nowrap text-on-surface-variant" title={g.played_at ? `${g.played_at.replace("T", " ").replace("Z", "")} UTC` : undefined}>
+                  <td rowSpan={span} {...toGame} className="px-4 py-1.5 whitespace-nowrap text-on-surface-variant cursor-pointer">
                     {dayOf(g)}{timeOf(g) && <span className="ml-2 tabular-nums">{timeOf(g)}</span>}
                   </td>
-                  <td rowSpan={span} className={`${cell} font-semibold tabular-nums whitespace-nowrap ${g.score === 1 ? "text-success" : g.score === 0 ? "text-error" : "text-on-surface-variant"}`}
-                    title={g.score === 1 ? "You won" : g.score === 0 ? "You lost" : g.score === 0.5 ? "A draw" : undefined}>
+                  <td rowSpan={span} {...toGame} className={`${cell} cursor-pointer font-semibold tabular-nums whitespace-nowrap ${g.score === 1 ? "text-success" : g.score === 0 ? "text-error" : "text-on-surface-variant"}`}>
                     {g.result === "1/2-1/2" ? "½-½" : g.result ?? "·"}
                   </td>
-                  <td rowSpan={span} className={`${cell} whitespace-nowrap`}>
+                  <td rowSpan={span} {...toGame} className={`${cell} cursor-pointer whitespace-nowrap hover:underline`}>
                     {g.white}{g.white_elo ? <span className="text-on-surface-variant"> ({g.white_elo})</span> : null}
                     <span className="text-on-surface-variant"> - </span>
                     {g.black}{g.black_elo ? <span className="text-on-surface-variant"> ({g.black_elo})</span> : null}
                   </td>
-                  <td rowSpan={span} className={`${cell} whitespace-nowrap`}>
+                  <td rowSpan={span} {...toGame} className={`${cell} cursor-pointer whitespace-nowrap`}>
                     {g.time_control
                       ? <span className="text-on-surface-variant" title={g.time_class ?? undefined}>{timeControlLabel(g.time_control)}</span>
                       : <span className="text-on-surface-variant">{g.time_class ?? g.event ?? ""}</span>}
@@ -221,33 +222,24 @@ export default function RecentGamesPage({ onOpenChapter, onOpenGame }: Props) {
                   </td>
                 </>
               );
-              const openGame = (
-                <td rowSpan={span} className={`${cell} text-right whitespace-nowrap`}>
-                  <button onClick={(e) => { e.stopPropagation(); void onOpenGame([summary(g)]); }}
-                    className="h-7 px-2.5 rounded-full text-label-md text-primary hover:bg-primary/8" title="The game on the Analysis board">Open</button>
-                </td>
-              );
               return (
-                <tbody key={g.id} className={`border-t border-outline/20 align-top ${clickable ? "cursor-pointer hover:bg-on-surface/5" : ""}`}
-                  onClick={() => open(ms[0])}>
+                <tbody key={g.id} className="border-t border-outline/20 align-top hover:bg-on-surface/5">
                   {ms.length === 0 ? (
                     <tr>
                       {game}
                       <td className={`${cell} text-on-surface-variant`}>—</td>
                       <td className={`${cell} ${TONE.muted}`}>{verdict(undefined, g.moves).text}</td>
-                      {openGame}
                     </tr>
                   ) : ms.map((m, i) => {
                     const v = verdict(m, g.moves);
                     return (
-                      <tr key={m.chapter_id} onClick={(e) => { e.stopPropagation(); open(m); }}
+                      <tr key={m.chapter_id} onClick={() => open(m)} className="cursor-pointer"
                         title="The chapter on the board where the game left it">
                         {i === 0 && game}
                         <td className={`${cell} min-w-[14rem] hover:underline`}>
                           <span className="text-label-sm text-on-surface-variant">{m.book_name} · </span>{m.chapter_name}
                         </td>
                         <td className={`${cell} min-w-[14rem] ${TONE[v.tone]}`}>{v.text}</td>
-                        {i === 0 && openGame}
                       </tr>
                     );
                   })}
