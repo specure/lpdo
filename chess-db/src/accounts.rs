@@ -96,7 +96,9 @@ pub struct Filter {
 }
 
 impl Filter {
+    #[cfg(test)]
     pub fn all() -> Self { Self::default() }
+    #[cfg(test)]
     pub fn scope(scope: Scope) -> Self { Self { scope, classes: None } }
     /// From the query's `scope` and `classes` ("blitz,rapid,none").
     pub fn parse(scope: Option<&str>, classes: Option<&str>) -> Result<Self> {

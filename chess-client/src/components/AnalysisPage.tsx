@@ -271,7 +271,7 @@ export default function AnalysisPage({
   const gameMoves = useMemo(() => boardLine ?? active?.loaded.moves.map((m) => m.san) ?? [],
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [boardLine?.join(" "), active?.loaded.moves]);
-  const match = useRepertoireMatch(gameMoves, active?.game.white ?? "", active?.game.black ?? "", repertoireMatch);
+  const match = useRepertoireMatch(gameMoves, active?.game.white ?? "", active?.game.black ?? "", repertoireMatch, active?.game.my_color);
   const matched = match.matches && matchCount(match.matches);
 
   // A repertoire chapter (#327): its lines, the cursor asked for when one is
