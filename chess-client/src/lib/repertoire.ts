@@ -3,6 +3,7 @@
 // docs/design/opening-repertoire.md.
 
 import { apiDelete, apiGet, apiUrl, postJson, putJson, submitJob } from "../api";
+import { loadMineFilter, mineQuery, type MineFilter } from "./accounts";
 import type { PositionStat } from "../trainer/buildPackage";
 import type { Mine } from "../trainer/format";
 
@@ -129,8 +130,8 @@ export interface OwnGames {
   ms: number;
   positions: { key: string; mine: Mine }[];
 }
-export const getOwnGames = (chapterId: number, playerId: number) =>
-  apiGet<OwnGames>(`/repertoire/chapters/${chapterId}/mine?player_id=${playerId}`);
+export const getOwnGames = (chapterId: number, playerId: number, filter: MineFilter = loadMineFilter()) =>
+  apiGet<OwnGames>(`/repertoire/chapters/${chapterId}/mine?player_id=${playerId}${mineQuery(filter)}`);
 
 /** A score over some of one's games; `perf` with three rated opponents or more. */
 export interface Score { games: number; w: number; d: number; l: number; perf: number | null }
@@ -150,8 +151,8 @@ export interface BookGames {
   chapters: ({ id: number } & Score)[];
   ms: number;
 }
-export const getBookGames = (bookId: number, playerId: number) =>
-  apiGet<BookGames>(`/repertoire/books/${bookId}/mine?player_id=${playerId}`);
+export const getBookGames = (bookId: number, playerId: number, filter: MineFilter = loadMineFilter()) =>
+  apiGet<BookGames>(`/repertoire/books/${bookId}/mine?player_id=${playerId}${mineQuery(filter)}`);
 /** One of one's games in a chapter, with how far it followed it: "left" (a
  *  move the chapter does not have — `left_by` you or the opponent, `move`
  *  "8...b6"), "end" (to the end of a line), "index" (as far as the positions
@@ -183,8 +184,8 @@ export interface ChapterGameList {
   ms: number;
 }
 /** One's games in a chapter (as "Your games" counts them), newest first. */
-export const getChapterGames = (chapterId: number, playerId: number) =>
-  apiGet<ChapterGameList>(`/repertoire/chapters/${chapterId}/games?player_id=${playerId}`);
+export const getChapterGames = (chapterId: number, playerId: number, filter: MineFilter = loadMineFilter()) =>
+  apiGet<ChapterGameList>(`/repertoire/chapters/${chapterId}/games?player_id=${playerId}${mineQuery(filter)}`);
 
 /** One of one's games in a book's chapters: the chapters it counts for. */
 export interface BookGame {
@@ -227,8 +228,8 @@ export interface LineMatch {
  *  start) went into, deepest first — in each book the ones it went furthest in. */
 export const matchLine = (moves: string[], color: BookColor) =>
   postJson<LineMatch[]>("/repertoire/match", { moves, color });
-export const getBookGameList = (bookId: number, playerId: number) =>
-  apiGet<BookGameList>(`/repertoire/books/${bookId}/games?player_id=${playerId}`);
+export const getBookGameList = (bookId: number, playerId: number, filter: MineFilter = loadMineFilter()) =>
+  apiGet<BookGameList>(`/repertoire/books/${bookId}/games?player_id=${playerId}${mineQuery(filter)}`);
 
 /** One's score as a percentage, "46%"; "–" without games. */
 export const scorePct = (s: Score) => (s.games ? `${Math.round(((s.w + s.d / 2) / s.games) * 100)}%` : "–");

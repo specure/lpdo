@@ -141,6 +141,10 @@ pub struct PlayerInfo {
     pub name: String,
     pub fide_id: Option<u32>,
     pub game_count: i64,
+    /// A handle on a platform (#90): "lichess" / "chesscom"; none for a
+    /// real name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -322,6 +326,9 @@ struct GamesQuery {
     collection: Option<String>,
     /// "public" or "private". Applied as `g.source_id IN (SELECT id FROM sources WHERE visibility = ?)`.
     visibility: Option<String>,
+    /// A time class (bullet, blitz, rapid, classical, correspondence), or
+    /// "none" for games without a time control; several with commas (#90).
+    time_class: Option<String>,
     /// Include soft-deleted games in the result (default: false).
     #[serde(default)]
     include_deleted: bool,
@@ -447,6 +454,7 @@ fn build_games_sql(
     fen_hash: Option<i64>,
     collection_id: Option<i32>,
     visibility: Option<&str>,
+    time_class: Option<&str>,
     include_deleted: bool,
     include_pgn: bool,
     count: bool,
@@ -456,6 +464,12 @@ fn build_games_sql(
     offset: i64,
 ) -> (String, Vec<Box<dyn duckdb::ToSql>>) {
     let mut params: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
+    // The time classes asked for, as the accounts' filter writes them; an
+    // unknown class matches nothing.
+    let class_filter: String = match time_class.map(str::trim).filter(|c| !c.is_empty()) {
+        None => String::new(),
+        Some(c) => crate::accounts::Filter::parse(None, Some(c)).map(|f| f.sql()).unwrap_or_else(|_| " AND FALSE".to_string()),
+    };
 
     // Rating order puts the strongest games first; the date order breaks ties
     // and still applies to the games with no rating, which sort last.
@@ -547,7 +561,7 @@ fn build_games_sql(
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE {players_filter} {date_from_filter} {date_to_filter}
-                 {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {engine_filter} {fen_filter}"
+                 {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {class_filter} {deleted_filter} {engine_filter} {fen_filter}"
             ), params);
         }
         return (format!(
@@ -558,7 +572,7 @@ fn build_games_sql(
              JOIN players pb ON g.black_id = pb.id
              {pos_join}
              WHERE {players_filter} {date_from_filter} {date_to_filter}
-             {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {engine_filter} {fen_filter}
+             {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {class_filter} {deleted_filter} {engine_filter} {fen_filter}
              ORDER BY {order} LIMIT ? OFFSET ?"
         ), params);
     } else if name.is_some() || fide_id.is_some() {
@@ -587,7 +601,7 @@ fn build_games_sql(
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE 1=1 {player_filter} {color_filter}
-                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {engine_filter} {fen_filter}"
+                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {class_filter} {deleted_filter} {engine_filter} {fen_filter}"
             )
         } else {
             format!(
@@ -599,7 +613,7 @@ fn build_games_sql(
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE 1=1 {player_filter} {color_filter}
-                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {engine_filter} {fen_filter}
+                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {class_filter} {deleted_filter} {engine_filter} {fen_filter}
                  ORDER BY {order} LIMIT ? OFFSET ?"
             )
         }
@@ -634,7 +648,7 @@ fn build_games_sql(
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE {where_clause}
-                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {engine_filter} {fen_filter}"
+                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {class_filter} {deleted_filter} {engine_filter} {fen_filter}"
             )
         } else {
             format!(
@@ -645,7 +659,7 @@ fn build_games_sql(
                  JOIN players pb ON g.black_id = pb.id
                  {pos_join}
                  WHERE {where_clause}
-                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {deleted_filter} {engine_filter} {fen_filter}
+                 {date_from_filter} {date_to_filter} {event_filter} {eco_filter} {moves_filter} {source_filter} {collection_filter} {visibility_filter} {class_filter} {deleted_filter} {engine_filter} {fen_filter}
                  ORDER BY {order} LIMIT ? OFFSET ?"
             )
         }
@@ -984,12 +998,12 @@ async fn players_handler(
             }
             let where_extra = if id_pred.is_empty() { String::new() } else { format!("AND {id_pred}") };
             format!("
-                SELECT p.id, p.name, p.fide_id, COUNT(*) AS game_count
+                SELECT p.id, p.name, p.fide_id, COUNT(*) AS game_count, p.platform
                 FROM players p
                 JOIN games g ON (g.white_id = p.id OR g.black_id = p.id)
                 JOIN game_collections gc ON gc.game_id = g.id AND gc.collection_id = ?
                 WHERE 1=1 {where_extra}
-                GROUP BY p.id, p.name, p.fide_id
+                GROUP BY p.id, p.name, p.fide_id, p.platform
                 ORDER BY game_count DESC LIMIT 50")
         } else {
             // Unscoped: the pre-aggregated players.game_count is fastest.
@@ -999,13 +1013,13 @@ async fn players_handler(
                 params.push(Box::new(format!("{}%", normalize_name(name))));
             }
             let where_clause = if id_pred.is_empty() { String::new() } else { format!("WHERE {id_pred}") };
-            format!("SELECT p.id, p.name, p.fide_id, p.game_count FROM players p {where_clause} ORDER BY p.game_count DESC LIMIT 50")
+            format!("SELECT p.id, p.name, p.fide_id, p.game_count, p.platform FROM players p {where_clause} ORDER BY p.game_count DESC LIMIT 50")
         };
 
         let params_ref: Vec<&dyn duckdb::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
         let rows = stmt.query_map(params_ref.as_slice(), |row| {
-            Ok(PlayerInfo { id: row.get(0)?, name: row.get(1)?, fide_id: row.get(2)?, game_count: row.get(3)? })
+            Ok(PlayerInfo { id: row.get(0)?, name: row.get(1)?, fide_id: row.get(2)?, game_count: row.get(3)?, platform: row.get(4)? })
         }).map_err(db_err)?;
         Ok(Json(rows.flatten().collect()))
     }).await
@@ -1054,7 +1068,7 @@ async fn games_handler(
             q.event.as_deref(), q.eco.as_deref(), q.first_moves.as_deref(),
             q.from.as_deref(), q.to.as_deref(),
             fen_hash,
-            collection_id, q.visibility.as_deref(),
+            collection_id, q.visibility.as_deref(), q.time_class.as_deref(),
             q.include_deleted,
             q.pgn, q.count, q.exclude_engines, q.sort.as_deref(), q.limit, q.offset,
         );
@@ -1402,18 +1416,19 @@ async fn repertoire_chapter_stats_handler(State(state): State<AppState>, AxumPat
 }
 
 #[derive(Deserialize)]
-struct ChapterMineQuery { player_id: i64, scope: Option<String> }
+struct ChapterMineQuery { player_id: i64, scope: Option<String>, classes: Option<String> }
 
-/// How one's games are counted: all, over the board only, online only (#90).
-fn scope_of(s: &Option<String>) -> Result<crate::accounts::Scope, (StatusCode, String)> {
-    crate::accounts::Scope::parse(s.as_deref()).map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))
+/// Which of one's games count (#90): the scope — all, over the board only,
+/// online only — and the time classes ("blitz,rapid,none").
+fn filter_of(scope: &Option<String>, classes: &Option<String>) -> Result<crate::accounts::Filter, (StatusCode, String)> {
+    crate::accounts::Filter::parse(scope.as_deref(), classes.as_deref()).map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))
 }
 
 /// One's own games through a chapter's positions, looked up live: with the
 /// book's colour, from the period the settings give.
 async fn repertoire_chapter_mine_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<ChapterMineQuery>) -> ApiResult<crate::repertoire::OwnGames> {
-    let scope = scope_of(&q.scope)?;
-    state.reads.run(move |conn| crate::repertoire::chapter_mine(conn, id, q.player_id, scope).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
+    let filter = filter_of(&q.scope, &q.classes)?;
+    state.reads.run(move |conn| crate::repertoire::chapter_mine(conn, id, q.player_id, filter).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
 }
 
 #[derive(Deserialize)]
@@ -1426,20 +1441,20 @@ async fn repertoire_match_handler(State(state): State<AppState>, Json(b): Json<M
 
 /// One's own games across a book's chapters, looked up live.
 async fn repertoire_book_mine_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<ChapterMineQuery>) -> ApiResult<crate::repertoire::BookGames> {
-    let scope = scope_of(&q.scope)?;
-    state.reads.run(move |conn| crate::repertoire::book_mine(conn, id, q.player_id, scope).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
+    let filter = filter_of(&q.scope, &q.classes)?;
+    state.reads.run(move |conn| crate::repertoire::book_mine(conn, id, q.player_id, filter).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
 }
 
 /// One's games in a chapter, with how far each followed it.
 async fn repertoire_chapter_games_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<ChapterMineQuery>) -> ApiResult<crate::repertoire::ChapterGameList> {
-    let scope = scope_of(&q.scope)?;
-    state.reads.run(move |conn| crate::repertoire::chapter_games(conn, id, q.player_id, scope).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
+    let filter = filter_of(&q.scope, &q.classes)?;
+    state.reads.run(move |conn| crate::repertoire::chapter_games(conn, id, q.player_id, filter).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
 }
 
 /// One's games in a book's opening, with the chapter each went into.
 async fn repertoire_book_games_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<ChapterMineQuery>) -> ApiResult<crate::repertoire::BookGameList> {
-    let scope = scope_of(&q.scope)?;
-    state.reads.run(move |conn| crate::repertoire::book_games(conn, id, q.player_id, scope).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
+    let filter = filter_of(&q.scope, &q.classes)?;
+    state.reads.run(move |conn| crate::repertoire::book_games(conn, id, q.player_id, filter).map(Json).map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))).await
 }
 
 // ── One's online accounts (#90) ──────────────────────────────────────────────
@@ -1451,7 +1466,7 @@ struct AccountBody { platform: String, username: String, player_id: i64 }
 struct AccountEnabledBody { enabled: bool }
 
 #[derive(Deserialize)]
-struct RecentQuery { days: Option<u32>, scope: Option<String>, limit: Option<usize> }
+struct RecentQuery { days: Option<u32>, scope: Option<String>, classes: Option<String>, limit: Option<usize> }
 
 /// The linked accounts, with their last sync.
 async fn accounts_handler(State(state): State<AppState>) -> ApiResult<Vec<crate::accounts::Account>> {
@@ -1497,10 +1512,10 @@ async fn accounts_sync_handler(State(state): State<AppState>) -> ApiResult<serde
 /// One's games of the last days — one's handles' too — each with how it
 /// stood to the repertoire.
 async fn player_recent_handler(State(state): State<AppState>, AxumPath(id): AxumPath<i64>, Query(q): Query<RecentQuery>) -> ApiResult<crate::repertoire::RecentGames> {
-    let scope = scope_of(&q.scope)?;
+    let filter = filter_of(&q.scope, &q.classes)?;
     let days = q.days.unwrap_or(7).clamp(1, 366);
     let limit = q.limit.unwrap_or(200).clamp(1, 2000);
-    state.reads.run(move |conn| crate::repertoire::recent_games(conn, id, days, scope, limit).map(Json).map_err(db_err)).await
+    state.reads.run(move |conn| crate::repertoire::recent_games(conn, id, days, filter, limit).map(Json).map_err(db_err)).await
 }
 
 #[derive(Deserialize)]
@@ -1803,13 +1818,14 @@ async fn player_by_id_handler(
 ) -> std::result::Result<Json<PlayerInfo>, (StatusCode, String)> {
     state.reads.run(move |conn| {
         conn.query_row(
-            "SELECT id, name, fide_id, game_count FROM players WHERE id = ?",
+            "SELECT id, name, fide_id, game_count, platform FROM players WHERE id = ?",
             duckdb::params![id],
             |row| Ok(PlayerInfo {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 fide_id: row.get(2)?,
                 game_count: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                platform: row.get(4)?,
             }),
         )
         .map(Json)
@@ -3278,7 +3294,7 @@ mod games_sql_tests {
             None, None, player_id, Some(color), opponent, opponent_id,
             None, None, None, None, // white/black + fide
             None, None, None, None, None, // event, eco, first_moves, from, to
-            None, None, None, // fen_hash, collection_id, visibility
+            None, None, None, None, // fen_hash, collection_id, visibility, time_class
             false, false, false, false, None, // include_deleted, include_pgn, count, exclude_engines, sort
             100, 0,
         ).0
@@ -3291,7 +3307,7 @@ mod games_sql_tests {
             None, None, Some(1), Some("any"), None, None,
             None, None, None, None,
             None, None, None, None, None,
-            Some(42), None, None,
+            Some(42), None, None, None,
             false, false, false, false, sort,
             100, 0,
         ).0

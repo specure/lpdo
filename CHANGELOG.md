@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not in the repertoire; a row puts the chapter on the Repertoire page's
   board where the game left it, *Open* puts the game on the Analysis board.
   A tally of the period at the top; the time classes as filters.
+- **Which of your games count** — on the Repertoire page, above your
+  games in a chapter or a book: all, over the board or online, and the
+  time classes (bullet, blitz, rapid, classical, correspondence, no clock);
+  the book's figures count the same games. The Games page filters by time
+  control too, and the player search marks a handle with its platform.
 - **Rating and performance in the figures** — a chapter's figures carry,
   for each move, the median rating of those who played it and their
   performance rating with it (from ten rated opponents); the Reference tab

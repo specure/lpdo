@@ -48,6 +48,8 @@ export interface PlayerInfo {
   name: string;
   fide_id: number | null;
   game_count: number;
+  /** A handle on a platform (#90): "lichess" / "chesscom"; absent for a real name. */
+  platform?: string | null;
 }
 
 export interface OpeningLine {
