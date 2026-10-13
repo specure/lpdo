@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { QR_DEFAULTS, QR_LIMITS, qrSettings, saveQrSettings, type QrSettings } from "../lib/qrSettings";
 import PhoneTestDialog from "./repertoire/PhoneTestDialog";
+import AccountsSection from "./AccountsSection";
 import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
 import ExternalLinkIcon from "./ExternalLinkIcon";
 import { REPETITION_ABOVE_KEY, REPETITION_APART_KEY, repetitionSettings } from "../lib/repetition";
@@ -2454,6 +2455,7 @@ const grid = "grid grid-cols-1 md:grid-cols-2 gap-4 items-start";
 
 const TABS = [
   { id: "sources", label: "Sources" },
+  { id: "accounts", label: "Online accounts" },
   { id: "databases", label: "Database" },
   { id: "players", label: "Players" },
   { id: "engines", label: "Engines" },
@@ -2553,6 +2555,13 @@ export default function MaintenancePanel({ onRunWizard, status, onMutated, conne
 
           <div className={tab === "sources" ? "" : "hidden"}>
             <SourcesPanel onMutated={onMutated} />
+          </div>
+
+          {/* Online accounts (#90) — one's own games from Chess.com and
+              Lichess, a tab of their own: not a source of the database's
+              reference games, but one's practice. */}
+          <div className={tab === "accounts" ? "" : "hidden"}>
+            <AccountsSection />
           </div>
 
           {/* Database — what happens to the games themselves. "Prepare database"
