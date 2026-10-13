@@ -219,9 +219,12 @@ export interface LineMatch {
   at_key: string;
   /** The line went into none of the book's chapters, only through moves
    *  they all share: one row for the book, `chapter_id` the first that went
-   *  as far, `book_has` the book's moves where the line left ("3.Nf3").
-   *  Absent from older servers. */
+   *  as far. Absent from older servers. */
   left_book?: boolean;
+  /** Where the line left, the repertoire's moves there: the chapter's
+   *  ("4.Ba4" for a 4.Bxc6 game), or the book's chapters' for a book row
+   *  ("3.Nf3"). Absent from older servers, empty for a chapter row before
+   *  0.24.13. */
   book_has?: string[];
 }
 /** The chapters of the books of `color` a line of moves (SAN, from the

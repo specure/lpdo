@@ -1857,9 +1857,11 @@ pub struct LineMatch {
     /// The line went into none of the book's chapters — only through moves
     /// they all share (the book's start, 1.d4 Nf6 2.c4 e6 of a 3.Nf3 book
     /// for a 3.Nc3 game): one row for the book, its chapter the first that
-    /// went as far; `book_has`, the book's moves where the line left
-    /// ("3.Nf3").
+    /// went as far.
     pub left_book: bool,
+    /// Where the line left ("left"), the repertoire's moves there — the
+    /// chapter's ("4.Ba4" for a 4.Bxc6 game), or the book's chapters' for
+    /// a book row ("3.Nf3"). Empty otherwise.
     pub book_has: Vec<String>,
 }
 
@@ -1931,13 +1933,14 @@ pub fn match_line(conn: &Connection, sans: &[String], color: &str) -> Result<Vec
         }
         if deepest == 0 { continue; }
         let side_to_move = if deepest.is_multiple_of(2) { "white" } else { "black" };
-        let (followed, left_by, mv) = if deepest == n { ("ended", None, None) }
-            else if c.moves.contains_key(&zs[deepest]) {
-                ("left", Some(if side_to_move == color { "you" } else { "opponent" }), Some(move_label(deepest as i64, moves[deepest])))
-            } else { ("end", None, None) };
+        let (followed, left_by, mv, book_has) = if deepest == n { ("ended", None, None, Vec::new()) }
+            else if let Some(ms) = c.moves.get(&zs[deepest]) {
+                let has = ms.iter().collect::<std::collections::BTreeSet<_>>().into_iter().map(|san| move_label(deepest as i64, san)).collect();
+                ("left", Some(if side_to_move == color { "you" } else { "opponent" }), Some(move_label(deepest as i64, moves[deepest])), has)
+            } else { ("end", None, None, Vec::new()) };
         found.push((LineMatch {
             book_id: c.book.0, book_name: c.book.1.clone(), chapter_id: *id, chapter_name: c.name.clone(),
-            ply: deepest as i64, followed, left_by, mv, at_key: keys[deepest].clone(), left_book: false, book_has: Vec::new(),
+            ply: deepest as i64, followed, left_by, mv, at_key: keys[deepest].clone(), left_book: false, book_has,
         }, (c.book.2, c.ord)));
     }
     // In how many of its book's chapters each of the line's positions is.
@@ -2216,9 +2219,10 @@ pub struct RecentGame {
     /// The game's moves (SAN, the main line) — to put a chapter's board
     /// where the game left it.
     pub moves: Vec<String>,
-    /// The chapter it went into, when it went into one.
-    #[serde(rename = "match")]
-    pub line: Option<LineMatch>,
+    /// The chapters it went into, deepest first ([`match_line`]): one per
+    /// book, several when the books of the colour overlap — a Catalan game
+    /// is in the 1.d4 book's chapter and the English book's.
+    pub matches: Vec<LineMatch>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -2261,8 +2265,8 @@ pub fn recent_games(conn: &Connection, player: i64, days: u32, filter: Filter, l
             _ => None,
         };
         let sans = crate::dedup::canonical_moves(&pgn);
-        let line = match_line(conn, &sans, color)?.into_iter().next();
-        games.push(RecentGame { id, white, black, white_elo, black_elo, date, event, site, result, time_control, time_class, platform, color: color.to_string(), score, moves: sans, line });
+        let matches = match_line(conn, &sans, color)?;
+        games.push(RecentGame { id, white, black, white_elo, black_elo, date, event, site, result, time_control, time_class, platform, color: color.to_string(), score, moves: sans, matches });
     }
     Ok(RecentGames { days, since, scope: filter.scope, games, ms: started.elapsed().as_millis() as i64 })
 }
@@ -2853,6 +2857,9 @@ mod tests {
         // The quickstarter goes on with 4.e5, further than any chapter: an
         // overview is never listed.
         assert_eq!(found("e4 e6 d4 d5 Nc3 Bb4 e5 c5", "black"), vec![(winawer, 6, "end", None, None)]);
+        // Deviated in the Advance: the chapter's move there comes along.
+        let m = &match_line(&conn, &line("e4 e6 d4 d5 e5 Nc6"), "black").unwrap()[0];
+        assert_eq!((m.chapter_id, m.followed, m.left_by, m.mv.as_deref(), m.book_has.clone()), (advance, "left", Some("you"), Some("3...Nc6"), vec!["3...c5".to_string()]));
         // Into the Advance's own 2.d4 and out at once: the book's row.
         let m = &match_line(&conn, &line("e4 e6 d4 Nf6"), "black").unwrap()[0];
         assert_eq!((m.chapter_id, m.ply, m.left_book, m.mv.as_deref(), m.book_has.clone()), (advance, 3, true, Some("2...Nf6"), vec!["2...d5".to_string()]));
@@ -2944,10 +2951,10 @@ mod tests {
         assert_eq!(recent.games.iter().map(|g| g.id).collect::<Vec<_>>(), vec![2, 1], "today's, newest first");
         let online = &recent.games[0];
         assert_eq!((online.platform.as_deref(), online.time_class.as_deref(), online.color.as_str(), online.score), (Some("lichess"), Some("blitz"), "white", Some(0.0)));
-        let m = online.line.as_ref().expect("matched against the book");
+        let m = online.matches.first().expect("matched against the book");
         assert_eq!((m.chapter_id, m.followed, m.left_by, m.mv.as_deref()), (ch.id, "left", Some("opponent"), Some("1...c5")));
         let otb = &recent.games[1];
-        assert_eq!((otb.score, otb.line.as_ref().map(|m| m.followed)), (Some(1.0), Some("end")));
+        assert_eq!((otb.score, otb.matches.first().map(|m| m.followed)), (Some(1.0), Some("end")));
         assert_eq!(recent_games(&conn, 1, 1, Filter::scope(Scope::Online), 10).unwrap().games.len(), 1);
         assert_eq!(recent_games(&conn, 1, 30, Filter::all(), 10).unwrap().games.len(), 2, "the old one is past the days");
     }

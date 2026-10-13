@@ -99,8 +99,9 @@ export interface RecentGame {
   score: number | null;
   /** The game's moves (SAN), to put a chapter's board where it left. */
   moves: string[];
-  /** The chapter it went into, when it went into one. */
-  match: LineMatch | null;
+  /** The chapters it went into, deepest first: one per book, several when
+   *  the books overlap. Empty when it went into none. */
+  matches: LineMatch[];
 }
 
 export interface RecentGames {
