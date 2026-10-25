@@ -216,11 +216,14 @@ chess-db serve --bind 192.168.1.50       # one specific interface
 
 In LPDO on the client machine: **Maintenance → Others → Server connection**.
 
-1. **Server address** — `http://<server-ip-or-hostname>:7777`
-2. **Access token** — paste the contents of the server's `access-token` file
-3. **Save and reconnect**
+1. **Remote server** — switch the toggle from *This machine*
+2. **Server address** — `http://<server-ip-or-hostname>:7777`
+3. **Access token** — paste the contents of the server's `access-token` file
+4. **Save and reconnect**
 
-"Use this machine" switches back to the local server. This card is reachable
+*This machine* is always the local server (127.0.0.1, no token); the remote
+server's address and token are remembered, so the toggle switches back and
+forth with one click. This card is reachable
 even when the app shows *Server offline*, which is exactly when you need it.
 
 A client-only install is a normal option: on Windows, untick the database-server

@@ -53,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repertoire's settings, works out the figures of every chapter of the
   active books anew, in the background (Stockfish's line ends are kept).
 
+- **Switch between this machine's server and a remote one** — a toggle
+  on Maintenance → Others → Server connection. The remote server's
+  address and token are remembered, so switching takes one click.
+
 ### Changed
 - **A chapter left right where the game reached it counts from move 4** —
   on the Recent games page and the Analysis page's Repertoire tab, a game
