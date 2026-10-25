@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-10-25
+
 ### Added
 - **One's own online games, the server side** (#90) — accounts on Lichess
   and Chess.com linked to your player (`/accounts`); their games synced
@@ -52,12 +54,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **Analyse all chapters again** on the Maintenance page, under the
   repertoire's settings, works out the figures of every chapter of the
   active books anew, in the background (Stockfish's line ends are kept).
-
 - **Switch between this machine's server and a remote one** — a toggle
   on Maintenance → Others → Server connection. The remote server's
   address and token are remembered, so switching takes one click.
 
 ### Changed
+- **Updated dependencies** — zip 9, sevenz-rust2 0.24, Tauri 2.12.2,
+  DuckDB 1.10506.1, rustls 0.23.45, tokio and the Tauri plugins.
 - **A chapter left right where the game reached it counts from move 4** —
   on the Recent games page and the Analysis page's Repertoire tab, a game
   that reaches a position only one chapter of a book has (by any move
@@ -1655,7 +1658,8 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/specure/lpdo/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/specure/lpdo/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/specure/lpdo/compare/v0.22.1...v0.23.0
 [0.22.1]: https://github.com/specure/lpdo/compare/v0.22.0...v0.22.1
