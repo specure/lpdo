@@ -19,7 +19,8 @@ import {
 import SourcesPanel from "./SourcesPanel";
 import MergePlayersDialog from "./MergePlayersDialog";
 import { StatusInfo, ScheduleInfo } from "../types";
-import { apiUrl, serverUrl, serverToken, setServerSettings, DEFAULT_SERVER_URL, getSchedule, getJobs } from "../api";
+import { apiUrl, serverUrl, serverToken, setServerSettings, savedRemoteServer, localServer, isDefaultServer, getSchedule, getJobs } from "../api";
+import type { ServerSide } from "../api";
 
 interface Props {
   onRunWizard: () => void;
@@ -121,18 +122,37 @@ function ServerConnectionSection({ status, connection = "connected" }: {
   status: StatusInfo | null;
   connection?: "checking" | "connected" | "disconnected" | "unauthorized";
 }) {
-  const [url, setUrl] = useState(serverUrl());
-  const [token, setToken] = useState(serverToken());
+  const inUse: ServerSide = isDefaultServer() ? "local" : "remote";
+  const [side, setSide] = useState<ServerSide>(inUse);
+  const [url, setUrl] = useState(() => savedRemoteServer().url);
+  const [token, setToken] = useState(() => savedRemoteServer().token);
   const [saved, setSaved] = useState(false);
 
-  const dirty = url.trim().replace(/\/+$/, "") !== serverUrl() || token.trim() !== serverToken();
+  const target = url.trim().replace(/\/+$/, "");
+  const dirty = side !== inUse || target !== serverUrl() || token.trim() !== serverToken();
+
+  // Everything reads these per call, but a reload is the honest way to drop
+  // in-flight state (SSE streams, cached lists) tied to the previous server.
+  function reconnect() {
+    setSaved(true);
+    setTimeout(() => window.location.reload(), 400);
+  }
 
   function save() {
-    setServerSettings(url, token);
-    setSaved(true);
-    // Everything reads these per call, but a reload is the honest way to drop
-    // in-flight state (SSE streams, cached lists) tied to the previous server.
-    setTimeout(() => window.location.reload(), 400);
+    setServerSettings(target, token);
+    reconnect();
+  }
+
+  // One click to the other server: this machine's (loopback, no token), or
+  // the remote one remembered; a remote server never set up yet waits for
+  // its address and Save.
+  function switchTo(next: ServerSide) {
+    if (next === side) return;
+    setSide(next);
+    setSaved(false);
+    if (next === inUse) return;
+    if (next === "local") { localServer(); reconnect(); }
+    else if (target) save();
   }
 
   // /status answers even with a bad token (it is deliberately open), so the
@@ -148,45 +168,55 @@ function ServerConnectionSection({ status, connection = "connected" }: {
     <SectionCard title="Server connection" status={caption}>
       <p className="text-body-sm text-on-surface-variant">
         The database server normally runs on this machine. To use one on another computer,
-        enter its address — and the access token from that server's data folder
-        (<span className="font-mono">access-token</span>). A server on this machine needs a
-        token only when it was set up to allow other computers to connect.
+        choose <em>Remote server</em> and enter its address — and the access token from that
+        server's data folder (<span className="font-mono">access-token</span>). Both are
+        remembered, so switching between the two servers takes one click.
       </p>
+      <div className="inline-flex items-center gap-1 p-1 bg-surface-container rounded-full w-fit">
+        {([["local", "This machine"], ["remote", "Remote server"]] as const).map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => switchTo(k)}
+            aria-pressed={side === k}
+            className={`h-7 px-3 rounded-full text-label-md transition-colors duration-short3 ease-standard ${
+              side === k
+                ? "bg-secondary-container text-on-secondary-container"
+                : "text-on-surface-variant hover:text-on-surface"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       {connection === "unauthorized" && <AccessDeniedHint url={serverUrl()} />}
+      {side === "remote" && <>
       <div>
         <div className="text-label-sm text-on-surface-variant uppercase tracking-wider mb-1">Server address</div>
         <input
           type="text"
           value={url}
           onChange={(e) => { setUrl(e.target.value); setSaved(false); }}
-          placeholder={DEFAULT_SERVER_URL}
+          placeholder="http://192.168.1.50:7777"
           spellCheck={false}
           className="w-full h-9 px-3 rounded-sm bg-transparent text-on-surface placeholder:text-on-surface-variant text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
         />
       </div>
       <div>
-        <div className="text-label-sm text-on-surface-variant uppercase tracking-wider mb-1">Access token (required when the server allows network access)</div>
+        <div className="text-label-sm text-on-surface-variant uppercase tracking-wider mb-1">Access token</div>
         <input
           type="password"
           value={token}
           onChange={(e) => { setToken(e.target.value); setSaved(false); }}
-          placeholder="empty for a local-only server"
+          placeholder="the contents of the server's access-token file"
           spellCheck={false}
           className="w-full h-9 px-3 rounded-sm bg-transparent text-on-surface placeholder:text-on-surface-variant text-body-sm font-mono border border-outline focus:outline-none focus:border-primary transition-colors duration-short3 ease-standard"
         />
       </div>
       <div className="flex items-center gap-2">
-        <ActionButton onClick={save} disabled={!dirty}>Save and reconnect</ActionButton>
-        {url.trim().replace(/\/+$/, "") !== DEFAULT_SERVER_URL && (
-          <button
-            onClick={() => { setUrl(DEFAULT_SERVER_URL); setToken(""); setSaved(false); }}
-            className="h-8 px-3 inline-flex items-center rounded-full text-primary text-label-md hover:bg-primary/8 transition-colors duration-short3 ease-standard"
-          >
-            Use this machine
-          </button>
-        )}
-        {saved && <span className="text-success text-body-sm">Saved — reconnecting…</span>}
+        <ActionButton onClick={save} disabled={!dirty || !target}>Save and reconnect</ActionButton>
       </div>
+      </>}
+      {saved && <span className="text-success text-body-sm">Reconnecting…</span>}
     </SectionCard>
   );
 }
