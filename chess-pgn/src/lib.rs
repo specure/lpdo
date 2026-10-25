@@ -503,7 +503,7 @@ fn temp_path_for() -> PathBuf {
 fn first_pgn_entry(archive: &mut zip::ZipArchive<File>) -> io::Result<usize> {
     let mut fallback = None;
     for i in 0..archive.len() {
-        let name = archive.by_index(i).map_err(zip_io)?.name().to_ascii_lowercase();
+        let name = archive.by_index(i).map_err(zip_io)?.name().map_err(zip_io)?.to_ascii_lowercase();
         if name.ends_with(".pgn") {
             return Ok(i);
         }

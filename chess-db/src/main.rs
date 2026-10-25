@@ -2587,7 +2587,7 @@ mod tests {
         let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip).unwrap()).unwrap();
         assert_eq!(archive.len(), 1, "one entry");
         let mut entry = archive.by_index(0).unwrap();
-        assert!(entry.name().ends_with(".pgn"), "entry is a .pgn");
+        assert!(entry.name().unwrap().ends_with(".pgn"), "entry is a .pgn");
         let mut text = String::new();
         entry.read_to_string(&mut text).unwrap();
         assert!(text.contains("1. e4 e5"), "first game present");
