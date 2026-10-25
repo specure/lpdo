@@ -28,6 +28,6 @@ pgn-reader = "0.29.0"
 serde = { version = "1", features = ["derive"] }
 # Decompress .zip/.zst/.gz PGNs directly (#104 slice 3) — versions match chess-db
 # so the compiled crates are shared, not duplicated.
-zip = "8"
+zip = "9"
 zstd = "0.14"
 flate2 = "1"

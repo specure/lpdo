@@ -1084,7 +1084,7 @@ pub fn pgns_of_zip(bytes: &[u8]) -> Result<Vec<(String, String)>> {
     let mut out = Vec::new();
     for i in 0..archive.len() {
         let mut f = archive.by_index(i)?;
-        let path = f.name().to_string();
+        let path = f.name()?.to_string();
         let file = path.rsplit('/').next().unwrap_or(&path);
         if !f.is_file() || !file.to_ascii_lowercase().ends_with(".pgn") { continue }
         let stem = file[..file.len() - 4].to_string();

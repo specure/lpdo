@@ -375,7 +375,7 @@ fn open_import_reader(path: &Path) -> Result<ImportReader> {
                 let mut archive = zip::ZipArchive::new(f)?;
                 let mut idx = None;
                 for i in 0..archive.len() {
-                    if archive.by_index(i)?.name().to_ascii_lowercase().ends_with(".pgn") {
+                    if archive.by_index(i)?.name()?.to_ascii_lowercase().ends_with(".pgn") {
                         idx = Some(i);
                         break;
                     }
@@ -2099,7 +2099,7 @@ fn extract_pgn_from_zip(zip_path: &Path) -> Result<Vec<u8>> {
 
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
-        let name = entry.name().to_lowercase();
+        let name = entry.name()?.to_lowercase();
         if name.ends_with(".pgn") {
             let mut buf = Vec::new();
             entry.read_to_end(&mut buf)?;

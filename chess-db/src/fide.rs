@@ -229,7 +229,7 @@ pub fn download_and_load(conn: &Connection, url: &str, reporter: &Reporter) -> R
         let mut archive = zip::ZipArchive::new(zf).context("opening FIDE zip")?;
         let mut idx = None;
         for i in 0..archive.len() {
-            if archive.by_index(i)?.name().to_ascii_lowercase().ends_with(".txt") {
+            if archive.by_index(i)?.name()?.to_ascii_lowercase().ends_with(".txt") {
                 idx = Some(i);
                 break;
             }
