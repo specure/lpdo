@@ -34,12 +34,48 @@ export function serverToken(): string {
   }
 }
 
+// The remote side of the local/remote switch remembers its address and token,
+// so going back and forth is one click; this machine is always the loopback
+// server with no token.
+const REMOTE_URL_KEY = "serverRemoteUrl";
+const REMOTE_TOKEN_KEY = "serverRemoteToken";
+
+export type ServerSide = "local" | "remote";
+
+function cleanUrl(url: string): string {
+  return url.trim().replace(/\/+$/, "");
+}
+
+function store(key: string, v: string): void {
+  if (v) localStorage.setItem(key, v);
+  else localStorage.removeItem(key);
+}
+
 export function setServerSettings(url: string, token: string): void {
-  const clean = url.trim().replace(/\/+$/, "");
-  if (clean && clean !== DEFAULT_SERVER_URL) localStorage.setItem(SERVER_URL_KEY, clean);
-  else localStorage.removeItem(SERVER_URL_KEY);
-  if (token.trim()) localStorage.setItem(SERVER_TOKEN_KEY, token.trim());
-  else localStorage.removeItem(SERVER_TOKEN_KEY);
+  const clean = cleanUrl(url);
+  const remote = !!clean && clean !== DEFAULT_SERVER_URL;
+  store(SERVER_URL_KEY, remote ? clean : "");
+  store(SERVER_TOKEN_KEY, remote ? token.trim() : "");
+  if (remote) {
+    store(REMOTE_URL_KEY, clean);
+    store(REMOTE_TOKEN_KEY, token.trim());
+  }
+}
+
+/** Back to this machine's server; the remote one stays remembered. */
+export function localServer(): void {
+  setServerSettings(serverUrl(), serverToken()); // remember the remote one in use
+  setServerSettings(DEFAULT_SERVER_URL, "");
+}
+
+/** The remote server last used, empty if none yet; the one in use counts
+ *  (settings saved before the switch existed). */
+export function savedRemoteServer(): { url: string; token: string } {
+  try {
+    const url = localStorage.getItem(REMOTE_URL_KEY);
+    if (url) return { url, token: localStorage.getItem(REMOTE_TOKEN_KEY) ?? "" };
+  } catch { /* nothing remembered */ }
+  return isDefaultServer() ? { url: "", token: "" } : { url: serverUrl(), token: serverToken() };
 }
 
 export function isDefaultServer(): boolean {
