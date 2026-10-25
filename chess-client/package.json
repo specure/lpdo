@@ -16,7 +16,7 @@
   "dependencies": {
     "@ngraveio/bc-ur": "^1.1.13",
     "@tauri-apps/api": "~2.12",
-    "@tauri-apps/plugin-dialog": "^2.8.2",
+    "@tauri-apps/plugin-dialog": "^2.8.3",
     "@tauri-apps/plugin-opener": "^2",
     "assert": "^2.1.0",
     "buffer": "^6.0.3",
@@ -25,10 +25,10 @@
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.4.299",
     "qrcode": "^1.5.4",
-    "react": "^19.3.0",
+    "react": "^19.3.1",
     "react-chessboard": "^5.12.1",
-    "react-dom": "^19.3.0",
-    "react-resizable-panels": "^4.14.4"
+    "react-dom": "^19.3.1",
+    "react-resizable-panels": "^4.14.5"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
