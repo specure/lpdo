@@ -75,6 +75,67 @@ pub fn is_bulk_size(total_bytes: u64) -> bool {
     total_bytes >= BULK_MODE_BYTES
 }
 
+/// Imports up to this size are *small*: what they cost follows the games they
+/// bring, not the size of the database. They look for the duplicates of each
+/// game as it arrives — one indexed query per white player — rather than first
+/// loading the fingerprint of every recent game, and afterwards recount only
+/// the players of their own games. Both steps used to read the whole games
+/// table: on a 14-million-game database, adding a single game took ~10 s and
+/// over 2 GB, enough to get a server already near its memory budget killed.
+/// A file this small holds a few thousand games at most, so the per-player
+/// queries stay under the cost of that load.
+const SMALL_IMPORT_BYTES: u64 = 256 * 1024;
+
+/// Whether an import of this size is small (see `SMALL_IMPORT_BYTES`). Never in
+/// bulk mode: its indexes are dropped, so every per-player query would scan
+/// the whole table.
+fn is_small_import(total_bytes: u64, bulk_mode: bool) -> bool {
+    !bulk_mode && total_bytes <= SMALL_IMPORT_BYTES
+}
+
+/// The games an import checks new ones against, with the columns their
+/// fingerprint is made of: everything imported in the last year, less the
+/// leftovers of an interrupted import. Callers narrow it with a further `AND`.
+/// (`LazyDedup` applies the same rule a player at a time.)
+const KNOWN_GAMES_SQL: &str =
+    "SELECT id, white_id, black_id, date, result, opening_line, move_count FROM games
+     WHERE issue_id NOT IN (
+         SELECT id FROM source_items WHERE downloaded = TRUE AND imported = FALSE
+     )
+     AND issue_id IN (
+         SELECT id FROM source_items
+         WHERE imported = TRUE
+         AND imported_at > CAST(NOW() AS TIMESTAMP) - INTERVAL '1 year'
+     )
+     AND deleted_at IS NULL";
+
+/// How many game ids one query of the up-front fingerprint load covers. The
+/// result of a query is held whole until it is read, so loading the table in
+/// one go kept every game's row in memory at once.
+const KNOWN_GAMES_ID_SLICE: u64 = 1_000_000;
+
+/// A small import's way of finding duplicates: the earlier games of each white
+/// player are fetched the first time that player turns up.
+struct LazyDedup {
+    /// White players whose earlier games are already in `seen_this_run`.
+    whites: std::collections::HashSet<u32>,
+    /// The source items whose games count as known — those `KNOWN_GAMES_SQL`
+    /// selects by (an imported item is never a leftover of an interrupted run).
+    items: std::collections::HashSet<i32>,
+}
+
+impl LazyDedup {
+    fn new(conn: &Connection) -> Result<Self> {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM source_items
+             WHERE imported = TRUE
+             AND imported_at > CAST(NOW() AS TIMESTAMP) - INTERVAL '1 year'",
+        )?;
+        let items = stmt.query_map([], |r| r.get::<_, i32>(0))?.flatten().collect();
+        Ok(Self { whites: std::collections::HashSet::new(), items })
+    }
+}
+
 /// User-facing knobs for `import-pgn`: grouping + visibility + duplicate policy.
 pub struct ImportSpec {
     pub collection: String,
@@ -827,7 +888,8 @@ pub fn import(
     // (e.g. "12,748 games imported into Ajedrez OTB") instead of "Import complete".
     let (mut tot_imported, mut tot_dups, mut tot_ns, mut tot_window) = (0usize, 0usize, 0usize, 0usize);
 
-    let mut ctx = ImportContext::new(conn, skip_dedup)?;
+    let small = is_small_import(total_bytes, bulk_mode);
+    let mut ctx = ImportContext::new(conn, skip_dedup, small)?;
     let collection_id = upsert_collection(conn, collection)?;
     let window = crate::sources::window(conn, source_key)?;
     if let Some(desc) = window.describe() {
@@ -954,7 +1016,12 @@ pub fn import(
 
     reporter.progress(0, 0, "Updating player game counts…".to_string());
     pb.set_message("Updating player game counts…");
-    crate::db::queries::recalculate_game_counts(conn)?;
+    if small {
+        let items: Vec<i32> = issues.iter().map(|(id, _)| *id).collect();
+        crate::db::queries::recalculate_game_counts_for_items(conn, &items)?;
+    } else {
+        crate::db::queries::recalculate_game_counts(conn)?;
+    }
 
     pb.finish_and_clear();
     let done_msg = format!(
@@ -1068,7 +1135,10 @@ pub fn import_pgn(
         (max_id.unwrap_or(0) as i32).max(1_000_000) + 1
     };
 
-    let mut ctx = ImportContext::new(conn, effective_skip_dedup)?;
+    let small = is_small_import(total_bytes, bulk_mode);
+    let mut ctx = ImportContext::new(conn, effective_skip_dedup, small)?;
+    // The source items this run fills, for the recount of a small import.
+    let mut run_items: Vec<i32> = Vec::new();
 
     let import_result = (|| -> Result<()> {
         for path in &pending {
@@ -1098,6 +1168,8 @@ pub fn import_pgn(
                     id
                 }
             };
+
+            run_items.push(issue_id);
 
             // Remove any games from a previous interrupted run of this file.
             conn.execute("DELETE FROM games WHERE issue_id = ?", duckdb::params![issue_id])?;
@@ -1187,7 +1259,11 @@ pub fn import_pgn(
 
     reporter.progress(0, 0, "Updating player game counts…".to_string());
     pb.set_message("Updating player game counts…");
-    crate::db::queries::recalculate_game_counts(conn)?;
+    if small {
+        crate::db::queries::recalculate_game_counts_for_items(conn, &run_items)?;
+    } else {
+        crate::db::queries::recalculate_game_counts(conn)?;
+    }
 
     pb.finish_and_clear();
     let done_msg = format!(
@@ -1220,6 +1296,12 @@ struct ImportContext {
     /// `dedup_games` pass cleans up afterwards. Bulk loads use this to keep dedup
     /// off the import's critical path (#131/#154).
     skip_dedup: bool,
+    /// Set in a small import, which finds duplicates game by game. None when
+    /// every fingerprint was loaded up front.
+    lazy: Option<LazyDedup>,
+    /// Player ids from this one up are created by this run, so no earlier game
+    /// can be theirs.
+    first_new_player_id: u32,
     /// Date for games that carry none, set per file: the month of a monthly
     /// archive, as "YYYY-MM-??" (see `GameVisitor::fallback_date`). None for
     /// files whose name says nothing about when their games were played.
@@ -1227,7 +1309,9 @@ struct ImportContext {
 }
 
 impl ImportContext {
-    fn new(conn: &Connection, skip_dedup: bool) -> Result<Self> {
+    /// `lazy_dedup`: find duplicates game by game (`load_white`) instead of
+    /// loading every recent game's fingerprint now.
+    fn new(conn: &Connection, skip_dedup: bool, lazy_dedup: bool) -> Result<Self> {
         let spinner = ProgressBar::new_spinner();
         spinner.set_style(progress::spinner_style());
         spinner.set_message("Initialising...");
@@ -1267,41 +1351,34 @@ impl ImportContext {
         let mut seen_chessbase_ids: HashMap<i64, u32> = HashMap::new();
 
         if !skip_dedup {
-            {
-                let mut pstmt = conn.prepare(
-                    "SELECT id, white_id, black_id, date, result, opening_line, move_count FROM games
-                     WHERE issue_id NOT IN (
-                         SELECT id FROM source_items WHERE downloaded = TRUE AND imported = FALSE
-                     )
-                     AND issue_id IN (
-                         SELECT id FROM source_items
-                         WHERE imported = TRUE
-                         AND imported_at > CAST(NOW() AS TIMESTAMP) - INTERVAL '1 year'
-                     )
-                     AND deleted_at IS NULL",
-                )?;
-                let rows = pstmt.query_map([], |r| {
-                    Ok((
-                        r.get::<_, u32>(0)?,
-                        r.get::<_, u32>(1)?,
-                        r.get::<_, u32>(2)?,
-                        r.get::<_, Option<String>>(3)?,
-                        r.get::<_, Option<String>>(4)?,
-                        r.get::<_, String>(5)?,
-                        r.get::<_, i16>(6)?,
-                    ))
-                })?;
-                for row in rows.flatten() {
-                    let (id, white_id, black_id, date, result, opening_line, move_count) = row;
-                    let fp = game_fingerprint(
-                        white_id,
-                        black_id,
-                        date.as_deref(),
-                        result.as_deref(),
-                        &opening_line,
-                        move_count,
-                    );
-                    seen_this_run.insert(fp, id);
+            if !lazy_dedup {
+                // A slice of ids at a time, so only that slice's rows are held
+                // while they are hashed (the primary key keeps each query to
+                // its own part of the table).
+                let (lo, hi): (Option<u32>, Option<u32>) =
+                    conn.query_row("SELECT MIN(id), MAX(id) FROM games", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                if let (Some(lo), Some(hi)) = (lo, hi) {
+                    let mut pstmt = conn.prepare(&format!("{KNOWN_GAMES_SQL} AND id BETWEEN ? AND ?"))?;
+                    let mut from = lo as u64;
+                    while from <= hi as u64 {
+                        let to = (from + KNOWN_GAMES_ID_SLICE - 1).min(hi as u64);
+                        let rows = pstmt.query_map(duckdb::params![from, to], |r| {
+                            Ok((
+                                r.get::<_, u32>(0)?,
+                                r.get::<_, u32>(1)?,
+                                r.get::<_, u32>(2)?,
+                                r.get::<_, Option<String>>(3)?,
+                                r.get::<_, Option<String>>(4)?,
+                                r.get::<_, String>(5)?,
+                                r.get::<_, i16>(6)?,
+                            ))
+                        })?;
+                        for (id, white_id, black_id, date, result, opening_line, move_count) in rows.flatten() {
+                            let fp = game_fingerprint(white_id, black_id, date.as_deref(), result.as_deref(), &opening_line, move_count);
+                            seen_this_run.insert(fp, id);
+                        }
+                        from = to + 1;
+                    }
                 }
             }
 
@@ -1334,6 +1411,8 @@ impl ImportContext {
             )
         });
 
+        let lazy = if lazy_dedup && !skip_dedup { Some(LazyDedup::new(conn)?) } else { None };
+
         Ok(Self {
             player_cache,
             fide_id_cache,
@@ -1343,8 +1422,45 @@ impl ImportContext {
             seen_this_run,
             seen_chessbase_ids,
             skip_dedup,
+            lazy,
+            first_new_player_id: next_player_id,
             fallback_date: None,
         })
+    }
+
+    /// In a small import, load the fingerprints of the games this player
+    /// already has as White — once per player. A fingerprint includes the white
+    /// player's id, so no other game could match one of theirs. Does nothing
+    /// when everything was loaded up front.
+    fn load_white(&mut self, conn: &Connection, white_id: u32) -> Result<()> {
+        let Some(lazy) = self.lazy.as_mut() else { return Ok(()) };
+        if white_id >= self.first_new_player_id || !lazy.whites.insert(white_id) {
+            return Ok(());
+        }
+        // Kept to the one indexed condition: with a second one (the black
+        // player, or the source items as a subquery) DuckDB scans the table.
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, issue_id, black_id, date, result, opening_line, move_count
+             FROM games WHERE white_id = ? AND deleted_at IS NULL",
+        )?;
+        let rows = stmt.query_map(duckdb::params![white_id], |r| {
+            Ok((
+                r.get::<_, u32>(0)?,
+                r.get::<_, Option<i32>>(1)?,
+                r.get::<_, u32>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, i16>(6)?,
+            ))
+        })?;
+        for (id, item, black_id, date, result, opening_line, move_count) in rows.flatten() {
+            if item.is_some_and(|i| lazy.items.contains(&i)) {
+                let fp = game_fingerprint(white_id, black_id, date.as_deref(), result.as_deref(), &opening_line, move_count);
+                self.seen_this_run.insert(fp, id);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1661,6 +1777,7 @@ fn process_pgn_stream(
                     continue;
                 }
             }
+            ctx.load_white(conn, white_id)?;
             let fp = game_fingerprint(
                 white_id,
                 black_id,
@@ -2634,5 +2751,128 @@ mod annotated_upgrade_tests {
     fn split_pgn_parts() {
         assert_eq!(split_pgn("[A \"1\"]\n[B \"2\"]\n\n1. e4 {x} e5"), ("[A \"1\"]\n[B \"2\"]\n\n", "1. e4 {x} e5"));
         assert_eq!(split_pgn("e4 e5"), ("", "e4 e5"));
+    }
+}
+
+#[cfg(test)]
+mod small_import_tests {
+    use super::*;
+
+    fn setup(tag: &str) -> (Connection, std::path::PathBuf) {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let dir = std::env::temp_dir().join(format!("lpdo-small-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        (conn, dir)
+    }
+
+    fn game(white: &str, black: &str, date: &str) -> String {
+        format!(
+            "[Event \"Open\"]\n[Site \"?\"]\n[Date \"{date}\"]\n[Round \"1\"]\n\
+             [White \"{white}\"]\n[Black \"{black}\"]\n[Result \"1-0\"]\n\n1. e4 e5 2. Nf3 Nc6 1-0\n\n"
+        )
+    }
+
+    fn import(conn: &Connection, dir: &Path, file: &str, pgn: &str) {
+        let path = dir.join(file);
+        std::fs::write(&path, pgn).unwrap();
+        let spec = ImportSpec { collection: "Test".into(), visibility: "public".into(), on_duplicate: "skip".into(), platform: None };
+        import_pgn(conn, &path, None, 1000, false, false, &spec, &Reporter::silent()).unwrap();
+    }
+
+    fn count_of(conn: &Connection, name: &str) -> i64 {
+        conn.query_row("SELECT game_count FROM players WHERE name = ?", duckdb::params![name], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn only_bulk_or_large_imports_load_every_fingerprint() {
+        assert!(is_small_import(200, false));
+        assert!(!is_small_import(SMALL_IMPORT_BYTES + 1, false));
+        assert!(!is_small_import(200, true), "bulk mode has no indexes to look a player up with");
+    }
+
+    /// Looking a white player's games up as they come must know exactly the
+    /// games the up-front load knows — including which ones are too old.
+    #[test]
+    fn both_ways_of_finding_duplicates_know_the_same_games() {
+        let (conn, dir) = setup("agree");
+        import(&conn, &dir, "a.pgn", &format!("{}{}", game("Alpha, A", "Beta, B", "2024.01.02"), game("Gamma, C", "Alpha, A", "2024.01.03")));
+        import(&conn, &dir, "old.pgn", &game("Alpha, A", "Delta, D", "2019.05.06"));
+        // Out of the dedup window (a year).
+        conn.execute_batch("UPDATE source_items SET imported_at = TIMESTAMP '2020-01-01 00:00:00' WHERE filename = 'old.pgn'").unwrap();
+        // And one soft-deleted game, which neither way may match.
+        import(&conn, &dir, "gone.pgn", &game("Alpha, A", "Epsilon, E", "2024.02.02"));
+        conn.execute_batch(
+            "UPDATE games SET deleted_at = NOW() WHERE issue_id = (SELECT id FROM source_items WHERE filename = 'gone.pgn')",
+        ).unwrap();
+
+        let upfront = ImportContext::new(&conn, false, false).unwrap();
+        assert_eq!(upfront.seen_this_run.len(), 2, "the two games of a.pgn");
+
+        let mut lazy = ImportContext::new(&conn, false, true).unwrap();
+        assert!(lazy.seen_this_run.is_empty(), "nothing loaded before a player turns up");
+        let whites: Vec<u32> = conn.prepare("SELECT DISTINCT white_id FROM games").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().flatten().collect();
+        for w in whites {
+            lazy.load_white(&conn, w).unwrap();
+        }
+        assert_eq!(lazy.seen_this_run, upfront.seen_this_run);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_small_import_skips_a_game_the_database_has() {
+        let (conn, dir) = setup("dup");
+        import(&conn, &dir, "first.pgn", &game("Alpha, A", "Beta, B", "2024.01.02"));
+        // The same game again, with one the database does not have.
+        import(&conn, &dir, "second.pgn", &format!("{}{}", game("Alpha, A", "Beta, B", "2024.01.02"), game("Alpha, A", "Beta, B", "2024.01.09")));
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM games", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(count_of(&conn, "Alpha, A"), 2);
+        assert_eq!(count_of(&conn, "Beta, B"), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The up-front load reads the table a slice of ids at a time: games on
+    /// both sides of a slice boundary, and in the last partial slice, count.
+    #[test]
+    fn the_up_front_load_covers_every_slice_of_ids() {
+        let (conn, _dir) = setup("slices");
+        conn.execute_batch(&format!(
+            "INSERT INTO source_items (id, source_key, filename, downloaded, imported, imported_at)
+                 VALUES (1, 'manual', 'x.pgn', TRUE, TRUE, NOW());
+             INSERT INTO games (id, issue_id, white_id, black_id, date, result, opening_line, move_count)
+             SELECT id, 1, 10, 20, '2024-01-01', '1-0', 'e4 e5 ' || id, 30
+             FROM (VALUES (7), ({s}), ({s} + 1), ({s} * 2 + 6), ({s} * 3 + 123)) t(id);",
+            s = KNOWN_GAMES_ID_SLICE
+        )).unwrap();
+        let ctx = ImportContext::new(&conn, false, false).unwrap();
+        let mut ids: Vec<u32> = ctx.seen_this_run.values().copied().collect();
+        ids.sort();
+        let s = KNOWN_GAMES_ID_SLICE as u32;
+        assert_eq!(ids, [7, s, s + 1, s * 2 + 6, s * 3 + 123]);
+    }
+
+    /// A small import recounts the players of its own games — and leaves the
+    /// others' rows alone (rewriting every player is what made it costly).
+    #[test]
+    fn a_small_import_recounts_only_its_own_players() {
+        let (conn, dir) = setup("recount");
+        import(&conn, &dir, "one.pgn", &game("Alpha, A", "Beta, B", "2024.01.02"));
+        // A count no import would arrive at, to see whether it is touched.
+        conn.execute_batch("UPDATE players SET game_count = 99 WHERE name = 'Beta, B'").unwrap();
+        import(&conn, &dir, "two.pgn", &format!("{}{}", game("Alpha, A", "Gamma, C", "2024.01.03"), game("Gamma, C", "Alpha, A", "2024.01.04")));
+
+        assert_eq!(count_of(&conn, "Alpha, A"), 3);
+        assert_eq!(count_of(&conn, "Gamma, C"), 2);
+        assert_eq!(count_of(&conn, "Beta, B"), 99, "not one of this import's players");
+
+        // The full recount agrees on the players the import did recount.
+        crate::db::queries::recalculate_game_counts(&conn).unwrap();
+        assert_eq!(count_of(&conn, "Alpha, A"), 3);
+        assert_eq!(count_of(&conn, "Gamma, C"), 2);
+        assert_eq!(count_of(&conn, "Beta, B"), 1);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

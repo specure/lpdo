@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Adding a game no longer costs what the whole database costs** — every
+  import, even of one game, first loaded a fingerprint of every game of the
+  last year and afterwards rewrote every player's game count: about 10 s and
+  over 2 GB on a database of 14 million games, enough to have a server near
+  its memory budget killed by the system. An import of up to 256 KB now looks
+  for a game's duplicates among its white player's games and recounts only
+  its own players (half a second for one game); a larger one loads the
+  fingerprints a million games at a time.
+- **A job lost to a server restart says so** — when the server restarted
+  while a job ran (a crash, an update, the machine out of memory), the job
+  was gone and the window that started it sat at "Running…" until it was
+  closed. The client now asks after its job every few seconds: a job the
+  server no longer knows ends with "The server restarted while this was
+  running", and a connection that only dropped is picked up again where it
+  was.
+
 ## [0.25.0] - 2026-10-25
 
 ### Added
