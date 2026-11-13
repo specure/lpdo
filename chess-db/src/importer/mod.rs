@@ -77,9 +77,10 @@ pub fn is_bulk_size(total_bytes: u64) -> bool {
 
 /// Imports up to this size are *small*: what they cost follows the games they
 /// bring, not the size of the database. They look for the duplicates of each
-/// game as it arrives — one indexed query per white player — rather than first
-/// loading the fingerprint of every recent game, and afterwards recount only
-/// the players of their own games. Both steps used to read the whole games
+/// game as it arrives — one indexed query per white player, and one per
+/// ChessBase GameId — rather than first loading the fingerprint and the GameId
+/// of every recent game, and afterwards recount only the players of their own
+/// games. Both steps used to read the whole games
 /// table: on a 14-million-game database, adding a single game took ~10 s and
 /// over 2 GB, enough to get a server already near its memory budget killed.
 /// A file this small holds a few thousand games at most, so the per-player
@@ -1382,7 +1383,10 @@ impl ImportContext {
                 }
             }
 
-            {
+            // A database built from ChessBase exports carries a GameId on
+            // millions of games: a small import looks its own few up instead
+            // (`load_chessbase_id`).
+            if !lazy_dedup {
                 let mut pstmt = conn.prepare(
                     "SELECT id, chessbase_id FROM games
                      WHERE chessbase_id IS NOT NULL
@@ -1426,6 +1430,27 @@ impl ImportContext {
             first_new_player_id: next_player_id,
             fallback_date: None,
         })
+    }
+
+    /// In a small import, find the known game with this ChessBase GameId — the
+    /// one the up-front load would have put in `seen_chessbase_ids`. Does
+    /// nothing when everything was loaded up front, or the id is already known.
+    fn load_chessbase_id(&mut self, conn: &Connection, cbid: i64) -> Result<()> {
+        let Some(lazy) = self.lazy.as_ref() else { return Ok(()) };
+        if self.seen_chessbase_ids.contains_key(&cbid) {
+            return Ok(());
+        }
+        // One indexed condition, as in `load_white`.
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, issue_id FROM games WHERE chessbase_id = ? AND deleted_at IS NULL ORDER BY id",
+        )?;
+        let rows = stmt.query_map(duckdb::params![cbid], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, Option<i32>>(1)?)))?;
+        for (id, item) in rows.flatten() {
+            if item.is_some_and(|i| lazy.items.contains(&i)) {
+                self.seen_chessbase_ids.insert(cbid, id);
+            }
+        }
+        Ok(())
     }
 
     /// In a small import, load the fingerprints of the games this player
@@ -1766,6 +1791,7 @@ fn process_pgn_stream(
             id
         } else {
             if let Some(cbid) = game.chessbase_id {
+                ctx.load_chessbase_id(conn, cbid)?;
                 let existing = match ctx.seen_chessbase_ids.get(&cbid) {
                     Some(&id) => Some(id),
                     None => existing_by_chessbase_id(conn, cbid, white_id, black_id)?,
@@ -2807,8 +2833,17 @@ mod small_import_tests {
             "UPDATE games SET deleted_at = NOW() WHERE issue_id = (SELECT id FROM source_items WHERE filename = 'gone.pgn')",
         ).unwrap();
 
+        // ChessBase GameIds: one on a known game, one on the game too old to
+        // count, one on the deleted game.
+        conn.execute_batch(
+            "UPDATE games SET chessbase_id = 1001 WHERE date = '2024-01-02';
+             UPDATE games SET chessbase_id = 1002 WHERE date = '2019-05-06';
+             UPDATE games SET chessbase_id = 1003 WHERE date = '2024-02-02';",
+        ).unwrap();
+
         let upfront = ImportContext::new(&conn, false, false).unwrap();
         assert_eq!(upfront.seen_this_run.len(), 2, "the two games of a.pgn");
+        assert_eq!(upfront.seen_chessbase_ids.keys().copied().collect::<Vec<_>>(), [1001]);
 
         let mut lazy = ImportContext::new(&conn, false, true).unwrap();
         assert!(lazy.seen_this_run.is_empty(), "nothing loaded before a player turns up");
@@ -2818,6 +2853,12 @@ mod small_import_tests {
             lazy.load_white(&conn, w).unwrap();
         }
         assert_eq!(lazy.seen_this_run, upfront.seen_this_run);
+
+        assert!(lazy.seen_chessbase_ids.is_empty(), "no GameId loaded before a game brings one");
+        for cbid in [1001, 1002, 1003, 1004] {
+            lazy.load_chessbase_id(&conn, cbid).unwrap();
+        }
+        assert_eq!(lazy.seen_chessbase_ids, upfront.seen_chessbase_ids);
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -13,9 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   last year and afterwards rewrote every player's game count: about 10 s and
   over 2 GB on a database of 14 million games, enough to have a server near
   its memory budget killed by the system. An import of up to 256 KB now looks
-  for a game's duplicates among its white player's games and recounts only
-  its own players (half a second for one game); a larger one loads the
-  fingerprints a million games at a time.
+  for a game's duplicates among its white player's games — and by its
+  ChessBase GameId, where a database built from ChessBase exports used to
+  have all of its ids loaded — and recounts only its own players (half a
+  second for one game); a larger one loads the fingerprints a million games
+  at a time.
 - **A job lost to a server restart says so** — when the server restarted
   while a job ran (a crash, an update, the machine out of memory), the job
   was gone and the window that started it sat at "Running…" until it was
