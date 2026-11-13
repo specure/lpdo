@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { submitJob, cancelJob, jobEventsUrl, postJson, apiGet } from "../api";
+import { submitJob, cancelJob, jobEventsUrl, postJson, apiGet, apiUrl } from "../api";
 
 // Job ids of in-flight operations, keyed by the caller-supplied `key`. Lives at
 // module scope so it survives a component unmounting (e.g. navigating away from
@@ -14,6 +14,15 @@ interface JobSnapshot {
   message: string;
   path?: string;
 }
+
+// Jobs live in the server's memory, so a server that restarts (a crash, an
+// update, the machine running out of memory) forgets the ones it was running.
+const JOB_LOST =
+  "The server restarted while this was running, so it did not finish. Please run it again.";
+// How often to check that a followed job still exists. The event stream
+// cannot be relied on to say so: a connection can die without an error (a
+// proxy in between, a machine that vanished), and then nothing arrives at all.
+const JOB_CHECK_MS = 4000;
 
 // Progress events streamed by the server's job runner (same shape the CLI
 // emitted in --json mode).
@@ -208,6 +217,9 @@ export function useJobProgress(key?: string): JobProgress {
   const esRef = useRef<EventSource | null>(null);
   const jobIdRef = useRef<string | null>(null);
   const queuePollRef = useRef<number | null>(null);
+  const checkTimerRef = useRef<number | null>(null);
+  // The stream a check is in flight for (one check per stream at a time).
+  const checkingRef = useRef<EventSource | null>(null);
 
   function stopQueuePoll() {
     if (queuePollRef.current !== null) {
@@ -249,6 +261,10 @@ export function useJobProgress(key?: string): JobProgress {
     esRef.current?.close();
     esRef.current = null;
     stopQueuePoll();
+    if (checkTimerRef.current !== null) {
+      clearInterval(checkTimerRef.current);
+      checkTimerRef.current = null;
+    }
   }
 
   function reset() {
@@ -331,6 +347,13 @@ export function useJobProgress(key?: string): JobProgress {
     startQueuePoll(jobId);
     const es = new EventSource(jobEventsUrl(jobId));
     esRef.current = es;
+    let opened = false;
+    es.onopen = () => {
+      // Every connection starts with a replay of the job's events so far, so
+      // on a reconnect drop the lines already shown rather than repeat them.
+      if (opened) setLog([]);
+      opened = true;
+    };
     es.onmessage = (ev) => {
       try {
         handleEvent(JSON.parse(ev.data) as ChessDbEvent);
@@ -338,10 +361,48 @@ export function useJobProgress(key?: string): JobProgress {
         /* ignore parse errors */
       }
     };
-    es.onerror = () => {
-      // The browser auto-reconnects; if the job already finished we have closed
-      // the stream, so this only fires on genuine transport drops.
+    // The stream alone cannot tell a running job from one that is gone: after
+    // a server restart the browser's reconnect is answered "no such job" and
+    // it gives up, and some dead connections never report an error at all.
+    // Either way nothing more would arrive and the caller sat at "Running…"
+    // for ever. So ask after the job — at once on an error, and regularly.
+    let finishedSeen = false;
+    const check = () => {
+      if (checkingRef.current === es) return;
+      checkingRef.current = es;
+      const current = () => esRef.current === es && jobIdRef.current === jobId;
+      fetch(apiUrl(`/jobs/${encodeURIComponent(jobId)}`))
+        .then(async (res) => {
+          if (!current()) return;
+          if (res.status === 404) {
+            handleEvent({ type: "error", message: JOB_LOST });
+            return;
+          }
+          if (!res.ok) return; // no answer about the job — ask again next time
+          const snap = (await res.json()) as JobSnapshot;
+          if (!current()) return;
+          const finished = snap.status !== "queued" && snap.status !== "running";
+          // Reconnect when the browser has given up on the stream, or when the
+          // job ended a whole check ago and the stream still has not said so
+          // (it is dead). The replay brings everything up to date.
+          if (es.readyState === EventSource.CLOSED || (finished && finishedSeen)) {
+            setLog([]);
+            openStream(jobId);
+          }
+          finishedSeen = finished;
+        })
+        .catch(() => {
+          // The server cannot be reached at all — keep asking until it can.
+          if (current()) setMessage("Lost the connection to the server — waiting for it to come back…");
+        })
+        .finally(() => {
+          if (checkingRef.current === es) checkingRef.current = null;
+        });
     };
+    es.onerror = () => {
+      if (esRef.current === es) check();
+    };
+    checkTimerRef.current = window.setInterval(check, JOB_CHECK_MS);
   }
 
   function run(args: string[]) {
