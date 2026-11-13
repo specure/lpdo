@@ -2393,6 +2393,77 @@ async fn engine_configure_handler(
     Ok(Json(status))
 }
 
+/// The server's memory budget and how it is split (see `db/mod.rs`).
+#[derive(serde::Serialize)]
+struct MemoryStatus {
+    /// The machine's memory, where the system says.
+    memory_mb: Option<u64>,
+    /// What the server may use, and whether that was chosen or is the default.
+    budget_mb: u64,
+    chosen: bool,
+    default_budget_mb: u64,
+    min_budget_mb: u64,
+    /// None where the machine's memory is not known.
+    max_budget_mb: Option<u64>,
+    /// Stockfish's hash with its helper's, and what that leaves the database.
+    engine_mb: u64,
+    database_mb: u64,
+}
+
+async fn memory_status(state: &AppState) -> MemoryStatus {
+    let s = state.engine.status().await.settings;
+    let engine_mb = ((s.hash_mb + if s.replies { s.helper_hash_mb } else { 0 }) as u64).min(crate::db::max_engine_hash_mb() as u64);
+    let (min, max) = crate::db::budget_bounds_mb();
+    MemoryStatus {
+        memory_mb: crate::db::total_ram_mb(),
+        budget_mb: crate::db::server_budget_mb(),
+        chosen: crate::db::budget_is_chosen(),
+        default_budget_mb: crate::db::default_budget_mb(),
+        min_budget_mb: min,
+        max_budget_mb: (max != u64::MAX).then_some(max),
+        engine_mb,
+        database_mb: crate::db::db_limit_mb(engine_mb as u32),
+    }
+}
+
+async fn memory_handler(State(state): State<AppState>) -> Json<MemoryStatus> {
+    Json(memory_status(&state).await)
+}
+
+#[derive(Deserialize)]
+struct MemoryBody {
+    /// The budget in MB; null for the default.
+    budget_mb: Option<u64>,
+}
+
+/// Choose the server's memory budget. It applies at once: Stockfish's hash is
+/// brought down if it no longer fits (the engine restarts with it), and the
+/// database's limit is set again on the live instance.
+async fn memory_put_handler(
+    State(state): State<AppState>,
+    Json(body): Json<MemoryBody>,
+) -> ApiResult<MemoryStatus> {
+    let data_dir = state.db_path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+    crate::db::set_budget(&data_dir, body.budget_mb).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let s = state.engine.status().await.settings;
+    let max_hash = crate::db::max_engine_hash_mb();
+    if s.hash_mb > max_hash {
+        state
+            .engine
+            .configure_all(None, None, Some(max_hash), None, None, None, None, None, None, crate::engine::ReplySettings::default())
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    }
+    let status = memory_status(&state).await;
+    let hash = status.engine_mb as u32;
+    state
+        .writer
+        .run(move |c| crate::db::apply_memory_limit(c, hash))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(status))
+}
+
 #[derive(Deserialize)]
 struct EngineAnalyseQuery {
     fen: String,
@@ -3054,6 +3125,8 @@ pub async fn run(
     crate::scheduler::spawn(jobs.clone(), reads.clone(), db_path.clone());
 
     let setup = Arc::new(std::sync::Mutex::new(SetupPhase::Idle));
+    // Before the engines: the ceiling of Stockfish's hash depends on the budget.
+    crate::db::load_budget(db_path.parent().unwrap_or(std::path::Path::new(".")));
     let engine = crate::engine::Engine::new(db_path.parent().unwrap_or(std::path::Path::new(".")));
     crate::cloud_eval::init_settings(db_path.parent().unwrap_or(std::path::Path::new(".")));
     crate::repertoire::init_settings(db_path.parent().unwrap_or(std::path::Path::new(".")));
@@ -3137,6 +3210,7 @@ pub async fn run(
         .route("/position/moves",                      get(position_moves_handler))
         .route("/cloud-eval",                          get(cloud_eval_handler))
         .route("/engine",                              get(engine_status_handler).put(engine_configure_handler))
+        .route("/memory",                              get(memory_handler).put(memory_put_handler))
         .route("/engine/analyse",                      get(engine_analyse_handler))
         .route("/engine/stop",                         post(engine_stop_handler))
         .route("/engines",                             get(engines_enabled_handler))
