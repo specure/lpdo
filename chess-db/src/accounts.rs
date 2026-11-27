@@ -208,6 +208,19 @@ pub fn enabled(conn: &Connection) -> Result<Vec<Account>> {
     Ok(list(conn)?.into_iter().filter(|a| a.enabled).collect())
 }
 
+/// The enabled accounts the daily run owes a sync: never synced, or last
+/// synced more than `age_secs` ago (the time since the day's scheduled run).
+/// An age, not a clock time: `last_sync` is on the database's clock, the
+/// schedule on the local one.
+pub fn due(conn: &Connection, age_secs: i64) -> Result<Vec<i64>> {
+    let mut st = conn.prepare(
+        "SELECT id FROM accounts
+         WHERE enabled AND (last_sync IS NULL OR last_sync < CAST(NOW() AS TIMESTAMP) - to_seconds(CAST(? AS BIGINT)))
+         ORDER BY id",
+    )?;
+    Ok(st.query_map(duckdb::params![age_secs.max(0)], |r| r.get::<_, i64>(0))?.collect::<duckdb::Result<_>>()?)
+}
+
 /// The player id and the handles linked to it, for "my games". A handle's own
 /// id is given back as it is.
 pub fn identity_ids(conn: &Connection, player: i64) -> Result<Vec<i64>> {
@@ -604,6 +617,26 @@ mod tests {
         remove(&conn, a.id).unwrap();
         assert_eq!(identity_ids(&conn, 1).unwrap(), vec![1, b.player_id]);
         assert!(add(&conn, Platform::Lichess, "no spaces here", 1, None).is_err());
+    }
+
+    #[test]
+    fn the_daily_run_owes_what_was_not_synced_since_it() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        conn.execute_batch("INSERT INTO players (id, name, name_normalized) VALUES (1, 'Svrcek, Jozef', 'svrcek jozef');").unwrap();
+        let a = add(&conn, Platform::Lichess, "jozef77", 1, None).unwrap();
+        let b = add(&conn, Platform::Chesscom, "jozef77", 1, None).unwrap();
+        assert_eq!(due(&conn, 3600).unwrap(), vec![a.id, b.id], "never synced");
+        record_sync(&conn, a.id, "ok", true).unwrap();
+        assert_eq!(due(&conn, 3600).unwrap(), vec![b.id], "synced since the run");
+        record_sync(&conn, b.id, "failed: offline", false).unwrap();
+        assert_eq!(due(&conn, 3600).unwrap(), vec![b.id], "a failure leaves it owed");
+        conn.execute("UPDATE accounts SET last_sync = last_sync - INTERVAL 2 HOUR WHERE id = ?", duckdb::params![a.id]).unwrap();
+        assert_eq!(due(&conn, 3600).unwrap(), vec![a.id, b.id], "synced before the run");
+        assert_eq!(due(&conn, 3 * 3600).unwrap(), vec![b.id]);
+        set_enabled(&conn, a.id, false).unwrap();
+        set_enabled(&conn, b.id, false).unwrap();
+        assert!(due(&conn, 0).unwrap().is_empty(), "not daily: left alone");
     }
 
     /// The real platforms: run by hand — `cargo test accounts -- --ignored`.

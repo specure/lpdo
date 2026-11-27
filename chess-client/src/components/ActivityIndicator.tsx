@@ -37,6 +37,7 @@ function jobLabel(j: Job): string {
     }
     case "sources_set_window": return `Set date range · ${src || "source"}`;
     case "update":             return "Scheduled update";
+    case "sync_accounts":      return (j.params as { account?: unknown } | undefined)?.account != null ? "Sync an online account" : "Sync online accounts";
     case "fide_refresh":       return "Update FIDE player list";
     case "index_positions":    return "Build position index";
     case "dedup_games":        return "Remove duplicate games";
