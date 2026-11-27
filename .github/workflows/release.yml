@@ -64,14 +64,14 @@ jobs:
             # do I click?" choice. .msi (WiX) dropped; re-add if enterprise/MDM
             # (Intune/GPO) deployment is ever needed.
             bundles: nsis
-          # macOS on Apple Silicon (M1+). The macos-14 runner is arm64, so the
+          # macOS on Apple Silicon (M1+). The macos-15 runner is arm64, so the
           # default host target is aarch64-apple-darwin — no extra rustup target
           # needed. We build the `.app` (signed with the Developer ID Application
           # cert) and then wrap it in a `.pkg` (steps below) that installs the GUI
           # + a system launchd daemon, signed with the Developer ID Installer cert
           # + notarized. We ship the `.pkg` only (no `.dmg`): one installer that
           # always sets up the server, no "which one?" choice.
-          - os: macos-14
+          - os: macos-15
             sidecar_src: target/release/chess-db
             sidecar_dst: chess-client/src-tauri/binaries/chess-db-aarch64-apple-darwin
             bundles: app
@@ -142,7 +142,7 @@ jobs:
       # into the runner's temp dir and hand tauri-action the path. macOS only —
       # the other targets don't sign.
       - name: Write notarization API key
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         shell: bash
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
@@ -179,7 +179,7 @@ jobs:
       # cert + notarized; if that secret is absent it builds UNSIGNED for local
       # testing (right-click→Open), so dry-runs work before the cert exists.
       - name: Import Developer ID Installer certificate
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         shell: bash
         env:
           APPLE_INSTALLER_CERTIFICATE: ${{ secrets.APPLE_INSTALLER_CERTIFICATE }}
@@ -206,7 +206,7 @@ jobs:
           echo "LPDO_PKG_SIGN=1" >> "$GITHUB_ENV"
 
       - name: Build the product .pkg
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         shell: bash
         env:
           INSTALLER_IDENTITY: "Developer ID Installer: SPECURE GmbH (4XZ94A6MUA)"
@@ -243,7 +243,7 @@ jobs:
           ls -la dist-pkg/
 
       - name: Notarize and staple the .pkg
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         shell: bash
         env:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -262,7 +262,7 @@ jobs:
           spctl --assess --type install -vv "$PKG" || true
 
       - name: Attach .pkg to the draft release
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
