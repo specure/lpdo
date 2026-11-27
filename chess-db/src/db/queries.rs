@@ -400,6 +400,41 @@ pub fn recalculate_game_counts(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Recalculate `game_count` for the players of the games in these source items
+/// only — what a small import changed. `recalculate_game_counts` rewrites every
+/// player's row, which on a large database costs far more than the import.
+pub fn recalculate_game_counts_for_items(conn: &Connection, item_ids: &[i32]) -> Result<()> {
+    if item_ids.is_empty() {
+        return Ok(());
+    }
+    let items = item_ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+    conn.execute_batch(&format!("
+        CREATE OR REPLACE TEMP TABLE recount_players AS
+            SELECT white_id AS id FROM games WHERE issue_id IN ({items})
+            UNION
+            SELECT black_id AS id FROM games WHERE issue_id IN ({items});
+
+        UPDATE players
+        SET game_count = COALESCE(counts.total, 0)
+        FROM (
+            SELECT player_id, SUM(cnt) AS total FROM (
+                SELECT white_id AS player_id, COUNT(*) AS cnt FROM games
+                WHERE deleted_at IS NULL AND white_id IN (SELECT id FROM recount_players) GROUP BY white_id
+                UNION ALL
+                SELECT black_id AS player_id, COUNT(*) AS cnt FROM games
+                WHERE deleted_at IS NULL AND black_id IN (SELECT id FROM recount_players) GROUP BY black_id
+            ) sub
+            GROUP BY player_id
+        ) counts
+        WHERE players.id = counts.player_id;
+
+        DROP TABLE recount_players;
+
+        UPDATE players SET game_count = 0 WHERE game_count IS NULL;
+    "))?;
+    Ok(())
+}
+
 /// Recalculate `game_count` for a single player. Excludes soft-deleted games.
 pub fn recalculate_game_count_for(conn: &Connection, player_id: u32) -> Result<()> {
     conn.execute(
