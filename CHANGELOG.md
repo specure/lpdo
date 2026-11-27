@@ -100,6 +100,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   start after a missed one); one that fails is tried again within the hour.
   The sync shows in Activity under its name, and "synced …" gives the time
   in local time (it was UTC, an hour or two early).
+- **Engine: a move listed twice** — past a few seconds of searching,
+  Stockfish reports a line it is searching again within a depth with only a
+  bound score; those were skipped, and the line's old move stayed in its
+  place while the move had already moved up the list. The Engine panel, the
+  Strong counts and the repertoire's line-end analysis could then show a
+  move twice, at two depths and two scores, and count it twice as strong
+  (2% of the results kept). Such a line now waits for its exact score; the
+  results kept that name a move twice are removed at the server's start and
+  analysed afresh when next shown.
 
 ## [0.25.0] - 2026-10-25
 
