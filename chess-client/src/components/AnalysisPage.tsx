@@ -79,6 +79,9 @@ interface Props {
   onOpenRepertoire?: (m: LineMatch, moves: string[]) => void;
   /** Drill a chapter (the Repertoire page). */
   onDrill?: (chapterId: number) => void;
+  /** The host's own commands in the board's More menu, after the rail's —
+   *  the Repertoire page prints a book's model games from there. */
+  menuExtras?: MenuEntry[];
   /** Open a related game as a new tab. Resolves to 0, or to how many did not
    *  fit (the rail is full) — then it stayed closed. */
   onOpenGame: (games: GameSummary[]) => Promise<number>;
@@ -116,7 +119,7 @@ export interface LeadingPanel {
 
 export default function AnalysisPage({
   tabs, activeKey, onActivate, onClose, onCloseMany, onMove, capacity, onOpenGame, onTabState, onGameMutated, onOpenProfile,
-  leadingPanels, layoutId = "analysis-main", emptyState, myGamesBook, onPickChapter, documentReload = 0, onOpenRepertoire, onDrill,
+  leadingPanels, layoutId = "analysis-main", emptyState, myGamesBook, onPickChapter, documentReload = 0, onOpenRepertoire, onDrill, menuExtras,
 }: Props) {
   const lead = leadingPanels && leadingPanels.length > 0 ? leadingPanels : null;
   const leadIds = lead ? lead.map((p) => p.id) : ["rail"];
@@ -583,7 +586,7 @@ export default function AnalysisPage({
                 onOpenProfile={onOpenProfile}
                 moveListHost={moveHost}
                 playRequest={playRequest}
-                menuExtras={railExtras}
+                menuExtras={menuExtras ? [...railExtras, ...menuExtras] : railExtras}
                 chapter={chapterDoc}
                 cursorRequest={cursorRequest}
                 onLineStep={active.document ? lineStep : undefined}
