@@ -1,6 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
+import { parseBlockTags } from "../../lib/pgnEditor";
+import { pairingFrom } from "../../lib/pairing";
+// The type alone: the module itself is fetched when someone prints (below).
+import type { TextSize } from "../../lib/pdfExport";
 
 // Printing a game, or saving it as a PDF — the same pages, ending in the
 // system print dialog or in a file: A4, two columns, the main line in bold
@@ -11,6 +15,38 @@ import { invoke } from "@tauri-apps/api/core";
 // author asks for one — so an imported annotator's diagrams are kept.
 
 const PDF_EXPORT_DIR_KEY = "pdfExportDir";
+/** The text size printed last: a matter of one's eyes and one's printer, so
+ *  it is kept from one printing to the next. */
+const TEXT_SIZE_KEY = "printText";
+const TEXT_SIZES: { value: TextSize; label: string; title: string }[] = [
+  { value: "small", label: "Small", title: "The most game on a page — a bulletin's type" },
+  { value: "medium", label: "Medium", title: "Read comfortably at arm's length" },
+  { value: "large", label: "Large", title: "For reading at the board" },
+];
+function storedTextSize(): TextSize {
+  try {
+    const v = localStorage.getItem(TEXT_SIZE_KEY);
+    return TEXT_SIZES.some((t) => t.value === v) ? (v as TextSize) : "medium";
+  } catch { return "medium"; }
+}
+/** Whether a diagram goes at every commented or drawn-on move and wherever
+ *  the lines part: kept, as the text size is — someone who studies from the page wants it every time. */
+const EVERY_NOTE_KEY = "printDiagramEveryNote";
+function storedEveryNote(): boolean {
+  try { return localStorage.getItem(EVERY_NOTE_KEY) === "1"; } catch { return false; }
+}
+/** How many places in a PGN's movetext a diagram at every note would have
+ *  something to draw for: the comments that say or show something — words,
+ *  an arrow, a ringed square; a clock time or an engine's score alone is not
+ *  a note — and the variations. */
+function noteCount(pgn: string): number {
+  const movetext = pgn.replace(/^\s*\[\w+\s+"[^\n]*"\]\s*$/gm, "");
+  let n = 0;
+  for (const m of movetext.matchAll(/\{([^}]*)\}/g)) {
+    if (/\[%c[as]l\s/.test(m[1]) || m[1].replace(/\[%[^\]]*\]/g, "").trim()) n += 1;
+  }
+  return n + (movetext.replace(/\{[^}]*\}/g, "").match(/\(/g) ?? []).length;
+}
 /** The preview's resolution: a page is shown about 480px wide, and this
  *  keeps 9pt type readable when it is. Printing draws afresh at print
  *  resolution. */
@@ -31,6 +67,68 @@ export interface ExportableGame {
   result: string | null;
   eco: string | null;
   pgn: string | null;
+  /** Where the caller knows them — else they are read from the PGN's tags. */
+  site?: string | null;
+  round?: string | null;
+  /** Nothing left out above is to be read from the PGN's tags (`PdfGame`). */
+  asGiven?: boolean;
+}
+
+/** A game known only by its PGN — a repertoire book's model game — as the
+ *  dialog takes it: the players, their ratings and the rest read from the
+ *  PGN's own headers. A date known in part is kept as far as it is known
+ *  ("2022.??.??" is 2022), so neither the page nor the file's name carries
+ *  question marks.
+ *
+ *  A course's export names both players in `[White]` — "Yilmazyerli, Mert
+ *  vs. Dolgun, Can (Ayvalik Petro, 2022)" — and leaves `[Black "?"]`: the
+ *  line is read into its players, event and year (lib/pairing.ts), and the
+ *  tags' own event and date — the course's name, the day of the export — are
+ *  left out. A game with one name and no pairing in it (a chapter made a
+ *  model game) keeps the name as its title, with no second player. */
+export function gameFromPgn(pgn: string, flipped?: boolean): ExportableGame {
+  const tags = new Map(parseBlockTags(pgn.trimStart()).tags.map((t) => [t.name, t.value.trim()]));
+  const tag = (name: string): string | null => {
+    const v = tags.get(name);
+    // "undefined": what one course's export wrote for everything it lacked.
+    return v && !/^[?\s-]*$/.test(v) && v !== "undefined" ? v : null;
+  };
+  const elo = (name: string): number | null => {
+    const n = Number.parseInt(tag(name) ?? "", 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  const date = (tag("Date") ?? "").split(/[.\-/]/);
+  const known = date.findIndex((part) => !/^\d+$/.test(part));
+  const white = tag("White");
+  const black = tag("Black");
+  // LPDO's own headers on a chapter (kept when it is made a model game):
+  // its place in the book and "LPDO repertoire" are not a round and a site.
+  const own = tag("Site") === "LPDO repertoire";
+  const game: ExportableGame = {
+    flipped,
+    white: white ?? "?",
+    black: black ?? "?",
+    white_elo: elo("WhiteElo"),
+    black_elo: elo("BlackElo"),
+    event: tag("Event"),
+    site: own ? null : tag("Site"),
+    round: own ? null : tag("Round"),
+    date: (known < 0 ? date : date.slice(0, known)).join("-") || null,
+    result: tag("Result"),
+    eco: tag("ECO"),
+    pgn,
+    asGiven: true,
+  };
+  if (white && !black) {
+    const pairing = pairingFrom(white);
+    // Both players in the one line: the event and the year are the line's,
+    // or not known — the tags hold the course's.
+    if (pairing) return { ...game, white: pairing.white, black: pairing.black, event: pairing.event, date: pairing.year, site: null, round: null };
+    // A title: no second player to print a question mark for — and, as
+    // above, no event and date that are the course's and the export's.
+    return { ...game, black: "", event: null, date: null, site: null, round: null };
+  }
+  return game;
 }
 
 export default function PrintDialog({
@@ -38,6 +136,7 @@ export default function PrintDialog({
   games,
   flipped,
   primary = "print",
+  title: givenTitle = "",
   onClose,
 }: {
   /** The one game to print — or, with `games`, ignored. */
@@ -50,6 +149,9 @@ export default function PrintDialog({
   /** What the dialog ends in: the system print dialog, or a file. The menu
    *  entry that opened it says which; the options are the same pages. */
   primary?: "print" | "save";
+  /** The title several games start with — a book's model games are named
+   *  for the book. It can be changed, or cleared, in the dialog. */
+  title?: string;
   onClose: () => void;
 }) {
   const list = games ?? (detail ? [detail] : []);
@@ -58,9 +160,23 @@ export default function PrintDialog({
   // Analysis rail carries its own; otherwise the board this was opened
   // from), or, on request, from the side to move.
   const [sideToMove, setSideToMove] = useState(false);
-  const [title, setTitle] = useState("");
+  const [title, setTitle] = useState(givenTitle);
   const [figurines, setFigurines] = useState(true);
+  const [textSize, setTextSize] = useState<TextSize>(storedTextSize);
+  const pickTextSize = (size: TextSize) => {
+    setTextSize(size);
+    try { localStorage.setItem(TEXT_SIZE_KEY, size); } catch { /* not kept */ }
+  };
+  const [everyNote, setEveryNote] = useState(storedEveryNote);
+  const pickEveryNote = (on: boolean) => {
+    setEveryNote(on);
+    try { localStorage.setItem(EVERY_NOTE_KEY, on ? "1" : "0"); } catch { /* not kept */ }
+  };
   const markers = list.reduce((n, g) => n + (g.pgn?.match(/\[#\]/g) ?? []).length, 0);
+  const notes = useMemo(() => list.reduce((n, g) => n + (g.pgn ? noteCount(g.pgn) : 0), 0),
+    // The games themselves do not change while the dialog is up.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [list.length]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -83,16 +199,16 @@ export default function PrintDialog({
       printable.map((g) => ({
         white: g.white, black: g.black,
         white_elo: g.white_elo, black_elo: g.black_elo,
-        event: g.event, date: g.date,
-        result: g.result, eco: g.eco, pgn: g.pgn ?? "", flipped: g.flipped,
+        event: g.event, date: g.date, site: g.site, round: g.round,
+        result: g.result, eco: g.eco, pgn: g.pgn ?? "", flipped: g.flipped, asGiven: g.asGiven,
       })),
-      { flipped, sideToMove, figurines, title, producer: "LPDO" },
+      { flipped, sideToMove, figurines, textSize, title, diagramEveryNote: everyNote, producer: "LPDO" },
     );
     const first = printable[0];
     const slug = title.trim().replace(/[^\p{L}\p{N}]+/gu, "_").replace(/^_|_$/g, "");
     const name = many
       ? slug ? `${slug}.pdf` : `${(first.date ?? "").slice(0, 10) || "games"}-${printable.length}-games.pdf`
-      : `${(first.date ?? "").slice(0, 10) || "game"}-${surname(first.white)}-${surname(first.black)}.pdf`;
+      : [(first.date ?? "").slice(0, 10) || "game", surname(first.white), ...(first.black.trim() ? [surname(first.black)] : [])].join("-") + ".pdf";
     return { bytes, name };
   }
 
@@ -121,7 +237,7 @@ export default function PrintDialog({
     return () => window.clearTimeout(timer);
     // The games themselves do not change while the dialog is up.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sideToMove, title, figurines, printable.length]);
+  }, [sideToMove, title, figurines, textSize, everyNote, printable.length]);
 
   /** Print: the pages are drawn into the window and the system's print
    *  dialog opens on them (lib/printPages.ts). */
@@ -223,12 +339,41 @@ export default function PrintDialog({
                 </label>
               </>
             )}
+            {/* Three sizes, the smallest the densest; the pages beside show
+                what each costs in paper. */}
+            <div className="flex items-center gap-2 text-body-sm text-on-surface" role="radiogroup" aria-label="Text size">
+              <span className="shrink-0">Text size</span>
+              <span className="inline-flex rounded-full overflow-hidden border border-outline/40">
+                {TEXT_SIZES.map((t) => (
+                  <button
+                    key={t.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={textSize === t.value}
+                    title={t.title}
+                    onClick={() => pickTextSize(t.value)}
+                    className={`h-7 px-3 text-label-md transition-colors duration-short3 ease-standard ${
+                      textSize === t.value ? "bg-primary text-on-primary" : "bg-surface-container text-on-surface-variant hover:bg-on-surface/8"
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </span>
+            </div>
             <label className={row}>
               <input type="checkbox" checked={figurines} onChange={(e) => setFigurines(e.target.checked)} className="accent-primary" />
               Print pieces as figurines (♘f3) rather than letters (Nf3)
             </label>
-            {/* Only when a game marks a diagram. */}
-            {markers > 0 && (
+            {/* Only when a game has something to draw a board for. */}
+            {notes > 0 && (
+              <label className={row} title="As well as the diagrams a game marks itself">
+                <input type="checkbox" checked={everyNote} onChange={(e) => pickEveryNote(e.target.checked)} className="accent-primary" />
+                A diagram at every comment, arrow or marked square, and wherever variations branch off
+              </label>
+            )}
+            {/* Only when there is a diagram to draw. */}
+            {(markers > 0 || (everyNote && notes > 0)) && (
               <label className={row}>
                 <input type="checkbox" checked={sideToMove} onChange={(e) => setSideToMove(e.target.checked)} className="accent-primary" />
                 Draw each diagram from the side to move

@@ -5,7 +5,7 @@
 // Games / Lines, engines) but no rail of open games. Switching chapters, or
 // books, stays on this page.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { GameSummary, Job } from "../types";
 import {
@@ -19,6 +19,8 @@ import { currentMyPlayer } from "./MyStatsWidget";
 import { buildPlayback } from "../lib/useGamePgn";
 import { apiUrl, JOB_SETTLED_EVENT } from "../api";
 import AnalysisPage, { type AnalysisTab } from "./AnalysisPage";
+import PrintDialog, { gameFromPgn, type ExportableGame } from "./games/PrintDialog";
+import type { MenuEntry } from "./games/GameMoreMenu";
 import Flyout, { PinButton } from "./Flyout";
 import MergeChaptersDialog from "./repertoire/MergeChaptersDialog";
 import DrillDialog from "./repertoire/DrillDialog";
@@ -334,6 +336,33 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
       if (c.model !== model) throw new Error("The server does not know model games yet. Update the server (lpdo-server 0.21.42 or later).");
     }
   });
+  // Model games — or reference games — being printed, or saved as a PDF:
+  // one document, in the list's order, named for the book.
+  const [printing, setPrinting] = useState<{ games: ExportableGame[]; primary: "print" | "save"; title: string } | null>(null);
+  const printGames = async (ids: number[], primary: "print" | "save", title: string) => {
+    if (ids.length === 0) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const views = readViews();
+      const cs = await Promise.all(ids.map((id) => getChapter(id)));
+      // Each game's diagrams the way its board stands: as it was left, else
+      // from the book's side.
+      setPrinting({
+        primary, title,
+        games: cs.map((c) => gameFromPgn(c.pgn, typeof views[c.id]?.flipped === "boolean" ? views[c.id].flipped : c.book.color === "black")),
+      });
+    } catch (e) {
+      setError(`Could not load the games: ${e instanceof Error ? e.message : String(e)}`);
+    } finally { setBusy(false); }
+  };
+  // The games selected in each of the two lists, as the lists report them —
+  // what "the N selected" means in the board's More menu.
+  const [gamesPicked, setGamesPicked] = useState<{ models: number[]; reference: number[] }>({ models: [], reference: [] });
+  const pickGames = useCallback((kind: "models" | "reference", ids: number[]) => {
+    setGamesPicked((p) => (p[kind].length === ids.length && p[kind].every((id, i) => id === ids[i]) ? p : { ...p, [kind]: ids }));
+  }, []);
+
   /** `model`: the games are model games of the book. */
   const importPgn = async (bookId: number, items: { pgn: string; file?: string }[], model = false) => {
     // One file at a time, in the order picked: each adds its chapters at the
@@ -586,6 +615,8 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
                   }
                 })}
                 onDeleteChapters={(ids) => run(async () => { await deleteChapters(ids); if (chapterId != null && ids.includes(chapterId)) dropChapter(); })}
+                onPrint={(ids, primary) => void printGames(ids, primary, printTitle(book.name, kind))}
+                onPicked={pickGames}
               />
             </div>
           ))}
@@ -596,6 +627,29 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
     </div>
   );
 
+  // A model game on the board: its list's games print from the board's More
+  // menu too, where the Analysis page prints its open games — those selected
+  // in the list, and all of them. (The game itself is the menu's own Print.)
+  const printExtras: MenuEntry[] = (() => {
+    const onBoard = book?.chapters.find((c) => c.id === chapterId);
+    if (!book || !onBoard?.model) return [];
+    const kind = onBoard.annotated !== false ? "models" as const : "reference" as const;
+    const all = (kind === "models" ? modelsOf(book) : referencesOf(book)).map((c) => c.id);
+    if (all.length < 2) return [];
+    const some = all.filter((id) => gamesPicked[kind].includes(id));
+    const subset = some.length >= 2 && some.length < all.length;
+    const many = kind === "models" ? "model games" : "reference games";
+    const title = printTitle(book.name, kind);
+    return [
+      ...(subset ? [
+        { label: `Print the ${some.length} selected…`, onClick: () => void printGames(some, "print", title), disabled: busy },
+        { label: `Export the ${some.length} selected as PDF…`, onClick: () => void printGames(some, "save", title), disabled: busy },
+      ] : []),
+      { label: `Print all ${many}…`, onClick: () => void printGames(all, "print", title), separated: subset, disabled: busy },
+      { label: `Export all ${many} as PDF…`, onClick: () => void printGames(all, "save", title), disabled: busy },
+    ];
+  })();
+
   // Each fold has a layout of its own, which AnalysisPage applies in place —
   // never by remounting it, which would lose an edit of the lines in progress.
   const layoutId = `repertoire-${booksFolded ? "b" : "B"}${chaptersFolded ? "c" : "C"}`;
@@ -605,6 +659,9 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
     {sending && (
       <SendToPhoneDialog chapterId={sending.id} onClose={() => setSending(null)}
         onSaveFile={() => { const s = sending; setSending(null); void saveForPhone(s.id, s.filename).then((n) => n && setError(n.startsWith("Could not") ? n : null)); }} />
+    )}
+    {printing && (
+      <PrintDialog games={printing.games} primary={printing.primary} title={printing.title} flipped={book?.color === "black"} onClose={() => setPrinting(null)} />
     )}
     {merging && (
       <MergeChaptersDialog
@@ -634,6 +691,7 @@ export default function RepertoirePage({ onOpenGame, open, onOpened }: Props) {
       }}
       documentReload={docReload}
       onDrill={setDrilling}
+      menuExtras={printExtras}
       leadingPanels={[
         booksFolded ? { id: "books", node: booksPanel, size: "3", strip: true }
           : { id: "books", node: booksPanel, size: "14", min: "9", max: "30", foldedSize: "3", onFold: () => setBooksFolded(true) },
@@ -698,6 +756,11 @@ async function exportPgn(path: string, filename: string): Promise<string | null>
     return ok ? "Saved as PGN" : null;
   } catch (e) { return `Could not export: ${e instanceof Error ? e.message : String(e)}`; }
 }
+
+/** What a document of a book's games is called, in the page header and the
+ *  file's name: "Classical English — model games". */
+const printTitle = (bookName: string, kind: "models" | "reference") =>
+  `${bookName} — ${kind === "models" ? "model games" : "reference games"}`;
 
 type ImportItem = { pgn: string; file?: string };
 /** A file picked for the books' Import…: a PGN, or a zip of them (a backup). */
@@ -1008,10 +1071,17 @@ function BookDetails({ book, busy, canArrange, onArrange, f2Here, onUpdate, onDe
  *  command that destroys (shown in red). */
 type MenuItem = { label: string; onClick?: () => void; disabled?: boolean; separated?: boolean; heading?: boolean; asWritten?: boolean; danger?: boolean };
 
+/** A menu's distance from its ⋯, and from the window's edge at the least. */
+const MENU_GAP = 4;
+const MENU_EDGE = 8;
+
 /** Commands behind one ⋯. `up`: opens upwards (at the foot of a panel);
  *  `right`: opens rightwards, for a ⋯ near the window's left edge. Placed
  *  against the window (fixed), so a panel's edge never cuts it off; a scroll
- *  closes it rather than leave it behind. */
+ *  closes it rather than leave it behind. The window's own edge does not cut
+ *  it off either: a menu too long for the room on its side of the ⋯ opens
+ *  to the other side when there is more room there, and scrolls within
+ *  itself when it is longer than either. */
 function Menu({ entries, title, up = false, right = false }: {
   entries: MenuItem[]; title: string; up?: boolean; right?: boolean;
 }) {
@@ -1019,6 +1089,18 @@ function Menu({ entries, title, up = false, right = false }: {
   const open = at !== null;
   const ref = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  // Which way it opens this time: `up`, unless the menu does not fit there.
+  const [upwards, setUpwards] = useState(up);
+  const room = at ? { above: at.top - MENU_GAP - MENU_EDGE, below: window.innerHeight - at.bottom - MENU_GAP - MENU_EDGE } : null;
+  useLayoutEffect(() => {
+    if (!room) return;
+    // Its whole length, whatever it is held to at the moment.
+    const height = menu.current?.scrollHeight ?? 0;
+    const [wanted, other] = up ? [room.above, room.below] : [room.below, room.above];
+    setUpwards(height <= wanted || wanted >= other ? up : !up);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [at, up, entries.length]);
   useEffect(() => {
     if (!open) return;
     const close = () => setAt(null);
@@ -1036,16 +1118,17 @@ function Menu({ entries, title, up = false, right = false }: {
       window.removeEventListener("resize", close);
     };
   }, [open]);
-  const place: React.CSSProperties | undefined = at ? {
-    ...(up ? { bottom: window.innerHeight - at.top + 4 } : { top: at.bottom + 4 }),
+  const place: React.CSSProperties | undefined = at && room ? {
+    ...(upwards ? { bottom: window.innerHeight - at.top + MENU_GAP } : { top: at.bottom + MENU_GAP }),
     ...(right ? { left: at.left } : { right: window.innerWidth - at.right }),
+    maxHeight: Math.max(upwards ? room.above : room.below, 0),
   } : undefined;
   return (
     <div ref={ref} className="relative shrink-0">
       <button ref={button} onClick={() => setAt(open ? null : button.current?.getBoundingClientRect() ?? null)}
         className={`${nav} text-body-sm`} title={title} aria-haspopup="menu" aria-expanded={open}>⋯</button>
       {open && (
-        <div role="menu" style={place} className="fixed z-50 min-w-44 py-1 rounded-md bg-surface-container-high border border-outline/40 shadow-lg flex flex-col">
+        <div ref={menu} role="menu" style={place} className="fixed z-50 min-w-44 py-1 rounded-md bg-surface-container-high border border-outline/40 shadow-lg flex flex-col overflow-y-auto *:shrink-0">
           {entries.map((e, i) => e.heading ? (
             <div key={`h${i}`} role="presentation"
               className={`px-3 pt-1.5 pb-0.5 max-w-80 truncate select-none ${e.asWritten ? "text-label-md font-medium text-on-surface-variant" : "text-label-sm uppercase tracking-wider text-on-surface-variant"} ${i > 0 ? "border-t border-outline/40 mt-1 pt-2" : ""}`}
@@ -1067,7 +1150,7 @@ function Menu({ entries, title, up = false, right = false }: {
 
 /** The book's chapters, with one menu for the chapter on the board and a
  *  mode for putting them in order. */
-function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onCountFens, onRenameMany, onChapter, onDeleteChapter, onDeleteChapters, onAddEmpty, onImport, f2Here, arrowsHere, kind = "chapters", onImportModels, onConvert, onOrder, onSetKind, onSetOverview, onSendToPhone }: {
+function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onMerge, onAnalyse, analysing, onRemoveFens, onCountFens, onRenameMany, onChapter, onDeleteChapter, onDeleteChapters, onAddEmpty, onImport, f2Here, arrowsHere, kind = "chapters", onImportModels, onConvert, onOrder, onSetKind, onSetOverview, onSendToPhone, onPrint, onPicked }: {
   /** Which list: the chapters, or — with their own heading and commands —
    *  the model games (`book.chapters` holds the one or the other). */
   kind?: "chapters" | "models" | "reference";
@@ -1103,6 +1186,11 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
   onSetOverview?: (ids: number[], overview: boolean | null) => void;
   /** Send a chapter to the phone trainer by QR code. */
   onSendToPhone?: (id: number, filename: string) => void;
+  /** Print these games (model games, reference games), or save them as a
+   *  PDF, in this order. */
+  onPrint?: (ids: number[], primary: "print" | "save") => void;
+  /** The games selected here, in the list's order, whenever they change. */
+  onPicked?: (kind: "models" | "reference", ids: number[]) => void;
   /** Adding chapters: an empty one, or from PGN (pasted, or files). */
   onAddEmpty: (name: string) => Promise<number | null>;
   onImport: (items: ImportItem[]) => void;
@@ -1203,6 +1291,12 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
   useEffect(() => { if (current != null && !picked.includes(current)) setPicked([current]); }, [current]); // eslint-disable-line react-hooks/exhaustive-deps
   const multi = picked.filter((id) => book.chapters.some((c) => c.id === id));
   const several = multi.length >= 2;
+  // Printed in the list's order, whatever order they were clicked in.
+  const multiInOrder = book.chapters.filter((c) => multi.includes(c.id)).map((c) => c.id);
+  const pickedKey = multiInOrder.join(",");
+  useEffect(() => {
+    if (kind !== "chapters") onPicked?.(kind, multiInOrder);
+  }, [kind, pickedKey, onPicked]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (!several) setConfirmDeleteMany(false); }, [several]);
   function clickChapter(id: number, i: number, e: React.MouseEvent) {
     if (e.shiftKey && anchor.current != null) {
@@ -1353,6 +1447,14 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
                 ? { label: `Remove FENs in ${multi.length} ${many}…`, disabled: busy, onClick: () => setFens({ ids: multi, what: `the ${multi.length} selected ${many}` }) }
                 : { label: "Remove FENs from comments…", disabled: none, onClick: () => chapter && setFens({ ids: [chapter.id], what: `“${chapter.name}”` }) },
               ...(several ? [] : [{ label: "Export PGN…", onClick: () => chapter && void exportPgn(chapterPgnPath(chapter.id), `${book.name}-${chapter.name}`).then(setNote), disabled: none }]),
+              // A game prints as on the Analysis page; several, as one document.
+              ...(models && onPrint ? (several ? [
+                { label: `Print ${multi.length} ${many}…`, onClick: () => onPrint(multiInOrder, "print"), disabled: busy },
+                { label: `Export ${multi.length} ${many} as PDF…`, onClick: () => onPrint(multiInOrder, "save"), disabled: busy },
+              ] : [
+                { label: "Print…", onClick: () => chapter && onPrint([chapter.id], "print"), disabled: none },
+                { label: "Export as PDF…", onClick: () => chapter && onPrint([chapter.id], "save"), disabled: none },
+              ]) : []),
             ] : []),
             // The phone trainer's: the chapter on the board.
             ...(kind === "chapters" && chapter && !several ? [
@@ -1370,6 +1472,10 @@ function ChaptersList({ book, busy, current, onPick, bookPicked, onPickBook, onM
             ]),
             { label: `Remove FENs in all ${many}…`, disabled: busy || book.chapters.length === 0,
               onClick: () => setFens({ ids: book.chapters.map((c) => c.id), what: `the book's ${many}` }) },
+            ...(models && onPrint ? [
+              { label: `Print all ${many}…`, onClick: () => onPrint(book.chapters.map((c) => c.id), "print"), disabled: busy || book.chapters.length === 0 },
+              { label: `Export all ${many} as PDF…`, onClick: () => onPrint(book.chapters.map((c) => c.id), "save"), disabled: busy || book.chapters.length === 0 },
+            ] : []),
             // Last, apart, in red.
             ...(several
               ? [{ label: `Delete ${multi.length} ${many}…`, separated: true, danger: true, onClick: () => setConfirmDeleteMany(true), disabled: busy }]

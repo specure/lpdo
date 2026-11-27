@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Model games print** — a model game (or a reference game) on the
+  Repertoire page's board has **Print…** and **Export as PDF…** in its More
+  menu, as a game on the Analysis page has: the same pages, with the players,
+  ratings, event and date from the game's own headers. Several print as one
+  document, named for the book: **Print the N selected…** and **Print all
+  model games…** (and the same as PDF) in the More menu and in the list's
+  own ⋯, in the list's order. The More menu also copies a model game's PGN.
+  A course's export writes both players into `[White]` — "Yilmazyerli, Mert
+  vs. Dolgun, Can (Ayvalik Petro, 2022)" — and leaves Black a question mark:
+  the page sets White and Black each on their line, with the event and the
+  year the line names, and leaves out the tags' own event and date, which
+  are the course's name and the day of the export.
+- **Print: the text size** — the Print dialog (and Export as PDF) sets the
+  text in three sizes: **Small**, the size everything was printed in until
+  now; **Medium**, about a third larger and the new default; **Large**,
+  half as large again. The running header at the top of the page grows with
+  the text (a name too long for its line ends in "…"); the page, its two
+  columns and the diagrams stay as they are, and the pages beside the
+  options show what each size costs in paper. The size chosen is kept for
+  the next printing.
+- **Print: a diagram at every note** — a new option in the Print dialog
+  (and Export as PDF) draws the position after every move that has a
+  comment, an arrow or a ringed square, and wherever variations branch
+  off, in the main line and inside the variations — as well as wherever
+  the game marks a diagram itself (`[#]`). The board comes between the
+  move and its comment, so the comment is read with the position in view,
+  and the moves after a comment start a line of their own;
+  where variations branch off it comes straight before the move they are
+  alternatives to, so what each of them opens with is read under the
+  position it starts from. The choice is kept for the next printing.
+- **Print: arrows and rings in the diagrams** — a diagram of a move the
+  annotator drew on shows what was drawn: the arrows and the ringed
+  squares, in their colours, turned with the board. Until now a printed
+  diagram was the bare position.
+
 ### Changed
 - **The server's memory budget is a setting, and half the machine by
   default** — it was four fifths of the machine's memory, fixed. The database
@@ -23,6 +59,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fifths if that is less.
 
 ### Fixed
+- **Print: what a variation opens with** — a comment at the start of a
+  variation, before its first move ("Also possible is…", "The game
+  went…"), was left off the printed page and out of the PDF. It is printed
+  inside the bracket, before the move; a `[#]` in it draws the position the
+  variation starts from, unless that board is already on the page.
+- **Print: a game's heading parted by the end of a column** — printing
+  several games, a heading could be left with White at the foot of one
+  column or page and Black at the top of the next, or stand whole with its
+  moves overleaf. The heading now stays in one piece and above the first
+  of its moves: with no room left for that, the game starts the next
+  column, with no rule drawn under the game before it.
+- **Repertoire: a ⋯ menu longer than the room below it** — with the
+  model games' list low in the window, the foot of its menu (Print…,
+  Export as PDF…, Delete…) ran off the window's edge and could not be
+  reached. A menu that does not fit on its side of the ⋯ now opens to the
+  other side when there is more room there, and scrolls within itself in a
+  window too low for it either way.
 - **Adding a game no longer costs what the whole database costs** — every
   import, even of one game, first loaded a fingerprint of every game of the
   last year and afterwards rewrote every player's game count: about 10 s and

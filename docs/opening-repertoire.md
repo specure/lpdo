@@ -137,6 +137,27 @@ has it. Exported books carry their model games, marked `[LpdoModelGame "1"]`
 with their own headers, so **Import…** makes them model games again; other
 programs read them as ordinary annotated games.
 
+A model game **prints** as a game on the Analysis page does: with one on the
+board, the board's **More** menu has **Print…** and **Export as PDF…** — the
+pages shown before they leave, two columns, the comments in italics, a
+diagram wherever a comment asks for one (`[#]`) — or, with **A diagram at
+every comment, arrow or marked square, and wherever variations branch off**
+ticked, after every such move and before every move that has alternatives,
+the arrows and ringed squares drawn on the board — the players,
+ratings, event and date from the game's own headers. A course's export puts both players in
+`[White]` — "Yilmazyerli, Mert vs. Dolgun, Can (Ayvalik Petro, 2022)", "Wesley
+So – Magnus Carlsen, chess.com 2017" — and the course's name and the day of
+the export in `[Event]` and `[Date]`: the page then sets White and Black each
+on a line of their own, with the event and the year the line names, and
+prints neither the course's name nor that date. With more than one game in the list,
+the same menu has **Print all model games…** and **Export all model games as
+PDF…**, and — several selected in the list (Ctrl-click, Shift-click) —
+**Print the N selected…**: one document, in the list's order, titled with
+the book's name (the title can be changed in the dialog). The list's own ⋯
+has the same commands. Each game's diagrams are drawn the way its board
+stands — from the book's side unless the board was turned. Reference games
+print the same way; chapters do not.
+
 ## Active books and chapters, and switching lines off
 
 The checkbox on a chapter marks it **active** — part of the repertoire you are

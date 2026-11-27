@@ -15,7 +15,7 @@ import { PIECE_SET, PIECE_SET_BOXES, PIECE_SET_SIZE } from "./pieceSet";
 import { Chess } from "chess.js";
 import { parsePgnTree, AnnotatedGame, MoveNode } from "./parsePgnTree";
 import { getMoveNum } from "./moveTreeNav";
-import { nagsToString } from "./parseAnnotations";
+import { nagsToString, CalArrow, CslCircle } from "./parseAnnotations";
 
 // ── Page geometry (points; A4 is 595.28 × 841.89) ───────────────────────────
 const PAGE = { width: 595.28, height: 841.89 };
@@ -23,12 +23,47 @@ const MARGIN = { top: 56, bottom: 48, left: 46, right: 46 };
 const GUTTER = 18;
 const COLUMN_WIDTH = (PAGE.width - MARGIN.left - MARGIN.right - GUTTER) / 2;
 /** Leading for the move text: 1.35× the move size, which is what lets a dense
- *  page of moves, comments and figurines be read line by line. */
+ *  page of moves, comments and figurines be read line by line. (At the
+ *  smallest text size, as SIZE is — see TEXT_SCALE.) */
 const LINE_HEIGHT = 12.4;
 /** How wide a diagram is drawn: about two thirds of the column, the proportion
  *  a printed game uses — a board the full column width swamps the moves. */
 const DIAGRAM_WIDTH = COLUMN_WIDTH * 0.66;
 const SIZE = { move: 9.2, variation: 8.4, header: 10.5, small: 8.2, running: 9 };
+
+/** How large the text is set. "small" is the densest — the most game on a
+ *  page, the size of a tournament bulletin; "medium" reads comfortably at
+ *  arm's length; "large" is for reading at the board. The page, its columns
+ *  and the diagrams stay as they are: the type and its leading grow — the
+ *  running header's with them, so the page's own name is not its smallest
+ *  print. */
+export type TextSize = "small" | "medium" | "large";
+export const TEXT_SIZES: TextSize[] = ["small", "medium", "large"];
+export const DEFAULT_TEXT_SIZE: TextSize = "medium";
+/** Each size against "small": moves of 9.2, 12 and 13.8 points. */
+const TEXT_SCALE: Record<TextSize, number> = { small: 1, medium: 1.3, large: 1.5 };
+
+/** The type a document is set in: SIZE and LINE_HEIGHT at its text size. */
+interface Type {
+  move: number;
+  variation: number;
+  header: number;
+  small: number;
+  running: number;
+  /** Leading, and how far above a line's foot its baseline sits. */
+  line: number;
+  rise: number;
+  /** What the gaps between paragraphs are multiplied by. */
+  scale: number;
+}
+function typeAt(size: TextSize): Type {
+  const k = TEXT_SCALE[size] ?? TEXT_SCALE[DEFAULT_TEXT_SIZE];
+  return {
+    move: SIZE.move * k, variation: SIZE.variation * k, header: SIZE.header * k, small: SIZE.small * k,
+    running: SIZE.running * k,
+    line: LINE_HEIGHT * k, rise: 3 * k, scale: k,
+  };
+}
 const INK = rgb(0, 0, 0);
 const MUTED = rgb(0.32, 0.32, 0.32);
 /** The board's colours on screen (index.css, light theme), so a printed
@@ -61,6 +96,9 @@ interface Para {
   indent: number;
   /** Space above, for the gap between the main line and a variation. */
   spaceBefore: number;
+  /** Not to be parted from what follows by the end of a column: a game's
+   *  heading stays whole, and above the first of its moves. */
+  keep?: boolean;
 }
 
 interface Diagram {
@@ -68,6 +106,10 @@ interface Diagram {
   fen: string;
   /** Whose view: diagrams are drawn from White's side unless asked otherwise. */
   flipped: boolean;
+  /** What the annotator drew on the board at this move: arrows, and the
+   *  squares ringed. */
+  arrows?: CalArrow[];
+  circles?: CslCircle[];
 }
 
 /** Where one game ends and the next begins: a gap and a rule, or a new page. */
@@ -95,6 +137,11 @@ export interface PdfGame {
   /** Draw this game's diagrams from Black's side — the way its board stood
    *  on screen. Overrides the document-wide `flipped`. */
   flipped?: boolean;
+  /** All of the above is as the caller means it: nothing left out is read
+   *  from the PGN's tags. A course's model game names its players in one
+   *  line and carries the course's name and the export's date in its tags —
+   *  not to be printed as the game's event and date. */
+  asGiven?: boolean;
 }
 
 export interface PdfOptions {
@@ -105,6 +152,12 @@ export interface PdfOptions {
   title?: string;
   /** Add a diagram of the final position even when the movetext asks for none. */
   diagramAtEnd?: boolean;
+  /** A diagram at every move the annotator stopped at — one with a comment,
+   *  an arrow or a ringed square — and at every move the lines part after,
+   *  as well as wherever the movetext asks for one. The board comes between
+   *  the move and what is said about it, so the comment — and what a
+   *  variation from there opens with — is read with the position in view. */
+  diagramEveryNote?: boolean;
   /** Print pieces as figurines (♘f3) rather than letters (Nf3), the way a
    *  chess book sets moves. Letters stay for anyone who prefers them — and
    *  they are what a PGN holds either way. */
@@ -119,6 +172,8 @@ export interface PdfOptions {
   /** Bulletin style: the moves alone, no comments and no diagrams — the most
    *  games on the least paper. */
   compact?: boolean;
+  /** How large the text is set (DEFAULT_TEXT_SIZE when left out). */
+  textSize?: TextSize;
 }
 
 
@@ -146,6 +201,7 @@ export async function buildGamesPdf(inputs: PdfGame[], opts: PdfOptions): Promis
     italic: await doc.embedFont(StandardFonts.TimesRomanItalic),
   };
   const compact = !!opts.compact;
+  const type = typeAt(opts.textSize ?? DEFAULT_TEXT_SIZE);
   const games = inputs.map(withPgnTags);
 
   // The title goes in the running header, where it names every page; it is
@@ -156,14 +212,16 @@ export async function buildGamesPdf(inputs: PdfGame[], opts: PdfOptions): Promis
     if (i > 0) blocks.push({ kind: "break", newPage: !!opts.newPagePerGame });
     const flipped = game.flipped ?? !!opts.flipped;
     const tree = parsePgnTree(game.pgn);
-    blocks.push(...headerBlocks(game, fonts));
-    blocks.push(...movetextBlocks(tree, fonts, flipped, opts.figurines !== false, compact));
+    for (const b of headerBlocks(game, fonts, type)) blocks.push(b.kind === "para" ? { ...b, keep: true } : b);
+    blocks.push(...movetextBlocks(tree, fonts, type, flipped, opts.figurines !== false, compact, !!opts.diagramEveryNote));
     if (opts.diagramAtEnd && !compact) {
       const last = tree.mainLine[tree.mainLine.length - 1];
-      blocks.push({ kind: "diagram", fen: last ? last.fen : tree.startFen, flipped });
+      blocks.push(last
+        ? diagramOf(last.fen, flipped, last.annotations)
+        : diagramOf(tree.startFen, flipped, tree.startAnnotations));
     }
     if (game.result) {
-      blocks.push(para([run(prettyResult(game.result), fonts.bold, SIZE.move, INK)], 0, 4));
+      blocks.push(para([run(prettyResult(game.result), fonts.bold, type.move, INK)], 0, 4));
     }
   });
 
@@ -174,9 +232,9 @@ export async function buildGamesPdf(inputs: PdfGame[], opts: PdfOptions): Promis
   if (opts.sideToMove) {
     for (const b of blocks) if (b.kind === "diagram") b.flipped = b.fen.split(" ")[1] === "b";
   }
-  layout(doc, blocks, fonts, header);
+  layout(doc, blocks, fonts, header, type);
 
-  doc.setTitle(games.length === 1 ? `${games[0].white} – ${games[0].black}` : many);
+  doc.setTitle(games.length === 1 ? players(games[0]) : many);
   doc.setAuthor(opts.producer ?? "LPDO");
   doc.setSubject(games.length === 1 ? describe(games[0]) : games.map(describe).join("; ").slice(0, 500));
   setXmpWithPgn(doc, games, many);
@@ -186,6 +244,7 @@ export async function buildGamesPdf(inputs: PdfGame[], opts: PdfOptions): Promis
 
 /** Fill the gaps in what the caller knew from the PGN's own tags. */
 function withPgnTags(game: PdfGame): PdfGame {
+  if (game.asGiven) return game;
   const tag = (name: string): string | null => {
     const m = game.pgn.match(new RegExp(`\\[${name} "([^"]*)"`));
     const value = m?.[1]?.trim();
@@ -204,7 +263,7 @@ function withPgnTags(game: PdfGame): PdfGame {
 
 // ── The game's own heading, as a chess book prints it ────────────────────────
 
-function headerBlocks(game: PdfGame, fonts: Fonts): Block[] {
+function headerBlocks(game: PdfGame, fonts: Fonts, type: Type): Block[] {
   const name = (who: string, elo?: number | null) => (elo ? `${who}  ${elo}` : who);
   const where = [
     game.event,
@@ -214,21 +273,33 @@ function headerBlocks(game: PdfGame, fonts: Fonts): Block[] {
   const when = game.date && !game.date.startsWith("????") ? game.date.replace(/-/g, ".") : "";
 
   const blocks: Block[] = [];
+  // No second player — a game known by a title alone, not by who played
+  // it: the title, without the squares that say which player is which.
+  if (!game.black.trim()) {
+    blocks.push(para([
+      run(game.white, fonts.bold, type.header, INK),
+      ...(game.eco ? [run(`   ${game.eco}`, fonts.bold, type.small, MUTED)] : []),
+    ], 0, 1));
+    if (where || when) {
+      blocks.push(para([run([where, when].filter(Boolean).join("  "), fonts.text, type.small, MUTED)], 0, 1));
+    }
+    return blocks;
+  }
   // A hollow square before White, a filled one before Black — the way a
   // printed game says which is which, since a list of two names does not:
   // the second name is Black here, but the bottom player is White on any
   // board on screen.
   blocks.push(para([
-    { ...run("", fonts.bold, SIZE.header, INK), swatch: "white" },
-    run(name(game.white, game.white_elo), fonts.bold, SIZE.header, INK),
-    ...(game.eco ? [run(`   ${game.eco}`, fonts.bold, SIZE.small, MUTED)] : []),
+    { ...run("", fonts.bold, type.header, INK), swatch: "white" },
+    run(name(game.white, game.white_elo), fonts.bold, type.header, INK),
+    ...(game.eco ? [run(`   ${game.eco}`, fonts.bold, type.small, MUTED)] : []),
   ], 0, 1));
   blocks.push(para([
-    { ...run("", fonts.bold, SIZE.header, INK), swatch: "black" },
-    run(name(game.black, game.black_elo), fonts.bold, SIZE.header, INK),
+    { ...run("", fonts.bold, type.header, INK), swatch: "black" },
+    run(name(game.black, game.black_elo), fonts.bold, type.header, INK),
   ], 0, 0));
   if (where || when) {
-    blocks.push(para([run([where, when].filter(Boolean).join("  "), fonts.text, SIZE.small, MUTED)], 0, 1));
+    blocks.push(para([run([where, when].filter(Boolean).join("  "), fonts.text, type.small, MUTED)], 0, 1));
   }
   return blocks;
 }
@@ -291,38 +362,90 @@ function para(runs: Run[], indent: number, spaceBefore: number): Para {
   return { kind: "para", runs, indent, spaceBefore };
 }
 
+type Shapes = { arrows?: CalArrow[]; circles?: CslCircle[] } | undefined;
+
+function hasShapes(shapes: Shapes): boolean {
+  return !!shapes && (shapes.arrows?.length ?? 0) + (shapes.circles?.length ?? 0) > 0;
+}
+
+/** A position, with whatever was drawn on its board. */
+function diagramOf(fen: string, flipped: boolean, shapes: Shapes): Diagram {
+  return {
+    kind: "diagram", fen, flipped,
+    ...(shapes?.arrows?.length ? { arrows: shapes.arrows } : {}),
+    ...(shapes?.circles?.length ? { circles: shapes.circles } : {}),
+  };
+}
+
+const STANDARD_START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w";
+
 /** Walk the tree into paragraphs: the main line as one flowing paragraph, each
- *  variation as its own bracketed, indented one — the shape a printed game has. */
-function movetextBlocks(tree: AnnotatedGame, fonts: Fonts, flipped: boolean, figurines: boolean, compact = false): Block[] {
+ *  variation as its own bracketed, indented one — the shape a printed game has.
+ *  With `everyNote`, a diagram follows every move the lines part after and
+ *  every move that has a comment or
+ *  something drawn on its board, not only the moves the movetext marks. */
+function movetextBlocks(tree: AnnotatedGame, fonts: Fonts, type: Type, flipped: boolean, figurines: boolean, compact = false, everyNote = false): Block[] {
   const blocks: Block[] = [];
   let current: Run[] = [];
   const flush = (indent: number, spaceBefore: number) => {
     if (current.length) blocks.push(para(current, indent, spaceBefore));
     current = [];
   };
+  // Moves a diagram was put after: the next move needs its number even with
+  // no comment between, and a variation from there has its starting position
+  // on the page already.
+  const diagrammed = new Set<MoveNode>();
 
   // A marker in the game's opening comment asks for the starting position —
-  // which is how a game that begins from a diagram is annotated.
-  if (tree.startComment && !compact) {
-    const text = tree.startComment.replace(DIAGRAM_MARKER, " ").trim();
-    if (text) blocks.push(para([run(text, fonts.italic, SIZE.variation, MUTED)], 0, 0));
-    if (DIAGRAM_MARKER.test(tree.startComment)) {
-      blocks.push({ kind: "diagram", fen: tree.startFen, flipped });
-    }
+  // which is how a game that begins from a diagram is annotated. With a
+  // diagram at every note, so does something drawn on the starting board, or
+  // a start that is not the usual one (a study, a fragment) when it has a
+  // comment or the first move has alternatives: nobody needs the initial
+  // position drawn for a game's introduction.
+  let startShown = false;
+  if (!compact) {
+    const comment = tree.startComment ?? "";
+    const text = comment.replace(DIAGRAM_MARKER, " ").trim();
+    const drawn = hasShapes(tree.startAnnotations);
+    const elsewhere = !tree.startFen.startsWith(STANDARD_START);
+    const parts = (tree.mainLine[0]?.variations.length ?? 0) > 0;
+    const wanted = DIAGRAM_MARKER.test(comment) || (everyNote && (drawn || (elsewhere && (!!text || parts))));
+    startShown = wanted;
+    const note = text ? para([run(text, fonts.italic, type.variation, MUTED)], 0, 0) : null;
+    const board = wanted ? diagramOf(tree.startFen, flipped, tree.startAnnotations) : null;
+    // The board before the words about it, as after a move — but only where
+    // every note has its board: a marked one stays where it always was.
+    for (const b of everyNote ? [board, note] : [note, board]) if (b) blocks.push(b);
   }
 
-  const walk = (line: MoveNode[], depth: number) => {
+  // `before` is the position the line starts from, `beforeShown` whether a
+  // diagram of it is on the page where the line leaves it.
+  const walk = (line: MoveNode[], depth: number, before: string, beforeShown: boolean) => {
     const isMain = depth === 0;
-    const size = isMain ? SIZE.move : SIZE.variation;
+    const size = isMain ? type.move : type.variation;
     const moveFont = isMain ? fonts.bold : fonts.text;
     const indent = depth === 0 ? 0 : 6 + (depth - 1) * 6;
 
     if (!isMain) current.push(run("[ ", fonts.text, size, MUTED));
 
     line.forEach((node, i) => {
+      // What a variation opens with — "Also possible is", "The game went" —
+      // is said before its first move, inside the bracket. A marker there
+      // asks for the position the variation starts from — unless that is
+      // already drawn where the lines part, as with a diagram at every note
+      // it is: the words are then read under their board, a few lines up.
+      const intro = compact ? "" : node.preComment ?? "";
+      const introText = intro.replace(DIAGRAM_MARKER, " ").trim();
+      const shown = i > 0 ? diagrammed.has(line[i - 1]) : beforeShown;
+      if (introText) current.push(run(`${introText} `, fonts.italic, size, MUTED));
+      if (DIAGRAM_MARKER.test(intro) && !shown) {
+        flush(indent, isMain ? 2 : 1);
+        blocks.push(diagramOf(i > 0 ? line[i - 1].fen : before, flipped, undefined));
+      }
+
       // A move number leads White's moves, and Black's when something came
       // between it and its White move — a comment, a variation, a line start.
-      const needsNumber = node.color === "w" || i === 0 || hasBreakBefore(line[i - 1]);
+      const needsNumber = node.color === "w" || i === 0 || hasBreakBefore(line[i - 1]) || diagrammed.has(line[i - 1]) || !!node.preComment;
       const prefix = needsNumber
         ? `${getMoveNum(node)}${node.color === "w" ? "." : "..."}`
         : "";
@@ -340,20 +463,47 @@ function movetextBlocks(tree: AnnotatedGame, fonts: Fonts, flipped: boolean, fig
       }
 
       const comment = compact ? "" : node.annotations.comment ?? "";
-      const wantsDiagram = DIAGRAM_MARKER.test(comment);
+      const marked = DIAGRAM_MARKER.test(comment);
       const text = comment.replace(DIAGRAM_MARKER, " ").trim();
-      if (text) current.push(run(`${text} `, fonts.italic, size, MUTED));
+      const note = text ? run(`${text} `, fonts.italic, size, MUTED) : null;
+      // The lines part after this move: the next one has alternatives. The
+      // board for that goes straight before the next move — after this
+      // move's own alternatives, which start from the board before it.
+      const parts = everyNote && !compact && (line[i + 1]?.variations.length ?? 0) > 0;
+      const noted = everyNote && !compact
+        && (!!text || marked || hasShapes(node.annotations) || (parts && node.variations.length === 0));
 
-      if (wantsDiagram) {
+      if (noted) {
+        // The move, its position, then what is said about it.
         flush(indent, isMain ? 2 : 1);
-        blocks.push({ kind: "diagram", fen: node.fen, flipped });
-        if (!isMain) current.push(run("", fonts.text, size, MUTED));
+        blocks.push(diagramOf(node.fen, flipped, node.annotations));
+        diagrammed.add(node);
+        if (note) {
+          current.push(note);
+          // The comment is a paragraph of its own under its board: the
+          // moves that follow start a new line, so the eye finds them
+          // without reading to the end of the comment. (A variation's last
+          // comment keeps the closing bracket.)
+          if (isMain || i < line.length - 1) flush(indent, isMain ? 2 : 1);
+        } else if (!isMain) current.push(run("", fonts.text, size, MUTED));
+      } else {
+        if (note) current.push(note);
+        if (marked) {
+          flush(indent, isMain ? 2 : 1);
+          blocks.push(diagramOf(node.fen, flipped, node.annotations));
+          diagrammed.add(node);
+          if (!isMain) current.push(run("", fonts.text, size, MUTED));
+        }
       }
 
       for (const variation of node.variations) {
         flush(indent, isMain ? 2 : 1);
-        walk(variation, depth + 1);
+        walk(variation, depth + 1, i > 0 ? line[i - 1].fen : before, i > 0 ? diagrammed.has(line[i - 1]) : beforeShown);
         flush(6 + depth * 6, 1);
+      }
+      if (parts && !diagrammed.has(node)) {
+        blocks.push(diagramOf(node.fen, flipped, node.annotations));
+        diagrammed.add(node);
       }
     });
 
@@ -361,7 +511,7 @@ function movetextBlocks(tree: AnnotatedGame, fonts: Fonts, flipped: boolean, fig
     flush(indent, isMain ? 2 : 1);
   };
 
-  walk(tree.mainLine, 0);
+  walk(tree.mainLine, 0, tree.startFen, startShown);
   flush(0, 2);
   return blocks;
 }
@@ -375,12 +525,12 @@ function hasBreakBefore(prev: MoveNode | undefined): boolean {
 
 // ── Laying blocks into two columns ───────────────────────────────────────────
 
-function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string) {
+function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string, type: Type) {
   let page = doc.addPage([PAGE.width, PAGE.height]);
   let column = 0;
   let y = PAGE.height - MARGIN.top;
   let pageNumber = 1;
-  drawRunningHeader(page, fonts, header, pageNumber);
+  drawRunningHeader(page, fonts, header, pageNumber, type.running);
 
   const columnLeft = () => MARGIN.left + column * (COLUMN_WIDTH + GUTTER);
   const nextColumn = () => {
@@ -389,13 +539,33 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
       column = 0;
       page = doc.addPage([PAGE.width, PAGE.height]);
       pageNumber += 1;
-      drawRunningHeader(page, fonts, header, pageNumber);
+      drawRunningHeader(page, fonts, header, pageNumber, type.running);
     } else {
       // The rule down the gutter is drawn once the second column is in use
       // — a last page with one column of text needs no line beside nothing.
       drawColumnRule(page);
     }
     y = PAGE.height - MARGIN.top;
+  };
+
+  const top = PAGE.height - MARGIN.top;
+  const diagramHeight = DIAGRAM_WIDTH + 14 + 6;   // the board, the file letters below, the gap after
+  /** What the paragraphs kept together from `from` on need of a column:
+   *  all their lines, and the first line (or the board) of what they are
+   *  kept with. Nothing, when `from` is not such a paragraph. */
+  const kept = (from: number): number => {
+    let height = 0;
+    let i = from;
+    for (; i < blocks.length; i++) {
+      const b = blocks[i];
+      if (b.kind !== "para" || !b.keep) break;
+      height += b.spaceBefore * type.scale + wrap(b.runs, COLUMN_WIDTH - b.indent).length * type.line;
+    }
+    if (i === from) return 0;
+    const after = blocks[i];
+    if (after?.kind === "para") height += after.spaceBefore * type.scale + type.line;
+    else if (after?.kind === "diagram") height += diagramHeight;
+    return height;
   };
 
   for (const [index, block] of blocks.entries()) {
@@ -406,9 +576,11 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
         nextColumn();
         continue;
       }
-      // A gap and a rule across the column, unless the column is fresh anyway.
-      if (y < PAGE.height - MARGIN.top - 1) {
-        if (y - 22 < MARGIN.bottom) { nextColumn(); continue; }
+      // A gap and a rule across the column, unless the column is fresh anyway
+      // — or has no room left for the next game's heading and its first
+      // moves, which then start the next column with no rule above them.
+      if (y < top - 1) {
+        if (y - 22 - kept(index + 1) < MARGIN.bottom) { nextColumn(); continue; }
         y -= 10;
         page.drawLine({
           start: { x: columnLeft(), y }, end: { x: columnLeft() + COLUMN_WIDTH, y },
@@ -425,23 +597,30 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
       // final position — in the same column: a board on one page and "1-0"
       // alone on the next reads as a mistake.
       const next = blocks[index + 1];
-      const keep = next && next.kind === "para" ? next.spaceBefore + LINE_HEIGHT : 0;
+      const keep = next && next.kind === "para" ? next.spaceBefore * type.scale + type.line : 0;
       if (y - height - 6 - keep < MARGIN.bottom) nextColumn();
       drawDiagram(page, fonts, block, columnLeft(), y - height + 6, size);
       y -= height + 6;
       continue;
     }
 
-    y -= block.spaceBefore;
+    // The first of paragraphs kept together: all of them here, or all of
+    // them in the next column.
+    const before = blocks[index - 1];
+    if (block.keep && !(before?.kind === "para" && before.keep) && y < top - 1 && y - kept(index) < MARGIN.bottom) {
+      nextColumn();
+    }
+    y -= block.spaceBefore * type.scale;
     const lines = wrap(block.runs, COLUMN_WIDTH - block.indent);
     for (const line of lines) {
-      if (y - LINE_HEIGHT < MARGIN.bottom) nextColumn();
+      if (y - type.line < MARGIN.bottom) nextColumn();
+      const baseline = y - type.line + type.rise;
       let x = columnLeft() + block.indent;
       for (const item of line) {
         if (item.swatch) {
           const side = item.size * 0.72;
           page.drawRectangle({
-            x, y: y - LINE_HEIGHT + 3 + item.size * 0.06, width: side, height: side,
+            x, y: baseline + item.size * 0.06, width: side, height: side,
             color: item.swatch === "black" ? INK : rgb(1, 1, 1),
             borderColor: INK, borderWidth: 0.7,
           });
@@ -452,7 +631,6 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
           // Number, then the piece on the text baseline like the letter it
           // replaces, then the square — the piece taking only the width it
           // draws, so the square follows as closely as after a letter.
-          const baseline = y - LINE_HEIGHT + 3;
           if (item.prefix) {
             page.drawText(item.prefix, { x, y: baseline, size: item.size, font: item.font, color: item.color });
             x += item.font.widthOfTextAtSize(item.prefix, item.size);
@@ -467,10 +645,10 @@ function layout(doc: PDFDocument, blocks: Block[], fonts: Fonts, header: string)
           x += item.font.widthOfTextAtSize(item.text, item.size);
           continue;
         }
-        page.drawText(item.text, { x, y: y - LINE_HEIGHT + 3, size: item.size, font: item.font, color: item.color });
+        page.drawText(item.text, { x, y: baseline, size: item.size, font: item.font, color: item.color });
         x += item.font.widthOfTextAtSize(item.text, item.size);
       }
-      y -= LINE_HEIGHT;
+      y -= type.line;
     }
   }
 }
@@ -486,13 +664,22 @@ function drawColumnRule(page: PDFPage) {
   });
 }
 
-function drawRunningHeader(page: PDFPage, fonts: Fonts, header: string, pageNumber: number) {
+function drawRunningHeader(page: PDFPage, fonts: Fonts, header: string, pageNumber: number, size: number) {
   const y = PAGE.height - MARGIN.top + 16;
-  page.drawText(printable(header), { x: MARGIN.left, y, size: SIZE.running, font: fonts.text, color: MUTED });
   const label = String(pageNumber);
+  const labelWidth = fonts.text.widthOfTextAtSize(label, size);
+  // One line, whatever the size: a name too long for it ends in "…" short of
+  // the page number rather than running into it.
+  const room = PAGE.width - MARGIN.left - MARGIN.right - labelWidth - size;
+  let text = printable(header);
+  if (fonts.text.widthOfTextAtSize(text, size) > room) {
+    while (text.length > 1 && fonts.text.widthOfTextAtSize(`${text.trimEnd()}…`, size) > room) text = text.slice(0, -1);
+    text = `${text.trimEnd()}…`;
+  }
+  page.drawText(text, { x: MARGIN.left, y, size, font: fonts.text, color: MUTED });
   page.drawText(label, {
-    x: PAGE.width - MARGIN.right - fonts.text.widthOfTextAtSize(label, SIZE.running),
-    y, size: SIZE.running, font: fonts.text, color: MUTED,
+    x: PAGE.width - MARGIN.right - labelWidth,
+    y, size, font: fonts.text, color: MUTED,
   });
   page.drawLine({
     start: { x: MARGIN.left, y: y - 4 },
@@ -570,6 +757,7 @@ function drawDiagram(page: PDFPage, fonts: Fonts, diagram: Diagram, x: number, y
     x: left, y: bottom, width: board, height: board,
     borderColor: MUTED, borderWidth: 0.6,
   });
+  drawShapes(page, diagram, left, bottom + board, square);
 
   // Files below, ranks to the left — the way a printed diagram is labelled.
   for (const i of rows) {
@@ -601,6 +789,65 @@ function drawDiagram(page: PDFPage, fonts: Fonts, diagram: Diagram, x: number, y
     borderWidth: 0.6,
   });
 }
+
+/** What the annotator drew on the board — rings round squares, arrows from
+ *  one to another — over the pieces and see-through, as on screen. `top` is
+ *  the board's upper edge: the shapes are placed as the screen places them,
+ *  from the top-left corner down. */
+function drawShapes(page: PDFPage, diagram: Diagram, left: number, top: number, square: number) {
+  const centre = (sq: string) => {
+    const file = sq.charCodeAt(0) - 97;
+    const rank = Number(sq[1]) - 1;
+    return {
+      x: (diagram.flipped ? 7 - file : file) * square + square / 2,
+      y: (diagram.flipped ? rank : 7 - rank) * square + square / 2,
+    };
+  };
+  const stroke = square * 0.09;
+
+  for (const circle of diagram.circles ?? []) {
+    const c = centre(circle.square);
+    const ink = shapeInk(circle.color);
+    page.drawCircle({
+      x: left + c.x, y: top - c.y, size: square / 2 - stroke / 2,
+      borderColor: ink.color, borderWidth: stroke, borderOpacity: ink.opacity,
+    });
+  }
+
+  for (const arrow of diagram.arrows ?? []) {
+    const from = centre(arrow.from);
+    const to = centre(arrow.to);
+    const length = Math.hypot(to.x - from.x, to.y - from.y);
+    if (!length) continue;
+    // Along the arrow and across it.
+    const ux = (to.x - from.x) / length;
+    const uy = (to.y - from.y) / length;
+    // A shade heavier than the screen's: a printed board is a third the size.
+    const shaft = square * 0.11;
+    const head = shaft * 3;
+    const tail = square * 0.15;                // clear of the piece it starts from
+    const tip = length - head * 0.5;           // just short of the square's centre
+    const neck = tip - head;
+    const at = (along: number, across: number) =>
+      `${(from.x + ux * along - uy * across).toFixed(2)} ${(from.y + uy * along + ux * across).toFixed(2)}`;
+    // One outline, shaft and head together: drawn as two, they would show
+    // darker where they overlap.
+    const d = `M ${at(tail, shaft / 2)} L ${at(neck, shaft / 2)} L ${at(neck, head / 2)} L ${at(tip, 0)} `
+      + `L ${at(neck, -head / 2)} L ${at(neck, -shaft / 2)} L ${at(tail, -shaft / 2)} Z`;
+    const ink = shapeInk(arrow.color);
+    page.drawSvgPath(d, { x: left, y: top, color: ink.color, opacity: ink.opacity });
+  }
+}
+
+/** A shape's colour as stored — "rgba(0, 220, 0, 0.7)" — for the page. */
+function shapeInk(colour: string): { color: RGB; opacity: number } {
+  const n = (colour.match(/[\d.]+/g) ?? []).map(Number);
+  if (n.length < 3) return { color: rgb(0, 0.86, 0), opacity: SHAPE_OPACITY };
+  return { color: rgb(n[0] / 255, n[1] / 255, n[2] / 255), opacity: SHAPE_OPACITY };
+}
+/** Stronger than on screen (about 0.5 there): paper has no backlight, and a
+ *  faint arrow over a dark square is lost in print. */
+const SHAPE_OPACITY = 0.85;
 
 /** A figurine's 45-unit box, relative to the type size. The set draws its
  *  pieces with margins inside that box (a king's ink is 36 of the 45 units),
@@ -690,7 +937,12 @@ function runningHeader(game: PdfGame, producer?: string): string {
 
 function describe(game: PdfGame): string {
   const when = game.date && !game.date.startsWith("????") ? game.date.slice(0, 4) : "";
-  return [`${game.white} – ${game.black}`, game.event, when].filter(Boolean).join(", ");
+  return [players(game), game.event, when].filter(Boolean).join(", ");
+}
+
+/** "White – Black" — or the one name a game known by a title has. */
+function players(game: PdfGame): string {
+  return game.black.trim() ? `${game.white} – ${game.black}` : game.white;
 }
 
 function prettyResult(result: string): string {

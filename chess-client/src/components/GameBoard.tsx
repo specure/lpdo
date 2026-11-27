@@ -26,7 +26,7 @@ import {
 import { serializeMovetext } from "../lib/serializeMovetext";
 import { gameUrlFromPgn } from "../lib/useGamePgn";
 import GameMoreMenu, { MenuEntry } from "./games/GameMoreMenu";
-import PrintDialog from "./games/PrintDialog";
+import PrintDialog, { gameFromPgn } from "./games/PrintDialog";
 import { appendScratchMove, clearScratchMarks, dropLastScratchMove, replayAsScratch, sansToCursor, type ScratchMove } from "../lib/scratchLine";
 import type { CalArrow, CslCircle } from "../lib/parseAnnotations";
 import { nagsToString, nagToSymbol } from "../lib/parseAnnotations";
@@ -541,7 +541,7 @@ async function exportGameToPgn(detail: GameDetail): Promise<void> {
 // progress used by soft-delete / restore.
 function GameActionsBar({
   detail, onDetailChanged, onStartEditMoves, detailsOpen, onToggleDetails, unsavedEdits = false,
-  fen, lineSans, ply, startFen, onExportPdf, onPrint, menuExtras, chapter, onDrill,
+  fen, lineSans, ply, startFen, onExportPdf, onPrint, menuExtras, chapter, modelGame, onDrill,
 }: {
   detail: GameDetail;
   onDrill?: () => void;
@@ -549,6 +549,9 @@ function GameActionsBar({
   /** A repertoire chapter (#327): only editing the moves, and the position
    *  on Lichess or the clipboard — no headers, collections, delete, print. */
   chapter?: boolean;
+  /** The chapter is a model game — a whole game, with its own headers: it
+   *  prints, and its PGN copies, as a game's does. */
+  modelGame?: boolean;
   /** Board position, the moves of the line being viewed and the position they
    *  start from — what the Share menu offers to Lichess and the clipboard. */
   fen: string;
@@ -667,15 +670,15 @@ function GameActionsBar({
         {/* Exports, Lichess, the clipboard, and the game's own address when
             its PGN names one — together, so the bar keeps to one row. */}
         <GameMoreMenu
-          pgn={chapter ? undefined : detail.pgn}
+          pgn={chapter && !modelGame ? undefined : detail.pgn}
           fen={fen}
           lineSans={lineSans}
           ply={ply}
           startFen={startFen}
           gameUrl={chapter ? null : gameUrlFromPgn(detail.pgn)}
           onExportPgn={chapter ? undefined : () => void handleExport()}
-          onExportPdf={chapter ? undefined : onExportPdf}
-          onPrint={chapter ? undefined : onPrint}
+          onExportPdf={chapter && !modelGame ? undefined : onExportPdf}
+          onPrint={chapter && !modelGame ? undefined : onPrint}
           extras={menuExtras}
         />
         {/* Restore stays inline with the other actions — it's a recovery action,
@@ -1931,6 +1934,7 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
           <GameActionsBar
             detail={detail}
             chapter={!!chapter}
+            modelGame={!!chapter?.model}
             onExportPdf={() => setPdfOpen("save")}
             onPrint={() => setPdfOpen("print")}
             menuExtras={menuExtras}
@@ -2187,7 +2191,9 @@ export default function GameBoard({ game, pgn: directPgn, moveSequence, onBackTo
           </div>
 
           {pdfOpen && detail && (
-        <PrintDialog detail={detail} flipped={flipped} primary={pdfOpen} onClose={() => setPdfOpen(null)} />
+        // A model game's players are in its PGN: the detail carries the
+        // chapter's name and the book's in their place.
+        <PrintDialog detail={chapter?.model && detail.pgn ? gameFromPgn(detail.pgn) : detail} flipped={flipped} primary={pdfOpen} onClose={() => setPdfOpen(null)} />
       )}
       {/* Variation choice menu — M3 menu surface (works in view & edit mode) */}
           {varChoice && (
