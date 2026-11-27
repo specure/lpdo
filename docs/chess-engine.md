@@ -131,12 +131,23 @@ the server runs an older one.
 | Hash | an eighth of the memory, 256 MB – 4 GB | More keeps more of an analysis when you move on and come back. |
 | Lines | 5 (Lc0: 10) | 1–20, set per computer. Each extra line makes Stockfish search a little slower; Lc0 reports its lines from one search at no cost. |
 
-**Memory is one budget.** The server may use 80% of the machine's memory. The
-engine's hash comes out of it and the database gets the rest, keeping at least
-2 GB — on a 32 GB machine, 4 GB of hash leaves the database about 21 GB. The
-card shows the split as you type; saving applies it to both at once. Less hash
-leaves the database more room for large jobs such as removing duplicates,
-which slow down (they spill to disk) rather than fail when memory is short.
+**Memory is one budget.** The server may use half of the machine's memory
+(on a machine of 8 GB or less: 4 GB, or four fifths of it if that is less)
+unless you set the figure yourself, in the same card: between 2 GB and nine
+tenths of the machine. The engine's hash comes out of it and the database gets
+the rest, keeping at least 2 GB — on a 32 GB machine, 4 GB of hash leaves the
+database about 12 GB. The card shows the split as you type; saving applies it
+to both at once, and a hash that no longer fits a smaller budget is brought
+down with it. Less hash leaves the database more room for large jobs such as
+removing duplicates, which slow down (they spill to disk) rather than fail
+when memory is short.
+
+Set the budget lower where the machine runs other things as well: the
+database takes what it is allowed before it starts working on disk, and the
+server as a whole holds somewhat more than the database's share, so a budget
+close to what is actually free ends with the system stopping the server. On a
+machine that runs only LPDO it can go up. The figure is kept in `memory.json`
+beside the database.
 
 Maintenance → Chess engine → **Benchmark** runs Stockfish's own benchmark
 (depth 16) with the threads and hash set there, and keeps the results in a
