@@ -93,6 +93,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server no longer knows ends with "The server restarted while this was
   running", and a connection that only dropped is picked up again where it
   was.
+- **Online accounts: the daily sync never ran** — an account marked *daily*
+  was synced on *Sync now* only: the daily run fetched the game sources and
+  left the accounts out. It now syncs every daily account not synced since
+  the day's run (at the time set under Sources, and on the server's next
+  start after a missed one); one that fails is tried again within the hour.
+  The sync shows in Activity under its name, and "synced …" gives the time
+  in local time (it was UTC, an hour or two early).
 
 ## [0.25.0] - 2026-10-25
 

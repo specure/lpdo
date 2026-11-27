@@ -22,9 +22,10 @@ const yearAgo = () => {
   return d.toISOString().slice(0, 10);
 };
 
+/** A sync's time of day here: the server stamps it in UTC ("2026-10-13 17:57:32.5"). */
 const when = (iso: string | null) => {
   if (!iso) return "never";
-  const d = new Date(iso.replace(" ", "T"));
+  const d = new Date(`${iso.replace(" ", "T")}Z`);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 };
 

@@ -6,6 +6,9 @@
 //! was down at the scheduled time, the next tick after it comes back sees the run
 //! is overdue and fires it.
 //!
+//! One's online accounts (#90) ride the same daily clock: an account marked
+//! daily and not synced since the day's run is sent to sync, each on its own.
+//!
 //! Each run is recorded as `running` *before* the job starts (the single writer
 //! thread is occupied for the whole update, so a write afterwards would queue
 //! behind it). The terminal status is then settled on a later tick by inspecting
@@ -13,9 +16,10 @@
 //! `running` status orphaned by a restart (the in-memory job registry doesn't
 //! survive one, so the job is simply gone → the run was interrupted).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{Duration as ChronoDuration, NaiveDateTime};
 
@@ -26,7 +30,10 @@ use crate::jobs::{JobManager, ReadPool};
 const TICK: Duration = Duration::from_secs(60);
 /// Grace period after startup before the first check, so the server is fully up.
 const STARTUP_DELAY: Duration = Duration::from_secs(10);
-
+/// How long an online account is left alone after it was sent to sync. A sync
+/// that fails leaves the account owed (a platform that refuses, a handle that
+/// is gone): it is tried again after this, not on every tick.
+const ACCOUNT_RETRY: Duration = Duration::from_secs(60 * 60);
 
 /// Spawn the scheduler loop onto the current Tokio runtime.
 pub fn spawn(jobs: Arc<JobManager>, reads: ReadPool, db_path: PathBuf) {
@@ -39,16 +46,23 @@ pub fn spawn(jobs: Arc<JobManager>, reads: ReadPool, db_path: PathBuf) {
     tokio::spawn(async move {
         tokio::time::sleep(STARTUP_DELAY).await;
         let mut ticker = tokio::time::interval(TICK);
+        // When each online account was last sent to sync, by its id.
+        let mut accounts_sent: HashMap<i64, Instant> = HashMap::new();
         loop {
             ticker.tick().await;
-            if let Err(e) = tick(&jobs, &reads, &db_path).await {
+            if let Err(e) = tick(&jobs, &reads, &db_path, &mut accounts_sent).await {
                 eprintln!("scheduler: {e:#}");
             }
         }
     });
 }
 
-async fn tick(jobs: &Arc<JobManager>, reads: &ReadPool, db_path: &Path) -> anyhow::Result<()> {
+async fn tick(
+    jobs: &Arc<JobManager>,
+    reads: &ReadPool,
+    db_path: &Path,
+    accounts_sent: &mut HashMap<i64, Instant>,
+) -> anyhow::Result<()> {
     // #131: fallback trigger for coalesced post-import maintenance. The job-
     // completion hook (jobs.rs) normally starts it the instant the queue drains;
     // this periodic call covers the case where maintenance was requested with an
@@ -117,7 +131,35 @@ async fn tick(jobs: &Arc<JobManager>, reads: &ReadPool, db_path: &Path) -> anyho
             }
         }
     }
+
+    // One's online accounts (#90): those marked daily and not synced since the
+    // day's run. After the feeds, so their jobs are ahead in the queue; one job
+    // an account, so one that fails holds no other back. Nothing while a sync
+    // is under way already — "Sync now" among them.
+    if !job_in_flight(jobs, "sync_accounts") {
+        let age = (chrono::Local::now().naive_local() - most_recent_scheduled(daily_minute)).num_seconds();
+        let due = reads
+            .run(move |c| crate::accounts::due(c, age).map_err(|e| anyhow::anyhow!(e)))
+            .await?;
+        for id in accounts_to_send(due, accounts_sent, Instant::now()) {
+            jobs.submit("sync_accounts".into(), serde_json::json!({ "account": id, "trigger": "scheduler" }));
+        }
+    }
     Ok(())
+}
+
+/// Of the accounts owed a sync, those to send now: not the ones sent within
+/// `ACCOUNT_RETRY`. Those sent are noted; an account no longer owed is forgotten.
+fn accounts_to_send(due: Vec<i64>, sent: &mut HashMap<i64, Instant>, now: Instant) -> Vec<i64> {
+    sent.retain(|id, _| due.contains(id));
+    let send: Vec<i64> = due
+        .into_iter()
+        .filter(|id| sent.get(id).is_none_or(|at| now.duration_since(*at) >= ACCOUNT_RETRY))
+        .collect();
+    for id in &send {
+        sent.insert(*id, now);
+    }
+    send
 }
 
 /// Whether a job of `job_type` is currently queued or running.
@@ -219,6 +261,21 @@ mod tests {
         let n = next_scheduled(4 * 60 + 30); // 04:30
         assert_eq!((n.hour(), n.minute()), (4, 30), "keeps the configured clock time");
         assert!(n > chrono::Local::now().naive_local(), "always the next occurrence, never past");
+    }
+
+    #[test]
+    fn an_account_owed_a_sync_is_sent_once_an_hour() {
+        let mut sent = HashMap::new();
+        let t0 = Instant::now();
+        assert_eq!(accounts_to_send(vec![1, 2], &mut sent, t0), vec![1, 2]);
+        // 1 synced, 2 failed and is still owed: not again a minute later, while
+        // 3 (linked meanwhile) goes at once.
+        assert_eq!(accounts_to_send(vec![2, 3], &mut sent, t0 + Duration::from_secs(60)), vec![3]);
+        // After the hour 2 is tried again; 3 has not waited that long.
+        assert_eq!(accounts_to_send(vec![2, 3], &mut sent, t0 + ACCOUNT_RETRY), vec![2]);
+        // The next day 1 is owed again: what was sent the day before is forgotten.
+        assert!(!sent.contains_key(&1));
+        assert_eq!(accounts_to_send(vec![1], &mut sent, t0 + ACCOUNT_RETRY + Duration::from_secs(60)), vec![1]);
     }
 
     #[test]
