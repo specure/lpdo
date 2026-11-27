@@ -490,6 +490,16 @@ interface EngineInfo {
   max_hash_mb: number;
 }
 
+/** The server's memory budget (GET /memory); servers before it have none. */
+interface MemoryInfo {
+  memory_mb: number | null;
+  budget_mb: number;
+  chosen: boolean;
+  default_budget_mb: number;
+  min_budget_mb: number;
+  max_budget_mb: number | null;
+}
+
 function gb(mb: number): string {
   return mb >= 1024 ? `${(mb / 1024).toFixed(mb % 1024 === 0 ? 0 : 1)} GB` : `${mb} MB`;
 }
@@ -502,6 +512,8 @@ function EngineSection() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [mem, setMem] = useState<MemoryInfo | null>(null);
+  const [budget, setBudget] = useState("");
 
   function take(d: EngineInfo) {
     setInfo(d);
@@ -509,12 +521,49 @@ function EngineSection() {
     setHash(String(d.settings.hash_mb));
     setDepth(d.settings.max_depth == null ? "" : String(d.settings.max_depth));
   }
+  function takeMemory(m: MemoryInfo) {
+    setMem(m);
+    setBudget(String(m.budget_mb));
+  }
   useEffect(() => {
     fetch(apiUrl("/engine"))
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
       .then(take)
       .catch((e) => setError(String(e)));
+    // A server from before the budget could be set has no /memory: the split
+    // is then shown without the field.
+    fetch(apiUrl("/memory"))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((m) => { if (m) takeMemory(m as MemoryInfo); })
+      .catch(() => {});
   }, []);
+
+  /** Set the server's memory budget (null: the default). The server brings
+   *  the hash down if it no longer fits, so the engine's settings are read
+   *  again. */
+  async function saveBudget(budget_mb: number | null) {
+    setBusy(true);
+    setError(null);
+    setNote(null);
+    try {
+      const r = await fetch(apiUrl("/memory"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ budget_mb }),
+      });
+      if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
+      takeMemory((await r.json()) as MemoryInfo);
+      const e = await fetch(apiUrl("/engine"));
+      if (e.ok) take((await e.json()) as EngineInfo);
+      setNote("Saved — the database works within the new budget from now on.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      // Refused: the field goes back to the budget in force.
+      if (mem) setBudget(String(mem.budget_mb));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function save(patch: { path?: string; threads?: number; hash_mb?: number; max_depth?: number; enabled?: boolean } & ReplyPatch) {
     setBusy(true);
@@ -596,12 +645,31 @@ function EngineSection() {
         const hashNow = Number.isFinite(h) ? Math.min(Math.max(h, 16), info.max_hash_mb) : info.settings.hash_mb;
         const dbNow = Math.max(info.budget_mb - hashNow, Math.min(2048, info.budget_mb));
         const pct = (mb: number) => `${Math.round((mb / info.budget_mb) * 100)}%`;
+        const b = parseInt(budget, 10);
         return (
           <div className="space-y-1">
-            <div className="text-body-sm text-on-surface">
-              Memory: the server may use {gb(info.budget_mb)}{info.memory_mb ? ` of the machine's ${gb(info.memory_mb)}` : ""} —
-              engine hash {gb(hashNow)}, database {gb(dbNow)}.
-            </div>
+            {mem ? (
+              <div className="flex items-center gap-2 flex-wrap text-body-sm text-on-surface">
+                <label className="flex items-center gap-2">
+                  <span>Memory: the server may use</span>
+                  <input type="number" min={mem.min_budget_mb} max={mem.max_budget_mb ?? undefined} step={1024} value={budget}
+                    onChange={(e) => setBudget(e.target.value)} disabled={busy} className={field.replace("w-20", "w-24")}
+                    {...commitOn(() => { if (Number.isFinite(b) && b !== mem.budget_mb) void saveBudget(b); else setBudget(String(mem.budget_mb)); })} />
+                  <span>MB{mem.memory_mb ? ` of the machine's ${gb(mem.memory_mb)}` : ""} —</span>
+                </label>
+                <span>engine hash {gb(hashNow)}, database {gb(dbNow)}.</span>
+                {mem.chosen && (
+                  <button onClick={() => void saveBudget(null)} disabled={busy} className="text-primary hover:underline disabled:opacity-50">
+                    Back to the default ({gb(mem.default_budget_mb)})
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="text-body-sm text-on-surface">
+                Memory: the server may use {gb(info.budget_mb)}{info.memory_mb ? ` of the machine's ${gb(info.memory_mb)}` : ""} —
+                engine hash {gb(hashNow)}, database {gb(dbNow)}.
+              </div>
+            )}
             <div className="h-2 rounded-full overflow-hidden flex bg-surface-container" title="The server's memory budget: engine hash and database">
               <div className="bg-primary" style={{ width: pct(hashNow) }} />
               <div className="bg-tertiary/60" style={{ width: pct(dbNow) }} />
@@ -615,7 +683,10 @@ function EngineSection() {
           since the server also answers everyone's queries. The hash comes out of the same memory budget as the
           database — it defaults to an eighth of the memory, at most 4 GB, and the database keeps at least
           2 GB. More hash keeps more of an analysis when you move on and come back; less leaves the
-          database more room for large jobs such as removing duplicates. To use an engine outside the
+          database more room for large jobs such as removing duplicates. The budget itself is half the
+          machine's memory unless you set it: lower it where the machine runs other things as well (the
+          database then works on disk sooner — slower, but the system has no reason to stop the server),
+          raise it where it runs only LPDO. To use an engine outside the
           standard locations, name it in <span className="font-mono">{info.settings_file}</span> on the server.
         </p>
       )}

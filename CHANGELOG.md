@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The server's memory budget is a setting, and half the machine by
+  default** — it was four fifths of the machine's memory, fixed. The database
+  takes what it is allowed before it starts working on disk, so on a machine
+  that runs anything else an ordinary large query could end with the system
+  stopping the server: the moves from the starting position over a database
+  of 14 million games took 8 GB under the old budget, and the same 4.6 s
+  within 4 GB under a smaller one. Maintenance → Engines → Stockfish now has
+  the figure as a field beside the split it is divided into — between 2 GB
+  and nine tenths of the machine, applied at once (a hash that no longer fits
+  is brought down with it), kept in `memory.json` beside the database. An
+  existing installation moves to the new default; raise it on a machine that
+  runs only LPDO. A machine of 8 GB or less keeps 4 GB, or its old four
+  fifths if that is less.
+
 ### Fixed
 - **Adding a game no longer costs what the whole database costs** — every
   import, even of one game, first loaded a fingerprint of every game of the

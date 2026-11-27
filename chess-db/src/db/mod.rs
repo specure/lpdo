@@ -57,20 +57,105 @@ pub fn clear_stray_transaction(conn: &Connection) {
 
 // ── Memory: one budget for the database and the chess engine ────────────────
 //
-// The server may use 80% of the machine's memory. The chess engine's hash
-// (#309) comes out of that budget and the database gets the rest, so the two
-// cannot together claim more than the machine has. The engine's hash is read
-// from engine.json beside the database; changing it under Maintenance sets
-// the database's limit again at once.
+// The server may use half of the machine's memory unless told otherwise
+// (memory.json beside the database, set under Maintenance). The chess
+// engine's hash (#309) comes out of that budget and the database gets the
+// rest, so the two cannot together claim more than the budget. The engine's
+// hash is read from engine.json beside the database; changing either under
+// Maintenance sets the database's limit again at once.
+//
+// The budget was 80% of memory, with no way to change it. The database takes
+// what it is allowed before it starts working on disk, and a process holds
+// more than the database's own limit counts — so on a machine that runs
+// anything else, an ordinary large query met the kernel's OOM killer first.
 
 /// Total physical memory in MB, where the system says.
 pub fn total_ram_mb() -> Option<u64> {
     read_total_ram_kb().map(|kb| kb / 1024).filter(|&m| m > 0)
 }
 
-/// What the server may use: 80% of memory (8 GB where it is not known).
+/// The budget chosen under Maintenance, in MB; 0 while it is the default.
+/// One per process: a server has one database, and so one data directory.
+static CHOSEN_BUDGET_MB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The budget when nobody has chosen one: half of memory (8 GB where it is
+/// not known) — but on a small machine, where half would leave the engine no
+/// hash beside the database's floor, 4 GB or the old four fifths, whichever
+/// is less.
+pub fn default_budget_mb() -> u64 {
+    total_ram_mb().map(|m| (m / 2).max((m * 4 / 5).min(4096))).unwrap_or(8192)
+}
+
+/// The least and the most a budget may be: the database's floor, and nine
+/// tenths of memory (no upper bound where memory is not known).
+pub fn budget_bounds_mb() -> (u64, u64) {
+    let max = total_ram_mb().map(|m| m * 9 / 10).unwrap_or(u64::MAX);
+    (DB_MIN_MB.min(max), max)
+}
+
+/// What the server may use: the budget chosen under Maintenance, else the
+/// default.
 pub fn server_budget_mb() -> u64 {
-    total_ram_mb().map(|m| m * 80 / 100).unwrap_or(8192)
+    match CHOSEN_BUDGET_MB.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => default_budget_mb(),
+        chosen => chosen,
+    }
+}
+
+/// Whether the budget was chosen (rather than the default).
+pub fn budget_is_chosen() -> bool {
+    CHOSEN_BUDGET_MB.load(std::sync::atomic::Ordering::Relaxed) != 0
+}
+
+fn budget_file(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("memory.json")
+}
+
+/// The budget written in `data_dir/memory.json`, within the bounds; None when
+/// there is no file or it does not say.
+fn read_budget(data_dir: &Path) -> Option<u64> {
+    let text = std::fs::read_to_string(budget_file(data_dir)).ok()?;
+    let mb = serde_json::from_str::<serde_json::Value>(&text).ok()?.get("budget_mb")?.as_u64()?;
+    let (min, max) = budget_bounds_mb();
+    Some(mb.clamp(min, max))
+}
+
+/// Take up the budget chosen for the database in `data_dir`, if any. The
+/// server calls it before it reads the engine's settings (the hash's ceiling
+/// depends on the budget); otherwise the first database opened decides —
+/// later ones (a safety snapshot elsewhere on disk) do not change it.
+pub fn load_budget(data_dir: &Path) {
+    BUDGET_LOADED.store(true, std::sync::atomic::Ordering::Relaxed);
+    CHOSEN_BUDGET_MB.store(read_budget(data_dir).unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+}
+
+static BUDGET_LOADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Choose the budget (`None`: back to the default) and remember it beside the
+/// database. Returns the budget now in force. The caller sets the database's
+/// limit again (`apply_memory_limit`). A figure outside the bounds is refused
+/// rather than brought within them: a slip of the hand ("8" for 8 GB) would
+/// otherwise cut the engine's hash down to fit.
+pub fn set_budget(data_dir: &Path, budget_mb: Option<u64>) -> Result<u64> {
+    let file = budget_file(data_dir);
+    match budget_mb {
+        Some(mb) => {
+            let (min, max) = budget_bounds_mb();
+            if mb < min || mb > max {
+                anyhow::bail!("The memory budget is in MB, between {min} and {max} on this machine.");
+            }
+            std::fs::write(&file, serde_json::to_string_pretty(&serde_json::json!({ "budget_mb": mb }))?)?;
+        }
+        None => {
+            if let Err(e) = std::fs::remove_file(&file) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    return Err(e.into());
+                }
+            }
+        }
+    }
+    load_budget(data_dir);
+    Ok(server_budget_mb())
 }
 
 /// The database keeps at least this much, whatever the engine is given.
@@ -119,6 +204,9 @@ pub fn apply_memory_limit(conn: &Connection, engine_hash_mb: u32) -> Result<()> 
 
 fn memory_limit_str(path: &Path) -> String {
     let data_dir = path.parent().unwrap_or(Path::new("."));
+    if !BUDGET_LOADED.load(std::sync::atomic::Ordering::Relaxed) {
+        load_budget(data_dir);
+    }
     format!("{}MiB", db_limit_mb(engine_hash_mb(data_dir)))
 }
 
@@ -322,6 +410,35 @@ mod memory_budget_tests {
             assert!(db >= DB_MIN_MB.min(budget), "db {db} for hash {hash}");
             assert!(db + hash as u64 <= budget.max(DB_MIN_MB + 16), "db {db} + hash {hash} > budget {budget}");
         }
+    }
+
+    /// The default leaves the other half of the machine alone, and a chosen
+    /// budget is read back from its file within the bounds.
+    #[test]
+    fn a_chosen_budget_is_kept_within_the_bounds() {
+        let (min, max) = budget_bounds_mb();
+        assert!(min <= max);
+        if let Some(total) = total_ram_mb() {
+            assert!(default_budget_mb() >= total / 2 && default_budget_mb() <= (total * 4 / 5).max(total / 2));
+            assert!(default_budget_mb() >= min && default_budget_mb() <= max);
+        }
+        let dir = std::env::temp_dir().join(format!("lpdo-budget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(read_budget(&dir), None, "no file: the default");
+        let write = |v: &str| std::fs::write(budget_file(&dir), v).unwrap();
+        let mid = min + (max.min(1 << 30) - min) / 2;
+        write(&format!("{{\"budget_mb\": {mid}}}"));
+        assert_eq!(read_budget(&dir), Some(mid));
+        write("{\"budget_mb\": 1}");
+        assert_eq!(read_budget(&dir), Some(min), "never under the database's floor");
+        if max != u64::MAX {
+            write(&format!("{{\"budget_mb\": {}}}", max + 1000));
+            assert_eq!(read_budget(&dir), Some(max), "never the whole machine");
+        }
+        write("not json");
+        assert_eq!(read_budget(&dir), None, "an unreadable file: the default");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// DuckDB takes the limit as written, and it changes on a live instance.
