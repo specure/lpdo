@@ -446,7 +446,8 @@ impl EvalStore {
 /// Keep `snap` for `ident` and `position` in `engine_evals` if it goes
 /// further than what is kept there.
 pub(crate) fn save_eval(conn: &duckdb::Connection, kind: Kind, ident: &str, position: &str, snap: &Snapshot) -> duckdb::Result<()> {
-    if snap.lines.is_empty() { return Ok(()); }
+    // A set naming a move twice mixes two of the engine's reports: not kept.
+    if snap.lines.is_empty() || !distinct_moves(&snap.lines) { return Ok(()); }
     let lines = serde_json::to_string(&snap.lines).unwrap_or_else(|_| "[]".to_string());
     let further = match kind {
         Kind::Lc0 => "excluded.nodes > engine_evals.nodes",
@@ -462,6 +463,24 @@ pub(crate) fn save_eval(conn: &duckdb::Connection, kind: Kind, ident: &str, posi
     );
     conn.execute(&sql, duckdb::params![ident, kind_name(kind), position, snap.depth as i64, snap.nodes as i64, snap.lines.len() as i64, lines])?;
     Ok(())
+}
+
+/// Delete the kept results whose lines name a move twice — mixed from two of
+/// the engine's reports, before bound lines emptied their slot (see
+/// `Info::bound_slot`). The positions are analysed afresh when next asked.
+/// How many there were.
+pub(crate) fn delete_mixed_results(conn: &duckdb::Connection) -> duckdb::Result<usize> {
+    let mut stmt = conn.prepare("SELECT engine, position, lines FROM engine_evals")?;
+    let mixed: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?
+        .filter_map(Result::ok)
+        .filter(|(_, _, lines)| serde_json::from_str::<Vec<Line>>(lines).is_ok_and(|l| !distinct_moves(&l)))
+        .map(|(engine, position, _)| (engine, position))
+        .collect();
+    for (engine, position) in &mixed {
+        conn.execute("DELETE FROM engine_evals WHERE engine = ? AND position = ?", duckdb::params![engine, position])?;
+    }
+    Ok(mixed.len())
 }
 
 /// How many lines the result kept for `ident` and `position` has (1 when
@@ -671,7 +690,7 @@ impl Remembered {
     /// Keep `s` if it is deeper than what is remembered for `key` (see
     /// `deeper`).
     fn offer(&mut self, key: &str, s: &Snapshot, kind: Kind) {
-        if s.lines.is_empty() { return; }
+        if s.lines.is_empty() || !distinct_moves(&s.lines) { return; }
         match self.by_key.get(key) {
             Some(old) if !deeper(kind, s, old) => return,
             Some(_) => {}
@@ -1658,6 +1677,8 @@ impl Engine {
                 if let Some(info) = parse_info(t) {
                     if let Some(d) = info.depth { depth = depth.max(d); }
                     if let Some(n) = info.nodes { nodes = n; }
+                    // A slot searched again: what it held is stale (see Info).
+                    if let Some(k) = info.bound_slot { found.remove(&k); scores.remove(&k); }
                     if let Some(l) = info.line {
                         let score = match (l.mate, l.eval_cp) {
                             (Some(m), _) if m > 0 => 100_000 - m,
@@ -2074,7 +2095,7 @@ async fn read_stderr(stderr: tokio::process::ChildStderr, errlog: ErrLog) {
 }
 
 async fn read_engine(
-    mut stdout: BufReader<ChildStdout>,
+    mut stdout: impl tokio::io::AsyncBufRead + Unpin,
     search: Arc<std::sync::Mutex<Search>>,
     idle: Arc<Notify>,
     tx: broadcast::Sender<Snapshot>,
@@ -2116,6 +2137,8 @@ async fn read_engine(
                         Some(Some(_)) => s.nps,
                     };
                 }
+                // A slot searched again: what it held is stale (see Info).
+                if let Some(k) = info.bound_slot { s.lines.remove(&k); continue; }
                 match info.line {
                     Some(mut l) => {
                         if l.multipv > s.want { continue; }
@@ -2128,6 +2151,9 @@ async fn read_engine(
                         let last_of_set = l.multipv == s.want;
                         s.lines.insert(l.multipv, l);
                         if !last_of_set { continue; } // wait for the rest of this depth
+                        // A slot still empty since a bound line: the next
+                        // report fills it.
+                        if !complete_set(&s.lines, s.want) { continue; }
                     }
                     None => continue, // speed-only updates are not worth a snapshot
                 }
@@ -2188,13 +2214,32 @@ struct Info {
     /// score (bound scores during aspiration windows are skipped). The score
     /// is still from the side to move.
     line: Option<Line>,
+    /// The slot (multipv) of a line with only a bound score: Stockfish
+    /// searching that slot again within the depth. What the slot held is
+    /// stale then — its move may have moved to another slot already — so it
+    /// is emptied until the slot's next exact line (see [`complete_set`]).
+    bound_slot: Option<u32>,
+}
+
+/// Whether `lines` are one coherent set of `want`: every slot filled, and no
+/// move twice. A set mixing slots from two of the engine's reports can name
+/// a move twice — its old slot and its new one (a slot re-searched within a
+/// depth is reported with a bound score, and skipped).
+fn complete_set(lines: &BTreeMap<u32, Line>, want: u32) -> bool {
+    lines.len() as u32 >= want && distinct_moves(lines.values())
+}
+
+/// No two lines start with the same move.
+fn distinct_moves<'a>(lines: impl IntoIterator<Item = &'a Line>) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    lines.into_iter().all(|l| l.pv_uci.first().is_none_or(|m| seen.insert(m.as_str())))
 }
 
 fn parse_info(t: &str) -> Option<Info> {
     let mut it = t.split_whitespace();
     if it.next()? != "info" { return None; }
     let toks: Vec<&str> = it.collect();
-    let mut info = Info { depth: None, nodes: None, nps: None, line: None };
+    let mut info = Info { depth: None, nodes: None, nps: None, line: None, bound_slot: None };
     let (mut multipv, mut cp, mut mate, mut bound, mut pv) = (1u32, None, None, false, Vec::new());
     let mut wdl: Option<[u32; 3]> = None;
     let mut i = 0;
@@ -2223,8 +2268,12 @@ fn parse_info(t: &str) -> Option<Info> {
             _ => i += 1,
         }
     }
-    if !pv.is_empty() && !bound && (cp.is_some() || mate.is_some()) {
-        info.line = Some(Line { multipv, eval_cp: if mate.is_some() { None } else { cp }, mate, pv_uci: pv, wdl });
+    if !pv.is_empty() && (cp.is_some() || mate.is_some()) {
+        if bound {
+            info.bound_slot = Some(multipv);
+        } else {
+            info.line = Some(Line { multipv, eval_cp: if mate.is_some() { None } else { cp }, mate, pv_uci: pv, wdl });
+        }
     }
     Some(info)
 }
@@ -2320,6 +2369,10 @@ impl Background {
             if t.starts_with("bestmove") { break; }
             if let Some(info) = parse_info(t) {
                 if let Some(n) = info.nodes { nodes = n; }
+                // A slot searched again: the set waits for its exact line.
+                if let Some(k) = info.bound_slot.map(|k| k as usize) {
+                    if (1..=want).contains(&k) { set[k - 1] = None; }
+                }
                 if let (Some(d), Some(mut l)) = (info.depth, info.line) {
                     let k = l.multipv as usize;
                     if (1..=want).contains(&k) {
@@ -2330,7 +2383,9 @@ impl Background {
                         }
                         if d != at { at = d; set.iter_mut().for_each(|s| *s = None); }
                         set[k - 1] = Some(l);
-                        if set.iter().all(Option::is_some) { best = Some((d, set.iter().flatten().cloned().collect())); }
+                        if set.iter().all(Option::is_some) && distinct_moves(set.iter().flatten()) {
+                            best = Some((d, set.iter().flatten().cloned().collect()));
+                        }
                     }
                 }
             }
@@ -2503,6 +2558,76 @@ mod tests {
         assert!(store.load("Stockfish 19", pos).await.is_none());
     }
 
+    /// Stockfish's own output (MultiPV 5, Black to move) where slot 3 is
+    /// searched again within depth 27: reported with a bound score, its old
+    /// move (e8g8) is stale, and a7a5 has moved up to slot 2 — taking the
+    /// slots as they come named a7a5 twice. The reader shows and keeps only
+    /// complete sets.
+    #[tokio::test]
+    async fn a_slot_searched_again_is_not_mixed_into_a_set() {
+        let out = "\
+info depth 26 seldepth 38 multipv 1 score cp -24 wdl 5 956 39 nodes 30684567 pv f6e4
+info depth 26 seldepth 38 multipv 2 score cp -39 wdl 3 926 71 nodes 30684567 pv e8g8
+info depth 26 seldepth 40 multipv 3 score cp -48 wdl 2 899 99 nodes 30684567 pv a7a5
+info depth 26 seldepth 30 multipv 4 score cp -49 wdl 2 894 104 nodes 30684567 pv h7h6
+info depth 26 seldepth 29 multipv 5 score cp -51 wdl 2 887 111 nodes 30684567 pv c8e6
+info depth 27 seldepth 39 multipv 1 score cp -24 wdl 5 956 39 nodes 34496443 pv f6e4
+info depth 27 seldepth 40 multipv 2 score cp -43 wdl 2 916 82 nodes 34496443 pv a7a5
+info depth 27 seldepth 39 multipv 3 score cp -51 upperbound wdl 2 888 110 nodes 34496443 pv e8g8
+info depth 26 seldepth 30 multipv 4 score cp -49 wdl 2 894 104 nodes 34496443 pv h7h6
+info depth 26 seldepth 29 multipv 5 score cp -51 wdl 2 887 111 nodes 34496443 pv c8e6
+info depth 27 seldepth 39 multipv 1 score cp -24 wdl 5 956 39 nodes 36000000 pv f6e4
+info depth 27 seldepth 40 multipv 2 score cp -43 wdl 2 916 82 nodes 36000000 pv a7a5
+info depth 27 seldepth 39 multipv 3 score cp -50 wdl 2 890 108 nodes 36000000 pv e8g8
+info depth 27 seldepth 30 multipv 4 score cp -49 wdl 2 894 104 nodes 36000000 pv h7h6
+info depth 27 seldepth 29 multipv 5 score cp -52 wdl 2 886 112 nodes 36000000 pv c8e6
+bestmove f6e4
+";
+        let search = Arc::new(std::sync::Mutex::new(Search {
+            gen: 1, key: "k".into(), ident: "Stockfish 19".into(), position: "p".into(), white_to_move: false,
+            searching: true, want: 5, depth: 0, nodes: 0, nps: 0, lines: BTreeMap::new(), stop_at: None,
+            frozen: false, resumed: None, since: None, answered: false,
+        }));
+        let (tx, mut rx) = broadcast::channel(64);
+        let remembered = Arc::new(std::sync::Mutex::new(Remembered::default()));
+        read_engine(
+            tokio::io::BufReader::new(out.as_bytes()), search, Arc::new(Notify::new()), tx, remembered.clone(),
+            Kind::Stockfish, None, Arc::new(std::sync::OnceLock::new()), ErrLog::default(), Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        ).await;
+        let mut snaps = Vec::new();
+        while let Ok(s) = rx.try_recv() { snaps.push(s); }
+        // Depth 26's set, the complete depth-27 set, and the end — not the mixed one.
+        assert!(snaps.iter().all(|s| distinct_moves(&s.lines)), "a move twice in {snaps:?}");
+        let last = snaps.last().unwrap();
+        let firsts: Vec<_> = last.lines.iter().map(|l| l.pv_uci[0].as_str()).collect();
+        assert_eq!(firsts, ["f6e4", "a7a5", "e8g8", "h7h6", "c8e6"]);
+        // White's view: Black's -50 is +50.
+        assert_eq!(last.lines[2].eval_cp, Some(50));
+        assert_eq!(remembered.lock().unwrap().get("k").unwrap().lines.len(), 5);
+    }
+
+    /// Results kept before the fix that name a move twice are deleted; a
+    /// new one like that is not kept at all.
+    #[test]
+    fn results_naming_a_move_twice_are_not_kept() {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        crate::db::schema::init(&conn).unwrap();
+        let line = |k, mv: &str| Line { multipv: k, eval_cp: Some(10), mate: None, pv_uci: vec![mv.into()], wdl: None };
+        let snap = |lines| Snapshot { gen: 0, depth: 30, nodes: 1, nps: 0, lines, done: true, cached: false, engine: None, error: None };
+        let mixed = snap(vec![line(1, "e2e4"), line(2, "d2d4"), line(3, "d2d4")]);
+        let fine = snap(vec![line(1, "e2e4"), line(2, "d2d4"), line(3, "c2c4")]);
+        save_eval(&conn, Kind::Stockfish, "SF", "a", &mixed).unwrap();
+        assert_eq!(kept_lines(&conn, "SF", "a"), 1, "not kept");
+        // As an older version kept them.
+        for (pos, s) in [("b", &mixed), ("c", &fine)] {
+            conn.execute("INSERT INTO engine_evals VALUES ('SF', 'stockfish', ?, 30, 1, 3, ?, now())",
+                duckdb::params![pos, serde_json::to_string(&s.lines).unwrap()]).unwrap();
+        }
+        assert_eq!(delete_mixed_results(&conn).unwrap(), 1);
+        assert_eq!((kept_lines(&conn, "SF", "b"), kept_lines(&conn, "SF", "c")), (1, 3));
+        assert_eq!(delete_mixed_results(&conn).unwrap(), 0);
+    }
+
     #[test]
     fn info_lines_parse() {
         let i = parse_info("info depth 22 seldepth 31 multipv 2 score cp -35 nodes 123456 nps 987654 hashfull 12 tbhits 0 time 125 pv e7e5 g1f3 b8c6").unwrap();
@@ -2516,7 +2641,11 @@ mod tests {
         assert_eq!((m.eval_cp, m.mate), (None, Some(-3)));
 
         // A bound score is an aspiration-window guess, not a result.
-        assert!(parse_info("info depth 20 multipv 1 score cp 40 lowerbound nodes 5 pv e2e4").unwrap().line.is_none());
+        let b = parse_info("info depth 20 multipv 3 score cp 40 lowerbound nodes 5 pv e2e4").unwrap();
+        assert!(b.line.is_none());
+        // …but its slot is searched again: what it held is stale.
+        assert_eq!(b.bound_slot, Some(3));
+        assert_eq!(parse_info("info depth 20 multipv 2 score cp 40 upperbound wdl 1 2 997 nodes 5 pv e2e4").unwrap().bound_slot, Some(2));
         assert!(parse_info("info depth 5 currmove e2e4 currmovenumber 1").unwrap().line.is_none());
         assert!(parse_info("info string NNUE evaluation using nn-xyz.nnue").unwrap().line.is_none());
         assert!(parse_info("bestmove e2e4").is_none());

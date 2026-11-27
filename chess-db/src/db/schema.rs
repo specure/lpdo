@@ -332,6 +332,11 @@ pub fn init(conn: &Connection) -> Result<()> {
             PRIMARY KEY (engine, position)
         );",
     )?;
+    // Engine results mixed from two of the engine's reports name a move twice:
+    // gone, to be analysed afresh. Cheap — a small table — and a no-op once
+    // clean.
+    let mixed = crate::engine::delete_mixed_results(conn)?;
+    if mixed > 0 { println!("Removed {mixed} engine results that listed a move twice; they are analysed afresh when next shown."); }
     if !had_engine_games {
         println!("Finding engine games (one-time migration)…");
         conn.execute_batch(
