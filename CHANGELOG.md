@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-11-27
+
 ### Added
 - **Model games print** — a model game (or a reference game) on the
   Repertoire page's board has **Print…** and **Export as PDF…** in its More
@@ -57,6 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing installation moves to the new default; raise it on a machine that
   runs only LPDO. A machine of 8 GB or less keeps 4 GB, or its old four
   fifths if that is less.
+- **Updated dependencies** — rustls 0.23.46 and the client's npm packages.
 
 ### Fixed
 - **Print: what a variation opens with** — a comment at the start of a
@@ -1761,7 +1764,8 @@ Initial public release — a cross-platform desktop chess database.
 - Release CI producing Debian/Linux (`.deb`, `.AppImage`) and Windows (NSIS
   `.exe`) builds, with the name-normalisation cache-service key baked in.
 
-[Unreleased]: https://github.com/specure/lpdo/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/specure/lpdo/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/specure/lpdo/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/specure/lpdo/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/specure/lpdo/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/specure/lpdo/compare/v0.22.1...v0.23.0
